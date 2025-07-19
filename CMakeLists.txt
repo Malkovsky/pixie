@@ -6,6 +6,7 @@ FetchContent_Declare(
     googletest
     URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
 )
+include(GoogleTest)
 FetchContent_MakeAvailable(googletest)
 FetchContent_Declare(
   googlebenchmark
@@ -40,7 +41,6 @@ set_property(TARGET unittests PROPERTY CXX_STANDARD 20)
 target_link_libraries(unittests
     gtest
     gtest_main)
-add_test(
-    NAME Unittests
-    COMMAND unittests
-)
+
+enable_testing()
+gtest_discover_tests(unittests)

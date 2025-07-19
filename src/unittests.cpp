@@ -9,15 +9,15 @@ TEST(BitVectorTest, Basic) {
   std::vector<uint64_t> bits = {0b101010101};
   BitVector bv(bits, 9);
   EXPECT_EQ(bv.size(), 9);
-  EXPECT_EQ(bv[0], false);
-  EXPECT_EQ(bv[1], true);
-  EXPECT_EQ(bv[2], false);
-  EXPECT_EQ(bv[3], true);
-  EXPECT_EQ(bv[4], false);
-  EXPECT_EQ(bv[5], true);
-  EXPECT_EQ(bv[6], false);
-  EXPECT_EQ(bv[7], true);
-  EXPECT_EQ(bv[8], false);
+  EXPECT_EQ(bv[0], 1);
+  EXPECT_EQ(bv[1], 0);
+  EXPECT_EQ(bv[2], 1);
+  EXPECT_EQ(bv[3], 0);
+  EXPECT_EQ(bv[4], 1);
+  EXPECT_EQ(bv[5], 0);
+  EXPECT_EQ(bv[6], 1);
+  EXPECT_EQ(bv[7], 0);
+  EXPECT_EQ(bv[8], 1);
 }
 
 TEST(BitVectorTest, MultipleWords) {
@@ -36,13 +36,7 @@ TEST(BitVectorTest, MultipleWords) {
   }
 }
 
-TEST(BitVectorTest, ToStringBasic) {
-  std::vector<uint64_t> bits = {0b101};
-  BitVector bv(bits, 3);
-  EXPECT_EQ(bv.to_string(), "101");
-}
-
-TEST(BitVectorTest, ToStringLonger) {
+TEST(BitVectorTest, ToString) {
   std::vector<uint64_t> bits = {0b10101010101};
   BitVector bv(bits, 11);
   EXPECT_EQ(bv.to_string(), "10101010101");

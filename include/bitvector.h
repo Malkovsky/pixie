@@ -38,10 +38,6 @@ private:
 
   std::span<const uint64_t> bits;
 
-  inline size_t word_index(size_t bit_pos) const { return bit_pos / kWordSize; }
-
-  inline size_t bit_offset(size_t bit_pos) const { return bit_pos % kWordSize; }
-
   inline uint64_t first_bits_mask(size_t num) const {
     return num >= 64 ? UINT64_MAX : ((1llu << num) - 1);
   }
@@ -66,8 +62,8 @@ public:
    * Get the bit at the specified position
    */
   int operator[](size_t pos) const {
-    size_t word_idx = word_index(pos);
-    size_t bit_off = bit_offset(pos);
+    size_t word_idx = pos / kWordSize;
+    size_t bit_off = pos % kWordSize;
 
     return (bits[word_idx] & (1ULL << bit_off)) != 0;
   }
