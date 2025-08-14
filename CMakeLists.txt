@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.12)
 project(pixie)
 
+set(CMAKE_CXX_FLAGS "-march=native")
+
 include(FetchContent)
 FetchContent_Declare(
     googletest
@@ -13,8 +15,7 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/google/benchmark.git
   GIT_TAG v1.7.1  # Replace with the desired version/tag
 )
-FetchContent_MakeAvailable(googlebenchmark)
-
+# FetchContent_MakeAvailable(googlebenchmark)
 # add_executable(bt_benchmarks
 #     src/benchmarks.cpp)
 # target_include_directories(bt_benchmarks

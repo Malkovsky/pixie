@@ -1,9 +1,52 @@
+#include <numeric>
 #include <random>
 
+#include "bits.h"
 #include "bitvector.h"
 #include <gtest/gtest.h>
 
 using pixie::BitVector;
+using pixie::BitVectorInterleaved;
+
+TEST(Popcount512, Ones) {
+  std::array<uint64_t, 8> a{std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max()};
+  for (size_t i = 0; i < 512; ++i) {
+    auto p = popcount_512(a.data(), i);
+    EXPECT_EQ(p, i);
+  }
+}
+
+TEST(Popcount512, Random) {
+  std::array<uint64_t, 8> a{std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max()};
+
+  std::mt19937_64 rng(42);
+  for (size_t t = 0; t < 1000; ++t) {
+    for (size_t i = 0; i < 8; ++i) {
+      a[i] = rng();
+    }
+    size_t rank = 0;
+    for (size_t i = 0; i <= 512; ++i) {
+      auto p = popcount_512(a.data(), i);
+      ASSERT_EQ(p, rank);
+      rank += 1 & (a[i >> 6] >> (i & 63));
+    }
+  }
+}
+
 
 TEST(BitVectorTest, Basic) {
   std::vector<uint64_t> bits = {0b101010101};
@@ -65,12 +108,47 @@ TEST(BitVectorTest, RankWithZeros) {
 
 TEST(BitVectorTest, MainTest) {
   std::mt19937_64 rng(42);
-  std::vector<uint64_t> bits;
+  std::vector<uint64_t> bits(65536 * 32);
   for (size_t i = 0; i < 65536 * 32; i++) {
-    bits.push_back(rng());
+    bits[i] = rng();
   }
 
   BitVector bv(bits, 65536 * 32 * 64);
+  uint64_t rank = 0;
+  for (size_t i = 0; i < bv.size(); ++i) {
+    ASSERT_EQ(rank, bv.rank(i));
+    rank += bv[i];
+  }
+}
+
+TEST(BitVectorInterleavedTest, AtTest) {
+  std::mt19937_64 rng(42);
+  /**
+   * TODO: need to check edge cases, at least
+   *       non-multiple of 64 size
+   */
+  std::vector<uint64_t> bits(65536 * 32);
+  for (size_t i = 0; i < 65536 * 32; i++) {
+    bits[i] = rng();
+  }
+
+  BitVectorInterleaved bv(bits, 65536 * 32 * 64);
+  uint64_t rank = 0;
+  for (size_t i = 0; i < 65536 * 32; ++i ) {
+    for (size_t j = 0; j < 64; ++j) {
+      ASSERT_EQ((bits[i] >> j) & 1, bv[i * 64 + j]);
+    }
+  }
+}
+
+TEST(BitVectorInterleavedTest, MainTest) {
+  std::mt19937_64 rng(42);
+  std::vector<uint64_t> bits(65536 * 32);
+  for (size_t i = 0; i < 65536 * 32; i++) {
+    bits[i] = rng();
+  }
+
+  BitVectorInterleaved bv(bits, 65536 * 32 * 64);
   uint64_t rank = 0;
   for (size_t i = 0; i < bv.size(); ++i) {
     ASSERT_EQ(rank, bv.rank(i));
