@@ -31,7 +31,6 @@ private:
   constexpr static size_t kSuperBlockSize = 65536;
   constexpr static size_t kWordsPerBlock = 8;
 
-
   std::vector<uint64_t> super_block_rank;
   std::vector<uint16_t> basic_block_rank;
   const size_t num_bits_;
@@ -158,11 +157,11 @@ private:
   constexpr static size_t kSuperBlockSize = 63488;
   constexpr static size_t kBlocksPerSuperBlock = 128;
   constexpr static size_t kWordsPerBlock = 8;
-  
+
   const size_t num_bits_;
   std::vector<uint64_t> bits_interleaved;
   std::vector<uint64_t> super_block_rank;
-  
+
   class BitReader {
     size_t iterator_64_ = 0;
     size_t offset_size_ = 0;
@@ -267,17 +266,22 @@ public:
    * rank_1(pos) = number of 1s in positions [0...pos-1]
    */
   uint64_t rank(size_t pos) const {
-    // Super block rank
+    // Multiplication/devisions
     uint64_t b_block = pos / kBasicBlockSize;
     uint64_t s_block = b_block / kBlocksPerSuperBlock;
-    // Basic block rank. kSuperBlockSize / kBasicBlockSize is 128
-    // and is known at compile time
-    uint64_t result =
-        super_block_rank[s_block];
-    result += bits_interleaved[b_block * 8 + 7] >> 48;
-
-    result += popcount_512(&bits_interleaved[b_block * kWordsPerBlock],
+    uint64_t b_block_pos = b_block * kWordsPerBlock;
+    // Super block rank
+    uint64_t result = super_block_rank[s_block];
+    /**
+     * Ok, so here's quite the important factor to load 512-bit region
+     * at &bits_interleaved[b_block_pos], we store local rank as 16 last
+     * bits of it. Prefetch should guarantee but seems like there is no
+     * need for it.
+     */
+    // __builtin_prefetch(&bits_interleaved[b_block_pos]); 
+    result += popcount_512(&bits_interleaved[b_block_pos],
                            pos - (b_block * kBasicBlockSize));
+    result += bits_interleaved[b_block_pos + 7] >> 48;
     return result;
   }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <immintrin.h>
 #include <numeric>
@@ -12,21 +13,21 @@
  * @brief Number of 1 bits in positions 0 .. count - 1
  * @details
  * Surprisingly one cannot just do (1 << L) - 1 for
- * L > 64 to produce mask of ones of length count.
- * The best we can do with a single instruction is (1 << L) - 1 for l=8k
+ * L > 64 to produce mask of ones of length L.
+ * The best we can do with a single instruction is (1 << L) - 1 for L=8k
  * using maskz_set1.
  *
  * To make mask for arbitrary L we use shldv instuction, it doesn't
  * really matter what epi is used the recipe is the following:
  * - produce mask with x * (count / x) ones and store in a
  * - produce mask with x * ((count / x) + 1) ones and store in b
- * - use shldv(a, b, count % x) to blend a and b producing requred mask
+ * - use shldv(a, b, count % x) to blend a and b producing required mask
  *
- * Essentially shldv_epix(a, b, k) takes k high bits of b and (x - k) bits of a
+ * Essentially shldv_epiX(a, b, k) takes k high bits of b and (X - k) bits of a
  * and concats them (bits of b become lower bits of the result).
  *
  * The rest is standard, i.e. popcount_epi64 to perform popcount on
- * 64 bits and ten reduce_add to sum the result.
+ * 64 bits and then reduce_add to sum the result.
  */
 uint64_t popcount_512(const uint64_t *x, uint64_t count) {
   __m512i a = _mm512_maskz_set1_epi64((1ull << ((count >> 6))) - 1,
