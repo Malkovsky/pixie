@@ -37,12 +37,35 @@ static void BM_RankInterleaved(benchmark::State &state) {
   }
 }
 
+static void BM_SelectNonInterleaved(benchmark::State &state) {
+  size_t n = state.range(0);
+  std::mt19937_64 rng(42);
+
+  std::vector<uint64_t> bits(1 + n / 64);
+  for (auto &x : bits) {
+    x = rng();
+  }
+  pixie::BitVector bv(bits, n);
+
+  auto max_rank = bv.rank(bv.size());
+
+  for (auto _ : state) {
+    uint64_t rank = rng() % max_rank;
+    benchmark::DoNotOptimize(bv.select(rank));
+  }
+}
+
 BENCHMARK(BM_RankNonInterleaved)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
     ->Range(8, 1ull << 34);
 
 BENCHMARK(BM_RankInterleaved)
+    ->ArgNames({"n"})
+    ->RangeMultiplier(4)
+    ->Range(8, 1ull << 34);
+
+BENCHMARK(BM_SelectNonInterleaved)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
     ->Range(8, 1ull << 34);

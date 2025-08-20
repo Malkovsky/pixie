@@ -8,7 +8,7 @@
 using pixie::BitVector;
 using pixie::BitVectorInterleaved;
 
-TEST(Popcount512, Ones) {
+TEST(Rank512, Ones) {
   std::array<uint64_t, 8> a{std::numeric_limits<uint64_t>::max(),
                             std::numeric_limits<uint64_t>::max(),
                             std::numeric_limits<uint64_t>::max(),
@@ -18,12 +18,12 @@ TEST(Popcount512, Ones) {
                             std::numeric_limits<uint64_t>::max(),
                             std::numeric_limits<uint64_t>::max()};
   for (size_t i = 0; i < 512; ++i) {
-    auto p = popcount_512(a.data(), i);
+    auto p = rank_512(a.data(), i);
     EXPECT_EQ(p, i);
   }
 }
 
-TEST(Popcount512, Random) {
+TEST(Rank512, Random) {
   std::array<uint64_t, 8> a{std::numeric_limits<uint64_t>::max(),
                             std::numeric_limits<uint64_t>::max(),
                             std::numeric_limits<uint64_t>::max(),
@@ -40,13 +40,105 @@ TEST(Popcount512, Random) {
     }
     size_t rank = 0;
     for (size_t i = 0; i <= 512; ++i) {
-      auto p = popcount_512(a.data(), i);
+      auto p = rank_512(a.data(), i);
       ASSERT_EQ(p, rank);
       rank += 1 & (a[i >> 6] >> (i & 63));
     }
   }
 }
 
+TEST(Select64, Ones) {
+  uint64_t x = std::numeric_limits<uint64_t>::max();
+  for (size_t i = 0; i < 64; ++i) {
+    auto p = select_64(x, i);
+    EXPECT_EQ(p, i);
+  }
+}
+
+TEST(Select64, Random) {
+  uint64_t a;
+
+  std::mt19937_64 rng(42);
+  for (size_t t = 0; t < 1000; ++t) {
+    a = rng();
+    size_t rank = 0;
+    for (size_t i = 0; i < 64; ++i) {
+      if (1 & (a >> i)) {
+        auto p = select_64(a, rank++);
+        ASSERT_EQ(p, i);
+      }
+    }
+  }
+}
+
+TEST(Select512, Ones) {
+  std::array<uint64_t, 8> a{std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max()};
+  for (size_t i = 0; i < 512; ++i) {
+    auto p = select_512(a.data(), i);
+    EXPECT_EQ(p, i);
+  }
+}
+
+TEST(Select512, Random) {
+  std::array<uint64_t, 8> a{std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max()};
+
+  std::mt19937_64 rng(42);
+  for (size_t t = 0; t < 1000; ++t) {
+    for (auto &x : a) {
+      x = rng();
+    }
+    size_t rank = 0;
+    for (size_t i = 0; i < 512; ++i) {
+      if (1 & (a[i >> 6] >> (i & 63))) {
+        auto p = select_512(a.data(), rank++);
+        ASSERT_EQ(p, i);
+      }
+    }
+  }
+}
+
+TEST(Select512, RankCompativility) {
+  std::array<uint64_t, 8> a{std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max()};
+
+  std::mt19937_64 rng(42);
+  for (size_t t = 0; t < 1000; ++t) {
+    for (auto &x : a) {
+      x = rng();
+    }
+    size_t rank = 0;
+    for (size_t i = 0; i < 512; ++i) {
+      if (1 & (a[i >> 6] >> (i & 63))) {
+        auto p = select_512(a.data(), rank++);
+        ASSERT_EQ(p, i);
+        auto r = rank_512(a.data(), p);
+        ASSERT_EQ(r + 1, rank);
+        r = rank_512(a.data(), p + 1);
+        ASSERT_EQ(r, rank);
+      }
+    }
+  }
+}
 
 TEST(BitVectorTest, Basic) {
   std::vector<uint64_t> bits = {0b101010101};
@@ -106,7 +198,21 @@ TEST(BitVectorTest, RankWithZeros) {
   }
 }
 
-TEST(BitVectorTest, MainTest) {
+TEST(BitVectorTest, SelectBasic) {
+  std::vector<uint64_t> bits = {0b1100010110010110};
+  BitVector bv(bits, 5);
+
+  EXPECT_EQ(bv.select(1), 1);
+  EXPECT_EQ(bv.select(2), 2);
+  EXPECT_EQ(bv.select(3), 4);
+  EXPECT_EQ(bv.select(4), 7);
+  EXPECT_EQ(bv.select(5), 8);
+  EXPECT_EQ(bv.select(6), 10);
+  EXPECT_EQ(bv.select(7), 14);
+  EXPECT_EQ(bv.select(8), 15);
+}
+
+TEST(BitVectorTest, MainRankTest) {
   std::mt19937_64 rng(42);
   std::vector<uint64_t> bits(65536 * 32);
   for (size_t i = 0; i < 65536 * 32; i++) {
@@ -121,9 +227,54 @@ TEST(BitVectorTest, MainTest) {
   }
 }
 
+TEST(BitVectorTest, MainSelectTest) {
+  std::mt19937_64 rng(42);
+  std::vector<uint64_t> bits(65536 * 32);
+  for (size_t i = 0; i < 65536 * 32; i++) {
+    bits[i] = rng();
+  }
+
+  BitVector bv(bits, 65536 * 32 * 64);
+  uint64_t rank = 0;
+
+  for (size_t i = 0; i < bv.size(); ++i) {
+    if (bv[i]) {
+      ASSERT_EQ(bv.select(++rank), i);
+      ASSERT_EQ(bv.rank(i), rank - 1);
+      ASSERT_EQ(bv.rank(i + 1), rank);
+    }
+  }
+}
+
+TEST(BitVectorTest, BenchmarkSelectTest) {
+  for (size_t n = 4; n <= (1ull << 34); n <<= 2) {
+    std::mt19937_64 rng(42);
+
+    std::vector<uint64_t> bits(1 + n / 64);
+    for (auto &x : bits) {
+      x = rng();
+    }
+    pixie::BitVector bv(bits, n);
+
+    auto max_rank = bv.rank(bv.size());
+    // size_t rank = 0;
+    auto r = bv.rank(bv.size());
+    auto s = bv.select(r);
+
+    // for (size_t i = 0; i < 10000 && r - i > 0; ++i) {
+    //   s = bv.select(r - i);
+    // }
+
+    for (size_t i = 0; i < 20000000; ++i) {
+      uint64_t rank = rng() % max_rank;
+      bv.select(rank);
+    }
+  }
+}
+
 TEST(BitVectorInterleavedTest, AtTest) {
   std::mt19937_64 rng(42);
-  /**
+  /*
    * TODO: need to check edge cases, at least
    *       non-multiple of 64 size
    */
@@ -134,7 +285,7 @@ TEST(BitVectorInterleavedTest, AtTest) {
 
   BitVectorInterleaved bv(bits, 65536 * 32 * 64);
   uint64_t rank = 0;
-  for (size_t i = 0; i < 65536 * 32; ++i ) {
+  for (size_t i = 0; i < 65536 * 32; ++i) {
     for (size_t j = 0; j < 64; ++j) {
       ASSERT_EQ((bits[i] >> j) & 1, bv[i * 64 + j]);
     }
