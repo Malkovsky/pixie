@@ -32,7 +32,7 @@ namespace pixie {
  * - Basic blocks of 512 bits
  * - Super block ranks of 64 bits resulting in ~ 0.98% overhead
  * - Basic block ranks of 16 bits resulting in ~ 3.125% overhead
- * - 64 bit Select samples of each 8192 bit ~ 0.78% overhead
+ * - 64 bit Select samples of each 16384 bit ~ 0.39% overhead
  *
  * Rank is 2 table lookups + SIMD popcount in a 512 block.
  *
@@ -69,7 +69,7 @@ private:
   constexpr static size_t kBasicBlockSize = 512;
   constexpr static size_t kSuperBlockSize = 65536;
   constexpr static size_t kWordsPerBlock = 8;
-  constexpr static size_t kSelectSampleFrequency = 8192;
+  constexpr static size_t kSelectSampleFrequency = 16384;
   constexpr static size_t kBlocksPerSuperBlock = 128;
 
   std::vector<uint64_t> super_block_rank;
