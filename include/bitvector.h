@@ -129,6 +129,8 @@ private:
       auto ones = std::popcount(bits[i]);
       if (rank + ones >= milestone) {
         auto pos = select_64(bits[i], milestone - rank - 1);
+        // TODO: try including global rank into select samples to save
+        //       a cache miss on global rank scan
         select_samples.emplace_back((64 * i + pos) / kSuperBlockSize);
         milestone += kSelectSampleFrequency;
       }
@@ -141,6 +143,7 @@ private:
    */
   uint64_t find_superblock(uint64_t rank) const {
     uint64_t left = select_samples[rank / kSelectSampleFrequency];
+
     auto rank_8 = _mm512_set1_epi64(rank);
 
     while (left + 7 < super_block_rank.size()) {
@@ -164,6 +167,12 @@ private:
     return left - 1;
   }
 
+  /**
+   * @brief SIMD-optimized linear scan
+   * @details
+   * Processes 32 16-bit entries at once (full cache line), so there is at most
+   * 4 iterations.
+   */
   uint64_t find_basicblock(uint16_t local_rank, uint64_t s_block) const {
     auto rank_32 = _mm512_set1_epi16(local_rank);
     auto pos = 0;
@@ -179,6 +188,45 @@ private:
       pos += 32;
     }
     return kBlocksPerSuperBlock * s_block + pos - 1;
+  }
+
+  /**
+   * @brief Interpolation search with SIMD optimization
+   * @details
+   * Similar to find_basicblock but initial guess is based on linear
+   * interpolation, for random data it should make initial guess correct
+   * most of the times, we start from the 32 wide block with interpolation
+   * guess at the center, if we see that select result lie in lower blocks
+   * we backoff to find_basicblock
+   */
+  uint64_t find_basicblock_is(uint16_t local_rank, uint64_t s_block) const {
+    auto lower = super_block_rank[s_block];
+    auto upper = super_block_rank[s_block + 1];
+
+    uint64_t pos = kBlocksPerSuperBlock * local_rank / (upper - lower);
+    pos = pos + 16 < 32 ? 0 : (pos - 16);
+    pos = pos > 96 ? 96 : pos;
+    auto rank_32 = _mm512_set1_epi16(local_rank);
+    while (pos < 96) {
+      auto batch = _mm512_loadu_epi16(&basic_block_rank[128 * s_block + pos]);
+      auto cmp = _mm512_cmplt_epu16_mask(batch, rank_32);
+      auto count = std::popcount(cmp);
+      if (count == 0) {
+        return find_basicblock(local_rank, s_block);
+      }
+      if (count < 32) {
+        return kBlocksPerSuperBlock * s_block + pos + count - 1;
+      }
+      pos += 32;
+    }
+    pos = 96;
+    auto batch = _mm512_loadu_epi16(&basic_block_rank[128 * s_block + pos]);
+    auto cmp = _mm512_cmplt_epu16_mask(batch, rank_32);
+    auto count = std::popcount(cmp);
+    if (count == 0) {
+      return find_basicblock(local_rank, s_block);
+    }
+    return kBlocksPerSuperBlock * s_block + pos + count - 1;
   }
 
 public:
@@ -232,7 +280,7 @@ public:
     }
     uint64_t s_block = find_superblock(rank);
     rank -= super_block_rank[s_block];
-    auto pos = find_basicblock(rank, s_block);
+    auto pos = find_basicblock_is(rank, s_block);
     rank -= basic_block_rank[pos];
     pos *= kWordsPerBlock;
 
