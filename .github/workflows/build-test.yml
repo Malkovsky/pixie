@@ -1,0 +1,56 @@
+name: CMake Build and Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Create Build Directory
+      run: mkdir build
+
+    - name: Configure CMake
+      working-directory: ./build
+      run: cmake ..
+
+    - name: Build Project
+      working-directory: ./build
+      run: make -j
+
+    - name: Run Unittests
+      working-directory: ./build
+      run: ./unittests
+  
+  build-and-test-with-SDE:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Create Build Directory
+      run: mkdir build
+
+    - name: Download and Unpack SDE
+      working-directory: ./build
+      run: |
+        wget https://downloadmirror.intel.com/859732/sde-external-9.58.0-2025-06-16-lin.tar.xz 
+        tar xf sde-external-9.58.0-2025-06-16-lin.tar.xz
+
+    - name: Configure CMake
+      working-directory: ./build
+      run: cmake .. -DMARCH=icelake-client
+
+    - name: Build Project
+      working-directory: ./build
+      run: make -j
+
+    - name: Run Unittests
+      working-directory: ./build
+      run: sde-external-9.58.0-2025-06-16-lin/sde64 -icl -emu-xinuse 0 -- ./unittests
