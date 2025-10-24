@@ -436,13 +436,13 @@ public:
 
       for (size_t j = 0; j < 7 && kWordSize * (i + j) < num_bits; ++j) {
         bits_interleaved[i * (kWordsPerBlock) + j] = bit_reader.ReadBits64(
-            std::min(64ull, num_bits - i * kBasicBlockSize + j * kWordSize));
+            std::min<uint64_t>(64ull, num_bits - i * kBasicBlockSize + j * kWordSize));
         basic_block_sum +=
             std::popcount(bits_interleaved[i * (kWordsPerBlock) + j]);
       }
       if ((i + 7) * kWordSize < num_bits) {
         auto v = bit_reader.ReadBits64(
-            std::min(48ull, num_bits - (i * kBasicBlockSize + 7 * kWordSize)));
+            std::min<uint64_t>(48ull, num_bits - (i * kBasicBlockSize + 7 * kWordSize)));
         bits_interleaved[i * (kWordsPerBlock) + 7] ^= v;
         basic_block_sum += std::popcount(v);
       }
