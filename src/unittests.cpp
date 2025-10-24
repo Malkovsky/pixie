@@ -246,31 +246,7 @@ TEST(BitVectorTest, MainSelectTest) {
   }
 }
 
-TEST(BitVectorTest, BenchmarkSelectTest) {
-  for (size_t n = 4; n <= (1ull << 34); n <<= 2) {
-    std::mt19937_64 rng(42);
 
-    std::vector<uint64_t> bits(1 + n / 64);
-    for (auto &x : bits) {
-      x = rng();
-    }
-    pixie::BitVector bv(bits, n);
-
-    auto max_rank = bv.rank(bv.size());
-    // size_t rank = 0;
-    auto r = bv.rank(bv.size());
-    auto s = bv.select(r);
-
-    // for (size_t i = 0; i < 10000 && r - i > 0; ++i) {
-    //   s = bv.select(r - i);
-    // }
-
-    for (size_t i = 0; i < 20000000; ++i) {
-      uint64_t rank = rng() % max_rank;
-      bv.select(rank);
-    }
-  }
-}
 
 TEST(BitVectorInterleavedTest, AtTest) {
   std::mt19937_64 rng(42);
