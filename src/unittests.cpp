@@ -140,6 +140,58 @@ TEST(Select512, RankCompativility) {
   }
 }
 
+TEST(CMPLPREFLEN256, Random) {
+  std::vector<uint64_t> x(4);
+  std::mt19937_64 rng(42);
+  for (size_t i = 0; i < 1000; i++) {
+    uint64_t y = rng();
+    uint16_t cnt = 0;
+    bool fl = 1;
+    for (size_t j = 0; j < 4;j++) {
+      x[j] = rng();
+      fl &= x[j] < y;
+      cnt += fl;
+    }
+    if (cnt < 4)
+      EXPECT_EQ(cmpl_pref_len_256(x.data(), y), cnt);
+    else
+      EXPECT_GE(cmpl_pref_len_256(x.data(), y), cnt);
+  }
+}
+
+TEST(CMPLPREFLEN512, Random) {
+  std::vector<uint64_t> x(8);
+  std::mt19937_64 rng(42);
+  for (size_t i = 0; i < 1000; i++) {
+    uint64_t y = rng();
+    uint16_t cnt = 0;
+    bool fl = 1;
+    for (size_t j = 0; j < 8;j++) {
+      x[j] = rng();
+      fl &= x[j] < y;
+      cnt += fl;
+    }
+    if (cnt < 8)
+      EXPECT_EQ(cmpl_pref_len_512(x.data(), y), cnt);
+    else
+      EXPECT_GE(cmpl_pref_len_512(x.data(), y), cnt);
+  }
+}
+
+TEST(CMPLCOUNT512, Random) {
+  std::vector<uint16_t> x(32);
+  std::mt19937 rng(42);
+  for (size_t i = 0; i < 1000; i++) {
+    uint16_t y = rng();
+    uint16_t cnt = 0;
+    for (size_t j = 0; j < 32;j++) {
+      x[j] = rng();
+      cnt += x[j] < y;
+    }
+    EXPECT_EQ(cmpl_count_512(x.data(), y), cnt);
+  }
+}
+
 TEST(BitVectorTest, Basic) {
   std::vector<uint64_t> bits = {0b101010101};
   BitVector bv(bits, 9);
