@@ -1,13 +1,14 @@
 cmake_minimum_required(VERSION 3.12)
 project(pixie)
 
-set(CMAKE_CXX_FLAGS "-march=native")
+set(MARCH "native" CACHE STRING "march compilier flag")
+set(CMAKE_CXX_FLAGS "-march=${MARCH} -O3 -DNDEBUG")
 set(BENCHMARK_ENABLE_GTEST_TESTS OFF)
 
 include(FetchContent)
 FetchContent_Declare(
     googletest
-    GIT+REPOSITORY https://github.com/google/googletest.git
+    GIT_REPOSITORY https://github.com/google/googletest.git
     GIT_TAG v1.17.0
 )
 include(GoogleTest)
@@ -45,4 +46,3 @@ target_link_libraries(unittests
     gtest_main)
 
 enable_testing()
-gtest_discover_tests(unittests)
