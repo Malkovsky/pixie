@@ -22,10 +22,6 @@ inline uint64_t first_bits_mask(size_t num) {
 
 
 /**
- * TODO: compile/runtime checks fror SIMD
- */
-
-/**
  * @brief Number of 1 bits in positions 0 .. count - 1
  * @details
  * Surprisingly one cannot just do (1 << L) - 1 for
@@ -45,9 +41,9 @@ inline uint64_t first_bits_mask(size_t num) {
  * The rest is standard, i.e. popcount_epi64 to perform popcount on
  * 64 bits and then reduce_add to sum the result.
  */
+uint64_t rank_512(const uint64_t *x, uint64_t count) {
 #ifdef AVX512SUPP
 
-uint64_t rank_512(const uint64_t *x, uint64_t count) {
   __m512i a = _mm512_maskz_set1_epi64((1ull << ((count >> 6))) - 1,
                                       std::numeric_limits<uint64_t>::max());
   __m512i b = _mm512_maskz_set1_epi64((1ull << ((count >> 6) + 1)) - 1,
@@ -58,13 +54,10 @@ uint64_t rank_512(const uint64_t *x, uint64_t count) {
   res = _mm512_and_epi64(res, mask);
   __m512i cnt = _mm512_popcnt_epi64(res);
   return _mm512_reduce_add_epi64(cnt);
-}
 
 #else
 
-uint64_t rank_512(const uint64_t *x, uint64_t count) {
-
-	uint64_t last_uint = count >> 6;
+  uint64_t last_uint = count >> 6;
 
 	uint64_t pop_val = 0;
 
@@ -76,9 +69,10 @@ uint64_t rank_512(const uint64_t *x, uint64_t count) {
 
 	pop_val += std::popcount(final);
 	return pop_val;
-}
 
 #endif
+}
+
 
 /**
  * @brief Return position of @p rank 1 bit in @p x
@@ -87,6 +81,7 @@ uint64_t select_64(uint64_t x, uint64_t rank) {
   auto a = _pdep_u64(1ull << rank, x);
   return _tzcnt_u64(a);
 }
+
 
 /**
  * @brief Return position of @p rank 1 bit in @p x
@@ -105,9 +100,9 @@ uint64_t select_64(uint64_t x, uint64_t rank) {
  * It can also be used as an alternative for linear search but i don't
  * see a proper SIMD algorithm to make it faster.
  */
+uint64_t select_512(const uint64_t *x, uint64_t rank) {
 #ifdef AVX512SUPP
 
-uint64_t select_512(const uint64_t *x, uint64_t rank) {
     __m512i res = _mm512_loadu_epi64(x);
   std::array<uint64_t, 8> counts;
   _mm512_storeu_epi64(counts.data(), _mm512_popcnt_epi64(res));
@@ -117,42 +112,36 @@ uint64_t select_512(const uint64_t *x, uint64_t rank) {
     rank -= counts[i++];
   }
   return i * 64 + select_64(x[i], rank);
-}
 
 #else
 
-uint64_t select_512(const uint64_t* bits, uint64_t rank) {
   size_t i = 0;
-	int popcount = std::popcount(bits[0]);
+	int popcount = std::popcount(x[0]);
 	while (i < 7 && popcount <= rank) {
 		rank -= popcount;
-		popcount = std::popcount(bits[++i]);
+		popcount = std::popcount(x[++i]);
 	}
-	return i * 64 + select_64(bits[i], rank);
-}
+	return i * 64 + select_64(x[i], rank);
 
 #endif
+}
 
 
 /**
  * @brief Compare 4 64-bit numbers of @p x with @p y and 
  * return the length of the prefix where @p y is less then @p x
  */
-#ifdef AVX512SUPP
-
 uint16_t cmpl_pref_len_256(const uint64_t* x, uint64_t y) {
+#ifdef AVX512SUPP
 
   auto y_4 = _mm256_set1_epi64x(y);
   auto reg_256 = _mm256_loadu_epi64(x);
   auto cmp = _mm256_cmpge_epu64_mask(reg_256, y_4);
 
   return _tzcnt_u16(cmp);
-}
 
 #else
 #ifdef AVX2SUPP
-
-uint16_t cmpl_pref_len_256(const uint64_t* x, uint64_t y) {
 
   auto y_4 = _mm256_set1_epi64x(y);
   __m256i reg_256 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(x));
@@ -163,40 +152,34 @@ uint16_t cmpl_pref_len_256(const uint64_t* x, uint64_t y) {
   auto mask = _mm256_movemask_epi8(_mm256_cmpgt_epi64(x_offset, _mm256_sub_epi64(y_offset, _mm256_set1_epi64x(1))));
 
   return _tzcnt_u32(mask) >> 3;
-}
 
 #else
 
-uint16_t cmpl_pref_len_256(const uint64_t* x, uint64_t y) {
   for (uint16_t i = 0; i < 4; ++i)
     if (x[i] >= y)
       return i;
   return 4;
-}
 
 #endif
 #endif
+}
 
 
 /**
  * @brief Compare 8 64-bit numbers of @p x with @p y and 
  * return the length of the prefix where @p y is less then @p x
  */
-#ifdef AVX512SUPP
-
 uint16_t cmpl_pref_len_512(const uint64_t* x, uint64_t y) {
+#ifdef AVX512SUPP
 
   auto y_8 = _mm512_set1_epi64(y);
   auto reg_512 = _mm512_loadu_epi64(x);
   auto cmp = _mm512_cmpge_epu64_mask(reg_512, y_8);
 
   return _tzcnt_u16(cmp);
-}
 
 #else
 #ifdef AVX2SUPP
-
-uint16_t cmpl_pref_len_512(const uint64_t* x, uint64_t y) {
 
   uint16_t len = cmpl_pref_len_256(x, y);
 
@@ -204,39 +187,33 @@ uint16_t cmpl_pref_len_512(const uint64_t* x, uint64_t y) {
     return len;
 
   return len + cmpl_pref_len_256(x + 4, y);
-}
 
 #else
 
-uint16_t cmpl_pref_len_512(const uint64_t* x, uint64_t y) {
   for (uint16_t i = 0; i < 8; ++i)
     if (x[i] >= y)
       return i;
   return 8;
-}
 
 #endif
 #endif
+}
 
 
 /**
  * @brief Compare 32 16-bit numbers of @p x with @p y and 
  * return the count of numbers where @p x is less then @p y
  */
-#ifdef AVX512SUPP
-
 uint16_t cmpl_count_512(const uint16_t* x, uint64_t y) {
+#ifdef AVX512SUPP
 
   auto y_32 = _mm512_set1_epi16(y);
   auto reg_512 = _mm512_loadu_epi16(x);
   auto cmp = _mm512_cmplt_epu16_mask(reg_512, y_32);
   return std::popcount(cmp);
-}
 
 #else
 #ifdef AVX2SUPP
-
-uint16_t cmpl_count_512(const uint16_t* x, uint64_t y) {
 
   auto y_16 = _mm256_set1_epi16(y);
   __m256i reg_256 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(x));
@@ -254,17 +231,15 @@ uint16_t cmpl_count_512(const uint16_t* x, uint64_t y) {
   mask = _mm256_movemask_epi8(_mm256_cmpgt_epi16(y_offset, x_offset));
 
   return count + (std::popcount(mask) >> 1);
-}
 
 #else
 
-uint16_t cmpl_count_512(const uint16_t* x, uint64_t y) {
   uint16_t cnt = 0;
   for (uint16_t i = 0; i < 32; ++i)
     if (x[i] < y)
       cnt++;
   return cnt;
-}
 
 #endif
 #endif
+}
