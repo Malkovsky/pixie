@@ -11,6 +11,11 @@
 #endif
 
 
+#ifdef __AVX2__
+#define AVX2SUPP
+#endif
+
+
 inline uint64_t first_bits_mask(size_t num) {
 	return num >= 64 ? UINT64_MAX : ((1llu << num) - 1);
 }
@@ -131,7 +136,7 @@ uint64_t select_512(const uint64_t* bits, uint64_t rank) {
 
 /**
  * @brief Compare 4 64-bit numbers of @p x with @p y and 
- * return the length of the prefix where @p y is less then
+ * return the length of the prefix where @p y is less then @p x
  */
 #ifdef AVX512SUPP
 
@@ -145,6 +150,7 @@ uint16_t cmpl_pref_len_256(const uint64_t* x, uint64_t y) {
 }
 
 #else
+#ifdef AVX2SUPP
 
 uint16_t cmpl_pref_len_256(const uint64_t* x, uint64_t y) {
 
@@ -159,6 +165,16 @@ uint16_t cmpl_pref_len_256(const uint64_t* x, uint64_t y) {
   return _tzcnt_u32(mask) >> 3;
 }
 
+#else
+
+uint16_t cmpl_pref_len_256(const uint64_t* x, uint64_t y) {
+  for (uint16_t i = 0; i < 4; ++i)
+    if (x[i] >= y)
+      return i;
+  return 4;
+}
+
+#endif
 #endif
 
 
@@ -178,6 +194,7 @@ uint16_t cmpl_pref_len_512(const uint64_t* x, uint64_t y) {
 }
 
 #else
+#ifdef AVX2SUPP
 
 uint16_t cmpl_pref_len_512(const uint64_t* x, uint64_t y) {
 
@@ -189,6 +206,16 @@ uint16_t cmpl_pref_len_512(const uint64_t* x, uint64_t y) {
   return len + cmpl_pref_len_256(x + 4, y);
 }
 
+#else
+
+uint16_t cmpl_pref_len_512(const uint64_t* x, uint64_t y) {
+  for (uint16_t i = 0; i < 8; ++i)
+    if (x[i] >= y)
+      return i;
+  return 8;
+}
+
+#endif
 #endif
 
 
@@ -207,6 +234,7 @@ uint16_t cmpl_count_512(const uint16_t* x, uint64_t y) {
 }
 
 #else
+#ifdef AVX2SUPP
 
 uint16_t cmpl_count_512(const uint16_t* x, uint64_t y) {
 
@@ -228,4 +256,15 @@ uint16_t cmpl_count_512(const uint16_t* x, uint64_t y) {
   return count + (std::popcount(mask) >> 1);
 }
 
+#else
+
+uint16_t cmpl_count_512(const uint16_t* x, uint64_t y) {
+  uint16_t cnt = 0;
+  for (uint16_t i = 0; i < 32; ++i)
+    if (x[i] < y)
+      cnt++;
+  return cnt;
+}
+
+#endif
 #endif
