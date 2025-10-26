@@ -81,10 +81,6 @@ private:
 
   std::span<const uint64_t> bits;
 
-  inline uint64_t first_bits_mask(size_t num) const {
-    return num >= 64 ? UINT64_MAX : ((1llu << num) - 1);
-  }
-
   /**
    * Precompute rank for fast queries
    */
@@ -144,21 +140,17 @@ private:
   uint64_t find_superblock(uint64_t rank) const {
     uint64_t left = select_samples[rank / kSelectSampleFrequency];
 
-    auto rank_8 = _mm512_set1_epi64(rank);
-
     while (left + 7 < super_block_rank.size()) {
-      auto reg_512 = _mm512_loadu_epi64(&super_block_rank[left]);
-      auto cmp = _mm512_cmpge_epu64_mask(reg_512, rank_8);
-      if (cmp) {
-        return left + _tzcnt_u16(cmp) - 1;
+      auto len = cmpl_pref_len_512(&super_block_rank[left], rank);
+      if (len < 8) {
+        return left + len - 1;
       }
       left += 8;
     }
     if (left + 3 < super_block_rank.size()) {
-      auto reg_256 = _mm256_loadu_epi64(&super_block_rank[left]);
-      auto cmp = _mm256_cmpge_epu64_mask(reg_256, *(__m256i *)(&rank_8));
-      if (cmp) {
-        return left + _tzcnt_u16(cmp) - 1;
+      auto len = cmpl_pref_len_256(&super_block_rank[left], rank);
+      if (len < 4) {
+        return left + len - 1;
       }
       left += 4;
     }
@@ -174,14 +166,10 @@ private:
    * 4 iterations.
    */
   uint64_t find_basicblock(uint16_t local_rank, uint64_t s_block) const {
-    auto rank_32 = _mm512_set1_epi16(local_rank);
     auto pos = 0;
 
     for (size_t i = 0; i < 4; ++i) {
-      auto batch =
-          _mm512_loadu_epi16(&basic_block_rank[128 * s_block + 32 * i]);
-      auto cmp = _mm512_cmplt_epu16_mask(batch, rank_32);
-      auto count = std::popcount(cmp);
+      auto count = cmpl_count_512(&basic_block_rank[128 * s_block + 32 * i], local_rank);
       if (count < 32) {
         return kBlocksPerSuperBlock * s_block + pos + count - 1;
       }
@@ -206,11 +194,8 @@ private:
     uint64_t pos = kBlocksPerSuperBlock * local_rank / (upper - lower);
     pos = pos + 16 < 32 ? 0 : (pos - 16);
     pos = pos > 96 ? 96 : pos;
-    auto rank_32 = _mm512_set1_epi16(local_rank);
     while (pos < 96) {
-      auto batch = _mm512_loadu_epi16(&basic_block_rank[128 * s_block + pos]);
-      auto cmp = _mm512_cmplt_epu16_mask(batch, rank_32);
-      auto count = std::popcount(cmp);
+      auto count = cmpl_count_512(&basic_block_rank[128 * s_block + pos], local_rank);
       if (count == 0) {
         return find_basicblock(local_rank, s_block);
       }
@@ -220,9 +205,7 @@ private:
       pos += 32;
     }
     pos = 96;
-    auto batch = _mm512_loadu_epi16(&basic_block_rank[128 * s_block + pos]);
-    auto cmp = _mm512_cmplt_epu16_mask(batch, rank_32);
-    auto count = std::popcount(cmp);
+    auto count = cmpl_count_512(&basic_block_rank[128 * s_block + pos], local_rank);
     if (count == 0) {
       return find_basicblock(local_rank, s_block);
     }
