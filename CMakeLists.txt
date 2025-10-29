@@ -45,4 +45,19 @@ target_link_libraries(unittests
     gtest
     gtest_main)
 
+add_executable(bench_rmm
+    src/bench_rmm.cpp)
+target_include_directories(bench_rmm
+    PUBLIC include
+)
+set_property(TARGET bench_rmm PROPERTY CXX_STANDARD 20)
+
+add_executable(fuzzer
+    src/fuzzer.cpp)
+target_include_directories(fuzzer
+    PUBLIC include
+    PUBLIC misc/include
+)
+set_property(TARGET fuzzer PROPERTY CXX_STANDARD 20)
+
 enable_testing()

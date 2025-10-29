@@ -40,19 +40,39 @@ This will build the library along with benchmarks and tests.
 
 After building:
 
+### BitVector
+
 ```bash
-/unittests
+./unittests
 ```
+
+### RmM Tree
+
+```bash
+./fuzzer
+```
+
+The fuzzer runs indefinitely; press `Ctrl+C` to stop.
 
 ---
 
 ## Running Benchmarks
 
-Bencharks are random 50/50 0-1 bitvectors up to $2^34$ bits.
+### BitVector
+
+Benchmarks are random 50/50 0-1 bitvectors up to $2^34$ bits.
 
 ```bash
 ./benchmarks
 ```
+
+### RmM Tree
+
+```bash
+./bench_rmm
+```
+
+Results print to stdout as CSV. Redirect to a file (e.g. `> rmm_bench.csv`) and visualize it with `python3 ../misc/plot_rmm.py rmm_bench.csv --save-dir=plots --logx`.
 
 ---
 
@@ -72,6 +92,30 @@ int main() {
     std::cout << "bv: " << bv.to_string() << "\n";     // "101101"
     std::cout << "rank(4): " << bv.rank(4) << "\n";    // number of ones in first 4 bits
     std::cout << "select(2): " << bv.select(2) << "\n"; // position of 2nd one-bit
+}
+```
+
+```cpp
+#include "rmm_tree.h"
+#include <string>
+#include <iostream>
+
+using namespace pixie;
+
+int main() {
+    // root
+    // ├─ A
+    // │  ├─ a1
+    // │  └─ a2
+    // ├─ B
+    // └─ C
+    //    └─ c1
+    std::string bits = "11101001011000";
+    RmMTree t(bits);
+
+    std::cout << "close(1): " << t.close(1) << "\n";     // expected 6 (A)
+    std::cout << "open(3): " << t.open(3) << "\n";       // expected 2 (a1)
+    std::cout << "enclose(1): " << t.enclose(1) << "\n"; // expected 0 (root)
 }
 ```
 
