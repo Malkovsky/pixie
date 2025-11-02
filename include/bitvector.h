@@ -62,7 +62,7 @@ namespace pixie {
  * involved (like {1} does).
  */
 class BitVector {
-private:
+ private:
   constexpr static size_t kWordSize = 64;
   constexpr static size_t kSuperBlockRankIntSize = 64;
   constexpr static size_t kBasicBlockRankIntSize = 16;
@@ -141,21 +141,22 @@ private:
     uint64_t left = select_samples[rank / kSelectSampleFrequency];
 
     while (left + 7 < super_block_rank.size()) {
-      auto len = cmpl_pref_len_512(&super_block_rank[left], rank);
+      auto len = lower_bound_8x64(&super_block_rank[left], rank);
       if (len < 8) {
         return left + len - 1;
       }
       left += 8;
     }
     if (left + 3 < super_block_rank.size()) {
-      auto len = cmpl_pref_len_256(&super_block_rank[left], rank);
+      auto len = lower_bound_4x64(&super_block_rank[left], rank);
       if (len < 4) {
         return left + len - 1;
       }
       left += 4;
     }
-    while (left < super_block_rank.size() && super_block_rank[left] < rank)
+    while (left < super_block_rank.size() && super_block_rank[left] < rank) {
       left++;
+    }
     return left - 1;
   }
 
@@ -169,7 +170,8 @@ private:
     auto pos = 0;
 
     for (size_t i = 0; i < 4; ++i) {
-      auto count = cmpl_count_512(&basic_block_rank[128 * s_block + 32 * i], local_rank);
+      auto count = lower_bound_32x16(&basic_block_rank[128 * s_block + 32 * i],
+                                     local_rank);
       if (count < 32) {
         return kBlocksPerSuperBlock * s_block + pos + count - 1;
       }
@@ -195,7 +197,8 @@ private:
     pos = pos + 16 < 32 ? 0 : (pos - 16);
     pos = pos > 96 ? 96 : pos;
     while (pos < 96) {
-      auto count = cmpl_count_512(&basic_block_rank[128 * s_block + pos], local_rank);
+      auto count =
+          lower_bound_32x16(&basic_block_rank[128 * s_block + pos], local_rank);
       if (count == 0) {
         return find_basicblock(local_rank, s_block);
       }
@@ -205,14 +208,15 @@ private:
       pos += 32;
     }
     pos = 96;
-    auto count = cmpl_count_512(&basic_block_rank[128 * s_block + pos], local_rank);
+    auto count =
+        lower_bound_32x16(&basic_block_rank[128 * s_block + pos], local_rank);
     if (count == 0) {
       return find_basicblock(local_rank, s_block);
     }
     return kBlocksPerSuperBlock * s_block + pos + count - 1;
   }
 
-public:
+ public:
   /**
    * Constructor from an external array of uint64_t.
    */
@@ -311,7 +315,7 @@ public:
  *
  */
 class BitVectorInterleaved {
-private:
+ private:
   constexpr static size_t kWordSize = 64;
   constexpr static size_t kSuperBlockRankIntSize = 64;
   constexpr static size_t kBasicBlockRankIntSize = 16;
@@ -339,7 +343,7 @@ private:
     size_t offset_bits_ = 0;
     std::span<const uint64_t> bits_;
 
-  public:
+   public:
     BitReader(std::span<const uint64_t> bits) : bits_(bits) {}
     uint64_t ReadBits64(size_t num_bits) {
       if (num_bits > 64) {
@@ -362,7 +366,7 @@ private:
     }
   };
 
-public:
+ public:
   /**
    * Constructor from an external array of uint64_t.
    */
@@ -418,14 +422,15 @@ public:
           static_cast<uint64_t>(basic_block_sum) << 48;
 
       for (size_t j = 0; j < 7 && kWordSize * (i + j) < num_bits; ++j) {
-        bits_interleaved[i * (kWordsPerBlock) + j] = bit_reader.ReadBits64(
-            std::min<uint64_t>(64ull, num_bits - i * kBasicBlockSize + j * kWordSize));
+        bits_interleaved[i * (kWordsPerBlock) + j] =
+            bit_reader.ReadBits64(std::min<uint64_t>(
+                64ull, num_bits - i * kBasicBlockSize + j * kWordSize));
         basic_block_sum +=
             std::popcount(bits_interleaved[i * (kWordsPerBlock) + j]);
       }
       if ((i + 7) * kWordSize < num_bits) {
-        auto v = bit_reader.ReadBits64(
-            std::min<uint64_t>(48ull, num_bits - (i * kBasicBlockSize + 7 * kWordSize)));
+        auto v = bit_reader.ReadBits64(std::min<uint64_t>(
+            48ull, num_bits - (i * kBasicBlockSize + 7 * kWordSize)));
         bits_interleaved[i * (kWordsPerBlock) + 7] ^= v;
         basic_block_sum += std::popcount(v);
       }
@@ -471,4 +476,4 @@ public:
   }
 };
 
-} // namespace pixie
+}  // namespace pixie

@@ -1,16 +1,15 @@
 #include <benchmark/benchmark.h>
-
 #include <bitvector.h>
+
 #include <random>
 #include <vector>
 
-
-static void BM_RankNonInterleaved(benchmark::State &state) {
+static void BM_RankNonInterleaved(benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
 
   std::vector<uint64_t> bits(1 + n / 64);
-  for (auto &x : bits) {
+  for (auto& x : bits) {
     x = rng();
   }
   pixie::BitVector bv(bits, n);
@@ -21,12 +20,12 @@ static void BM_RankNonInterleaved(benchmark::State &state) {
   }
 }
 
-static void BM_RankInterleaved(benchmark::State &state) {
+static void BM_RankInterleaved(benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
 
   std::vector<uint64_t> bits(1 + n / 64);
-  for (auto &x : bits) {
+  for (auto& x : bits) {
     x = rng();
   }
   pixie::BitVectorInterleaved bv(bits, n);
@@ -37,12 +36,12 @@ static void BM_RankInterleaved(benchmark::State &state) {
   }
 }
 
-static void BM_SelectNonInterleaved(benchmark::State &state) {
+static void BM_SelectNonInterleaved(benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
 
   std::vector<uint64_t> bits(1 + n / 64);
-  for (auto &x : bits) {
+  for (auto& x : bits) {
     x = rng();
   }
   pixie::BitVector bv(bits, n);

@@ -1,25 +1,52 @@
 #pragma once
 
-#include <array>
-#include <cstdint>
 #include <immintrin.h>
+
+#include <array>
+#include <bit>
+#include <cstdint>
 #include <numeric>
 
-
-#if defined(__AVX512VPOPCNTDQ__) && defined(__AVX512F__) && defined(__AVX512BW__)
-#define AVX512SUPP
+#if defined(__AVX512VPOPCNTDQ__) && defined(__AVX512F__) && \
+    defined(__AVX512BW__)
+#define PIXIE_AVX512_SUPPORT
 #endif
-
 
 #ifdef __AVX2__
-#define AVX2SUPP
+#define PIXIE_AVX2_SUPPORT
+// Lookup table for 4-bit popcount
+// This table maps each 4-bit value (0-15) to its population count
+// clang-format off
+const __m256i lookup_popcount_4 = _mm256_setr_epi8(
+    0, 1, 1, 2,  // 0000, 0001, 0010, 0011
+    1, 2, 2, 3,  // 0100, 0101, 0110, 0111
+    1, 2, 2, 3,  // 1000, 1001, 1010, 1011
+    2, 3, 3, 4,  // 1100, 1101, 1110, 1111
+    
+    // Same table repeated for high 128 bits
+    0, 1, 1, 2,  // 0000, 0001, 0010, 0011
+    1, 2, 2, 3,  // 0100, 0101, 0110, 0111
+    1, 2, 2, 3,  // 1000, 1001, 1010, 1011
+    2, 3, 3, 4   // 1100, 1101, 1110, 1111
+);
+
+const __m256i mask_first_half = _mm256_setr_epi8(
+    0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF,
+    0, 0, 0, 0,
+    0, 0, 0, 0,
+    0, 0, 0, 0,
+    0, 0, 0, 0
+);
+
+// clang-format on
 #endif
 
-
 inline uint64_t first_bits_mask(size_t num) {
-	return num >= 64 ? UINT64_MAX : ((1llu << num) - 1);
+  return num >= 64 ? UINT64_MAX : ((1llu << num) - 1);
 }
-
 
 /**
  * @brief Number of 1 bits in positions 0 .. count - 1
@@ -41,8 +68,8 @@ inline uint64_t first_bits_mask(size_t num) {
  * The rest is standard, i.e. popcount_epi64 to perform popcount on
  * 64 bits and then reduce_add to sum the result.
  */
-uint64_t rank_512(const uint64_t *x, uint64_t count) {
-#ifdef AVX512SUPP
+uint64_t rank_512(const uint64_t* x, uint64_t count) {
+#ifdef PIXIE_AVX512_SUPPORT
 
   __m512i a = _mm512_maskz_set1_epi64((1ull << ((count >> 6))) - 1,
                                       std::numeric_limits<uint64_t>::max());
@@ -59,29 +86,26 @@ uint64_t rank_512(const uint64_t *x, uint64_t count) {
 
   uint64_t last_uint = count >> 6;
 
-	uint64_t pop_val = 0;
+  uint64_t pop_val = 0;
 
-	for (int i = 0; i < last_uint; i++) {
-		pop_val += std::popcount(x[i]);
-	}
+  for (int i = 0; i < last_uint; i++) {
+    pop_val += std::popcount(x[i]);
+  }
 
-	uint64_t final = x[last_uint] & first_bits_mask(count & 63);
+  uint64_t final = x[last_uint] & first_bits_mask(count & 63);
 
-	pop_val += std::popcount(final);
-	return pop_val;
+  pop_val += std::popcount(final);
+  return pop_val;
 
 #endif
 }
-
 
 /**
  * @brief Return position of @p rank 1 bit in @p x
  */
 uint64_t select_64(uint64_t x, uint64_t rank) {
-  auto a = _pdep_u64(1ull << rank, x);
-  return _tzcnt_u64(a);
+  return _tzcnt_u64(_pdep_u64(1ull << rank, x));
 }
-
 
 /**
  * @brief Return position of @p rank 1 bit in @p x
@@ -100,10 +124,10 @@ uint64_t select_64(uint64_t x, uint64_t rank) {
  * It can also be used as an alternative for linear search but i don't
  * see a proper SIMD algorithm to make it faster.
  */
-uint64_t select_512(const uint64_t *x, uint64_t rank) {
-#ifdef AVX512SUPP
+uint64_t select_512(const uint64_t* x, uint64_t rank) {
+#ifdef PIXIE_AVX512_SUPPORT
 
-    __m512i res = _mm512_loadu_epi64(x);
+  __m512i res = _mm512_loadu_epi64(x);
   std::array<uint64_t, 8> counts;
   _mm512_storeu_epi64(counts.data(), _mm512_popcnt_epi64(res));
 
@@ -116,23 +140,22 @@ uint64_t select_512(const uint64_t *x, uint64_t rank) {
 #else
 
   size_t i = 0;
-	int popcount = std::popcount(x[0]);
-	while (i < 7 && popcount <= rank) {
-		rank -= popcount;
-		popcount = std::popcount(x[++i]);
-	}
-	return i * 64 + select_64(x[i], rank);
+  int popcount = std::popcount(x[0]);
+  while (i < 7 && popcount <= rank) {
+    rank -= popcount;
+    popcount = std::popcount(x[++i]);
+  }
+  return i * 64 + select_64(x[i], rank);
 
 #endif
 }
 
-
 /**
- * @brief Compare 4 64-bit numbers of @p x with @p y and 
+ * @brief Compare 4 64-bit numbers of @p x with @p y and
  * return the length of the prefix where @p y is less then @p x
  */
-uint16_t cmpl_pref_len_256(const uint64_t* x, uint64_t y) {
-#ifdef AVX512SUPP
+uint16_t lower_bound_4x64(const uint64_t* x, uint64_t y) {
+#ifdef PIXIE_AVX512_SUPPORT
 
   auto y_4 = _mm256_set1_epi64x(y);
   auto reg_256 = _mm256_loadu_epi64(x);
@@ -141,7 +164,7 @@ uint16_t cmpl_pref_len_256(const uint64_t* x, uint64_t y) {
   return _tzcnt_u16(cmp);
 
 #else
-#ifdef AVX2SUPP
+#ifdef PIXIE_AVX2_SUPPORT
 
   auto y_4 = _mm256_set1_epi64x(y);
   __m256i reg_256 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(x));
@@ -149,28 +172,30 @@ uint16_t cmpl_pref_len_256(const uint64_t* x, uint64_t y) {
   const __m256i offset = _mm256_set1_epi64x(0x8000000000000000ULL);
   __m256i x_offset = _mm256_xor_si256(reg_256, offset);
   __m256i y_offset = _mm256_xor_si256(y_4, offset);
-  auto mask = _mm256_movemask_epi8(_mm256_cmpgt_epi64(x_offset, _mm256_sub_epi64(y_offset, _mm256_set1_epi64x(1))));
+  auto mask = _mm256_movemask_epi8(_mm256_cmpgt_epi64(
+      x_offset, _mm256_sub_epi64(y_offset, _mm256_set1_epi64x(1))));
 
   return _tzcnt_u32(mask) >> 3;
 
 #else
 
-  for (uint16_t i = 0; i < 4; ++i)
-    if (x[i] >= y)
+  for (uint16_t i = 0; i < 4; ++i) {
+    if (x[i] >= y) {
       return i;
+    }
+  }
   return 4;
 
 #endif
 #endif
 }
 
-
 /**
- * @brief Compare 8 64-bit numbers of @p x with @p y and 
+ * @brief Compare 8 64-bit numbers of @p x with @p y and
  * return the length of the prefix where @p y is less then @p x
  */
-uint16_t cmpl_pref_len_512(const uint64_t* x, uint64_t y) {
-#ifdef AVX512SUPP
+uint16_t lower_bound_8x64(const uint64_t* x, uint64_t y) {
+#ifdef PIXIE_AVX512_SUPPORT
 
   auto y_8 = _mm512_set1_epi64(y);
   auto reg_512 = _mm512_loadu_epi64(x);
@@ -179,33 +204,35 @@ uint16_t cmpl_pref_len_512(const uint64_t* x, uint64_t y) {
   return _tzcnt_u16(cmp);
 
 #else
-#ifdef AVX2SUPP
+#ifdef PIXIE_AVX2_SUPPORT
 
   uint16_t len = cmpl_pref_len_256(x, y);
 
-  if (len < 4)
+  if (len < 4) {
     return len;
+  }
 
   return len + cmpl_pref_len_256(x + 4, y);
 
 #else
 
-  for (uint16_t i = 0; i < 8; ++i)
-    if (x[i] >= y)
+  for (uint16_t i = 0; i < 8; ++i) {
+    if (x[i] >= y) {
       return i;
+    }
+  }
   return 8;
 
 #endif
 #endif
 }
 
-
 /**
- * @brief Compare 32 16-bit numbers of @p x with @p y and 
+ * @brief Compare 32 16-bit numbers of @p x with @p y and
  * return the count of numbers where @p x is less then @p y
  */
-uint16_t cmpl_count_512(const uint16_t* x, uint64_t y) {
-#ifdef AVX512SUPP
+uint16_t lower_bound_32x16(const uint16_t* x, uint64_t y) {
+#ifdef PIXIE_AVX512_SUPPORT
 
   auto y_32 = _mm512_set1_epi16(y);
   auto reg_512 = _mm512_loadu_epi16(x);
@@ -213,7 +240,7 @@ uint16_t cmpl_count_512(const uint16_t* x, uint64_t y) {
   return std::popcount(cmp);
 
 #else
-#ifdef AVX2SUPP
+#ifdef PIXIE_AVX2_SUPPORT
 
   auto y_16 = _mm256_set1_epi16(y);
   __m256i reg_256 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(x));
@@ -235,11 +262,146 @@ uint16_t cmpl_count_512(const uint16_t* x, uint64_t y) {
 #else
 
   uint16_t cnt = 0;
-  for (uint16_t i = 0; i < 32; ++i)
-    if (x[i] < y)
+  for (uint16_t i = 0; i < 32; ++i) {
+    if (x[i] < y) {
       cnt++;
+    }
+  }
   return cnt;
 
 #endif
+#endif
+}
+
+/**
+ * @brief Calculates 64 popcounts of 4-bits integers and stores as 64 4-bits
+ * integers (packed into 32 bytes)
+ *
+ * This function counts the number of set bits in each 4-bit value
+ * using an efficient shuffle-based approach with lookup tables.
+ *
+ * @param x Pointer to 32 bytes containing 64 4-bit integers
+ * @param result Pointer to store the 64 resulting 4-bit popcount values (packed
+ * in 32 bytes)
+ */
+void popcount_64x4(const uint8_t* x, uint8_t* result) {
+#ifdef PIXIE_AVX2_SUPPORT
+  __m256i data = _mm256_loadu_si256((__m256i const*)x);
+
+  // Masks for extracting the lower and upper nibbles
+  const __m256i low_bits_mask = _mm256_set1_epi8(0x0F);
+
+  // Count bits in the lower half
+  __m256i low_bits = _mm256_and_si256(data, low_bits_mask);
+  __m256i low_count = _mm256_shuffle_epi8(lookup_popcount_4, low_bits);
+
+  // Count bits in the upper half
+  __m256i high_bits = _mm256_srli_epi16(data, 4);
+  high_bits = _mm256_and_si256(high_bits, low_bits_mask);
+  __m256i high_count = _mm256_shuffle_epi8(lookup_popcount_4, high_bits);
+
+  // Pack the results into a single output vector
+  __m256i result_vec =
+      _mm256_or_si256(low_count, _mm256_slli_epi16(high_count, 4));
+  _mm256_storeu_epi8(result, result_vec);
+#else
+  // Fallback implementation for non-AVX2 platforms
+  for (size_t i = 0; i < 32; i++) {
+    // Count bits in the lower half
+    uint8_t a = x[i] & 0x0F;
+    uint8_t low_count = std::popcount(a);
+    // Count bits in the upper half
+    a = (x[i] >> 4) & 0x0F;
+    uint8_t high_count = std::popcount(a);
+
+    // Pack the counts into the output byte
+    result[i] = low_count | (high_count << 4);
+  }
+#endif
+}
+
+/**
+ * @brief Calculates 64 popcounts of 4-bits integers and stores as 64 4-bits
+ * integers (packed into 32 bytes)
+ *
+ * This function counts the number of set bits in each 4-bit value
+ * using an efficient shuffle-based approach with lookup tables.
+ *
+ * @param x Pointer to 32 bytes containing 64 4-bit integers
+ * @param result Pointer to store the 64 resulting 4-bit popcount values
+ * (packed in 32 bytes)
+ */
+void popcount_32x8(const uint8_t* x, uint8_t* result) {
+#ifdef PIXIE_AVX512_SUPPORT
+  // Load 64 4-bit integers (256 bits total)
+  __m256i data = _mm256_loadu_si256((__m256i const*)x);
+  auto popcount_8 = _mm256_popcnt_epi8(data);
+  _mm256_storeu_si256((__m256i*)result, popcount_8);
+#else
+#ifdef PIXIE_AVX2_SUPPORT
+  // Load 64 4-bit integers (256 bits total)
+  __m256i data = _mm256_loadu_si256((__m256i const*)x);
+
+  // Masks for extracting the lower and upper nibbles
+  const __m256i low_bits_mask = _mm256_set1_epi8(0x0F);
+
+  // Count bits in lower half
+  __m256i low_bits = _mm256_and_si256(data, low_bits_mask);
+  __m256i low_count = _mm256_shuffle_epi8(lookup_popcount_4, low_bits);
+
+  // Count bits upper half
+  __m256i high_bits = _mm256_srli_epi16(data, 4);
+  high_bits = _mm256_and_si256(high_bits, low_bits_mask);
+  __m256i high_count = _mm256_shuffle_epi8(lookup_popcount_4, high_bits);
+
+  __m256i result_vec = _mm256_add_epi8(low_count, high_count);
+  _mm256_storeu_epi8(result, result_vec);
+#else
+  // Fallback implementation for non-AVX2 platforms
+  for (size_t i = 0; i < 32; i++) {
+    result[i] = std::popcount(x[i]);
+  }
+#endif
+#endif
+}
+
+/**
+ * @brief Calculates 32 bit ranks of every 8th bit, result is stored as 32
+ * 8-bit integers.
+ *
+ * @param x Pointer to 32 input 8-bit integers
+ * @param result Pointer to store the resulting 32 8-bit integers
+ */
+void rank_32x8(const uint8_t* x, uint8_t* result) {
+#ifdef PIXIE_AVX512_SUPPORT
+  // Step 1: Calculate popcount of each byte
+  popcount_32x8(x, result);
+  __m256i prefix_sums = _mm256_loadu_si256((__m256i const*)result);
+  const __m256i zero = _mm256_setzero_si256();
+
+  prefix_sums = _mm256_add_epi8(prefix_sums,
+                                _mm256_alignr_epi8(prefix_sums, zero, 16 - 1));
+  prefix_sums = _mm256_add_epi8(prefix_sums,
+                                _mm256_alignr_epi8(prefix_sums, zero, 16 - 2));
+  prefix_sums = _mm256_add_epi8(prefix_sums,
+                                _mm256_alignr_epi8(prefix_sums, zero, 16 - 4));
+  prefix_sums = _mm256_add_epi8(prefix_sums,
+                                _mm256_alignr_epi8(prefix_sums, zero, 16 - 8));
+
+  // At this point we have prefix sums for two halfs, the last step is to
+  // extract 16-th value and add it to the whole second half
+  __m128i low_lane = _mm256_extracti128_si256(prefix_sums, 0);
+  __m128i high_lane = _mm256_extracti128_si256(prefix_sums, 1);
+  auto last_val_low = _mm_extract_epi8(low_lane, 15);
+  __m128i add_to_high = _mm_set1_epi8(last_val_low);
+  high_lane = _mm_add_epi8(high_lane, add_to_high);
+  prefix_sums = _mm256_set_m128i(high_lane, low_lane);
+  _mm256_storeu_epi8(result, prefix_sums);
+#else
+  // Scalar fallback implementation
+  result[0] = std::popcount(x[0]);
+  for (size_t i = 1; i < 32; ++i) {
+    result[i] = std::popcount(x[i]) + result[i - 1];
+  }
 #endif
 }

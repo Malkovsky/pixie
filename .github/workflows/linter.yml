@@ -1,0 +1,28 @@
+name: Clang Format Lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  clang-format:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-format
+
+      - name: Run clang-format check
+        run: |
+          # Find all C/C++ files and check formatting
+          FILES=$(find . -regex '.*\.\(cpp\|hpp\|cc\|c\|h\)')
+          echo "Checking formatting on:"
+          echo "$FILES"
+          clang-format --version
+          
+          # Run clang-format in "diff" mode to see issues
+          clang-format --dry-run --Werror $FILES
