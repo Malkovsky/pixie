@@ -206,13 +206,13 @@ uint16_t lower_bound_8x64(const uint64_t* x, uint64_t y) {
 #else
 #ifdef PIXIE_AVX2_SUPPORT
 
-  uint16_t len = cmpl_pref_len_256(x, y);
+  uint16_t len = lower_bound_4x64(x, y);
 
   if (len < 4) {
     return len;
   }
 
-  return len + cmpl_pref_len_256(x + 4, y);
+  return len + lower_bound_4x64(x + 4, y);
 
 #else
 
