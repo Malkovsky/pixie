@@ -355,7 +355,7 @@ void popcount_32x8(const uint8_t* x, uint8_t* result) {
   __m256i high_count = _mm256_shuffle_epi8(lookup_popcount_4, high_bits);
 
   __m256i result_vec = _mm256_add_epi8(low_count, high_count);
-  _mm256_storeu_epi8(result, result_vec);
+  _mm256_storeu_si256((__m256i*)result, result_vec);
 #else
   // Fallback implementation for non-AVX2 platforms
   for (size_t i = 0; i < 32; i++) {
