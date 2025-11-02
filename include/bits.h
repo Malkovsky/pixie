@@ -285,7 +285,7 @@ uint16_t lower_bound_32x16(const uint16_t* x, uint64_t y) {
  * in 32 bytes)
  */
 void popcount_64x4(const uint8_t* x, uint8_t* result) {
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef PIXIE_AVX512_SUPPORT
   __m256i data = _mm256_loadu_si256((__m256i const*)x);
 
   // Masks for extracting the lower and upper nibbles
