@@ -2,9 +2,7 @@ cmake_minimum_required(VERSION 3.12)
 project(pixie)
 
 set(MARCH "native" CACHE STRING "march compilier flag")
-set(CMAKE_CXX_FLAGS "-march=${MARCH} -O3 -DNDEBUG")
-set(BENCHMARK_ENABLE_GTEST_TESTS OFF)
-
+set(CMAKE_CXX_FLAGS "-march=${MARCH}")
 include(FetchContent)
 FetchContent_Declare(
     googletest
@@ -18,7 +16,9 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/google/benchmark.git
   GIT_TAG v1.9.4  # Replace with the desired version/tag
 )
+set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "Disable Google Benchmark tests")
 FetchContent_MakeAvailable(googlebenchmark)
+
 add_executable(benchmarks
     src/benchmarks.cpp)
 target_include_directories(benchmarks
