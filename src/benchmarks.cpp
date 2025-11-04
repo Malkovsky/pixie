@@ -134,7 +134,7 @@ static void BM_SelectNonInterleaved90PercentFill(benchmark::State& state) {
   }
 }
 
-/*
+
 BENCHMARK(BM_RankNonInterleaved)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
@@ -149,7 +149,7 @@ BENCHMARK(BM_SelectNonInterleaved)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
     ->Range(8, 1ull << 34);
-*/
+
 BENCHMARK(BM_RankNonInterleaved10PercentFill)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
