@@ -141,7 +141,7 @@ public:
         return npos;
     }
 
-    std::size_t rmq_pos(std::size_t i, std::size_t j) const
+    std::size_t range_min_query_pos(std::size_t i, std::size_t j) const
     {
         if (i > j || j >= num_bits)
             return npos;
@@ -159,7 +159,7 @@ public:
         return pos;
     }
 
-    int rmq_val(std::size_t i, std::size_t j) const
+    int range_min_query_val(std::size_t i, std::size_t j) const
     {
         if (i > j || j >= num_bits)
             return 0;
@@ -173,7 +173,7 @@ public:
         return mn;
     }
 
-    std::size_t rMq_pos(std::size_t i, std::size_t j) const
+    std::size_t range_max_query_pos(std::size_t i, std::size_t j) const
     {
         if (i > j || j >= num_bits)
             return npos;
@@ -191,7 +191,7 @@ public:
         return pos;
     }
 
-    int rMq_val(std::size_t i, std::size_t j) const
+    int range_max_query_val(std::size_t i, std::size_t j) const
     {
         if (i > j || j >= num_bits)
             return 0;

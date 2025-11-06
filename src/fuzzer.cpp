@@ -273,23 +273,23 @@ int main()
             }
             break;
             case 9:
-            { // rmq_pos
+            { // range_min_query_pos
                 if (N == 0)
                     break;
-                auto a = nv.rmq_pos(i, j);
-                auto b = rm.rmq_pos(i, j);
+                auto a = nv.range_min_query_pos(i, j);
+                auto b = rm.range_min_query_pos(i, j);
                 if (a != b)
-                    die_mismatch(seed_info, bits, "rmq_pos", {std::to_string(i), std::to_string(j)}, show_sz_or_npos(a), show_sz_or_npos(b));
+                    die_mismatch(seed_info, bits, "range_min_query_pos", {std::to_string(i), std::to_string(j)}, show_sz_or_npos(a), show_sz_or_npos(b));
             }
             break;
             case 10:
-            { // rmq_val
+            { // range_min_query_val
                 if (N == 0)
                     break;
-                auto a = nv.rmq_val(i, j);
-                auto b = rm.rmq_val(i, j);
+                auto a = nv.range_min_query_val(i, j);
+                auto b = rm.range_min_query_val(i, j);
                 if (a != b)
-                    die_mismatch(seed_info, bits, "rmq_val", {std::to_string(i), std::to_string(j)}, std::to_string(a), std::to_string(b));
+                    die_mismatch(seed_info, bits, "range_min_query_val", {std::to_string(i), std::to_string(j)}, std::to_string(a), std::to_string(b));
             }
             break;
             case 11:
@@ -315,25 +315,25 @@ int main()
             }
             break;
             case 13:
-            { // rMq_pos
+            { // range_max_query_pos
                 if (N == 0)
                     break;
-                auto a = nv.rMq_pos(i, j);
-                auto b = rm.rMq_pos(i, j);
+                auto a = nv.range_max_query_pos(i, j);
+                auto b = rm.range_max_query_pos(i, j);
                 if (a != b)
-                    die_mismatch(seed_info, bits, "rMq_pos",
+                    die_mismatch(seed_info, bits, "range_max_query_pos",
                                  {std::to_string(i), std::to_string(j)},
                                  show_sz_or_npos(a), show_sz_or_npos(b));
             }
             break;
             case 14:
-            { // rMq_val
+            { // range_max_query_val
                 if (N == 0)
                     break;
-                auto a = nv.rMq_val(i, j);
-                auto b = rm.rMq_val(i, j);
+                auto a = nv.range_max_query_val(i, j);
+                auto b = rm.range_max_query_val(i, j);
                 if (a != b)
-                    die_mismatch(seed_info, bits, "rMq_val",
+                    die_mismatch(seed_info, bits, "range_max_query_val",
                                  {std::to_string(i), std::to_string(j)},
                                  std::to_string(a), std::to_string(b));
             }

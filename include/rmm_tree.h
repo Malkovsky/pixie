@@ -14,15 +14,15 @@ namespace pixie
     /**
      * @brief Range min–max tree over a bitvector (LSB-first) tailored for balanced-parentheses (BP).
      * @details
-     *  Implements the classic RMQ/rMq family and BP navigation in O(log n)
+     *  Implements the classic rmq/rMq family and BP navigation in O(log n)
      *  using a perfectly balanced binary tree of blocks. Supported queries:
      *  - rank1 / rank0
      *  - select1 / select0
      *  - rank10 / select10 (starts of "10")
      *  - excess (prefix +1 for '1', −1 for '0')
      *  - fwdsearch / bwdsearch (prefix–sum search)
-     *  - rmq_pos / rmq_val (first minimum within a range)
-     *  - rMq_pos / rMq_val (first maximum within a range)
+     *  - range_min_query_pos / range_min_query_val (first minimum within a range)
+     *  - range_max_query_pos / range_max_query_val (first maximum within a range)
      *  - mincount / minselect (count/selection of minima)
      *  - close / open / enclose (BP navigation)
      *
@@ -42,21 +42,21 @@ namespace pixie
         // size of segment (in bits) covered by node
         // needed for: rank1/rank0, select1/select0, select10,
         //             excess, fwdsearch/bwdsearch/close/open/enclose,
-        //             rmq/rMq, minselect.
+        //             range_min_query/range_max_query, minselect.
         std::vector<uint32_t> segment_size_bits;
 
         // node_total_excess = total excess (+1 for '1', -1 for '0') on the node
         // needed for: rank1/rank0, select1/select0, excess,
         //             fwdsearch/bwdsearch/close/open/enclose,
-        //             rmq/rMq, mincount/minselect.
+        //             range_min_query/range_max_query, mincount/minselect.
         std::vector<int32_t> node_total_excess;
 
         // node_min_prefix_excess = minimum pref-excess on the node (from 0)
-        // needed for: fwdsearch/bwdsearch/close/open/enclose, rmq, mincount/minselect.
+        // needed for: fwdsearch/bwdsearch/close/open/enclose, range_min_query, mincount/minselect.
         std::vector<int32_t> node_min_prefix_excess;
 
         // node_max_prefix_excess = maximum pref-excess on the node (from 0)
-        // needed for: fwdsearch/bwdsearch/close/open/enclose, rMq.
+        // needed for: fwdsearch/bwdsearch/close/open/enclose, range_max_query.
         std::vector<int32_t> node_max_prefix_excess;
 
         // node_min_count = number of positions where the minimum is attained
@@ -404,7 +404,7 @@ namespace pixie
          * @brief Position of the first minimum of excess on [i, j] (inclusive).
          * @return Position of first occurrence of minimum, or npos on invalid range.
          */
-        size_t rmq_pos(const size_t &i, const size_t &j) const
+        size_t range_min_query_pos(const size_t &i, const size_t &j) const
         {
             if (i > j || j >= num_bits)
                 return npos;
@@ -502,11 +502,11 @@ namespace pixie
          * @brief Value of the minimum prefix excess on [i, j] relative to i.
          * @details Equivalent to min_{t in [i..j]} (excess(t+1) - excess(i)).
          */
-        int rmq_val(const size_t &i, const size_t &j) const
+        int range_min_query_val(const size_t &i, const size_t &j) const
         {
             if (i > j || j >= num_bits)
                 return 0;
-            size_t p = rmq_pos(i, j);
+            size_t p = range_min_query_pos(i, j);
             if (p == npos)
                 return 0;
             return excess(p + 1) - excess(i);
@@ -516,7 +516,7 @@ namespace pixie
          * @brief Position of the first maximum of excess on [i, j] (inclusive).
          * @return Position of first occurrence of maximum, or npos on invalid range.
          */
-        size_t rMq_pos(const size_t &i, const size_t &j) const
+        size_t range_max_query_pos(const size_t &i, const size_t &j) const
         {
             if (i > j || j >= num_bits)
                 return npos;
@@ -613,11 +613,11 @@ namespace pixie
         /**
          * @brief Value of the maximum prefix excess on [i, j] relative to i.
          */
-        int rMq_val(const size_t &i, const size_t &j) const
+        int range_max_query_val(const size_t &i, const size_t &j) const
         {
             if (i > j || j >= num_bits)
                 return 0;
-            size_t p = rMq_pos(i, j);
+            size_t p = range_max_query_pos(i, j);
             if (p == npos)
                 return 0;
             return excess(p + 1) - excess(i);

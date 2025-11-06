@@ -337,53 +337,53 @@ int main(int argc, char **argv)
             cout << N << ",bwdsearch," << ns << "," << q << "," << hits << "," << (q - hits) << "," << args.seed << "," << args.block_bits << "\n";
         }
 
-        // rmq_pos / rmq_val / mincount / minselect
+        // range_min_query_pos / range_min_query_val / mincount / minselect
         vector<pair<size_t, size_t>> segs(args.Q);
         for (size_t k = 0; k < args.Q; k++)
             segs[k] = rand_ij();
 
-        // rmq_pos
+        // range_min_query_pos
         {
             auto fn = [&](size_t it)
             {
                 auto [i, j] = segs[it];
-                BH_sz += t.rmq_pos(i, j);
+                BH_sz += t.range_min_query_pos(i, j);
             };
             double ns = time_ns_per_call(fn, args.Q);
-            cout << N << ",rmq_pos," << ns << "," << args.Q << ",0,0," << args.seed << "," << args.block_bits << "\n";
+            cout << N << ",range_min_query_pos," << ns << "," << args.Q << ",0,0," << args.seed << "," << args.block_bits << "\n";
         }
 
-        // rmq_val
+        // range_min_query_val
         {
             auto fn = [&](size_t it)
             {
                 auto [i, j] = segs[it];
-                BH_i += t.rmq_val(i, j);
+                BH_i += t.range_min_query_val(i, j);
             };
             double ns = time_ns_per_call(fn, args.Q);
-            cout << N << ",rmq_val," << ns << "," << args.Q << ",0,0," << args.seed << "," << args.block_bits << "\n";
+            cout << N << ",range_min_query_val," << ns << "," << args.Q << ",0,0," << args.seed << "," << args.block_bits << "\n";
         }
 
-        // rMq_pos
+        // range_max_query_pos
         {
             auto fn = [&](size_t it)
             {
                 auto [i, j] = segs[it];
-                BH_sz += t.rMq_pos(i, j);
+                BH_sz += t.range_max_query_pos(i, j);
             };
             double ns = time_ns_per_call(fn, args.Q);
-            cout << N << ",rMq_pos," << ns << "," << args.Q << ",0,0," << args.seed << "," << args.block_bits << "\n";
+            cout << N << ",range_max_query_pos," << ns << "," << args.Q << ",0,0," << args.seed << "," << args.block_bits << "\n";
         }
 
-        // rMq_val
+        // range_max_query_val
         {
             auto fn = [&](size_t it)
             {
                 auto [i, j] = segs[it];
-                BH_i += t.rMq_val(i, j);
+                BH_i += t.range_max_query_val(i, j);
             };
             double ns = time_ns_per_call(fn, args.Q);
-            cout << N << ",rMq_val," << ns << "," << args.Q << ",0,0," << args.seed << "," << args.block_bits << "\n";
+            cout << N << ",range_max_query_val," << ns << "," << args.Q << ",0,0," << args.seed << "," << args.block_bits << "\n";
         }
 
         // mincount
