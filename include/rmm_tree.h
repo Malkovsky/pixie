@@ -11,14 +11,6 @@
 
 namespace pixie
 {
-
-#ifdef __GNUC__
-#define POPCNT __builtin_popcountll
-#else
-#include <intrin.h>
-    static inline int POPCNT(unsigned long long x) { return __popcnt64(x); }
-#endif
-
     /**
      * @brief Range min–max tree over a bitvector (LSB-first) tailored for balanced-parentheses (BP).
      * @details
@@ -938,7 +930,7 @@ namespace pixie
                 P &= ((std::uint64_t(1) << (len - 1)) - 1);
             else
                 P &= 0x7FFFFFFFFFFFFFFFull;
-            return (size_t)POPCNT(P);
+            return (size_t)std::popcount(P);
         }
 
         /**
@@ -957,20 +949,20 @@ namespace pixie
             if (w_l == w_r)
             {
                 const std::uint64_t mask = ((off_r == 0) ? 0 : ((std::uint64_t(1) << off_r) - 1)) & (~std::uint64_t(0) << off_l);
-                return (size_t)POPCNT(bits[w_l] & mask);
+                return (size_t)std::popcount(bits[w_l] & mask);
             }
             if (off_l)
             {
-                cnt += (size_t)POPCNT(bits[w_l] & (~std::uint64_t(0) << off_l));
+                cnt += (size_t)std::popcount(bits[w_l] & (~std::uint64_t(0) << off_l));
                 ++w_l;
             }
             while (w_l < w_r)
             {
-                cnt += (size_t)POPCNT(bits[w_l]);
+                cnt += (size_t)std::popcount(bits[w_l]);
                 ++w_l;
             }
             if (off_r)
-                cnt += (size_t)POPCNT(bits[w_r] & ((std::uint64_t(1) << off_r) - 1));
+                cnt += (size_t)std::popcount(bits[w_r] & ((std::uint64_t(1) << off_r) - 1));
             return cnt;
         }
 
@@ -1062,7 +1054,7 @@ namespace pixie
                 const std::uint64_t slice = bits[w_l] >> off_l;
                 std::uint64_t P = slice & ~(slice >> 1);
                 P &= ((std::uint64_t(1) << (len - 1)) - 1);
-                const int c = POPCNT(P);
+                const int c = std::popcount(P);
                 if (k <= (size_t)c)
                 {
                     const int off = select_in_masked_slice(slice, len, k);
@@ -1083,7 +1075,7 @@ namespace pixie
                 // full word w+1 (positions 0..62)
                 const std::uint64_t x = bits[w + 1];
                 const std::uint64_t P = (x & ~(x >> 1)) & 0x7FFFFFFFFFFFFFFFull;
-                const int c = POPCNT(P);
+                const int c = std::popcount(P);
                 if (k <= (size_t)c)
                 {
                     const int off = select_in_word(P, k);
@@ -1488,7 +1480,7 @@ namespace pixie
             if (off_l)
             {
                 const std::uint64_t w = bits[w_l] & mask_l;
-                const int c = POPCNT(w);
+                const int c = std::popcount(w);
                 if (k <= (size_t)c)
                     return Lb + select_in_word(w, k);
                 k -= c;
@@ -1498,7 +1490,7 @@ namespace pixie
             while (w_l < w_r)
             {
                 const std::uint64_t w = bits[w_l];
-                const int c = POPCNT(w);
+                const int c = std::popcount(w);
                 if (k <= (size_t)c)
                     return (w_l << 6) + select_in_word(w, k);
                 k -= c;
@@ -1509,7 +1501,7 @@ namespace pixie
             if (off_r)
             {
                 const std::uint64_t w = bits[w_l] & ((std::uint64_t(1) << off_r) - 1);
-                const int c = POPCNT(w);
+                const int c = std::popcount(w);
                 if (k <= (size_t)c)
                     return (w_l << 6) + select_in_word(w, k);
             }
@@ -1541,7 +1533,7 @@ namespace pixie
             if (off_l)
             {
                 const std::uint64_t w = (~bits[w_l]) & (~std::uint64_t(0) << off_l);
-                const int c = POPCNT(w);
+                const int c = std::popcount(w);
                 if (k <= (size_t)c)
                 {
                     const int off = select_in_word(w, k);
@@ -1555,7 +1547,7 @@ namespace pixie
             while (w_l < w_r)
             {
                 const std::uint64_t w = ~bits[w_l];
-                const int c = POPCNT(w);
+                const int c = std::popcount(w);
                 if (k <= (size_t)c)
                 {
                     const int off = select_in_word(w, k);
@@ -1570,7 +1562,7 @@ namespace pixie
             if (off_r)
             {
                 const std::uint64_t w = (~bits[w_l]) & ((std::uint64_t(1) << off_r) - 1);
-                const int c = POPCNT(w);
+                const int c = std::popcount(w);
                 if (k <= (size_t)c)
                 {
                     const int off = select_in_word(w, k);
