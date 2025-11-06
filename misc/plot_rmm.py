@@ -1,9 +1,9 @@
 """
 Plot RmMTree benchmark results.
 
-This script reads a CSV produced by `bench_rmm.cpp` (with at least columns:
-N, op, ns_per_op) and, for each operation, draws a scatter plot of
-individual points and a trend line (optionally median-smoothed).
+This script reads a CSV produced by `bench_rmm.cpp` and,
+for each operation, draws a scatter plot of individual points
+and a trend line (optionally median-smoothed).
 Plots are saved as PNG files and can also be shown interactively.
 
 Examples:
@@ -32,6 +32,9 @@ OPS_ORDER = [
     "range_max_query_val",
     "mincount",
     "minselect",
+    "close",
+    "open",
+    "enclose",
 ]
 
 
@@ -91,27 +94,25 @@ def main():
 
     os.makedirs(args.save_dir, exist_ok=True)
     df = pd.read_csv(args.csv)
-    df = df.dropna(subset=["ns_per_op"])
+    df = df.dropna(subset=["cpu_time", "N"])
 
     for op in OPS_ORDER:
-        d = df[df["op"] == op].copy()
+        d = df[df["name"] == op].copy()
         if d.empty:
             continue
+        d = d.groupby("N", as_index=False)["cpu_time"].median().sort_values("N")
 
-        d = d.groupby("N", as_index=False)["ns_per_op"].median().sort_values("N")
-
+        yplot = d["cpu_time"]
         if args.smooth and args.smooth > 1:
             d["ns_smooth"] = (
-                d["ns_per_op"]
+                d["cpu_time"]
                 .rolling(window=args.smooth, center=True, min_periods=1)
                 .median()
             )
             yplot = d["ns_smooth"]
-        else:
-            yplot = d["ns_per_op"]
 
         plt.figure()
-        plt.scatter(d["N"], d["ns_per_op"], s=8, alpha=0.3, linewidths=0)
+        plt.scatter(d["N"], d["cpu_time"], s=8, alpha=0.3, linewidths=0)
         plt.plot(d["N"], yplot, linewidth=1.5)
 
         if args.logx:

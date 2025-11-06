@@ -30,7 +30,10 @@ private:
         num_bits = nbits;
         bits.assign(num_bits, 0);
         for (std::size_t i = 0; i < num_bits; i++)
-            bits[i] = ((words[i >> 6] >> (i & 63)) & 1u);
+        {
+            const std::size_t w = (i >> 6);
+            bits[i] = static_cast<uint8_t>(((w < words.size() ? words[w] : 0ull) >> (i & 63)) & 1u);
+        }
     }
 
     inline int bit(std::size_t i) const { return bits[i]; }

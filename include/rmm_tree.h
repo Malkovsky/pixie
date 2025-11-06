@@ -158,7 +158,7 @@ namespace pixie
          */
         size_t select1(size_t k) const
         {
-            if (k == 0)
+            if (k == 0 || num_bits == 0)
                 return npos;
             size_t v = 1;
             if (ones_in_node(v) < k)
@@ -189,7 +189,7 @@ namespace pixie
          */
         size_t select0(size_t k) const
         {
-            if (k == 0)
+            if (k == 0 || num_bits == 0)
                 return npos;
             size_t v = 1;
             const auto zeros = [&](const size_t &x) noexcept
@@ -255,7 +255,7 @@ namespace pixie
          */
         size_t select10(size_t k) const
         {
-            if (k == 0)
+            if (k == 0 || num_bits == 0)
                 return npos;
             size_t ind = 1;
             if (node_pattern10_count[ind] < k)

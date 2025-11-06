@@ -52,8 +52,6 @@ After building:
 ./test_rmm
 ```
 
-The testing runs indefinitely; press `Ctrl+C` to stop.
-
 ---
 
 ## Running Benchmarks

@@ -1,10 +1,19 @@
-#include <bits/stdc++.h>
+#include <benchmark/benchmark.h>
+#include <random>
+#include <string>
+#include <vector>
+#include <set>
+#include <algorithm>
+#include <cstdint>
+#include <cmath>
+#include <cctype>
+#include <iostream>
+#include <optional>
+#include <memory>
 #include "rmm_tree.h"
 
 using namespace std;
-
-static volatile size_t BH_sz = 0;
-static volatile int BH_i = 0;
+using pixie::RmMTree;
 
 struct Args
 {
@@ -18,13 +27,14 @@ struct Args
     vector<size_t> explicit_sizes;
 };
 
-static Args parse_args(int argc, char **argv)
+static Args args;
+
+static void parse_args_and_strip(int &argc, char **&argv)
 {
-    Args a;
-    auto getv = [&](string key) -> optional<string>
+    auto getv = [&](const string &key) -> optional<string>
     {
         string pref = "--" + key + "=";
-        for (int i = 1; i < argc; i++)
+        for (int i = 1; i < argc; ++i)
         {
             string s = argv[i];
             if (s.rfind(pref, 0) == 0)
@@ -32,38 +42,52 @@ static Args parse_args(int argc, char **argv)
         }
         return nullopt;
     };
+    auto strip = [&](const string &key)
+    {
+        string pref = "--" + key + "=";
+        int w = 0;
+        for (int i = 0; i < argc; ++i)
+        {
+            if (i > 0 && string(argv[i]).rfind(pref, 0) == 0)
+                continue;
+            argv[w++] = argv[i];
+        }
+        argc = w;
+    };
+
     if (auto v = getv("min-exp"))
-        a.min_exp = stoi(*v);
+        args.min_exp = stoi(*v), strip("min-exp");
     if (auto v = getv("max-exp"))
-        a.max_exp = stoi(*v);
+        args.max_exp = stoi(*v), strip("max-exp");
     if (auto v = getv("q"))
-        a.Q = stoull(*v);
+        args.Q = stoull(*v), strip("q");
     if (auto v = getv("p"))
-        a.p1 = stod(*v);
+        args.p1 = stod(*v), strip("p");
     if (auto v = getv("seed"))
-        a.seed = stoull(*v);
+        args.seed = stoull(*v), strip("seed");
     if (auto v = getv("block"))
-        a.block_bits = stoull(*v);
+        args.block_bits = stoull(*v), strip("block");
     if (auto v = getv("per-octave"))
-        a.per_octave = stoi(*v);
+        args.per_octave = stoi(*v), strip("per-octave");
+
     if (auto v = getv("sizes"))
     {
         string s = *v;
+        strip("sizes");
         size_t pos = 0;
         while (pos < s.size())
         {
             while (pos < s.size() && (s[pos] == ',' || isspace((unsigned char)s[pos])))
                 ++pos;
-            if (pos >= s.size())
-                break;
             size_t start = pos;
             while (pos < s.size() && isdigit((unsigned char)s[pos]))
                 ++pos;
             if (start < pos)
-                a.explicit_sizes.push_back(stoull(s.substr(start, pos - start)));
+                args.explicit_sizes.push_back(stoull(s.substr(start, pos - start)));
         }
+        sort(args.explicit_sizes.begin(), args.explicit_sizes.end());
+        args.explicit_sizes.erase(unique(args.explicit_sizes.begin(), args.explicit_sizes.end()), args.explicit_sizes.end());
     }
-    return a;
 }
 
 static string make_random_bits(size_t N, double p1, mt19937_64 &rng)
@@ -71,18 +95,16 @@ static string make_random_bits(size_t N, double p1, mt19937_64 &rng)
     uniform_real_distribution<double> U(0.0, 1.0);
     string s;
     s.resize(N);
-    for (size_t i = 0; i < N; i++)
+    for (size_t i = 0; i < N; ++i)
         s[i] = (U(rng) < p1 ? '1' : '0');
     return s;
 }
 
-static vector<size_t> build_size_grid(const Args &args)
+static vector<size_t> build_size_grid()
 {
     if (!args.explicit_sizes.empty())
     {
         vector<size_t> v = args.explicit_sizes;
-        sort(v.begin(), v.end());
-        v.erase(unique(v.begin(), v.end()), v.end());
         v.erase(remove(v.begin(), v.end(), 0), v.end());
         return v;
     }
@@ -98,27 +120,24 @@ static vector<size_t> build_size_grid(const Args &args)
 
     int per_octave_steps = args.per_octave;
     set<size_t> N_cands;
+    size_t min_N = size_t(1) << lo, max_N = size_t(1) << hi;
+
     for (int e = lo; e <= hi; ++e)
     {
         for (int t = 0; t <= per_octave_steps; ++t)
         {
-            double x = e + double(t) / double(per_octave_steps);
-            long double size_float = powl(2.0L, x);
-            size_t N = (size_t)llround(size_float);
-            if (N == 0)
-                continue;
-            size_t min_N = size_t(1) << lo;
-            size_t max_N = size_t(1) << hi;
+            long double x = e + (long double)t / (long double)per_octave_steps;
+            size_t N = (size_t)llround(powl(2.0L, x));
             if (N < min_N)
                 N = min_N;
             if (N > max_N)
                 N = max_N;
-            N_cands.insert(N);
+            if (N)
+                N_cands.insert(N);
         }
     }
-    vector<size_t> v(N_cands.begin(), N_cands.end());
 
-    size_t min_N = size_t(1) << lo, max_N = size_t(1) << hi;
+    vector<size_t> v(N_cands.begin(), N_cands.end());
     if (v.front() != min_N)
         v.insert(v.begin(), min_N);
     if (v.back() != max_N)
@@ -126,371 +145,290 @@ static vector<size_t> build_size_grid(const Args &args)
     return v;
 }
 
-template <class F>
-static double time_ns_per_call(F &&f, size_t q)
+struct Pools
 {
-    using clk = std::chrono::steady_clock;
-    auto t0 = clk::now();
-    for (size_t i = 0; i < q; i++)
-        f(i);
-    auto t1 = clk::now();
-    double ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
-    return ns / (double)q;
+    vector<size_t> inds_any;
+    vector<size_t> inds;
+    vector<size_t> inds_1N;
+    vector<int> deltas;
+    vector<pair<size_t, size_t>> segs;
+
+    vector<size_t> ks1, ks0, ks10;
+    vector<size_t> minselect_q;
+};
+
+struct Dataset
+{
+    size_t N{};
+    string bits;
+    RmMTree t;
+
+    size_t cnt1{}, cnt0{}, cnt10{};
+    Pools pool;
+};
+
+static vector<shared_ptr<Dataset>> keepalive;
+
+static size_t count10(const string &s)
+{
+    size_t c = 0;
+    if (s.size() < 2)
+        return 0;
+    for (size_t i = 0; i + 1 < s.size(); ++i)
+        if (s[i] == '1' && s[i + 1] == '0')
+            ++c;
+    return c;
+}
+
+static Dataset build_dataset(size_t N)
+{
+    mt19937_64 rng(args.seed ^ (uint64_t)N * 0x9E3779B185EBCA87ull);
+
+    Dataset d;
+    d.N = N;
+    d.bits = make_random_bits(N, args.p1, rng);
+
+    if (args.block_bits == 0)
+        d.t = RmMTree(d.bits, 0, -1.0f);
+    else
+        d.t = RmMTree(d.bits, args.block_bits);
+
+    d.cnt1 = d.t.rank1(N);
+    d.cnt0 = N - d.cnt1;
+    d.cnt10 = count10(d.bits);
+
+    const size_t L = min<size_t>(args.Q, 32768);
+
+    uniform_int_distribution<size_t> ind_dist_incl(0, N ? N : 0);
+    uniform_int_distribution<size_t> ind_dist(0, N ? (N - 1) : 0);
+    uniform_int_distribution<size_t> ind_dist_1N(1, N ? N : 1);
+    uniform_int_distribution<int> d_dist(-8, +8);
+
+    d.pool.inds_any.resize(L);
+    d.pool.inds.resize(L);
+    d.pool.inds_1N.resize(L);
+    d.pool.deltas.resize(L);
+    d.pool.segs.resize(L);
+
+    auto rand_ij = [&]() -> pair<size_t, size_t>
+    {
+        if (N == 0)
+            return {0, 0};
+        size_t a = ind_dist(rng), b = ind_dist(rng);
+        if (a > b)
+            swap(a, b);
+        return {a, b};
+    };
+
+    for (size_t i = 0; i < L; ++i)
+    {
+        d.pool.inds_any[i] = ind_dist_incl(rng);
+        d.pool.inds[i] = (N ? ind_dist(rng) : 0);
+        d.pool.inds_1N[i] = (N ? ind_dist_1N(rng) : 0);
+        d.pool.deltas[i] = d_dist(rng);
+        d.pool.segs[i] = rand_ij();
+    }
+
+    auto fill_ks = [&](size_t total, vector<size_t> &out)
+    {
+        out.resize(L);
+        if (total == 0)
+        {
+            fill(out.begin(), out.end(), 1);
+            return;
+        }
+        uniform_int_distribution<size_t> dist(1, total);
+        for (size_t i = 0; i < L; ++i)
+            out[i] = dist(rng);
+    };
+    fill_ks(d.cnt1, d.pool.ks1);
+    fill_ks(d.cnt0, d.pool.ks0);
+    fill_ks(d.cnt10, d.pool.ks10);
+
+    d.pool.minselect_q.resize(L);
+    for (size_t i = 0; i < L; ++i)
+    {
+        auto [l, r] = d.pool.segs[i];
+        size_t c = d.t.mincount(l, r);
+        if (c == 0)
+            c = 1;
+        uniform_int_distribution<size_t> uq(1, c);
+        d.pool.minselect_q[i] = uq(rng);
+    }
+
+    return d;
+}
+
+template <class Fn>
+static void register_op(const string &op, shared_ptr<Dataset> data, Fn &&body)
+{
+    auto idx_ptr = make_shared<size_t>(0);
+
+    auto *b = benchmark::RegisterBenchmark(
+        op.c_str(),
+        [data, idx_ptr, body](benchmark::State &state)
+        {
+            const Dataset &D = *data;
+            for (auto _ : state)
+            {
+                size_t i = (*idx_ptr)++;
+                body(state, D, i);
+            }
+            state.counters["N"] = static_cast<double>(D.N);
+            state.counters["seed"] = static_cast<double>(args.seed);
+            state.counters["block_bits"] = static_cast<double>(args.block_bits);
+        });
+
+    b->Unit(benchmark::kNanosecond);
+}
+
+static void register_all()
+{
+    auto Ns = build_size_grid();
+    for (size_t N : Ns)
+    {
+        auto data = make_shared<Dataset>(build_dataset(N));
+        keepalive.push_back(data);
+
+        const auto &P = data->pool;
+
+        register_op("rank1", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            auto r = D.t.rank1(P.inds_any[k % P.inds_any.size()]);
+            benchmark::DoNotOptimize(r); });
+
+        register_op("rank0", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            auto r = D.t.rank0(P.inds_any[k % P.inds_any.size()]);
+            benchmark::DoNotOptimize(r); });
+
+        register_op("select1", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            auto r = D.t.select1(P.ks1[k % P.ks1.size()]);
+            benchmark::DoNotOptimize(r); });
+
+        register_op("select0", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            auto r = D.t.select0(P.ks0[k % P.ks0.size()]);
+            benchmark::DoNotOptimize(r); });
+
+        register_op("rank10", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            auto r = D.t.rank10(P.inds_any[k % P.inds_any.size()]);
+            benchmark::DoNotOptimize(r); });
+
+        register_op("select10", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            auto r = D.t.select10(P.ks10[k % P.ks10.size()]);
+            benchmark::DoNotOptimize(r); });
+
+        register_op("excess", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            auto r = D.t.excess(P.inds_any[k % P.inds_any.size()]);
+            benchmark::DoNotOptimize(r); });
+
+        register_op("fwdsearch", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            auto r = D.t.fwdsearch(P.inds[k % P.inds.size()], P.deltas[k % P.deltas.size()]);
+            benchmark::DoNotOptimize(r); });
+
+        register_op("bwdsearch", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            auto r = D.t.bwdsearch(P.inds_1N[k % P.inds_1N.size()], P.deltas[k % P.deltas.size()]);
+            benchmark::DoNotOptimize(r); });
+
+        register_op("range_min_query_pos", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            auto [i, j] = P.segs[k % P.segs.size()];
+            auto r = D.t.range_min_query_pos(i, j);
+            benchmark::DoNotOptimize(r); });
+
+        register_op("range_min_query_val", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            auto [i, j] = P.segs[k % P.segs.size()];
+            auto r = D.t.range_min_query_val(i, j);
+            benchmark::DoNotOptimize(r); });
+
+        register_op("range_max_query_pos", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            auto [i, j] = P.segs[k % P.segs.size()];
+            auto r = D.t.range_max_query_pos(i, j);
+            benchmark::DoNotOptimize(r); });
+
+        register_op("range_max_query_val", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            auto [i, j] = P.segs[k % P.segs.size()];
+            auto r = D.t.range_max_query_val(i, j);
+            benchmark::DoNotOptimize(r); });
+
+        register_op("mincount", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            auto [i, j] = P.segs[k % P.segs.size()];
+            auto r = D.t.mincount(i, j);
+            benchmark::DoNotOptimize(r); });
+
+        register_op("minselect", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            const size_t idx = k % P.segs.size();
+            auto [i, j] = P.segs[idx];
+            auto q = P.minselect_q[idx];
+            auto r = D.t.minselect(i, j, q);
+            benchmark::DoNotOptimize(r); });
+
+        register_op("close", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            if (D.N == 0) { benchmark::DoNotOptimize(0); return; }
+            auto i = P.inds[k % P.inds.size()];
+            auto r = D.t.close(i);
+            benchmark::DoNotOptimize(r); });
+
+        register_op("open", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            auto r = D.t.open(P.inds_1N[k % P.inds_1N.size()]);
+            benchmark::DoNotOptimize(r); });
+
+        register_op("enclose", data, [&](benchmark::State &, const Dataset &D, size_t k)
+                    {
+            auto r = D.t.enclose(P.inds_1N[k % P.inds_1N.size()]);
+            benchmark::DoNotOptimize(r); });
+    }
 }
 
 int main(int argc, char **argv)
 {
-    ios::sync_with_stdio(false);
-    cin.tie(nullptr);
+    parse_args_and_strip(argc, argv);
 
-    Args args = parse_args(argc, argv);
-    mt19937_64 rng(args.seed);
-
-    vector<size_t> Ns = build_size_grid(args);
-
-    cout << "N,op,ns_per_op,queries,hits,misses,seed,block_bits\n";
-
-    for (size_t N : Ns)
+    auto has = [&](const char *key)
     {
-
-        string bits = make_random_bits(N, args.p1, rng);
-        pixie::RmMTree t(bits, args.block_bits);
-        // pixie::RmMTree t(bits, 0, 0.15f);
-
-        uniform_int_distribution<size_t> ind_dist_incl(0, N ? N : 0);
-        uniform_int_distribution<size_t> ind_dist(0, N ? (N - 1) : 0);
-        auto rand_i_any = [&]()
-        { return (N ? ind_dist_incl(rng) : 0); };
-        auto rand_i = [&]()
-        { return (N ? ind_dist(rng) : 0); };
-        auto rand_ij = [&]()
+        string p1 = string(key) + "=";
+        for (int i = 1; i < argc; ++i)
         {
-            if (N == 0)
-                return pair<size_t, size_t>(0, 0);
-            size_t a = ind_dist(rng), b = ind_dist(rng);
-            if (a > b)
-                swap(a, b);
-            return pair<size_t, size_t>(a, b);
-        };
-        uniform_int_distribution<int> d_dist(-8, +8);
-
-        size_t cnt1 = t.rank1(N);
-        size_t cnt0 = N - cnt1;
-
-        size_t cnt10 = 0;
-        for (size_t p = 0; p + 1 < N; ++p)
-            if (bits[p] == '1' && bits[p + 1] == '0')
-                ++cnt10;
-
-        // rank1
-        {
-            vector<size_t> inds(args.Q);
-            for (size_t k = 0; k < args.Q; k++)
-                inds[k] = rand_i_any();
-            auto fn = [&](size_t it)
-            { BH_sz += t.rank1(inds[it]); };
-            double ns = time_ns_per_call(fn, args.Q);
-            cout << N << ",rank1," << ns << "," << args.Q << ",0,0," << args.seed << "," << args.block_bits << "\n";
+            string s = argv[i];
+            if (s == key || s.rfind(p1, 0) == 0)
+                return true;
         }
+        return false;
+    };
 
-        // rank0
-        {
-            vector<size_t> inds(args.Q);
-            for (size_t k = 0; k < args.Q; k++)
-                inds[k] = rand_i_any();
-            auto fn = [&](size_t it)
-            { BH_sz += t.rank0(inds[it]); };
-            double ns = time_ns_per_call(fn, args.Q);
-            cout << N << ",rank0," << ns << "," << args.Q << ",0,0," << args.seed << "," << args.block_bits << "\n";
-        }
+    static vector<string> extra;
+    if (!has("--benchmark_format"))
+        extra.emplace_back("--benchmark_format=csv");
+    if (!has("--benchmark_counters_tabular"))
+        extra.emplace_back("--benchmark_counters_tabular=true");
+    if (!has("--benchmark_time_unit"))
+        extra.emplace_back("--benchmark_time_unit=ns");
 
-        // select1
-        {
-            size_t q = min(args.Q, max<size_t>(cnt1, (size_t)1));
-            vector<size_t> ks;
-            ks.reserve(q);
-            if (cnt1 > 0)
-            {
-                uniform_int_distribution<size_t> select_dist(1, cnt1);
-                for (size_t i = 0; i < q; i++)
-                    ks.push_back(select_dist(rng));
-            }
-            size_t hits = 0;
-            auto fn = [&](size_t it)
-            {
-                size_t k = (cnt1 ? ks[it] : (size_t)1);
-                auto r = t.select1(k);
-                hits += (r != pixie::RmMTree::npos);
-                BH_sz += r;
-            };
-            double ns = time_ns_per_call(fn, q);
-            cout << N << ",select1," << ns << "," << q << "," << hits << "," << (q - hits) << "," << args.seed << "," << args.block_bits << "\n";
-        }
+    static vector<char *> argv_vec;
+    argv_vec.assign(argv, argv + argc);
+    for (auto &s : extra)
+        argv_vec.push_back(s.data());
+    argv_vec.push_back(nullptr);
+    argc = (int)argv_vec.size() - 1;
+    argv = argv_vec.data();
 
-        // select0
-        {
-            size_t q = min(args.Q, max<size_t>(cnt0, (size_t)1));
-            vector<size_t> ks;
-            ks.reserve(q);
-            if (cnt0 > 0)
-            {
-                uniform_int_distribution<size_t> select_dist(1, cnt0);
-                for (size_t i = 0; i < q; i++)
-                    ks.push_back(select_dist(rng));
-            }
-            size_t hits = 0;
-            auto fn = [&](size_t it)
-            {
-                size_t k = (cnt0 ? ks[it] : (size_t)1);
-                auto r = t.select0(k);
-                hits += (r != pixie::RmMTree::npos);
-                BH_sz += r;
-            };
-            double ns = time_ns_per_call(fn, q);
-            cout << N << ",select0," << ns << "," << q << "," << hits << "," << (q - hits) << "," << args.seed << "," << args.block_bits << "\n";
-        }
-
-        // rank10
-        {
-            vector<size_t> inds(args.Q);
-            for (size_t k = 0; k < args.Q; k++)
-                inds[k] = rand_i_any();
-            auto fn = [&](size_t it)
-            { BH_sz += t.rank10(inds[it]); };
-            double ns = time_ns_per_call(fn, args.Q);
-            cout << N << ",rank10," << ns << "," << args.Q << ",0,0," << args.seed << "," << args.block_bits << "\n";
-        }
-
-        // select10
-        {
-            size_t q = min(args.Q, max<size_t>(cnt10, (size_t)1));
-            vector<size_t> ks;
-            ks.reserve(q);
-            if (cnt10 > 0)
-            {
-                uniform_int_distribution<size_t> select_dist(1, cnt10);
-                for (size_t i = 0; i < q; i++)
-                    ks.push_back(select_dist(rng));
-            }
-            size_t hits = 0;
-            auto fn = [&](size_t it)
-            {
-                size_t k = (cnt10 ? ks[it] : (size_t)1);
-                auto r = t.select10(k);
-                hits += (r != pixie::RmMTree::npos);
-                BH_sz += r;
-            };
-            double ns = time_ns_per_call(fn, q);
-            cout << N << ",select10," << ns << "," << q << "," << hits << "," << (q - hits) << "," << args.seed << "," << args.block_bits << "\n";
-        }
-
-        // excess
-        {
-            vector<size_t> inds(args.Q);
-            for (size_t k = 0; k < args.Q; k++)
-                inds[k] = rand_i_any();
-            auto fn = [&](size_t it)
-            { BH_i += t.excess(inds[it]); };
-            double ns = time_ns_per_call(fn, args.Q);
-            cout << N << ",excess," << ns << "," << args.Q << ",0,0," << args.seed << "," << args.block_bits << "\n";
-        }
-
-        // fwdsearch
-        {
-            size_t q = args.Q;
-            vector<size_t> inds(q);
-            vector<int> ds(q);
-            for (size_t k = 0; k < q; k++)
-            {
-                inds[k] = (N ? ind_dist(rng) : 0);
-                ds[k] = d_dist(rng);
-            }
-            size_t hits = 0;
-            auto fn = [&](size_t it)
-            {
-                auto r = t.fwdsearch(inds[it], ds[it]);
-                hits += (r != pixie::RmMTree::npos);
-                BH_sz += r;
-            };
-            double ns = time_ns_per_call(fn, q);
-            cout << N << ",fwdsearch," << ns << "," << q << "," << hits << "," << (q - hits) << "," << args.seed << "," << args.block_bits << "\n";
-        }
-
-        // bwdsearch
-        {
-            size_t q = args.Q;
-            vector<size_t> inds(q);
-            vector<int> ds(q);
-            for (size_t k = 0; k < q; k++)
-            {
-                inds[k] = (N ? ind_dist(rng) : 0);
-                ds[k] = d_dist(rng);
-            }
-            size_t hits = 0;
-            auto fn = [&](size_t it)
-            {
-                auto r = t.bwdsearch(inds[it], ds[it]);
-                hits += (r != pixie::RmMTree::npos);
-                BH_sz += r;
-            };
-            double ns = time_ns_per_call(fn, q);
-            cout << N << ",bwdsearch," << ns << "," << q << "," << hits << "," << (q - hits) << "," << args.seed << "," << args.block_bits << "\n";
-        }
-
-        // range_min_query_pos / range_min_query_val / mincount / minselect
-        vector<pair<size_t, size_t>> segs(args.Q);
-        for (size_t k = 0; k < args.Q; k++)
-            segs[k] = rand_ij();
-
-        // range_min_query_pos
-        {
-            auto fn = [&](size_t it)
-            {
-                auto [i, j] = segs[it];
-                BH_sz += t.range_min_query_pos(i, j);
-            };
-            double ns = time_ns_per_call(fn, args.Q);
-            cout << N << ",range_min_query_pos," << ns << "," << args.Q << ",0,0," << args.seed << "," << args.block_bits << "\n";
-        }
-
-        // range_min_query_val
-        {
-            auto fn = [&](size_t it)
-            {
-                auto [i, j] = segs[it];
-                BH_i += t.range_min_query_val(i, j);
-            };
-            double ns = time_ns_per_call(fn, args.Q);
-            cout << N << ",range_min_query_val," << ns << "," << args.Q << ",0,0," << args.seed << "," << args.block_bits << "\n";
-        }
-
-        // range_max_query_pos
-        {
-            auto fn = [&](size_t it)
-            {
-                auto [i, j] = segs[it];
-                BH_sz += t.range_max_query_pos(i, j);
-            };
-            double ns = time_ns_per_call(fn, args.Q);
-            cout << N << ",range_max_query_pos," << ns << "," << args.Q << ",0,0," << args.seed << "," << args.block_bits << "\n";
-        }
-
-        // range_max_query_val
-        {
-            auto fn = [&](size_t it)
-            {
-                auto [i, j] = segs[it];
-                BH_i += t.range_max_query_val(i, j);
-            };
-            double ns = time_ns_per_call(fn, args.Q);
-            cout << N << ",range_max_query_val," << ns << "," << args.Q << ",0,0," << args.seed << "," << args.block_bits << "\n";
-        }
-
-        // mincount
-        vector<size_t> seg_counts(args.Q, 0);
-        {
-            auto fn = [&](size_t it)
-            {
-                auto [i, j] = segs[it];
-                auto c = t.mincount(i, j);
-                seg_counts[it] = c;
-                BH_sz += c;
-            };
-            double ns = time_ns_per_call(fn, args.Q);
-            cout << N << ",mincount," << ns << "," << args.Q << ",0,0," << args.seed << "," << args.block_bits << "\n";
-        }
-
-        // minselect
-        {
-            vector<size_t> good_inds;
-            good_inds.reserve(args.Q);
-            for (size_t it = 0; it < args.Q; ++it)
-                if (seg_counts[it] > 0)
-                    good_inds.push_back(it);
-
-            size_t q = good_inds.size();
-            vector<size_t> qs;
-            qs.reserve(q);
-            for (size_t k = 0; k < q; k++)
-            {
-                size_t it = good_inds[k];
-                uniform_int_distribution<size_t> query_dist(1, seg_counts[it]);
-                qs.push_back(query_dist(rng));
-            }
-
-            size_t hits = 0;
-            auto fn = [&](size_t r)
-            {
-                size_t it = good_inds[r];
-                auto [i, j] = segs[it];
-                auto pos = t.minselect(i, j, qs[r]);
-                hits += (pos != pixie::RmMTree::npos);
-                BH_sz += pos;
-            };
-            double ns = (q ? time_ns_per_call(fn, q) : numeric_limits<double>::quiet_NaN());
-            cout << N << ",minselect," << ns << "," << q << "," << hits << "," << (q - hits) << "," << args.seed << "," << args.block_bits << "\n";
-        }
-
-        // close
-        {
-            if (N > 0)
-            {
-                size_t q = args.Q;
-                vector<size_t> inds(q);
-                for (size_t k = 0; k < q; k++)
-                    inds[k] = (N ? ind_dist(rng) : 0); // i in [0..N-1]
-                size_t hits = 0;
-                auto fn = [&](size_t it)
-                {
-                    auto r = t.close(inds[it]);
-                    hits += (r != pixie::RmMTree::npos);
-                    BH_sz += r;
-                };
-                double ns = time_ns_per_call(fn, q);
-                cout << N << ",close," << ns << "," << q << "," << hits << "," << (q - hits) << "," << args.seed << "," << args.block_bits << "\n";
-            }
-            else
-            {
-                cout << N << ",close," << std::numeric_limits<double>::quiet_NaN()
-                     << ",0,0,0," << args.seed << "," << args.block_bits << "\n";
-            }
-        }
-
-        // open
-        {
-            size_t q = args.Q;
-            vector<size_t> inds(q);
-            for (size_t k = 0; k < q; k++)
-                inds[k] = (N ? ind_dist_incl(rng) : 0); // i in [0..N]
-            size_t hits = 0;
-            auto fn = [&](size_t it)
-            {
-                auto r = t.open(inds[it]);
-                hits += (r != pixie::RmMTree::npos);
-                BH_sz += r;
-            };
-            double ns = time_ns_per_call(fn, q);
-            cout << N << ",open," << ns << "," << q << "," << hits << "," << (q - hits) << "," << args.seed << "," << args.block_bits << "\n";
-        }
-
-        // enclose
-        {
-            size_t q = args.Q;
-            vector<size_t> inds(q);
-            for (size_t k = 0; k < q; k++)
-                inds[k] = (N ? ind_dist_incl(rng) : 0); // i in [0..N]
-            size_t hits = 0;
-            auto fn = [&](size_t it)
-            {
-                auto r = t.enclose(inds[it]);
-                hits += (r != pixie::RmMTree::npos);
-                BH_sz += r;
-            };
-            double ns = time_ns_per_call(fn, q);
-            cout << N << ",enclose," << ns << "," << q << "," << hits << "," << (q - hits) << "," << args.seed << "," << args.block_bits << "\n";
-        }
-    }
-
-    cerr << "blackholes: " << BH_sz << " / " << BH_i << "\n";
+    benchmark::Initialize(&argc, argv);
+    register_all();
+    benchmark::RunSpecifiedBenchmarks();
+    benchmark::Shutdown();
     return 0;
 }
