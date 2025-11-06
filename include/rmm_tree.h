@@ -22,10 +22,8 @@ namespace pixie
     // Range min max tree for balanced-parentheses bitvector.
     // Implements: fwdsearch, bwdsearch, rmq_pos/rmq_val, rMq_pos/rMq_val, mincount, minselect,
     // rank1/rank0, select1/select0, rank10/select10, excess, open/close, enclose.
-    struct RmMTree
+    class RmMTree
     {
-        static constexpr size_t npos = std::numeric_limits<size_t>::max();
-
         // ------------ bitvector ------------
         std::vector<std::uint64_t> bits; // LSB-first
         size_t num_bits = 0;             // number of bits
@@ -33,11 +31,7 @@ namespace pixie
         // ------------ blocking ------------
         size_t block_bits = 64; // block size (bits), leaf covers <= block_bits bits
         size_t leaf_count = 0;  // #leaves = ceil(num_bits/block_bits)
-#ifdef DEBUG
-        float built_overhead = 0.0;
-#endif
 
-    private:
         // ------------ tree arrays (heap order: 1 is root) ------------
         // size of segment (in bits) covered by node
         // needed for: rank1/rank0, select1/select0, select10,
@@ -72,6 +66,12 @@ namespace pixie
         std::vector<uint8_t> node_first_bit, node_last_bit;
 
     public:
+        static constexpr size_t npos = std::numeric_limits<size_t>::max();
+
+#ifdef DEBUG
+        float built_overhead = 0.0;
+#endif
+
         // --------- construction ----------
         RmMTree() = default;
 

@@ -5,17 +5,19 @@
 #include <limits>
 #include <algorithm>
 
-struct NaiveRmM
+class NaiveRmM
 {
-    static constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
-
     std::vector<uint8_t> bits;
     std::size_t num_bits = 0;
+
+public:
+    static constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
 
     NaiveRmM() = default;
     explicit NaiveRmM(const std::string &s) { build_from_string(s); }
     NaiveRmM(const std::vector<std::uint64_t> &words, std::size_t nbits) { build_from_words(words, nbits); }
 
+private:
     void build_from_string(const std::string &s)
     {
         num_bits = s.size();
@@ -32,8 +34,8 @@ struct NaiveRmM
     }
 
     inline int bit(std::size_t i) const { return bits[i]; }
-    inline std::size_t size() const { return num_bits; }
 
+public:
     std::size_t rank1(std::size_t i) const
     {
         if (i > num_bits)
