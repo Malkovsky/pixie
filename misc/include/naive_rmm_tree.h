@@ -7,41 +7,40 @@
 
 struct NaiveRmM
 {
-    using u64 = std::uint64_t;
     static constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
 
-    std::vector<uint8_t> b;
-    std::size_t N = 0;
+    std::vector<uint8_t> bits;
+    std::size_t num_bits = 0;
 
     NaiveRmM() = default;
     explicit NaiveRmM(const std::string &s) { build_from_string(s); }
-    NaiveRmM(const std::vector<u64> &words, std::size_t nbits) { build_from_words(words, nbits); }
+    NaiveRmM(const std::vector<std::uint64_t> &words, std::size_t nbits) { build_from_words(words, nbits); }
 
     void build_from_string(const std::string &s)
     {
-        N = s.size();
-        b.resize(N);
-        for (std::size_t i = 0; i < N; i++)
-            b[i] = (s[i] == '1');
+        num_bits = s.size();
+        bits.resize(num_bits);
+        for (std::size_t i = 0; i < num_bits; i++)
+            bits[i] = (s[i] == '1');
     }
-    void build_from_words(const std::vector<u64> &words, std::size_t nbits)
+    void build_from_words(const std::vector<std::uint64_t> &words, std::size_t nbits)
     {
-        N = nbits;
-        b.assign(N, 0);
-        for (std::size_t i = 0; i < N; i++)
-            b[i] = ((words[i >> 6] >> (i & 63)) & 1u);
+        num_bits = nbits;
+        bits.assign(num_bits, 0);
+        for (std::size_t i = 0; i < num_bits; i++)
+            bits[i] = ((words[i >> 6] >> (i & 63)) & 1u);
     }
 
-    inline int bit(std::size_t i) const { return b[i]; }
-    inline std::size_t size() const { return N; }
+    inline int bit(std::size_t i) const { return bits[i]; }
+    inline std::size_t size() const { return num_bits; }
 
     std::size_t rank1(std::size_t i) const
     {
-        if (i > N)
-            i = N;
+        if (i > num_bits)
+            i = num_bits;
         std::size_t c = 0;
         for (std::size_t p = 0; p < i; p++)
-            c += (b[p] != 0);
+            c += (bits[p] != 0);
         return c;
     }
     std::size_t rank0(std::size_t i) const { return i - rank1(i); }
@@ -51,8 +50,8 @@ struct NaiveRmM
     {
         if (k == 0)
             return npos;
-        for (std::size_t p = 0; p < N; p++)
-            if (b[p])
+        for (std::size_t p = 0; p < num_bits; p++)
+            if (bits[p])
             {
                 if (--k == 0)
                     return p;
@@ -65,8 +64,8 @@ struct NaiveRmM
     {
         if (k == 0)
             return npos;
-        for (std::size_t p = 0; p < N; p++)
-            if (!b[p])
+        for (std::size_t p = 0; p < num_bits; p++)
+            if (!bits[p])
             {
                 if (--k == 0)
                     return p;
@@ -80,7 +79,7 @@ struct NaiveRmM
             return 0;
         std::size_t c = 0;
         for (std::size_t p = 0; p + 1 < i; ++p)
-            if (b[p] == 1 && b[p + 1] == 0)
+            if (bits[p] == 1 && bits[p + 1] == 0)
                 ++c;
         return c;
     }
@@ -90,8 +89,8 @@ struct NaiveRmM
     {
         if (k == 0)
             return npos;
-        for (std::size_t p = 0; p + 1 < N; ++p)
-            if (b[p] == 1 && b[p + 1] == 0)
+        for (std::size_t p = 0; p + 1 < num_bits; ++p)
+            if (bits[p] == 1 && bits[p + 1] == 0)
             {
                 if (--k == 0)
                     return p;
@@ -107,13 +106,13 @@ struct NaiveRmM
 
     std::size_t fwdsearch(std::size_t i, int d) const
     {
-        if (i >= N)
+        if (i >= num_bits)
             return npos;
         int target = excess(i) + d;
         int cur = excess(i);
-        for (std::size_t p = i; p < N; ++p)
+        for (std::size_t p = i; p < num_bits; ++p)
         {
-            cur += b[p] ? +1 : -1;
+            cur += bits[p] ? +1 : -1;
             if (cur == target)
                 return p;
         }
@@ -123,7 +122,7 @@ struct NaiveRmM
     std::size_t bwdsearch(std::size_t i, int d) const
     {
 
-        if (i > N)
+        if (i > num_bits)
             return npos;
         if (i == 0)
             return npos;
@@ -133,7 +132,7 @@ struct NaiveRmM
         for (std::size_t p = i; p > 0;)
         {
             --p;
-            cur += b[p] ? -1 : +1;
+            cur += bits[p] ? -1 : +1;
             if (cur == target)
                 return p;
         }
@@ -142,13 +141,13 @@ struct NaiveRmM
 
     std::size_t rmq_pos(std::size_t i, std::size_t j) const
     {
-        if (i > j || j >= N)
+        if (i > j || j >= num_bits)
             return npos;
         int cur = 0, mn = std::numeric_limits<int>::max();
         std::size_t pos = npos;
         for (std::size_t p = i; p <= j; ++p)
         {
-            cur += b[p] ? +1 : -1;
+            cur += bits[p] ? +1 : -1;
             if (cur < mn)
             {
                 mn = cur;
@@ -160,12 +159,12 @@ struct NaiveRmM
 
     int rmq_val(std::size_t i, std::size_t j) const
     {
-        if (i > j || j >= N)
+        if (i > j || j >= num_bits)
             return 0;
         int cur = 0, mn = std::numeric_limits<int>::max();
         for (std::size_t p = i; p <= j; ++p)
         {
-            cur += b[p] ? +1 : -1;
+            cur += bits[p] ? +1 : -1;
             if (cur < mn)
                 mn = cur;
         }
@@ -174,13 +173,13 @@ struct NaiveRmM
 
     std::size_t rMq_pos(std::size_t i, std::size_t j) const
     {
-        if (i > j || j >= N)
+        if (i > j || j >= num_bits)
             return npos;
         int cur = 0, mx = std::numeric_limits<int>::min();
         std::size_t pos = npos;
         for (std::size_t p = i; p <= j; ++p)
         {
-            cur += b[p] ? +1 : -1;
+            cur += bits[p] ? +1 : -1;
             if (cur > mx)
             {
                 mx = cur;
@@ -192,12 +191,12 @@ struct NaiveRmM
 
     int rMq_val(std::size_t i, std::size_t j) const
     {
-        if (i > j || j >= N)
+        if (i > j || j >= num_bits)
             return 0;
         int cur = 0, mx = std::numeric_limits<int>::min();
         for (std::size_t p = i; p <= j; ++p)
         {
-            cur += b[p] ? +1 : -1;
+            cur += bits[p] ? +1 : -1;
             if (cur > mx)
                 mx = cur;
         }
@@ -206,12 +205,12 @@ struct NaiveRmM
 
     std::size_t mincount(std::size_t i, std::size_t j) const
     {
-        if (i > j || j >= N)
+        if (i > j || j >= num_bits)
             return 0;
         int cur = 0, mn = std::numeric_limits<int>::max();
         for (std::size_t p = i; p <= j; ++p)
         {
-            cur += b[p] ? +1 : -1;
+            cur += bits[p] ? +1 : -1;
             if (cur < mn)
                 mn = cur;
         }
@@ -219,7 +218,7 @@ struct NaiveRmM
         cur = 0;
         for (std::size_t p = i; p <= j; ++p)
         {
-            cur += b[p] ? +1 : -1;
+            cur += bits[p] ? +1 : -1;
             if (cur == mn)
                 ++cnt;
         }
@@ -229,19 +228,19 @@ struct NaiveRmM
     // (1-based q)
     std::size_t minselect(std::size_t i, std::size_t j, std::size_t q) const
     {
-        if (i > j || j >= N || q == 0)
+        if (i > j || j >= num_bits || q == 0)
             return npos;
         int cur = 0, mn = std::numeric_limits<int>::max();
         for (std::size_t p = i; p <= j; ++p)
         {
-            cur += b[p] ? +1 : -1;
+            cur += bits[p] ? +1 : -1;
             if (cur < mn)
                 mn = cur;
         }
         cur = 0;
         for (std::size_t p = i; p <= j; ++p)
         {
-            cur += b[p] ? +1 : -1;
+            cur += bits[p] ? +1 : -1;
             if (cur == mn)
             {
                 if (--q == 0)
@@ -253,20 +252,20 @@ struct NaiveRmM
 
     std::size_t close(std::size_t i) const
     {
-        if (i >= N)
+        if (i >= num_bits)
             return npos;
         return fwdsearch(i, -1);
     }
     std::size_t open(std::size_t i) const
     {
-        if (i == 0 || i > N)
+        if (i == 0 || i > num_bits)
             return npos;
         auto r = bwdsearch(i, 0);
         return (r == npos ? npos : r + 1);
     }
     std::size_t enclose(std::size_t i) const
     {
-        if (i == 0 || i > N)
+        if (i == 0 || i > num_bits)
             return npos;
         auto r = bwdsearch(i, -2);
         return (r == npos ? npos : r + 1);

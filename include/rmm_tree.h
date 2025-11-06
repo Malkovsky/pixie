@@ -24,16 +24,15 @@ namespace pixie
     // rank1/rank0, select1/select0, rank10/select10, excess, open/close, enclose.
     struct RmMTree
     {
-        using u64 = uint64_t;
         static constexpr size_t npos = std::numeric_limits<size_t>::max();
 
         // ------------ bitvector ------------
-        std::vector<u64> bits; // LSB-first
-        size_t N = 0;          // number of bits
+        std::vector<std::uint64_t> bits; // LSB-first
+        size_t num_bits = 0;             // number of bits
 
         // ------------ blocking ------------
-        size_t B = 64; // block size (bits), leaf covers <= B bits
-        size_t L = 0;  // #leaves = ceil(N/B)
+        size_t block_bits = 64; // block size (bits), leaf covers <= block_bits bits
+        size_t leaf_count = 0;  // #leaves = ceil(num_bits/block_bits)
 #ifdef DEBUG
         float built_overhead = 0.0;
 #endif
@@ -44,42 +43,42 @@ namespace pixie
         // needed for: rank1/rank0, select1/select0, select10,
         //             excess, fwdsearch/bwdsearch/close/open/enclose,
         //             rmq/rMq, minselect.
-        std::vector<uint32_t> seglen;
+        std::vector<uint32_t> segment_size_bits;
 
-        // e = total excess (+1 for '1', -1 for '0') on the node
+        // node_total_excess = total excess (+1 for '1', -1 for '0') on the node
         // needed for: rank1/rank0, select1/select0, excess,
         //             fwdsearch/bwdsearch/close/open/enclose,
         //             rmq/rMq, mincount/minselect.
-        std::vector<int32_t> e;
+        std::vector<int32_t> node_total_excess;
 
-        // m = minimum pref-excess on the node (from 0)
+        // node_min_prefix_excess = minimum pref-excess on the node (from 0)
         // needed for: fwdsearch/bwdsearch/close/open/enclose, rmq, mincount/minselect.
-        std::vector<int32_t> m;
+        std::vector<int32_t> node_min_prefix_excess;
 
-        // Mx = maximum pref-excess on the node (from 0)
+        // node_max_prefix_excess = maximum pref-excess on the node (from 0)
         // needed for: fwdsearch/bwdsearch/close/open/enclose, rMq.
-        std::vector<int32_t> Mx;
+        std::vector<int32_t> node_max_prefix_excess;
 
-        // nmin = number of positions where the minimum is attained
+        // node_min_count = number of positions where the minimum is attained
         // needed for: mincount/minselect.
-        std::vector<uint32_t> nmin;
+        std::vector<uint32_t> node_min_count;
 
-        // rr = # of "10" pattern occurrences inside the node
+        // node_pattern10_count = # of "10" pattern occurrences inside the node
         // needed for: rank10, select10.
-        std::vector<uint32_t> rr;
+        std::vector<uint32_t> node_pattern10_count;
 
-        // fb = first bit (0/1), lb = last bit (0/1) of the segment (to handle "10" crossing)
+        // node_first_bit = first bit (0/1), node_last_bit = last bit (0/1) of the segment (to handle "10" crossing)
         // both needed for: rank10, select10.
-        std::vector<uint8_t> fb, lb;
+        std::vector<uint8_t> node_first_bit, node_last_bit;
 
     public:
         // --------- construction ----------
         RmMTree() = default;
 
-        // priorities for B:
+        // priorities for block_bits:
         // 1) honor max_overhead
-        // 2) honor an explicit request of B
-        // 3) B := log N
+        // 2) honor an explicit request of block_bits
+        // 3) block_bits := log num_bits
         explicit RmMTree(const std::string &bp,
                          const size_t &leaf_block_bits /*0=auto*/ = 0,
                          const float &max_overhead /*<0=off*/ = -1.0)
@@ -87,11 +86,11 @@ namespace pixie
             build_from_string(bp, leaf_block_bits, max_overhead);
         }
 
-        // priorities for B:
+        // priorities for block_bits:
         // 1) honor max_overhead
-        // 2) honor an explicit request of B
-        // 3) B := log N
-        explicit RmMTree(const std::vector<u64> &words, size_t Nbits,
+        // 2) honor an explicit request of block_bits
+        // 3) block_bits := log num_bits
+        explicit RmMTree(const std::vector<std::uint64_t> &words, size_t Nbits,
                          const size_t &leaf_block_bits /*0=auto*/ = 0,
                          const float &max_overhead /*<0=off*/ = -1.0)
         {
@@ -112,8 +111,8 @@ namespace pixie
                 for (const size_t &v : nodes)
                     ans += ones_in_node(v);
             }
-            const size_t Lb = blk * B;
-            const size_t Rb = std::min(N, Lb + B);
+            const size_t Lb = blk * block_bits;
+            const size_t Rb = std::min(num_bits, Lb + block_bits);
             ans += rank1_in_block(Lb, std::min(i, Rb));
             return ans;
         }
@@ -143,11 +142,11 @@ namespace pixie
                 else
                 {
                     k -= o_l;
-                    base += seglen[Lc];
+                    base += segment_size_bits[Lc];
                     v = Rc;
                 }
             }
-            return select1_in_block(base, std::min(base + seglen[v], N), k);
+            return select1_in_block(base, std::min(base + segment_size_bits[v], num_bits), k);
         }
         // 1-based
         size_t select0(size_t k) const
@@ -157,7 +156,7 @@ namespace pixie
             size_t v = 1;
             const auto zeros = [&](const size_t &x) noexcept
             {
-                return seglen[x] - ones_in_node(x);
+                return segment_size_bits[x] - ones_in_node(x);
             };
             if (zeros(v) < k)
                 return npos;
@@ -174,11 +173,11 @@ namespace pixie
                 else
                 {
                     k -= z_l;
-                    base += seglen[Lc];
+                    base += segment_size_bits[Lc];
                     v = Rc;
                 }
             }
-            return select0_in_block(base, std::min(base + seglen[v], N), k);
+            return select0_in_block(base, std::min(base + segment_size_bits[v], num_bits), k);
         }
 
         // pattern "10": rank/select on starts of "10"
@@ -195,13 +194,13 @@ namespace pixie
                 const auto nodes = cover_blocks(0, blk - 1);
                 for (const size_t &v : nodes)
                 {
-                    ans += rr[v];
-                    if (prev_last != -1 && prev_last == 1 && fb[v] == 0)
+                    ans += node_pattern10_count[v];
+                    if (prev_last != -1 && prev_last == 1 && node_first_bit[v] == 0)
                         ++ans;
-                    prev_last = lb[v];
+                    prev_last = node_last_bit[v];
                 }
             }
-            const size_t Lb = blk * B;
+            const size_t Lb = blk * block_bits;
             ans += rr_in_block(Lb, i);
             // boundary between the last full node and the leaf tail
             if (blk > 0 && i > Lb && prev_last == 1 && bit(Lb) == 0)
@@ -214,31 +213,31 @@ namespace pixie
             if (k == 0)
                 return npos;
             size_t ind = 1;
-            if (rr[ind] < k)
+            if (node_pattern10_count[ind] < k)
                 return npos;
             size_t base = 0;
             const size_t leaf0 = first_leaf_index();
             while (ind < leaf0)
             {
                 const size_t Lc = ind << 1, Rc = Lc | 1;
-                const size_t cross = (lb[Lc] == 1 && fb[Rc] == 0) ? 1u : 0u;
-                if (rr[Lc] >= k)
+                const size_t cross = (node_last_bit[Lc] == 1 && node_first_bit[Rc] == 0) ? 1u : 0u;
+                if (node_pattern10_count[Lc] >= k)
                 {
                     ind = Lc;
                     continue;
                 }
-                size_t rem = k - rr[Lc];
+                size_t rem = k - node_pattern10_count[Lc];
                 if (cross)
                 {
                     if (rem == 1)
-                        return base + seglen[Lc] - 1;
+                        return base + segment_size_bits[Lc] - 1;
                     --rem;
                 }
-                base += seglen[Lc];
+                base += segment_size_bits[Lc];
                 ind = Rc;
                 k = rem;
             }
-            return select10_in_block(base, std::min(base + seglen[ind], N), k);
+            return select10_in_block(base, std::min(base + segment_size_bits[ind], num_bits), k);
         }
 
         // prefix excess over [0, i): +1 for '1', -1 for '0'
@@ -249,7 +248,7 @@ namespace pixie
 
         size_t fwdsearch(const size_t &i, const int &d) const
         {
-            if (i >= N)
+            if (i >= num_bits)
                 return npos;
 
             const int start_excess = excess(i);
@@ -257,8 +256,8 @@ namespace pixie
 
             // 1) scan the remainder of the current leaf
             const size_t blk = block_of(i);
-            const size_t Lb = blk * B;
-            const size_t Rb = std::min(N, Lb + B);
+            const size_t Lb = blk * block_bits;
+            const size_t Rb = std::min(num_bits, Lb + block_bits);
             int cur = start_excess;
             for (size_t p = i; p < Rb; ++p)
             {
@@ -267,21 +266,21 @@ namespace pixie
                     return p;
             }
 
-            // 2) suffix after the leaf: cover full blocks [blk+1 .. L-1]
+            // 2) suffix after the leaf: cover full blocks [blk+1 .. leaf_count-1]
             const int excess_at_Rb = excess(Rb);
             int need = target - excess_at_Rb; // target expressed in coordinates of the current node start
-            if (blk + 1 <= (L ? L - 1 : 0))
+            if (blk + 1 <= (leaf_count ? leaf_count - 1 : 0))
             {
-                const auto nodes = cover_blocks(blk + 1, L - 1);
-                size_t base = (blk + 1) * B;
+                const auto nodes = cover_blocks(blk + 1, leaf_count - 1);
+                size_t base = (blk + 1) * block_bits;
                 for (const size_t &v : nodes)
                 {
                     if (need == 0)
                         return base;
-                    if (m[v] <= need && need <= Mx[v])
+                    if (node_min_prefix_excess[v] <= need && need <= node_max_prefix_excess[v])
                         return descend_fwd(v, need, base);
-                    need -= e[v];
-                    base += seglen[v];
+                    need -= node_total_excess[v];
+                    base += segment_size_bits[v];
                 }
             }
             return npos;
@@ -290,14 +289,14 @@ namespace pixie
         // ---- bwdsearch: climb & check left siblings ----
         size_t bwdsearch(const size_t &i, const int &d) const
         {
-            if (i > N || i == 0)
+            if (i > num_bits || i == 0)
                 return npos;
             const int start_excess = excess(i);
             const int target = start_excess + d;
 
             // 1) scan inside the block
             const size_t blk = block_of(i - 1);
-            const size_t Lb = blk * B;
+            const size_t Lb = blk * block_bits;
             int cur = start_excess;
             for (size_t p = i; p > Lb;)
             {
@@ -319,26 +318,26 @@ namespace pixie
             while (v > 1)
             {
                 if (v & 1)
-                {                                        // v is the right child
-                    const size_t sib = v ^ 1;            // left sibling
-                    const size_t border = base;          // right border of the sibling (== start(v))
-                    const int need_node = need + e[sib]; // target in coordinates relative to the start of sib
-                    const bool allow_rb = (border != i); // j must be < i
+                {                                                        // v is the right child
+                    const size_t sib = v ^ 1;                            // left sibling
+                    const size_t border = base;                          // right border of the sibling (== start(v))
+                    const int need_node = need + node_total_excess[sib]; // target in coordinates relative to the start of sib
+                    const bool allow_rb = (border != i);                 // j must be < i
 
                     // try inside the sibling, but return only if a position is found
-                    if (need_node == 0 || (m[sib] <= need_node && need_node <= Mx[sib]))
+                    if (need_node == 0 || (node_min_prefix_excess[sib] <= need_node && need_node <= node_max_prefix_excess[sib]))
                     {
-                        const size_t ans = descend_bwd(sib, border - seglen[sib], need_node, border, allow_rb);
+                        const size_t ans = descend_bwd(sib, border - segment_size_bits[sib], need_node, border, allow_rb);
                         if (ans != npos)
                             return ans;
                     }
                     // junction between children is a separate branch (allowed only if < i)
-                    if (need_node == e[sib] && border < i)
+                    if (need_node == node_total_excess[sib] && border < i)
                         return border;
 
                     // stepped over the sibling, shifted the zero point of the coordinates
-                    need += e[sib];
-                    base -= seglen[sib];
+                    need += node_total_excess[sib];
+                    base -= segment_size_bits[sib];
                 }
                 v >>= 1;
             }
@@ -348,14 +347,14 @@ namespace pixie
         // position of first minimum of excess on [i, j] (inclusive)
         size_t rmq_pos(const size_t &i, const size_t &j) const
         {
-            if (i > j || j >= N)
+            if (i > j || j >= num_bits)
                 return npos;
 
             const size_t blk_i = block_of(i);
-            const size_t Lbi = blk_i * B;
-            const size_t Rbi = std::min(N, Lbi + B);
+            const size_t Lbi = blk_i * block_bits;
+            const size_t Rbi = std::min(num_bits, Lbi + block_bits);
             const size_t blk_j = block_of(j);
-            const size_t Lbj = blk_j * B;
+            const size_t Lbj = blk_j * block_bits;
 
             int best_val = INT_MAX;
             size_t best_pos = npos;
@@ -389,7 +388,7 @@ namespace pixie
                     if (l & 1)
                     {
                         const size_t v = l++;
-                        const int cand = pref + m[v];
+                        const int cand = pref + node_min_prefix_excess[v];
                         if (cand < best_val)
                         {
                             best_val = cand;
@@ -397,7 +396,7 @@ namespace pixie
                             chosen_node = v;
                             pref_at_choice = pref;
                         }
-                        pref += e[v];
+                        pref += node_total_excess[v];
                     }
                     if ((r & 1) == 0)
                         Rnodes[rn++] = r--;
@@ -407,7 +406,7 @@ namespace pixie
                 while (rn--)
                 {
                     const size_t v = Rnodes[rn];
-                    const int cand = pref + m[v];
+                    const int cand = pref + node_min_prefix_excess[v];
                     if (cand < best_val)
                     {
                         best_val = cand;
@@ -415,7 +414,7 @@ namespace pixie
                         chosen_node = v;
                         pref_at_choice = pref;
                     }
-                    pref += e[v];
+                    pref += node_total_excess[v];
                 }
             }
 
@@ -440,10 +439,10 @@ namespace pixie
             return descend_first_min(chosen_node, best_val - pref_at_choice, node_base(chosen_node));
         }
 
-        // value of that minimum (absolute relative to start i, i.e., minimum of partial sums)
+        // value of that minimum (absolute relative to start i, i.excess_total., minimum of partial sums)
         int rmq_val(const size_t &i, const size_t &j) const
         {
-            if (i > j || j >= N)
+            if (i > j || j >= num_bits)
                 return 0;
             size_t p = rmq_pos(i, j);
             if (p == npos)
@@ -453,14 +452,14 @@ namespace pixie
 
         size_t rMq_pos(const size_t &i, const size_t &j) const
         {
-            if (i > j || j >= N)
+            if (i > j || j >= num_bits)
                 return npos;
 
             const size_t blk_i = block_of(i);
-            const size_t Lbi = blk_i * B;
-            const size_t Rbi = std::min(N, Lbi + B);
+            const size_t Lbi = blk_i * block_bits;
+            const size_t Rbi = std::min(num_bits, Lbi + block_bits);
             const size_t blk_j = block_of(j);
-            const size_t Lbj = blk_j * B;
+            const size_t Lbj = blk_j * block_bits;
 
             int best_val = INT_MIN;
             size_t best_pos = npos;
@@ -494,7 +493,7 @@ namespace pixie
                     if (l & 1)
                     {
                         const size_t v = l++;
-                        const int cand = pref + Mx[v];
+                        const int cand = pref + node_max_prefix_excess[v];
                         if (cand > best_val)
                         {
                             best_val = cand;
@@ -502,7 +501,7 @@ namespace pixie
                             chosen_node = v;
                             pref_at_choice = pref;
                         }
-                        pref += e[v];
+                        pref += node_total_excess[v];
                     }
                     if ((r & 1) == 0)
                         Rnodes[rn++] = r--;
@@ -512,7 +511,7 @@ namespace pixie
                 while (rn--)
                 {
                     const size_t v = Rnodes[rn];
-                    const int cand = pref + Mx[v];
+                    const int cand = pref + node_max_prefix_excess[v];
                     if (cand > best_val)
                     {
                         best_val = cand;
@@ -520,7 +519,7 @@ namespace pixie
                         chosen_node = v;
                         pref_at_choice = pref;
                     }
-                    pref += e[v];
+                    pref += node_total_excess[v];
                 }
             }
 
@@ -547,7 +546,7 @@ namespace pixie
 
         int rMq_val(const size_t &i, const size_t &j) const
         {
-            if (i > j || j >= N)
+            if (i > j || j >= num_bits)
                 return 0;
             size_t p = rMq_pos(i, j);
             if (p == npos)
@@ -558,14 +557,14 @@ namespace pixie
         // how many times min occurs on [i, j]
         size_t mincount(const size_t &i, const size_t &j) const
         {
-            if (i > j || j >= N)
+            if (i > j || j >= num_bits)
                 return 0;
 
             const size_t blk_i = block_of(i);
-            const size_t Lbi = blk_i * B;
-            const size_t Rbi = std::min(N, Lbi + B);
+            const size_t Lbi = blk_i * block_bits;
+            const size_t Rbi = std::min(num_bits, Lbi + block_bits);
             const size_t blk_j = block_of(j);
-            const size_t Lbj = blk_j * B;
+            const size_t Lbj = blk_j * block_bits;
 
             int best_val = INT_MAX;
             size_t cnt = 0;
@@ -599,17 +598,17 @@ namespace pixie
                 const auto mids = cover_blocks(blk_i + 1, blk_j - 1);
                 for (const size_t &v : mids)
                 {
-                    const int cand = pref + m[v];
+                    const int cand = pref + node_min_prefix_excess[v];
                     if (cand < best_val)
                     {
                         best_val = cand;
-                        cnt = nmin[v];
+                        cnt = node_min_count[v];
                     }
                     else if (cand == best_val)
                     {
-                        cnt += nmin[v];
+                        cnt += node_min_count[v];
                     }
-                    pref += e[v];
+                    pref += node_total_excess[v];
                 }
             }
 
@@ -647,14 +646,14 @@ namespace pixie
         // position of the q-th occurrence (1-based) of the minimum on [i, j]
         size_t minselect(const size_t &i, const size_t &j, size_t q) const
         {
-            if (i > j || j >= N || q == 0)
+            if (i > j || j >= num_bits || q == 0)
                 return npos;
 
             const size_t blk_i = block_of(i);
-            const size_t Lbi = blk_i * B;
-            const size_t Rbi = std::min(N, Lbi + B);
+            const size_t Lbi = blk_i * block_bits;
+            const size_t Rbi = std::min(num_bits, Lbi + block_bits);
             const size_t blk_j = block_of(j);
-            const size_t Lbj = blk_j * B;
+            const size_t Lbj = blk_j * block_bits;
 
             // prefix
             const size_t end_first = std::min(j, Rbi - 1);
@@ -689,17 +688,17 @@ namespace pixie
                 {
                     if (l & 1)
                     {
-                        const int cand = pref + m[l];
+                        const int cand = pref + node_min_prefix_excess[l];
                         if (cand < best_val)
                         {
                             best_val = cand;
-                            total_cnt = nmin[l];
+                            total_cnt = node_min_count[l];
                         }
                         else if (cand == best_val)
                         {
-                            total_cnt += nmin[l];
+                            total_cnt += node_min_count[l];
                         }
-                        pref += e[l++];
+                        pref += node_total_excess[l++];
                     }
                     if ((r & 1) == 0)
                         Rnodes[rn++] = r--;
@@ -709,17 +708,17 @@ namespace pixie
                 while (rn--)
                 {
                     const size_t v = Rnodes[rn];
-                    const int cand = pref + m[v];
+                    const int cand = pref + node_min_prefix_excess[v];
                     if (cand < best_val)
                     {
                         best_val = cand;
-                        total_cnt = nmin[v];
+                        total_cnt = node_min_count[v];
                     }
                     else if (cand == best_val)
                     {
-                        total_cnt += nmin[v];
+                        total_cnt += node_min_count[v];
                     }
-                    pref += e[v];
+                    pref += node_total_excess[v];
                 }
             }
 
@@ -764,16 +763,16 @@ namespace pixie
                     if (l & 1)
                     {
                         const size_t v = l++;
-                        const int cand = pref + m[v];
+                        const int cand = pref + node_min_prefix_excess[v];
                         if (cand == best_val)
                         {
-                            if (q <= nmin[v])
+                            if (q <= node_min_count[v])
                             {
                                 return descend_qth_min(v, best_val - pref, q, node_base(v));
                             }
-                            q -= nmin[v];
+                            q -= node_min_count[v];
                         }
-                        pref += e[v];
+                        pref += node_total_excess[v];
                     }
                     if (!(r & 1))
                         Rnodes[rn++] = r--;
@@ -783,16 +782,16 @@ namespace pixie
                 while (rn--)
                 {
                     const size_t v = Rnodes[rn];
-                    const int cand = pref + m[v];
+                    const int cand = pref + node_min_prefix_excess[v];
                     if (cand == best_val)
                     {
-                        if (q <= nmin[v])
+                        if (q <= node_min_count[v])
                         {
                             return descend_qth_min(v, best_val - pref, q, node_base(v));
                         }
-                        q -= nmin[v];
+                        q -= node_min_count[v];
                     }
-                    pref += e[v];
+                    pref += node_total_excess[v];
                 }
             }
 
@@ -809,7 +808,7 @@ namespace pixie
         // close(i): matching ')' for '(' at i  (or npos)
         inline size_t close(const size_t &i) const
         {
-            if (i >= N)
+            if (i >= num_bits)
                 return npos;
             return fwdsearch(i, -1);
         }
@@ -817,8 +816,8 @@ namespace pixie
         // open(i): matching '(' for ')' at i  (or npos)
         inline size_t open(const size_t &i) const
         {
-            // bwdsearch allows i in [1..N]
-            if (i == 0 || i > N)
+            // bwdsearch allows i in [1..num_bits]
+            if (i == 0 || i > num_bits)
                 return npos;
             const size_t r = bwdsearch(i, 0);
             return (r == npos ? npos : r + 1);
@@ -827,26 +826,26 @@ namespace pixie
         // enclose(i): opening '(' that *encloses* position i  (or npos)
         inline size_t enclose(const size_t &i) const
         {
-            if (i == 0 || i > N)
+            if (i == 0 || i > num_bits)
                 return npos;
             const size_t r = bwdsearch(i, -2);
             return (r == npos ? npos : r + 1);
         }
 
     private:
-        static inline size_t pop10_in_slice64(const u64 &slice, const int &len) noexcept
+        static inline size_t pop10_in_slice64(const std::uint64_t &slice, const int &len) noexcept
         {
             if (len <= 1)
                 return 0;
-            u64 P = slice & ~(slice >> 1); // candidates for "10"
+            std::uint64_t P = slice & ~(slice >> 1); // candidates for "10"
             if (len < 64)
-                P &= ((u64(1) << (len - 1)) - 1);
+                P &= ((std::uint64_t(1) << (len - 1)) - 1);
             else
                 P &= 0x7FFFFFFFFFFFFFFFull;
             return (size_t)POPCNT(P);
         }
 
-        // fast rank of ones in [L,R)
+        // fast rank of ones in [leaf_count,R)
         size_t rank1_in_block(const size_t &Lb, const size_t &Rb) const noexcept
         {
             if (Rb <= Lb)
@@ -858,12 +857,12 @@ namespace pixie
             size_t cnt = 0;
             if (w_l == w_r)
             {
-                const u64 mask = ((off_r == 0) ? 0 : ((u64(1) << off_r) - 1)) & (~u64(0) << off_l);
+                const std::uint64_t mask = ((off_r == 0) ? 0 : ((std::uint64_t(1) << off_r) - 1)) & (~std::uint64_t(0) << off_l);
                 return (size_t)POPCNT(bits[w_l] & mask);
             }
             if (off_l)
             {
-                cnt += (size_t)POPCNT(bits[w_l] & (~u64(0) << off_l));
+                cnt += (size_t)POPCNT(bits[w_l] & (~std::uint64_t(0) << off_l));
                 ++w_l;
             }
             while (w_l < w_r)
@@ -872,7 +871,7 @@ namespace pixie
                 ++w_l;
             }
             if (off_r)
-                cnt += (size_t)POPCNT(bits[w_r] & ((u64(1) << off_r) - 1));
+                cnt += (size_t)POPCNT(bits[w_r] & ((std::uint64_t(1) << off_r) - 1));
             return cnt;
         }
 
@@ -889,27 +888,27 @@ namespace pixie
             if (w_l == w_r)
             {
                 const int len = off_r - off_l + 1;
-                const u64 slice = bits[w_l] >> off_l;
+                const std::uint64_t slice = bits[w_l] >> off_l;
                 return pop10_in_slice64(slice, len);
             }
 
             // prefix word
             {
                 const int len = 64 - off_l;
-                const u64 slice = bits[w_l] >> off_l;
+                const std::uint64_t slice = bits[w_l] >> off_l;
                 cnt += pop10_in_slice64(slice, len);
             }
             // full interior words
             for (size_t w = w_l + 1; w < w_r; ++w)
             {
-                const u64 x = bits[w];
+                const std::uint64_t x = bits[w];
                 cnt += pop10_in_slice64(x, 64);
             }
             // suffix word
             {
                 const int len = off_r + 1;
-                const u64 mask = (len == 64) ? ~u64(0) : ((u64(1) << len) - 1);
-                const u64 slice = bits[w_r] & mask;
+                const std::uint64_t mask = (len == 64) ? ~std::uint64_t(0) : ((std::uint64_t(1) << len) - 1);
+                const std::uint64_t slice = bits[w_r] & mask;
                 cnt += pop10_in_slice64(slice, len);
             }
             // cross-word boundaries (bit 63 of w and bit 0 of w+1)
@@ -931,13 +930,13 @@ namespace pixie
             const int off_l = Lb & 63;
             const int off_r = (Rb - 1) & 63;
 
-            const auto select_in_masked_slice = [&](const u64 &slice, const int &len, const size_t &kk) noexcept -> int
+            const auto select_in_masked_slice = [&](const std::uint64_t &slice, const int &len, const size_t &kk) noexcept -> int
             {
                 if (len <= 1)
                     return -1;
-                u64 P = slice & ~(slice >> 1);
+                std::uint64_t P = slice & ~(slice >> 1);
                 if (len < 64)
-                    P &= ((u64(1) << (len - 1)) - 1);
+                    P &= ((std::uint64_t(1) << (len - 1)) - 1);
                 else
                     P &= 0x7FFFFFFFFFFFFFFFull;
                 return select_in_word(P, kk);
@@ -946,7 +945,7 @@ namespace pixie
             if (w_l == w_r)
             {
                 const int len = off_r - off_l + 1;
-                const u64 slice = bits[w_l] >> off_l;
+                const std::uint64_t slice = bits[w_l] >> off_l;
                 const int off = select_in_masked_slice(slice, len, k);
                 return off >= 0 ? (Lb + (size_t)off) : npos;
             }
@@ -954,9 +953,9 @@ namespace pixie
             // prefix word
             {
                 const int len = 64 - off_l;
-                const u64 slice = bits[w_l] >> off_l;
-                u64 P = slice & ~(slice >> 1);
-                P &= ((u64(1) << (len - 1)) - 1);
+                const std::uint64_t slice = bits[w_l] >> off_l;
+                std::uint64_t P = slice & ~(slice >> 1);
+                P &= ((std::uint64_t(1) << (len - 1)) - 1);
                 const int c = POPCNT(P);
                 if (k <= (size_t)c)
                 {
@@ -976,8 +975,8 @@ namespace pixie
                         return (w << 6) + 63;
                 }
                 // full word w+1 (positions 0..62)
-                const u64 x = bits[w + 1];
-                const u64 P = (x & ~(x >> 1)) & 0x7FFFFFFFFFFFFFFFull;
+                const std::uint64_t x = bits[w + 1];
+                const std::uint64_t P = (x & ~(x >> 1)) & 0x7FFFFFFFFFFFFFFFull;
                 const int c = POPCNT(P);
                 if (k <= (size_t)c)
                 {
@@ -999,8 +998,8 @@ namespace pixie
             // suffix word w_r: [0..off_r]
             {
                 const int len = off_r + 1;
-                const u64 mask = (len == 64) ? ~u64(0) : ((u64(1) << len) - 1);
-                const u64 slice = bits[w_r] & mask;
+                const std::uint64_t mask = (len == 64) ? ~std::uint64_t(0) : ((std::uint64_t(1) << len) - 1);
+                const std::uint64_t slice = bits[w_r] & mask;
                 const int off = select_in_masked_slice(slice, len, k);
                 if (off >= 0)
                     return (w_r << 6) + (size_t)off;
@@ -1010,15 +1009,15 @@ namespace pixie
 
         struct ByteAgg
         {
-            int8_t e;     // total excess for the byte
-            int8_t m;     // minimum prefix within the byte (from 0)
-            int8_t Mx;    // maximum prefix within the byte (from 0)
-            uint8_t nmin; // number of positions attaining the minimum in the byte
-            uint8_t rr;   // number of "10" patterns inside the byte
-            uint8_t fb;   // first bit (LSB)
-            uint8_t lb;   // last bit (MSB)
-            uint8_t pm;   // pos of first minimum in this byte
-            uint8_t pM;   // pos of first maximum in this byte
+            int8_t excess_total;     // total excess for the byte
+            int8_t min_prefix;       // minimum prefix within the byte (from 0)
+            int8_t max_prefix;       // maximum prefix within the byte (from 0)
+            uint8_t min_count;       // number of positions attaining the minimum in the byte
+            uint8_t pattern10_count; // number of "10" patterns inside the byte
+            uint8_t first_bit;       // first bit (LSB)
+            uint8_t last_bit;        // last bit (MSB)
+            uint8_t pos_first_min;   // pos of first minimum in this byte
+            uint8_t pos_first_max;   // pos of first maximum in this byte
         };
 
         static inline const std::array<ByteAgg, 256> &LUT8() noexcept
@@ -1055,15 +1054,15 @@ namespace pixie
                         }
                     }
                     ByteAgg a{};
-                    a.e = cur;
-                    a.m = (mn == INT_MAX ? 0 : mn);
-                    a.Mx = (mx == INT_MIN ? 0 : mx);
-                    a.nmin = cnt;
-                    a.rr = rrc;
-                    a.fb = get(0);
-                    a.lb = get(7);
-                    a.pm = pm;
-                    a.pM = pM;
+                    a.excess_total = cur;
+                    a.min_prefix = (mn == INT_MAX ? 0 : mn);
+                    a.max_prefix = (mx == INT_MIN ? 0 : mx);
+                    a.min_count = cnt;
+                    a.pattern10_count = rrc;
+                    a.first_bit = get(0);
+                    a.last_bit = get(7);
+                    a.pos_first_min = pm;
+                    a.pos_first_max = pM;
                     t[b] = a;
                 }
                 return t;
@@ -1076,11 +1075,11 @@ namespace pixie
         {
             const size_t w = pos >> 6;
             const size_t off = pos & 63;
-            const u64 lo = bits[w] >> off;
+            const std::uint64_t lo = bits[w] >> off;
             if (off <= 56)
                 return uint8_t(lo & 0xFFu);
-            const u64 hi = (w + 1 < bits.size()) ? bits[w + 1] : 0;
-            const u64 x = (lo | (hi << (64 - off))) & 0xFFu;
+            const std::uint64_t hi = (w + 1 < bits.size()) ? bits[w + 1] : 0;
+            const std::uint64_t x = (lo | (hi << (64 - off))) & 0xFFu;
             return uint8_t(x);
         }
 
@@ -1091,16 +1090,16 @@ namespace pixie
             while (v < leaf0)
             {
                 const size_t Lc = v << 1, Rc = Lc | 1;
-                const int leftX = Mx[Lc];
-                const int rightX = e[Lc] + Mx[Rc];
+                const int leftX = node_max_prefix_excess[Lc];
+                const int rightX = node_total_excess[Lc] + node_max_prefix_excess[Rc];
                 if (leftX >= rightX && leftX == d)
                 {
                     v = Lc;
                 }
                 else if (rightX == d)
                 {
-                    base += seglen[Lc];
-                    d -= e[Lc];
+                    base += segment_size_bits[Lc];
+                    d -= node_total_excess[Lc];
                     v = Rc;
                 }
                 else
@@ -1110,7 +1109,7 @@ namespace pixie
             }
 
             const size_t Lb = base;
-            const size_t Rb = std::min(base + seglen[v], N);
+            const size_t Rb = std::min(base + segment_size_bits[v], num_bits);
             int mx;
             size_t pos;
 
@@ -1120,10 +1119,10 @@ namespace pixie
 
         inline size_t first_leaf_index() const noexcept
         {
-            return std::bit_ceil(std::max<size_t>(1, L));
+            return std::bit_ceil(std::max<size_t>(1, leaf_count));
         }
 
-        size_t block_of(const size_t &i) const noexcept { return i / B; }
+        size_t block_of(const size_t &i) const noexcept { return i / block_bits; }
 
         // index in heap array of the leaf whose segment starts at 'block_start'
         size_t leaf_index_of(const size_t &block_start) const noexcept
@@ -1136,12 +1135,12 @@ namespace pixie
         {
             const size_t leaf0 = first_leaf_index();
             if (v >= leaf0)
-                return (v - leaf0) * B;
+                return (v - leaf0) * block_bits;
 
             size_t base = 0;
             for (; v > 1; v >>= 1)
                 if (v & 1)
-                    base += seglen[v - 1];
+                    base += segment_size_bits[v - 1];
             return base;
         }
 
@@ -1174,16 +1173,16 @@ namespace pixie
             {
                 const size_t Lc = v << 1;
                 const size_t Rc = Lc | 1;
-                if (m[Lc] <= need && need <= Mx[Lc])
+                if (node_min_prefix_excess[Lc] <= need && need <= node_max_prefix_excess[Lc])
                     v = Lc;
                 else
                 {
-                    need -= e[Lc];
-                    base += seglen[Lc];
+                    need -= node_total_excess[Lc];
+                    base += segment_size_bits[Lc];
                     v = Rc;
                 }
             }
-            const size_t Rb = std::min(base + seglen[v], N);
+            const size_t Rb = std::min(base + segment_size_bits[v], num_bits);
             int cur = 0;
             for (size_t p = base; p < Rb; ++p)
             {
@@ -1202,25 +1201,25 @@ namespace pixie
             {
                 const size_t Lc = v << 1;
                 const size_t Rc = Lc | 1;
-                const int need_r = need - e[Lc];
+                const int need_r = need - node_total_excess[Lc];
 
                 // 1) try the right child first (to capture the rightmost j)
-                if (m[Rc] <= need_r && need_r <= Mx[Rc])
+                if (node_min_prefix_excess[Rc] <= need_r && need_r <= node_max_prefix_excess[Rc])
                 {
-                    const size_t ans = descend_bwd(Rc, base + seglen[Lc], need_r, right_border, allow_rb);
+                    const size_t ans = descend_bwd(Rc, base + segment_size_bits[Lc], need_r, right_border, allow_rb);
                     if (ans != npos)
                         return ans;
                 }
 
                 // 2) junction between children (end of the left child)
-                const size_t j_border = base + seglen[Lc];
-                if (need == e[Lc] && (j_border < right_border || allow_rb))
+                const size_t j_border = base + segment_size_bits[Lc];
+                if (need == node_total_excess[Lc] && (j_border < right_border || allow_rb))
                 {
                     return j_border;
                 }
 
                 // 3) can we move left within the range?
-                if (m[Lc] <= need && need <= Mx[Lc])
+                if (node_min_prefix_excess[Lc] <= need && need <= node_max_prefix_excess[Lc])
                 {
                     v = Lc;
                     continue;
@@ -1236,7 +1235,7 @@ namespace pixie
             }
 
             const size_t Lb = base;
-            const size_t Rb = std::min(base + seglen[v], N);
+            const size_t Rb = std::min(base + segment_size_bits[v], num_bits);
             const size_t RB = std::min(right_border, Rb);
 
             int cur = 0;
@@ -1269,16 +1268,16 @@ namespace pixie
             while (v < leaf0)
             {
                 const size_t Lc = v << 1, Rc = Lc | 1;
-                const int leftm = m[Lc];
-                const int rightm = e[Lc] + m[Rc];
+                const int leftm = node_min_prefix_excess[Lc];
+                const int rightm = node_total_excess[Lc] + node_min_prefix_excess[Rc];
                 if (leftm <= rightm && leftm == d)
                 {
                     v = Lc;
                 }
                 else if (rightm == d)
                 {
-                    base += seglen[Lc];
-                    d -= e[Lc];
+                    base += segment_size_bits[Lc];
+                    d -= node_total_excess[Lc];
                     v = Rc;
                 }
                 else
@@ -1288,7 +1287,7 @@ namespace pixie
             }
 
             const size_t Lb = base;
-            const size_t Rb = std::min(base + seglen[v], N);
+            const size_t Rb = std::min(base + segment_size_bits[v], num_bits);
             int mn;
             size_t pos;
 
@@ -1303,27 +1302,27 @@ namespace pixie
             {
                 const size_t Lc = v << 1;
                 const size_t Rc = Lc | 1;
-                const int leftm = m[Lc];
-                const int rightm = e[Lc] + m[Rc];
+                const int leftm = node_min_prefix_excess[Lc];
+                const int rightm = node_total_excess[Lc] + node_min_prefix_excess[Rc];
                 if (leftm == d)
                 {
-                    if (nmin[Lc] >= q)
+                    if (node_min_count[Lc] >= q)
                     {
                         v = Lc;
                         continue;
                     }
-                    q -= nmin[Lc];
+                    q -= node_min_count[Lc];
                 }
                 if (rightm == d)
                 {
-                    base += seglen[Lc];
-                    d -= e[Lc];
+                    base += segment_size_bits[Lc];
+                    d -= node_total_excess[Lc];
                     v = Rc;
                     continue;
                 }
                 return npos;
             }
-            return qth_min_in_block(base, std::min(base + seglen[v], N) - 1, q);
+            return qth_min_in_block(base, std::min(base + segment_size_bits[v], num_bits) - 1, q);
         }
 
         // 1-based
@@ -1332,16 +1331,16 @@ namespace pixie
             size_t w_l = Lb >> 6;
             const size_t w_r = (Rb >> 6);
             const size_t off_l = Lb & 63;
-            const u64 mask_l = (off_l ? (~u64(0) << off_l) : ~u64(0));
+            const std::uint64_t mask_l = (off_l ? (~std::uint64_t(0) << off_l) : ~std::uint64_t(0));
             if (w_l == w_r)
             {
-                const u64 w = bits[w_l] & mask_l & ((Rb & 63) ? ((u64(1) << (Rb & 63)) - 1) : ~u64(0));
+                const std::uint64_t w = bits[w_l] & mask_l & ((Rb & 63) ? ((std::uint64_t(1) << (Rb & 63)) - 1) : ~std::uint64_t(0));
                 return Lb + select_in_word(w, k);
             }
             // prefix
             if (off_l)
             {
-                const u64 w = bits[w_l] & mask_l;
+                const std::uint64_t w = bits[w_l] & mask_l;
                 const int c = POPCNT(w);
                 if (k <= (size_t)c)
                     return Lb + select_in_word(w, k);
@@ -1351,7 +1350,7 @@ namespace pixie
             // full words
             while (w_l < w_r)
             {
-                const u64 w = bits[w_l];
+                const std::uint64_t w = bits[w_l];
                 const int c = POPCNT(w);
                 if (k <= (size_t)c)
                     return (w_l << 6) + select_in_word(w, k);
@@ -1362,7 +1361,7 @@ namespace pixie
             const size_t off_r = Rb & 63;
             if (off_r)
             {
-                const u64 w = bits[w_l] & ((u64(1) << off_r) - 1);
+                const std::uint64_t w = bits[w_l] & ((std::uint64_t(1) << off_r) - 1);
                 const int c = POPCNT(w);
                 if (k <= (size_t)c)
                     return (w_l << 6) + select_in_word(w, k);
@@ -1382,9 +1381,9 @@ namespace pixie
 
             if (w_l == w_r)
             {
-                const u64 mask_l = (off_l ? (~u64(0) << off_l) : ~u64(0));
-                const u64 mask_r = ((Rb & 63) ? ((u64(1) << (Rb & 63)) - 1) : ~u64(0));
-                const u64 w = (~bits[w_l]) & mask_l & mask_r;
+                const std::uint64_t mask_l = (off_l ? (~std::uint64_t(0) << off_l) : ~std::uint64_t(0));
+                const std::uint64_t mask_r = ((Rb & 63) ? ((std::uint64_t(1) << (Rb & 63)) - 1) : ~std::uint64_t(0));
+                const std::uint64_t w = (~bits[w_l]) & mask_l & mask_r;
                 const int off = select_in_word(w, k);
                 return (off >= 0) ? (Lb + (size_t)off) : npos;
             }
@@ -1392,7 +1391,7 @@ namespace pixie
             // prefix
             if (off_l)
             {
-                const u64 w = (~bits[w_l]) & (~u64(0) << off_l);
+                const std::uint64_t w = (~bits[w_l]) & (~std::uint64_t(0) << off_l);
                 const int c = POPCNT(w);
                 if (k <= (size_t)c)
                 {
@@ -1406,7 +1405,7 @@ namespace pixie
             // full words
             while (w_l < w_r)
             {
-                const u64 w = ~bits[w_l];
+                const std::uint64_t w = ~bits[w_l];
                 const int c = POPCNT(w);
                 if (k <= (size_t)c)
                 {
@@ -1421,7 +1420,7 @@ namespace pixie
             const size_t off_r = Rb & 63;
             if (off_r)
             {
-                const u64 w = (~bits[w_l]) & ((u64(1) << off_r) - 1);
+                const std::uint64_t w = (~bits[w_l]) & ((std::uint64_t(1) << off_r) - 1);
                 const int c = POPCNT(w);
                 if (k <= (size_t)c)
                 {
@@ -1432,7 +1431,7 @@ namespace pixie
             return npos;
         }
 
-        static inline int select_in_word(u64 w, size_t k) noexcept
+        static inline int select_in_word(std::uint64_t w, size_t k) noexcept
         {
 #ifdef __GNUC__
             while (w)
@@ -1460,8 +1459,8 @@ namespace pixie
         {
             if (Nbits == 0)
                 return 0;
-            size_t L = ceil_div(Nbits, Bpow2);
-            return std::bit_ceil(std::max<size_t>(1, L)) + L;
+            size_t leaf_count = ceil_div(Nbits, Bpow2);
+            return std::bit_ceil(std::max<size_t>(1, leaf_count)) + leaf_count;
         }
 
         static inline float overhead_for(const size_t &Nbits, const size_t &Bpow2) noexcept
@@ -1476,38 +1475,38 @@ namespace pixie
             return ((float)aux) / ((float)bb);
         }
 
-        // Returns the minimal B (power-of-two) that keeps overhead ≤ cap.
+        // Returns the minimal block_bits (power-of-two) that keeps overhead ≤ cap.
         static inline size_t choose_block_bits_for_overhead(const size_t &Nbits, const float &cap) noexcept
         {
             if (cap < 0.f)
                 return 64;
 
             const size_t Bmax = std::min<size_t>(Nbits, 16384);
-            size_t B = 64;
-            while (B < Bmax)
+            size_t block_bits = 64;
+            while (block_bits < Bmax)
             {
-                if (overhead_for(Nbits, B) <= cap)
+                if (overhead_for(Nbits, block_bits) <= cap)
                     break;
-                B <<= 1;
+                block_bits <<= 1;
             }
-            return B;
+            return block_bits;
         }
 
         void build_from_string(const std::string &s, const size_t &leaf_block_bits = 0, const float &max_overhead = -1.0)
         {
-            N = s.size();
-            bits.assign((N + 63) / 64, 0);
-            for (size_t i = 0; i < N; ++i)
+            num_bits = s.size();
+            bits.assign((num_bits + 63) / 64, 0);
+            for (size_t i = 0; i < num_bits; ++i)
                 if (s[i] == '1')
                     set1(i);
             build(leaf_block_bits, max_overhead);
         }
-        void build_from_words(const std::vector<u64> &w, const size_t &Nbits, const size_t &leaf_block_bits = 0, const float &max_overhead = -1.0)
+        void build_from_words(const std::vector<std::uint64_t> &w, const size_t &Nbits, const size_t &leaf_block_bits = 0, const float &max_overhead = -1.0)
         {
             bits = w;
-            N = Nbits;
-            if (bits.size() * 64 < N)
-                bits.resize((N + 63) / 64);
+            num_bits = Nbits;
+            if (bits.size() * 64 < num_bits)
+                bits.resize((num_bits + 63) / 64);
             build(leaf_block_bits, max_overhead);
         }
 
@@ -1518,12 +1517,12 @@ namespace pixie
 
         inline void set1(const size_t &i) noexcept
         {
-            bits[i >> 6] |= (u64(1) << (i & 63));
+            bits[i >> 6] |= (std::uint64_t(1) << (i & 63));
         }
 
         inline uint32_t ones_in_node(const size_t &v) const noexcept
         {
-            return ((int64_t)seglen[v] + (int64_t)e[v]) >> 1;
+            return ((int64_t)segment_size_bits[v] + (int64_t)node_total_excess[v]) >> 1;
         }
 
         // Passing through the range [l..r] (inclusive): counts mn and cnt (how many times the minimum is reached),
@@ -1558,17 +1557,17 @@ namespace pixie
             while (l + 7 <= r)
             {
                 const auto &a = T[get_byte(l)];
-                const int cand = cur + a.m;
+                const int cand = cur + a.min_prefix;
                 if (cand < mn)
                 {
                     mn = cand;
-                    cnt = a.nmin;
+                    cnt = a.min_count;
                 }
                 else if (cand == mn)
                 {
-                    cnt += a.nmin;
+                    cnt += a.min_count;
                 }
-                cur += a.e;
+                cur += a.excess_total;
                 l += 8;
             }
             // tail
@@ -1614,8 +1613,8 @@ namespace pixie
             while (p + 7 <= r)
             {
                 const auto &a = T[get_byte(p)];
-                mn = std::min(mn, cur + a.m);
-                cur += a.e;
+                mn = std::min(mn, cur + a.min_prefix);
+                cur += a.excess_total;
                 p += 8;
             }
             while (p <= r)
@@ -1646,21 +1645,21 @@ namespace pixie
             {
                 const uint8_t b = get_byte(p);
                 const auto &a = T[b];
-                const int cand = cur + a.m;
+                const int cand = cur + a.min_prefix;
                 if (cand == mn)
                 {
                     int s = 0;
                     for (int k = 0; k < 8; ++k)
                     {
                         s += ((b >> k) & 1u) ? +1 : -1;
-                        if (s == a.m)
+                        if (s == a.min_prefix)
                         {
                             if (--q == 0)
                                 return p + k;
                         }
                     }
                 }
-                cur += a.e;
+                cur += a.excess_total;
                 p += 8;
             }
 
@@ -1702,13 +1701,13 @@ namespace pixie
             while (l + 7 <= r)
             {
                 const auto &a = T[get_byte(l)];
-                const int cand = cur + a.m;
+                const int cand = cur + a.min_prefix;
                 if (cand < mn)
                 {
                     mn = cand;
-                    first_pos = l + a.pm;
+                    first_pos = l + a.pos_first_min;
                 }
-                cur += a.e;
+                cur += a.excess_total;
                 l += 8;
             }
 
@@ -1748,13 +1747,13 @@ namespace pixie
             while (l + 7 <= r)
             {
                 const auto &a = T[get_byte(l)];
-                const int cand = cur + a.Mx;
+                const int cand = cur + a.max_prefix;
                 if (cand > mx)
                 {
                     mx = cand;
-                    first_pos = l + a.pM;
+                    first_pos = l + a.pos_first_max;
                 }
-                cur += a.e;
+                cur += a.excess_total;
                 l += 8;
             }
 
@@ -1775,42 +1774,42 @@ namespace pixie
         void build(const size_t &leaf_block_bits, const float &max_overhead)
         {
             // the lower clamp depends on the desired overhead fraction; otherwise use 64
-            const size_t clamp_by_overhead = (max_overhead >= 0.0 ? choose_block_bits_for_overhead(N, max_overhead) : size_t(64));
+            const size_t clamp_by_overhead = (max_overhead >= 0.0 ? choose_block_bits_for_overhead(num_bits, max_overhead) : size_t(64));
 
-            // chosen B: honor an explicit request, but not below clamp_by_overhead
+            // chosen block_bits: honor an explicit request, but not below clamp_by_overhead
             if (leaf_block_bits == 0)
-                B = std::max(clamp_by_overhead, std::bit_ceil<size_t>((N <= 1) ? 1 : std::bit_width(N - 1)));
+                block_bits = std::max(clamp_by_overhead, std::bit_ceil<size_t>((num_bits <= 1) ? 1 : std::bit_width(num_bits - 1)));
             else
-                B = std::max(clamp_by_overhead, std::bit_ceil(std::max<size_t>(1, leaf_block_bits)));
+                block_bits = std::max(clamp_by_overhead, std::bit_ceil(std::max<size_t>(1, leaf_block_bits)));
 
 #ifdef DEBUG
             // finalizes the achieved overhead percentage
-            built_overhead = overhead_for(N, B);
+            built_overhead = overhead_for(num_bits, block_bits);
 #endif
 
-            L = ceil_div(N, B);
+            leaf_count = ceil_div(num_bits, block_bits);
             const size_t leaf0 = first_leaf_index();
-            const size_t tree_size = leaf0 + L - 1;
-            seglen.assign(tree_size + 1, 0);
-            e.assign(tree_size + 1, 0);
-            m.assign(tree_size + 1, 0);
-            Mx.assign(tree_size + 1, 0);
-            nmin.assign(tree_size + 1, 0);
-            rr.assign(tree_size + 1, 0);
-            fb.assign(tree_size + 1, 0);
-            lb.assign(tree_size + 1, 0);
+            const size_t tree_size = leaf0 + leaf_count - 1;
+            segment_size_bits.assign(tree_size + 1, 0);
+            node_total_excess.assign(tree_size + 1, 0);
+            node_min_prefix_excess.assign(tree_size + 1, 0);
+            node_max_prefix_excess.assign(tree_size + 1, 0);
+            node_min_count.assign(tree_size + 1, 0);
+            node_pattern10_count.assign(tree_size + 1, 0);
+            node_first_bit.assign(tree_size + 1, 0);
+            node_last_bit.assign(tree_size + 1, 0);
 
             // leaves
-            for (size_t k = 0; k < L; ++k)
+            for (size_t k = 0; k < leaf_count; ++k)
             {
                 const size_t v = leaf0 + k;
-                const size_t Lb = k * B;
-                const size_t Rb = std::min(N, Lb + B);
-                seglen[v] = Rb - Lb;
+                const size_t Lb = k * block_bits;
+                const size_t Rb = std::min(num_bits, Lb + block_bits);
+                segment_size_bits[v] = Rb - Lb;
 
                 if (Lb < Rb)
                 {
-                    fb[v] = bit(Lb);
+                    node_first_bit[v] = bit(Lb);
                 }
 
                 const auto &T = LUT8();
@@ -1830,26 +1829,26 @@ namespace pixie
                     const auto &a = T[b];
 
                     // internal "10" inside the byte
-                    rrc += a.rr;
+                    rrc += a.pattern10_count;
                     // stitching across the boundary between the previous and current byte (within the segment)
-                    if (prev_bit == 1 && a.fb == 0)
+                    if (prev_bit == 1 && a.first_bit == 0)
                         rrc++;
 
                     // prefix min/max accounting for the current offset
-                    const int cand_min = cur + a.m;
+                    const int cand_min = cur + a.min_prefix;
                     if (cand_min < mn)
                     {
                         mn = cand_min;
-                        mn_cnt = a.nmin;
+                        mn_cnt = a.min_count;
                     }
                     else if (cand_min == mn)
                     {
-                        mn_cnt += a.nmin;
+                        mn_cnt += a.min_count;
                     }
 
-                    mx = std::max(mx, cur + a.Mx);
-                    cur += a.e;
-                    prev_bit = a.lb;
+                    mx = std::max(mx, cur + a.max_prefix);
+                    cur += a.excess_total;
+                    prev_bit = a.last_bit;
                     p += 8;
                 }
 
@@ -1878,60 +1877,60 @@ namespace pixie
                 }
 
                 if (Lb < Rb)
-                    lb[v] = prev_bit;
+                    node_last_bit[v] = prev_bit;
 
-                e[v] = cur;
-                m[v] = (seglen[v] == 0 ? 0 : mn);
-                Mx[v] = (seglen[v] == 0 ? 0 : mx);
-                nmin[v] = mn_cnt;
-                rr[v] = (uint32_t)rrc;
+                node_total_excess[v] = cur;
+                node_min_prefix_excess[v] = (segment_size_bits[v] == 0 ? 0 : mn);
+                node_max_prefix_excess[v] = (segment_size_bits[v] == 0 ? 0 : mx);
+                node_min_count[v] = mn_cnt;
+                node_pattern10_count[v] = (uint32_t)rrc;
             }
             // internal nodes
             for (size_t v = leaf0 - 1; v >= 1; --v)
             {
                 const size_t Lc = v << 1;
                 const size_t Rc = Lc | 1;
-                const bool has_l = (Lc <= tree_size) && seglen[Lc];
-                const bool has_r = (Rc <= tree_size) && seglen[Rc];
+                const bool has_l = (Lc <= tree_size) && segment_size_bits[Lc];
+                const bool has_r = (Rc <= tree_size) && segment_size_bits[Rc];
                 if (!has_l && !has_r)
                 {
-                    seglen[v] = 0;
+                    segment_size_bits[v] = 0;
                     continue;
                 }
                 if (has_l && !has_r)
                 {
-                    seglen[v] = seglen[Lc];
-                    e[v] = e[Lc];
-                    m[v] = m[Lc];
-                    Mx[v] = Mx[Lc];
-                    nmin[v] = nmin[Lc];
-                    rr[v] = rr[Lc];
-                    fb[v] = fb[Lc];
-                    lb[v] = lb[Lc];
+                    segment_size_bits[v] = segment_size_bits[Lc];
+                    node_total_excess[v] = node_total_excess[Lc];
+                    node_min_prefix_excess[v] = node_min_prefix_excess[Lc];
+                    node_max_prefix_excess[v] = node_max_prefix_excess[Lc];
+                    node_min_count[v] = node_min_count[Lc];
+                    node_pattern10_count[v] = node_pattern10_count[Lc];
+                    node_first_bit[v] = node_first_bit[Lc];
+                    node_last_bit[v] = node_last_bit[Lc];
                 }
                 else if (!has_l && has_r)
                 {
-                    seglen[v] = seglen[Rc];
-                    e[v] = e[Rc];
-                    m[v] = m[Rc];
-                    Mx[v] = Mx[Rc];
-                    nmin[v] = nmin[Rc];
-                    rr[v] = rr[Rc];
-                    fb[v] = fb[Rc];
-                    lb[v] = lb[Rc];
+                    segment_size_bits[v] = segment_size_bits[Rc];
+                    node_total_excess[v] = node_total_excess[Rc];
+                    node_min_prefix_excess[v] = node_min_prefix_excess[Rc];
+                    node_max_prefix_excess[v] = node_max_prefix_excess[Rc];
+                    node_min_count[v] = node_min_count[Rc];
+                    node_pattern10_count[v] = node_pattern10_count[Rc];
+                    node_first_bit[v] = node_first_bit[Rc];
+                    node_last_bit[v] = node_last_bit[Rc];
                 }
                 else
                 {
-                    seglen[v] = seglen[Lc] + seglen[Rc];
-                    e[v] = e[Lc] + e[Rc];
-                    const int m_r = e[Lc] + m[Rc];
-                    const int M_R = e[Lc] + Mx[Rc];
-                    m[v] = std::min(m[Lc], m_r);
-                    Mx[v] = std::max(Mx[Lc], M_R);
-                    nmin[v] = (m[Lc] == m[v] ? nmin[Lc] : 0) + (m_r == m[v] ? nmin[Rc] : 0);
-                    rr[v] = rr[Lc] + rr[Rc] + ((lb[Lc] == 1 && fb[Rc] == 0) ? 1u : 0u);
-                    fb[v] = fb[Lc];
-                    lb[v] = lb[Rc];
+                    segment_size_bits[v] = segment_size_bits[Lc] + segment_size_bits[Rc];
+                    node_total_excess[v] = node_total_excess[Lc] + node_total_excess[Rc];
+                    const int m_r = node_total_excess[Lc] + node_min_prefix_excess[Rc];
+                    const int M_R = node_total_excess[Lc] + node_max_prefix_excess[Rc];
+                    node_min_prefix_excess[v] = std::min(node_min_prefix_excess[Lc], m_r);
+                    node_max_prefix_excess[v] = std::max(node_max_prefix_excess[Lc], M_R);
+                    node_min_count[v] = (node_min_prefix_excess[Lc] == node_min_prefix_excess[v] ? node_min_count[Lc] : 0) + (m_r == node_min_prefix_excess[v] ? node_min_count[Rc] : 0);
+                    node_pattern10_count[v] = node_pattern10_count[Lc] + node_pattern10_count[Rc] + ((node_last_bit[Lc] == 1 && node_first_bit[Rc] == 0) ? 1u : 0u);
+                    node_first_bit[v] = node_first_bit[Lc];
+                    node_last_bit[v] = node_last_bit[Rc];
                 }
                 if (v == 1)
                     break;
