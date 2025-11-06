@@ -56,7 +56,7 @@ add_executable(fuzzer
     src/fuzzer.cpp)
 target_include_directories(fuzzer
     PUBLIC include
-    PUBLIC misc/include
+    PUBLIC include/misc
 )
 set_property(TARGET fuzzer PROPERTY CXX_STANDARD 20)
 
