@@ -19,9 +19,23 @@ namespace pixie
     static inline int POPCNT(unsigned long long x) { return __popcnt64(x); }
 #endif
 
-    // Range min max tree for balanced-parentheses bitvector.
-    // Implements: fwdsearch, bwdsearch, rmq_pos/rmq_val, rMq_pos/rMq_val, mincount, minselect,
-    // rank1/rank0, select1/select0, rank10/select10, excess, open/close, enclose.
+    /**
+     * @brief Range min–max tree over a bitvector (LSB-first) tailored for balanced-parentheses (BP).
+     * @details
+     *  Implements the classic RMQ/rMq family and BP navigation in O(log n)
+     *  using a perfectly balanced binary tree of blocks. Supported queries:
+     *  - rank1 / rank0
+     *  - select1 / select0
+     *  - rank10 / select10 (starts of "10")
+     *  - excess (prefix +1 for '1', −1 for '0')
+     *  - fwdsearch / bwdsearch (prefix–sum search)
+     *  - rmq_pos / rmq_val (first minimum within a range)
+     *  - rMq_pos / rMq_val (first maximum within a range)
+     *  - mincount / minselect (count/selection of minima)
+     *  - close / open / enclose (BP navigation)
+     *
+     *  The bitvector is LSB-first inside each 64-bit word.
+     */
     class RmMTree
     {
         // ------------ bitvector ------------
@@ -66,6 +80,9 @@ namespace pixie
         std::vector<uint8_t> node_first_bit, node_last_bit;
 
     public:
+        /**
+         * @brief Sentinel for "not found".
+         */
         static constexpr size_t npos = std::numeric_limits<size_t>::max();
 
 #ifdef DEBUG
@@ -73,12 +90,20 @@ namespace pixie
 #endif
 
         // --------- construction ----------
+
+        /**
+         * @brief Construct empty structure.
+         */
         RmMTree() = default;
 
-        // priorities for block_bits:
-        // 1) honor max_overhead
-        // 2) honor an explicit request of block_bits
-        // 3) block_bits := log num_bits
+        /**
+         * @brief Build from a '0'/'1' string.
+         * @param bp Bitstring (characters '0' and '1').
+         * @param leaf_block_bits Desired leaf size (power of two, 0 = auto).
+         * @param max_overhead Max allowed overhead fraction (<0 to disable constraint).
+         * @details Block size priority: (1) respect @p max_overhead, (2) explicit @p leaf_block_bits,
+         *          (3) set to ceil_pow2(log2(num_bits)).
+         */
         explicit RmMTree(const std::string &bp,
                          const size_t &leaf_block_bits /*0=auto*/ = 0,
                          const float &max_overhead /*<0=off*/ = -1.0)
@@ -86,10 +111,15 @@ namespace pixie
             build_from_string(bp, leaf_block_bits, max_overhead);
         }
 
-        // priorities for block_bits:
-        // 1) honor max_overhead
-        // 2) honor an explicit request of block_bits
-        // 3) block_bits := log num_bits
+        /**
+         * @brief Build from 64-bit words (LSB-first).
+         * @param words Array of words holding bits LSB-first.
+         * @param Nbits Number of valid bits.
+         * @param leaf_block_bits Desired leaf size (power of two, 0 = auto).
+         * @param max_overhead Max allowed overhead fraction (<0 to disable constraint).
+         * @details Block size priority: (1) respect @p max_overhead, (2) explicit @p leaf_block_bits,
+         *          (3) set to ceil_pow2(log2(num_bits)).
+         */
         explicit RmMTree(const std::vector<std::uint64_t> &words, size_t Nbits,
                          const size_t &leaf_block_bits /*0=auto*/ = 0,
                          const float &max_overhead /*<0=off*/ = -1.0)
@@ -98,7 +128,11 @@ namespace pixie
         }
 
         // --------- queries: rank/select/excess ----------
-        // #ones in [0,i)
+
+        /**
+         * @brief Number of ones in prefix [0, i).
+         * @details Returns 0 for i==0. Complexity: O(log n) with small constants.
+         */
         size_t rank1(const size_t &i) const
         {
             if (i == 0)
@@ -116,12 +150,20 @@ namespace pixie
             ans += rank1_in_block(Lb, std::min(i, Rb));
             return ans;
         }
+
+        /**
+         * @brief Number of zeros in prefix [0, i).
+         * @details Computed as i - rank1(i).
+         */
         size_t rank0(const size_t &i) const
         {
             return i - rank1(i);
         }
 
-        // ones/zeros select (1-based k). Returns npos if not found.
+        /**
+         * @brief 1-based select of the k-th one.
+         * @return Position of k-th '1' or npos if not found.
+         */
         size_t select1(size_t k) const
         {
             if (k == 0)
@@ -148,7 +190,11 @@ namespace pixie
             }
             return select1_in_block(base, std::min(base + segment_size_bits[v], num_bits), k);
         }
-        // 1-based
+
+        /**
+         * @brief 1-based select of the k-th zero.
+         * @return Position of k-th '0' or npos if not found.
+         */
         size_t select0(size_t k) const
         {
             if (k == 0)
@@ -180,7 +226,10 @@ namespace pixie
             return select0_in_block(base, std::min(base + segment_size_bits[v], num_bits), k);
         }
 
-        // pattern "10": rank/select on starts of "10"
+        /**
+         * @brief Rank of the pattern "10" (starts) within [0, i).
+         * @details Counts p where bit[p]==1 and bit[p+1]==0 with p+1<i.
+         */
         size_t rank10(const size_t &i) const
         {
             if (i <= 1)
@@ -208,6 +257,10 @@ namespace pixie
             return ans;
         }
 
+        /**
+         * @brief 1-based select of the k-th "10" start.
+         * @return Position p such that bits[p..p+1]=="10", or npos if not found.
+         */
         size_t select10(size_t k) const
         {
             if (k == 0)
@@ -240,12 +293,19 @@ namespace pixie
             return select10_in_block(base, std::min(base + segment_size_bits[ind], num_bits), k);
         }
 
-        // prefix excess over [0, i): +1 for '1', -1 for '0'
+        /**
+         * @brief Prefix excess on [0, i): +1 for '1', −1 for '0'.
+         */
         inline int excess(const size_t &i) const
         {
             return int64_t(rank1(i)) * 2 - int64_t(i);
         }
 
+        /**
+         * @brief Forward search: first position p ≥ i where excess(p) = excess(i) + d.
+         * @details Scans remainder of current leaf, then descends using precomputed bounds.
+         *          Returns npos if no such position exists.
+         */
         size_t fwdsearch(const size_t &i, const int &d) const
         {
             if (i >= num_bits)
@@ -286,7 +346,11 @@ namespace pixie
             return npos;
         }
 
-        // ---- bwdsearch: climb & check left siblings ----
+        /**
+         * @brief Backward search: last position p ≤ i where excess(p) = excess(i) + d.
+         * @details Scans inside the leaf to the left, then climbs to examine left siblings.
+         *          Returns npos if no such position exists.
+         */
         size_t bwdsearch(const size_t &i, const int &d) const
         {
             if (i > num_bits || i == 0)
@@ -344,7 +408,10 @@ namespace pixie
             return npos;
         }
 
-        // position of first minimum of excess on [i, j] (inclusive)
+        /**
+         * @brief Position of the first minimum of excess on [i, j] (inclusive).
+         * @return Position of first occurrence of minimum, or npos on invalid range.
+         */
         size_t rmq_pos(const size_t &i, const size_t &j) const
         {
             if (i > j || j >= num_bits)
@@ -439,7 +506,10 @@ namespace pixie
             return descend_first_min(chosen_node, best_val - pref_at_choice, node_base(chosen_node));
         }
 
-        // value of that minimum (absolute relative to start i, i.excess_total., minimum of partial sums)
+        /**
+         * @brief Value of the minimum prefix excess on [i, j] relative to i.
+         * @details Equivalent to min_{t in [i..j]} (excess(t+1) - excess(i)).
+         */
         int rmq_val(const size_t &i, const size_t &j) const
         {
             if (i > j || j >= num_bits)
@@ -450,6 +520,10 @@ namespace pixie
             return excess(p + 1) - excess(i);
         }
 
+        /**
+         * @brief Position of the first maximum of excess on [i, j] (inclusive).
+         * @return Position of first occurrence of maximum, or npos on invalid range.
+         */
         size_t rMq_pos(const size_t &i, const size_t &j) const
         {
             if (i > j || j >= num_bits)
@@ -544,6 +618,9 @@ namespace pixie
             return descend_first_max(chosen_node, best_val - pref_at_choice, node_base(chosen_node));
         }
 
+        /**
+         * @brief Value of the maximum prefix excess on [i, j] relative to i.
+         */
         int rMq_val(const size_t &i, const size_t &j) const
         {
             if (i > j || j >= num_bits)
@@ -554,7 +631,9 @@ namespace pixie
             return excess(p + 1) - excess(i);
         }
 
-        // how many times min occurs on [i, j]
+        /**
+         * @brief How many times the minimum prefix excess occurs on [i, j].
+         */
         size_t mincount(const size_t &i, const size_t &j) const
         {
             if (i > j || j >= num_bits)
@@ -643,7 +722,10 @@ namespace pixie
             return cnt;
         }
 
-        // position of the q-th occurrence (1-based) of the minimum on [i, j]
+        /**
+         * @brief Position of the q-th (1-based) occurrence of the minimum on [i, j].
+         * @return Position or npos if q exceeds the number of minima.
+         */
         size_t minselect(const size_t &i, const size_t &j, size_t q) const
         {
             if (i > j || j >= num_bits || q == 0)
@@ -805,7 +887,11 @@ namespace pixie
         }
 
         // ----- parentheses navigation (BP) -----
-        // close(i): matching ')' for '(' at i  (or npos)
+
+        /**
+         * @brief close(i): matching ')' for '(' at i.
+         * @return Position of matching ')', or npos.
+         */
         inline size_t close(const size_t &i) const
         {
             if (i >= num_bits)
@@ -813,7 +899,10 @@ namespace pixie
             return fwdsearch(i, -1);
         }
 
-        // open(i): matching '(' for ')' at i  (or npos)
+        /**
+         * @brief open(i): matching '(' for ')' at i.
+         * @return Position of matching '(', or npos.
+         */
         inline size_t open(const size_t &i) const
         {
             // bwdsearch allows i in [1..num_bits]
@@ -823,7 +912,10 @@ namespace pixie
             return (r == npos ? npos : r + 1);
         }
 
-        // enclose(i): opening '(' that *encloses* position i  (or npos)
+        /**
+         * @brief enclose(i): opening '(' that strictly encloses position i.
+         * @return Position of enclosing '(', or npos.
+         */
         inline size_t enclose(const size_t &i) const
         {
             if (i == 0 || i > num_bits)
@@ -833,6 +925,10 @@ namespace pixie
         }
 
     private:
+        /**
+         * @brief Count "10" occurrences inside a 64-bit slice of given logical length.
+         * @details Only positions fully inside the slice are counted.
+         */
         static inline size_t pop10_in_slice64(const std::uint64_t &slice, const int &len) noexcept
         {
             if (len <= 1)
@@ -845,7 +941,10 @@ namespace pixie
             return (size_t)POPCNT(P);
         }
 
-        // fast rank of ones in [leaf_count,R)
+        /**
+         * @brief Rank of ones within [Lb, Rb).
+         * @details Works on word boundaries; Rb may equal Lb.
+         */
         size_t rank1_in_block(const size_t &Lb, const size_t &Rb) const noexcept
         {
             if (Rb <= Lb)
@@ -875,6 +974,10 @@ namespace pixie
             return cnt;
         }
 
+        /**
+         * @brief Count "10" starts within [Lb, Rb).
+         * @details Accounts for cross-word boundaries.
+         */
         size_t rr_in_block(const size_t &Lb, const size_t &Rb) const noexcept
         {
             if (Rb <= Lb + 1)
@@ -920,7 +1023,10 @@ namespace pixie
             return cnt;
         }
 
-        // 1-based
+        /**
+         * @brief 1-based select of k-th "10" within [Lb, Rb).
+         * @return Position or npos.
+         */
         size_t select10_in_block(const size_t &Lb, const size_t &Rb, size_t k) const noexcept
         {
             if (Rb <= Lb + 1)
@@ -1020,6 +1126,9 @@ namespace pixie
             uint8_t pos_first_max;   // pos of first maximum in this byte
         };
 
+        /**
+         * @brief Returns the static lookup table of byte aggregates.
+         */
         static inline const std::array<ByteAgg, 256> &LUT8() noexcept
         {
             static const std::array<ByteAgg, 256> T = []
@@ -1070,7 +1179,9 @@ namespace pixie
             return T;
         }
 
-        // Extract 8 bits starting from position pos (LSB-first, may cross word boundaries)
+        /**
+         * @brief Extract 8 bits starting at position pos (LSB-first across words).
+         */
         inline uint8_t get_byte(const size_t &pos) const noexcept
         {
             const size_t w = pos >> 6;
@@ -1083,7 +1194,13 @@ namespace pixie
             return uint8_t(x);
         }
 
-        // Descend to the first (leftmost) maximum where the node-relative prefix equals d
+        /**
+         * @brief Descend to the first (leftmost) maximum with node-relative prefix equal to d.
+         * @param v Node index.
+         * @param d Target prefix within node coordinates.
+         * @param base Starting global position of node.
+         * @return Position or npos.
+         */
         size_t descend_first_max(size_t v, int d, size_t base) const noexcept
         {
             const size_t leaf0 = first_leaf_index();
@@ -1117,20 +1234,31 @@ namespace pixie
             return (mx == d ? pos : npos);
         }
 
+        /**
+         * @brief Heap index of the first leaf node.
+         */
         inline size_t first_leaf_index() const noexcept
         {
             return std::bit_ceil(std::max<size_t>(1, leaf_count));
         }
 
+        /**
+         * @brief Block index containing position i.
+         */
         size_t block_of(const size_t &i) const noexcept { return i / block_bits; }
 
-        // index in heap array of the leaf whose segment starts at 'block_start'
+        /**
+         * @brief Heap index of the leaf whose segment starts at block_start.
+         */
         size_t leaf_index_of(const size_t &block_start) const noexcept
         {
             return first_leaf_index() + block_of(block_start);
         }
 
-        // starting global position for node v (0-indexed)
+        /**
+         * @brief Starting global position for node v (0-indexed).
+         * @details Walk up to compute base for internal nodes; direct for leaves.
+         */
         size_t node_base(size_t v) const noexcept
         {
             const size_t leaf0 = first_leaf_index();
@@ -1144,7 +1272,10 @@ namespace pixie
             return base;
         }
 
-        // cover a range of whole blocks [a..b] (inclusive) with O(log) maximal nodes (left-to-right)
+        /**
+         * @brief Cover a range of whole blocks [a..b] (inclusive) with O(log n) maximal nodes.
+         * @details Returns node indices in left-to-right order.
+         */
         std::vector<size_t> cover_blocks(const size_t &a, const size_t &b) const
         {
             const size_t leaf0 = first_leaf_index();
@@ -1165,7 +1296,9 @@ namespace pixie
             return Lnodes;
         }
 
-        // descend for fwdsearch: find first position where relative prefix equals 'need'
+        /**
+         * @brief Descend for fwdsearch to find first position where relative prefix equals 'need'.
+         */
         size_t descend_fwd(size_t v, int need, size_t base) const noexcept
         {
             const size_t leaf0 = first_leaf_index();
@@ -1193,7 +1326,14 @@ namespace pixie
             return npos;
         }
 
-        // descend_bwd: go for the rightmost solution
+        /**
+         * @brief Descend for bwdsearch to return the rightmost solution.
+         * @param v Current node.
+         * @param base Left border of node v.
+         * @param need Target relative prefix inside v.
+         * @param right_border Global right limit (exclusive if !allow_rb).
+         * @param allow_rb Whether right border is allowed to match.
+         */
         size_t descend_bwd(size_t v, const size_t &base, const int &need, const size_t &right_border, const bool &allow_rb) const noexcept
         {
             const size_t leaf0 = first_leaf_index();
@@ -1261,7 +1401,9 @@ namespace pixie
             return npos;
         }
 
-        // descend to find first position where node-relative prefix equals d
+        /**
+         * @brief Descend to find first position where node-relative prefix equals d (minimum).
+         */
         size_t descend_first_min(size_t v, int d, size_t base) const noexcept
         {
             const size_t leaf0 = first_leaf_index();
@@ -1295,6 +1437,9 @@ namespace pixie
             return (mn == d ? pos : npos);
         }
 
+        /**
+         * @brief Descend to find the q-th minimum (1-based) where node-relative prefix equals d.
+         */
         size_t descend_qth_min(size_t v, int d, size_t q, size_t base) const noexcept
         {
             const size_t leaf0 = first_leaf_index();
@@ -1325,7 +1470,9 @@ namespace pixie
             return qth_min_in_block(base, std::min(base + segment_size_bits[v], num_bits) - 1, q);
         }
 
-        // 1-based
+        /**
+         * @brief 1-based select of k-th '1' within [Lb, Rb).
+         */
         size_t select1_in_block(const size_t &Lb, const size_t &Rb, size_t k) const noexcept
         {
             size_t w_l = Lb >> 6;
@@ -1369,7 +1516,9 @@ namespace pixie
             return npos;
         }
 
-        // 1-based
+        /**
+         * @brief 1-based select of k-th '0' within [Lb, Rb).
+         */
         size_t select0_in_block(const size_t &Lb, const size_t &Rb, size_t k) const noexcept
         {
             if (Rb <= Lb)
@@ -1431,6 +1580,10 @@ namespace pixie
             return npos;
         }
 
+        /**
+         * @brief 1-based select of k-th set bit inside a 64-bit word.
+         * @return Bit index [0..63] or −1 if not found.
+         */
         static inline int select_in_word(std::uint64_t w, size_t k) noexcept
         {
 #ifdef __GNUC__
@@ -1450,11 +1603,18 @@ namespace pixie
 #endif
         }
 
+        /**
+         * @brief Ceil division of positive integers.
+         */
         static inline size_t ceil_div(const size_t &a, const size_t &b) noexcept
         {
             return (a + b - 1) / b;
         }
 
+        /**
+         * @brief Number of node slots needed for @p Nbits with leaf size @p Bpow2.
+         * @details Includes internal node space (heap layout) plus leaves.
+         */
         static inline size_t nodeslots_for(const size_t &Nbits, const size_t &Bpow2) noexcept
         {
             if (Nbits == 0)
@@ -1463,6 +1623,9 @@ namespace pixie
             return std::bit_ceil(std::max<size_t>(1, leaf_count)) + leaf_count;
         }
 
+        /**
+         * @brief Auxiliary overhead in bytes/bitvector bytes for given parameters.
+         */
         static inline float overhead_for(const size_t &Nbits, const size_t &Bpow2) noexcept
         {
             static constexpr size_t AUX_SLOT_BYTES = sizeof(uint32_t) + sizeof(int32_t) + sizeof(int32_t) + sizeof(int32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint8_t);
@@ -1475,7 +1638,10 @@ namespace pixie
             return ((float)aux) / ((float)bb);
         }
 
-        // Returns the minimal block_bits (power-of-two) that keeps overhead ≤ cap.
+        /**
+         * @brief Choose minimal block size (power of two) keeping overhead ≤ cap.
+         * @details Returns 64 if cap < 0 (no constraint). Clamped to ≤16384 or Nbits.
+         */
         static inline size_t choose_block_bits_for_overhead(const size_t &Nbits, const float &cap) noexcept
         {
             if (cap < 0.f)
@@ -1492,6 +1658,11 @@ namespace pixie
             return block_bits;
         }
 
+        /**
+         * @brief Build internal structures from a 0/1 string.
+         * @param leaf_block_bits Desired leaf size (0 = auto).
+         * @param max_overhead Overhead cap (<0 = no cap).
+         */
         void build_from_string(const std::string &s, const size_t &leaf_block_bits = 0, const float &max_overhead = -1.0)
         {
             num_bits = s.size();
@@ -1501,32 +1672,51 @@ namespace pixie
                     set1(i);
             build(leaf_block_bits, max_overhead);
         }
-        void build_from_words(const std::vector<std::uint64_t> &w, const size_t &Nbits, const size_t &leaf_block_bits = 0, const float &max_overhead = -1.0)
+
+        /**
+         * @brief Build internal structures from 64-bit words.
+         * @param words Words with LSB-first bits.
+         * @param Nbits Number of valid bits.
+         * @param leaf_block_bits Desired leaf size (0 = auto).
+         * @param max_overhead Overhead cap (<0 = no cap).
+         */
+        void build_from_words(const std::vector<std::uint64_t> &words, const size_t &Nbits, const size_t &leaf_block_bits = 0, const float &max_overhead = -1.0)
         {
-            bits = w;
+            bits = words;
             num_bits = Nbits;
             if (bits.size() * 64 < num_bits)
                 bits.resize((num_bits + 63) / 64);
             build(leaf_block_bits, max_overhead);
         }
 
+        /**
+         * @brief Read bit at position i (LSB-first across words).
+         */
         inline int bit(const size_t &i) const noexcept
         {
             return (bits[i >> 6] >> (i & 63)) & 1u;
         }
 
+        /**
+         * @brief Set bit at position i to 1.
+         */
         inline void set1(const size_t &i) noexcept
         {
             bits[i >> 6] |= (std::uint64_t(1) << (i & 63));
         }
 
+        /**
+         * @brief Number of ones in node v computed from size and total excess.
+         */
         inline uint32_t ones_in_node(const size_t &v) const noexcept
         {
             return ((int64_t)segment_size_bits[v] + (int64_t)node_total_excess[v]) >> 1;
         }
 
-        // Passing through the range [l..r] (inclusive): counts mn and cnt (how many times the minimum is reached),
-        // and returns cur at the end of the range.
+        /**
+         * @brief Scan [l..r] inclusive, computing minimum value and how many times it is attained.
+         * @details Uses 8-bit LUT for speed; outputs cur at end, mn, and count.
+         */
         inline void scan_range_min_count8(size_t l, const size_t &r, int &cur, int &mn, uint32_t &cnt) const noexcept
         {
             cur = 0;
@@ -1591,8 +1781,10 @@ namespace pixie
             }
         }
 
-        // Selecting the qth minimum position inside [l..r] (inclusive) in two passes of 8 bits each.
-        // We find the global mn; then we go again and select the qth minimum.
+        /**
+         * @brief Select q-th minimum (1-based) inside [l..r] inclusive in two 8-bit passes.
+         * @details First pass finds global minimum, second selects the q-th position.
+         */
         inline size_t qth_min_in_block(const size_t &l, const size_t &r, size_t q) const noexcept
         {
             if (r < l || q == 0)
@@ -1678,6 +1870,11 @@ namespace pixie
             return npos;
         }
 
+        /**
+         * @brief Find first minimum value and its first position in [l..r] inclusive using 8-bit LUT.
+         * @param mn_out Output minimum value (0 if empty).
+         * @param first_pos Output position of first minimum (npos if none).
+         */
         inline void first_min_value_pos8(size_t l, const size_t &r, int &mn_out, size_t &first_pos) const noexcept
         {
             const auto &T = LUT8();
@@ -1726,6 +1923,11 @@ namespace pixie
             mn_out = (mn == INT_MAX ? 0 : mn);
         }
 
+        /**
+         * @brief Find first maximum value and its first position in [l..r] inclusive using 8-bit LUT.
+         * @param mx_out Output maximum value (0 if empty).
+         * @param first_pos Output position of first maximum (npos if none).
+         */
         inline void first_max_value_pos8(size_t l, const size_t &r, int &mx_out, size_t &first_pos) const noexcept
         {
             const auto &T = LUT8();
@@ -1771,6 +1973,11 @@ namespace pixie
             mx_out = (mx == INT_MIN ? 0 : mx);
         }
 
+        /**
+         * @brief Build the tree arrays and per-node aggregates.
+         * @details Chooses block_bits honoring @p max_overhead or explicit @p leaf_block_bits,
+         *          allocates arrays, fills leaves via LUT, and builds internal nodes bottom-up.
+         */
         void build(const size_t &leaf_block_bits, const float &max_overhead)
         {
             // the lower clamp depends on the desired overhead fraction; otherwise use 64
