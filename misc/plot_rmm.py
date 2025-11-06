@@ -1,4 +1,16 @@
-# Usage: python3 plot_rmm.py rmm_bench.csv --save-dir=plots --logx --smooth 3
+"""
+Plot RmMTree benchmark results.
+
+This script reads a CSV produced by `bench_rmm.cpp` (with at least columns:
+N, op, ns_per_op) and, for each operation, draws a scatter plot of
+individual points and a trend line (optionally median-smoothed).
+Plots are saved as PNG files and can also be shown interactively.
+
+Examples:
+  python3 plot_rmm.py rmm_bench.csv --save-dir plots --logx --smooth 3
+  python3 plot_rmm.py rmm_bench.csv --show
+"""
+
 import argparse
 import os
 import pandas as pd
@@ -24,12 +36,57 @@ OPS_ORDER = [
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("csv")
-    ap.add_argument("--save-dir", default="plots")
-    ap.add_argument("--show", action="store_true")
-    ap.add_argument("--logx", action="store_true")
-    ap.add_argument("--smooth", type=int, default=0)
+    ap = argparse.ArgumentParser(
+        description=(
+            "Read a CSV with RmMTree benchmark results and plot time per operation "
+            "versus sequence size N for each operation."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  python3 plot_rmm.py rmm_bench.csv --save-dir plots --logx --smooth 3\n"
+            "  python3 plot_rmm.py rmm_bench.csv --show"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument(
+        "csv",
+        metavar="CSV",
+        help="Path to the CSV file with results (output of bench_rmm.cpp).",
+    )
+    ap.add_argument(
+        "--save-dir",
+        default="plots",
+        metavar="DIR",
+        help=(
+            "Directory to save PNG plots. Will be created if it doesn't exist. "
+            "Default: %(default)s"
+        ),
+    )
+    ap.add_argument(
+        "--show",
+        action="store_true",
+        help=(
+            "Show plot windows after saving. "
+            "By default, plots are only written to disk."
+        ),
+    )
+    ap.add_argument(
+        "--logx",
+        action="store_true",
+        help=(
+            "Use a logarithmic X axis (base 2). " "Handy when N grows in powers of two."
+        ),
+    )
+    ap.add_argument(
+        "--smooth",
+        type=int,
+        default=0,
+        metavar="W",
+        help=(
+            "Median smoothing window size for the trend line. "
+            "0 or 1 means no smoothing. Default: %(default)s"
+        ),
+    )
     args = ap.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -59,8 +116,8 @@ def main():
 
         if args.logx:
             plt.xscale("log", base=2)
-        plt.xlabel("Размер последовательности N (бит)")
-        plt.ylabel("Время на операцию, нс")
+        plt.xlabel("Sequence size N (bits)")
+        plt.ylabel("Time per operation, ns")
         plt.title(f"RmMTree: {op}")
         plt.grid(True, which="both", linestyle="--", alpha=0.4)
         out = os.path.join(args.save_dir, f"{op}.png")
