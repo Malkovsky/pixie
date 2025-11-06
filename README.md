@@ -49,10 +49,10 @@ After building:
 ### RmM Tree
 
 ```bash
-./fuzzer
+./test_rmm
 ```
 
-The fuzzer runs indefinitely; press `Ctrl+C` to stop.
+The testing runs indefinitely; press `Ctrl+C` to stop.
 
 ---
 

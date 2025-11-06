@@ -52,12 +52,12 @@ target_include_directories(bench_rmm
 )
 set_property(TARGET bench_rmm PROPERTY CXX_STANDARD 20)
 
-add_executable(fuzzer
-    src/fuzzer.cpp)
-target_include_directories(fuzzer
+add_executable(test_rmm
+    src/test_rmm.cpp)
+target_include_directories(test_rmm
     PUBLIC include
     PUBLIC include/misc
 )
-set_property(TARGET fuzzer PROPERTY CXX_STANDARD 20)
+set_property(TARGET test_rmm PROPERTY CXX_STANDARD 20)
 
 enable_testing()
