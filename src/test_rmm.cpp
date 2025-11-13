@@ -570,3 +570,74 @@ TEST(RmMTreeStress, LongRandom) {
     }
   }
 }
+
+TEST(RmMTest, RankBasic) {
+  std::vector<std::uint64_t> bits = {0b10110};
+  pixie::RmMTree rm(bits, 5);
+
+  EXPECT_EQ(rm.rank1(0), 0);  // No bits
+  EXPECT_EQ(rm.rank1(1), 0);  // 0
+  EXPECT_EQ(rm.rank1(2), 1);  // 10
+  EXPECT_EQ(rm.rank1(3), 2);  // 110
+  EXPECT_EQ(rm.rank1(4), 2);  // 0110
+  EXPECT_EQ(rm.rank1(5), 3);  // 10110
+}
+
+TEST(RmMTest, RankWithZeros) {
+  std::vector<std::uint64_t> bits = {0};
+  pixie::RmMTree rm(bits, 5);
+
+  for (size_t i = 0; i <= 5; i++) {
+    EXPECT_EQ(rm.rank1(i), 0);
+  }
+}
+
+TEST(RmMTest, SelectBasic) {
+  std::vector<std::uint64_t> bits = {0b1100010110010110};
+  pixie::RmMTree rm(bits, 16);
+
+  EXPECT_EQ(rm.select1(1), 1);
+  EXPECT_EQ(rm.select1(2), 2);
+  EXPECT_EQ(rm.select1(3), 4);
+  EXPECT_EQ(rm.select1(4), 7);
+  EXPECT_EQ(rm.select1(5), 8);
+  EXPECT_EQ(rm.select1(6), 10);
+  EXPECT_EQ(rm.select1(7), 14);
+  EXPECT_EQ(rm.select1(8), 15);
+}
+
+TEST(RmMTest, MainRankTest) {
+  std::mt19937_64 rng(42);
+  std::vector<std::uint64_t> bits(65536 * 32);
+  for (size_t i = 0; i < 65536 * 32; i++) {
+    bits[i] = rng();
+  }
+
+  size_t rm_size = 65536 * 32 * 64;
+  pixie::RmMTree rm(bits, rm_size);
+  size_t rank = 0;
+  for (size_t i = 0; i < rm_size; ++i) {
+    ASSERT_EQ(rank, rm.rank1(i));
+    rank += (bits[i >> 6] >> (i & 63)) & 1u;
+  }
+}
+
+TEST(RmMTest, MainSelectTest) {
+  std::mt19937_64 rng(42);
+  std::vector<std::uint64_t> bits(65536 * 32);
+  for (size_t i = 0; i < 65536 * 32; i++) {
+    bits[i] = rng();
+  }
+
+  size_t rm_size = 65536 * 32 * 64;
+  pixie::RmMTree rm(bits, rm_size);
+  size_t rank = 0;
+
+  for (size_t i = 0; i < rm_size; ++i) {
+    if ((bits[i >> 6] >> (i & 63)) & 1u) {
+      ASSERT_EQ(rm.select1(++rank), i);
+      ASSERT_EQ(rm.rank1(i), rank - 1);
+      ASSERT_EQ(rm.rank1(i + 1), rank);
+    }
+  }
+}
