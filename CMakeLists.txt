@@ -45,4 +45,24 @@ target_link_libraries(unittests
     gtest
     gtest_main)
 
+add_executable(bench_rmm
+    src/bench_rmm.cpp)
+target_include_directories(bench_rmm
+    PUBLIC include
+)
+set_property(TARGET bench_rmm PROPERTY CXX_STANDARD 20)
+target_link_libraries(bench_rmm
+    benchmark)
+
+add_executable(test_rmm
+    src/test_rmm.cpp)
+target_include_directories(test_rmm
+    PUBLIC include
+    PUBLIC include/misc
+)
+set_property(TARGET test_rmm PROPERTY CXX_STANDARD 20)
+target_link_libraries(test_rmm
+    gtest
+    gtest_main)
+
 enable_testing()
