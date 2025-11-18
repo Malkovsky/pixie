@@ -160,7 +160,9 @@ TEST(BitVectorTest, Basic) {
 }
 
 TEST(BitVectorTest, MultipleWords) {
-  std::vector<uint64_t> bits = {0xAAAAAAAAAAAAAAAA, 0x5555555555555555};
+  std::vector<uint64_t> bits(8, 0);
+  bits[0] = 0xAAAAAAAAAAAAAAAA;
+  bits[1] = 0x5555555555555555;
   BitVector bv(bits, 128);
   EXPECT_EQ(bv.size(), 128);
 
@@ -176,13 +178,15 @@ TEST(BitVectorTest, MultipleWords) {
 }
 
 TEST(BitVectorTest, ToString) {
-  std::vector<uint64_t> bits = {0b10101010101};
+  std::vector<uint64_t> bits(8, 0);
+  bits[0] = 0b10101010101;
   BitVector bv(bits, 11);
   EXPECT_EQ(bv.to_string(), "10101010101");
 }
 
 TEST(BitVectorTest, RankBasic) {
-  std::vector<uint64_t> bits = {0b10110};
+  std::vector<uint64_t> bits(8, 0);
+  bits[0] = 0b10110;
   BitVector bv(bits, 5);
 
   EXPECT_EQ(bv.rank(0), 0);  // No bits
@@ -194,7 +198,7 @@ TEST(BitVectorTest, RankBasic) {
 }
 
 TEST(BitVectorTest, RankWithZeros) {
-  std::vector<uint64_t> bits = {0};
+  std::vector<uint64_t> bits(8, 0);
   BitVector bv(bits, 5);
 
   for (size_t i = 0; i <= 5; i++) {
@@ -203,7 +207,8 @@ TEST(BitVectorTest, RankWithZeros) {
 }
 
 TEST(BitVectorTest, SelectBasic) {
-  std::vector<uint64_t> bits = {0b1100010110010110};
+  std::vector<uint64_t> bits(8, 0);
+  bits[0] = 0b1100010110010110;
   BitVector bv(bits, 5);
 
   EXPECT_EQ(bv.select(1), 1);
@@ -286,7 +291,7 @@ TEST(BitVectorInterleavedTest, MainTest) {
 }
 
 TEST(LowerBound4x64, Random) {
-  std::vector<uint64_t> x(4);
+  std::vector<uint64_t> x(8);
   std::mt19937_64 rng(42);
   for (size_t i = 0; i < 1000; i++) {
     uint64_t y = rng();
