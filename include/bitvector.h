@@ -94,8 +94,6 @@ class BitVector {
     super_block_rank.resize(num_superblocks);
     basic_block_rank.resize(num_basicblocks);
 
-    bits.resize(((bits.size() + kBasicBlockSize - 1) / kBasicBlockSize) * kBasicBlockSize);
-
     uint64_t super_block_sum = 0;
     uint16_t basic_block_sum = 0;
 
