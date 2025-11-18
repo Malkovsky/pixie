@@ -1,4 +1,4 @@
-name: CMake Build and Test
+name: CMake Build and Run Unittests
 
 on:
   push:
@@ -18,7 +18,7 @@ jobs:
 
     - name: Configure CMake
       working-directory: ./build
-      run: cmake ..
+      run: cmake -DUSE_NO_AVX512=ON -DENABLE_ADDRESS_SANITIZER=ON ..
 
     - name: Build Project
       working-directory: ./build
@@ -45,7 +45,7 @@ jobs:
 
     - name: Configure CMake
       working-directory: ./build
-      run: cmake .. -DMARCH=icelake-client
+      run: cmake -DENABLE_ADDRESS_SANITIZER=ON -DMARCH=icelake-client ..
 
     - name: Build Project
       working-directory: ./build
