@@ -40,19 +40,37 @@ This will build the library along with benchmarks and tests.
 
 After building:
 
+### BitVector
+
 ```bash
-/unittests
+./unittests
+```
+
+### RmM Tree
+
+```bash
+./test_rmm
 ```
 
 ---
 
 ## Running Benchmarks
 
-Bencharks are random 50/50 0-1 bitvectors up to $2^34$ bits.
+### BitVector
+
+Benchmarks are random 50/50 0-1 bitvectors up to $2^34$ bits.
 
 ```bash
 ./benchmarks
 ```
+
+### RmM Tree
+
+```bash
+./bench_rmm
+```
+
+For visualization, write the CSV output to a file using `--benchmark_out=<file>` (e.g. `./bench_rmm --benchmark_out=rmm_bench.csv`) and plot it with `misc/plot_rmm.py`.
 
 ---
 
@@ -72,6 +90,30 @@ int main() {
     std::cout << "bv: " << bv.to_string() << "\n";     // "101101"
     std::cout << "rank(4): " << bv.rank(4) << "\n";    // number of ones in first 4 bits
     std::cout << "select(2): " << bv.select(2) << "\n"; // position of 2nd one-bit
+}
+```
+
+```cpp
+#include "rmm_tree.h"
+#include <string>
+#include <iostream>
+
+using namespace pixie;
+
+int main() {
+    // root
+    // ├─ A
+    // │  ├─ a1
+    // │  └─ a2
+    // ├─ B
+    // └─ C
+    //    └─ c1
+    std::string bits = "11101001011000";
+    RmMTree t(bits);
+
+    std::cout << "close(1): " << t.close(1) << "\n";     // expected 6 (A)
+    std::cout << "open(3): " << t.open(3) << "\n";       // expected 2 (a1)
+    std::cout << "enclose(1): " << t.enclose(1) << "\n"; // expected 0 (root)
 }
 ```
 
