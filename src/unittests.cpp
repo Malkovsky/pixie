@@ -40,11 +40,13 @@ TEST(Rank512, Random) {
       a[i] = rng();
     }
     size_t rank = 0;
-    for (size_t i = 0; i <= 512; ++i) {
+    for (size_t i = 0; i < 512; ++i) {
       auto p = rank_512(a.data(), i);
       ASSERT_EQ(p, rank);
       rank += 1 & (a[i >> 6] >> (i & 63));
     }
+    auto p = rank_512(a.data(), 512);
+    ASSERT_EQ(p, rank);
   }
 }
 
