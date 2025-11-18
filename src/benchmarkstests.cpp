@@ -9,7 +9,6 @@
 using pixie::BitVector;
 using pixie::BitVectorInterleaved;
 
-
 TEST(BitVectorBenchmarkTest, SelectNonInterleaved10PercentFill) {
   for (size_t n = 4; n <= (1ull << 34); n <<= 2) {
     std::mt19937_64 rng(42);
@@ -67,6 +66,6 @@ TEST(BitVectorBenchmarkTest, SelectNonInterleaved) {
     for (int i = 0; i < 100000; i++) {
       uint64_t rank = rng() % max_rank;
       bv.select(rank);
-  }
+    }
   }
 }
