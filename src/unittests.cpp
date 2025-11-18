@@ -144,7 +144,8 @@ TEST(Select512, RankCompativility) {
 }
 
 TEST(BitVectorTest, Basic) {
-  std::vector<uint64_t> bits = {0b101010101};
+  std::vector<uint64_t> bits(8, 0);
+  bits[0] = 0b101010101;
   BitVector bv(bits, 9);
   EXPECT_EQ(bv.size(), 9);
   EXPECT_EQ(bv[0], 1);
