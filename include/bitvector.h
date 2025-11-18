@@ -355,7 +355,7 @@ class BitVectorInterleaved {
         offset_size_ -= num_bits;
         return result;
       }
-      uint64_t next = bits_[iterator_64_++];
+      uint64_t next = iterator_64_ < bits_.size() ? bits_[iterator_64_++] : 0;
       result ^= (next & first_bits_mask(num_bits - offset_size_))
                 << offset_size_;
       offset_bits_ = (num_bits - offset_size_ == 64)
