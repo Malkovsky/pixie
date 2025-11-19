@@ -70,7 +70,7 @@ Benchmarks are random 50/50 0-1 bitvectors up to $2^34$ bits.
 ./bench_rmm
 ```
 
-For visualization, write the CSV output to a file using `--benchmark_out=<file>` (e.g. `./bench_rmm --benchmark_out=rmm_bench.csv`) and plot it with `misc/plot_rmm.py`.
+Results print to stdout as CSV. Redirect to a file (e.g. `./bench_rmm > rmm_bench.csv`) and visualize it with `misc/plot_rmm.py`.
 
 ---
 
