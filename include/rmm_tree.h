@@ -8,6 +8,9 @@
 #include <limits>
 #include <string>
 #include <vector>
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
 
 namespace pixie {
 /**
@@ -71,6 +74,12 @@ class RmMTree {
   // segment (to handle "10" crossing) both needed for: rank10, select10.
   std::vector<uint8_t> node_first_bit, node_last_bit;
 
+  // leaf_prefix[k * leaf_prefix_stride + j] = excess(Lb + j) - excess(Lb), j in
+  // [0..leaf_size], Lb = k * block_bits. needed for:
+  // fwdsearch/bwdsearch/close/open/enclose
+  std::vector<int16_t> leaf_prefix;
+  size_t leaf_prefix_stride = 0;
+
  public:
   /**
    * @brief Sentinel for "not found".
@@ -133,9 +142,10 @@ class RmMTree {
     const size_t blk = block_of(i - 1);
     size_t ans = 0;
     if (blk > 0) {
-      const auto nodes = cover_blocks(0, blk - 1);
-      for (const size_t& v : nodes) {
-        ans += ones_in_node(v);
+      size_t nodes_buf[64];
+      const size_t cnt = cover_blocks_collect(0, blk - 1, nodes_buf);
+      for (size_t j = 0; j < cnt; ++j) {
+        ans += ones_in_node(nodes_buf[j]);
       }
     }
     const size_t Lb = blk * block_bits;
@@ -163,8 +173,7 @@ class RmMTree {
       return npos;
     }
     size_t base = 0;
-    const size_t leaf0 = first_leaf_index();
-    while (v < leaf0) {
+    while (v < first_leaf_index) {
       const size_t Lc = v << 1, Rc = Lc | 1;
       const uint32_t o_l = ones_in_node(Lc);
       if (o_l >= k) {
@@ -195,8 +204,7 @@ class RmMTree {
       return npos;
     }
     size_t base = 0;
-    const size_t leaf0 = first_leaf_index();
-    while (v < leaf0) {
+    while (v < first_leaf_index) {
       const size_t Lc = v << 1, Rc = Lc | 1;
       const size_t z_l = zeros(Lc);
       if (z_l >= k) {
@@ -255,8 +263,7 @@ class RmMTree {
       return npos;
     }
     size_t base = 0;
-    const size_t leaf0 = first_leaf_index();
-    while (ind < leaf0) {
+    while (ind < first_leaf_index) {
       const size_t Lc = ind << 1, Rc = Lc | 1;
       const size_t cross =
           (node_last_bit[Lc] == 1 && node_first_bit[Rc] == 0) ? 1u : 0u;
@@ -297,29 +304,24 @@ class RmMTree {
       return npos;
     }
 
-    const int start_excess = excess(i);
-    const int target = start_excess + d;
-
     // 1) scan the remainder of the current leaf
     const size_t blk = block_of(i);
     const size_t Lb = blk * block_bits;
     const size_t Rb = std::min(num_bits, Lb + block_bits);
-    int cur = start_excess;
-    for (size_t p = i; p < Rb; ++p) {
-      cur += bit(p) ? +1 : -1;
-      if (cur == target) {
-        return p;
-      }
+    int delta_leaf = 0;
+    const size_t pos_leaf = leaf_fwd_bp_simd(blk, Lb, i, d, delta_leaf);
+    if (pos_leaf != npos) {
+      return pos_leaf;
     }
 
-    // 2) suffix after the leaf: cover full blocks [blk+1 .. leaf_count-1]
-    const int excess_at_Rb = excess(Rb);
-    int need = target - excess_at_Rb;  // target expressed in coordinates of the
-                                       // current node start
-    if (blk + 1 <= (leaf_count ? leaf_count - 1 : 0)) {
-      const auto nodes = cover_blocks(blk + 1, leaf_count - 1);
+    int need = d - delta_leaf;
+    if (blk + 1 < leaf_count) {
+      size_t nodes_buf[64];
+      const size_t cnt =
+          cover_blocks_collect(blk + 1, leaf_count - 1, nodes_buf);
       size_t base = (blk + 1) * block_bits;
-      for (const size_t& v : nodes) {
+      for (size_t j = 0; j < cnt; ++j) {
+        const size_t v = nodes_buf[j];
         if (need == 0) {
           return base;
         }
@@ -344,30 +346,18 @@ class RmMTree {
     if (i > num_bits || i == 0) {
       return npos;
     }
-    const int start_excess = excess(i);
-    const int target = start_excess + d;
 
     // 1) scan inside the block
     const size_t blk = block_of(i - 1);
     const size_t Lb = blk * block_bits;
-    int cur = start_excess;
-    for (size_t p = i; p > Lb;) {
-      --p;
-      cur += bit(p) ? -1 : +1;
-      if (cur == target) {
-        return p;
-      }
-      if (p == 0) {
-        break;
-      }
-    }
-    const int excess_at_Lb = excess(Lb);
-    if (Lb < i && excess_at_Lb == target) {
-      return Lb;
+    int delta_leaf = 0;  // excess(i) - excess(Lb)
+    const size_t res = leaf_bwd_bp_simd(blk, Lb, i, d, delta_leaf);
+    if (res != npos) {
+      return res;
     }
 
-    // 2) climb up
-    int need = target - excess_at_Lb;
+    // need = target - excess(Lb) = excess(i) + d - excess(Lb) = delta_leaf + d
+    int need = delta_leaf + d;
     size_t v = leaf_index_of(Lb);
     size_t base = Lb;
     while (v > 1) {
@@ -437,10 +427,9 @@ class RmMTree {
     }
 
     // middle
-    const size_t leaf0 = first_leaf_index();
     if (blk_i + 1 <= blk_j - 1) {
-      size_t l = leaf0 + (blk_i + 1);
-      size_t r = leaf0 + (blk_j - 1);
+      size_t l = first_leaf_index + (blk_i + 1);
+      size_t r = first_leaf_index + (blk_j - 1);
       size_t Rnodes[64];
       int rn = 0;
 
@@ -545,10 +534,9 @@ class RmMTree {
     }
 
     // middle
-    const size_t leaf0 = first_leaf_index();
     if (blk_i + 1 <= blk_j - 1) {
-      size_t l = leaf0 + (blk_i + 1);
-      size_t r = leaf0 + (blk_j - 1);
+      size_t l = first_leaf_index + (blk_i + 1);
+      size_t r = first_leaf_index + (blk_j - 1);
       size_t Rnodes[64];
       int rn = 0;
 
@@ -724,9 +712,8 @@ class RmMTree {
     size_t total_cnt = (mn_first == INT_MAX ? 0u : (size_t)c_first);
     int pref = cur_first;  // offset for middle
 
-    const size_t leaf0 = first_leaf_index();
-    size_t l = leaf0 + blk_i + 1;
-    size_t r = leaf0 + blk_j - 1;
+    size_t l = first_leaf_index + blk_i + 1;
+    size_t r = first_leaf_index + blk_j - 1;
     size_t Rnodes[64];
     int rn = 0;
 
@@ -791,8 +778,8 @@ class RmMTree {
     // middle
     pref = cur_first;
     if (blk_i + 1 <= blk_j - 1) {
-      l = leaf0 + (blk_i + 1);
-      r = leaf0 + (blk_j - 1);
+      l = first_leaf_index + (blk_i + 1);
+      r = first_leaf_index + (blk_j - 1);
       rn = 0;
       while (l <= r) {
         if (l & 1) {
@@ -1079,15 +1066,30 @@ class RmMTree {
     uint8_t pos_first_max;    // pos of first maximum in this byte
   };
 
+  struct LUT8Tables {
+    std::array<ByteAgg, 256> agg;
+    /**
+     * @brief For each byte and each delta ∈ [-8..+8] — the first position in
+     * the byte (0..7) where the prefix equals delta; -1 if none
+     */
+    std::array<std::array<int8_t, 17>, 256> fwd_pos;
+    /**
+     * @brief For each byte and each delta ∈ [-8..+8] — the last position in the
+     * byte (0..7) where the prefix equals delta; -1 if none
+     */
+    std::array<std::array<int8_t, 17>, 256> bwd_pos;
+  };
+
   /**
-   * @brief Returns the static lookup table of byte aggregates.
+   * @brief Unified initialization of all byte-based LUTs.
    */
-  static inline const std::array<ByteAgg, 256>& LUT8() noexcept {
-    static const std::array<ByteAgg, 256> T = [] {
-      std::array<ByteAgg, 256> t{};
+  static inline const LUT8Tables& LUT8_ALL() noexcept {
+    static const LUT8Tables T = [] {
+      LUT8Tables tab{};
       for (int b = 0; b < 256; ++b) {
         int cur = 0, mn = INT_MAX, mx = INT_MIN, cnt = 0, rrc = 0;
         int pm = 0, pM = 0;
+        int pref[8];
         const auto get = [&](const int& k) {
           return (b >> k) & 1;
         };  // LSB-first
@@ -1097,6 +1099,7 @@ class RmMTree {
             ++rrc;
           }
           cur += bit ? +1 : -1;
+          pref[k] = cur;
           if (cur < mn) {
             mn = cur;
             cnt = 1;
@@ -1119,11 +1122,158 @@ class RmMTree {
         a.last_bit = get(7);
         a.pos_first_min = pm;
         a.pos_first_max = pM;
-        t[b] = a;
+        tab.agg[b] = a;
+        auto& fp = tab.fwd_pos[b];
+        auto& bp = tab.bwd_pos[b];
+        fp.fill(-1);
+        bp.fill(-1);
+        for (int d = -8; d <= 8; ++d) {
+          for (int k = 0; k < 8; ++k) {
+            if (pref[k] == d) {
+              fp[d + 8] = k;
+              break;
+            }
+          }
+          for (int k = 7; k >= 0; --k) {
+            if (pref[k] == d) {
+              bp[d + 8] = k;
+              break;
+            }
+          }
+        }
       }
-      return t;
+      return tab;
     }();
     return T;
+  }
+
+  /**
+   * @brief Byte-level aggregates.
+   */
+  static inline const std::array<ByteAgg, 256>& LUT8() noexcept {
+    return LUT8_ALL().agg;
+  }
+
+  /**
+   * @brief Position of the first occurrence of delta within the byte.
+   */
+  static inline const std::array<std::array<int8_t, 17>, 256>&
+  LUT8_FWD_POS() noexcept {
+    return LUT8_ALL().fwd_pos;
+  }
+
+  /**
+   * @brief Position of the last occurrence of delta within the byte.
+   */
+  static inline const std::array<std::array<int8_t, 17>, 256>&
+  LUT8_BWD_POS() noexcept {
+    return LUT8_ALL().bwd_pos;
+  }
+
+  /**
+   * @brief Forward search within a single leaf over the range [from, to).
+   * @param need required relative excess (relative to `from`).
+   * @return The position, or npos.
+   */
+  inline size_t scan_leaf_fwd(const size_t& from,
+                              const size_t& to,
+                              const int& need) const noexcept {
+    if (from >= to) {
+      return npos;
+    }
+    const auto& Agg = LUT8();
+    const auto& Pos = LUT8_FWD_POS();
+    int cur = 0;
+    size_t pos = from;
+    while (pos + 8 <= to) {
+      const uint8_t b = get_byte(pos);
+      const auto& a = Agg[b];
+      const int local = need - cur;
+      if (local >= a.min_prefix && local <= a.max_prefix && local >= -8 &&
+          local <= 8) {
+        const int8_t offset = Pos[b][local + 8];
+        if (offset >= 0) {
+          return pos + size_t(offset);
+        }
+      }
+      cur += a.excess_total;
+      pos += 8;
+    }
+
+    while (pos < to) {
+      cur += bit(pos) ? 1 : -1;
+      if (cur == need) {
+        return pos;
+      }
+      ++pos;
+    }
+
+    return npos;
+  }
+
+  /**
+   * @brief Backward search within a single leaf over [Lb, RB) (does not look to
+   * the right of RB).
+   * @param need         relative excess from Lb.
+   * @param allow_rb     whether RB may be used as a valid answer.
+   * @param right_border global right limit (as in descend_bwd).
+   */
+  inline size_t scan_leaf_bwd(const size_t& Lb,
+                              const size_t& RB,
+                              const int& need,
+                              const bool& allow_rb,
+                              const size_t& right_border) const noexcept {
+    if (Lb >= RB) {
+      if ((Lb < right_border || allow_rb) && need == 0) {
+        return Lb;
+      }
+      return npos;
+    }
+
+    const auto& Agg = LUT8();
+    const auto& PosLast = LUT8_BWD_POS();
+    int cur = 0;
+    size_t pos = Lb;
+    size_t last = npos;
+    while (pos + 8 <= RB) {
+      const uint8_t b = get_byte(pos);
+      const auto& a = Agg[b];
+      const int local = need - cur;
+      if (local >= a.min_prefix && local <= a.max_prefix && local >= -8 &&
+          local <= 8) {
+        const int8_t offset = PosLast[b][local + 8];
+        if (offset >= 0) {
+          const size_t j = pos + size_t(offset) + 1ull;
+          if (j <= RB) {
+            last = j;
+          }
+        }
+      }
+      cur += a.excess_total;
+      pos += 8;
+    }
+
+    while (pos < RB) {
+      cur += bit(pos) ? +1 : -1;
+      if (cur == need) {
+        last = pos + 1;
+      }
+      ++pos;
+    }
+
+    if (allow_rb && cur == need) {
+      return RB;
+    }
+
+    if (last != npos) {
+      return last;
+    }
+
+    if ((Lb < right_border || allow_rb) && need == 0) {
+      return Lb;
+    }
+
+    return npos;
   }
 
   /**
@@ -1150,8 +1300,7 @@ class RmMTree {
    * @return Position or npos.
    */
   size_t descend_first_max(size_t v, int d, size_t base) const noexcept {
-    const size_t leaf0 = first_leaf_index();
-    while (v < leaf0) {
+    while (v < first_leaf_index) {
       const size_t Lc = v << 1, Rc = Lc | 1;
       const int leftX = node_max_prefix_excess[Lc];
       const int rightX = node_total_excess[Lc] + node_max_prefix_excess[Rc];
@@ -1178,9 +1327,7 @@ class RmMTree {
   /**
    * @brief Heap index of the first leaf node.
    */
-  inline size_t first_leaf_index() const noexcept {
-    return std::bit_ceil(std::max<size_t>(1, leaf_count));
-  }
+  size_t first_leaf_index = 1;
 
   /**
    * @brief Block index containing position i.
@@ -1191,7 +1338,7 @@ class RmMTree {
    * @brief Heap index of the leaf whose segment starts at block_start.
    */
   size_t leaf_index_of(const size_t& block_start) const noexcept {
-    return first_leaf_index() + block_of(block_start);
+    return first_leaf_index + block_of(block_start);
   }
 
   /**
@@ -1199,9 +1346,8 @@ class RmMTree {
    * @details Walk up to compute base for internal nodes; direct for leaves.
    */
   size_t node_base(size_t v) const noexcept {
-    const size_t leaf0 = first_leaf_index();
-    if (v >= leaf0) {
-      return (v - leaf0) * block_bits;
+    if (v >= first_leaf_index) {
+      return (v - first_leaf_index) * block_bits;
     }
 
     size_t base = 0;
@@ -1219,9 +1365,8 @@ class RmMTree {
    * @details Returns node indices in left-to-right order.
    */
   std::vector<size_t> cover_blocks(const size_t& a, const size_t& b) const {
-    const size_t leaf0 = first_leaf_index();
-    size_t l = leaf0 + a;
-    size_t r = leaf0 + b;
+    size_t l = first_leaf_index + a;
+    size_t r = first_leaf_index + b;
     std::vector<size_t> Lnodes, Rnodes;
     while (l <= r) {
       if ((l & 1) == 1) {
@@ -1243,8 +1388,7 @@ class RmMTree {
    * equals 'need'.
    */
   size_t descend_fwd(size_t v, int need, size_t base) const noexcept {
-    const size_t leaf0 = first_leaf_index();
-    while (v < leaf0) {
+    while (v < first_leaf_index) {
       const size_t Lc = v << 1;
       const size_t Rc = Lc | 1;
       if (node_min_prefix_excess[Lc] <= need &&
@@ -1256,15 +1400,8 @@ class RmMTree {
         v = Rc;
       }
     }
-    const size_t Rb = std::min(base + segment_size_bits[v], num_bits);
-    int cur = 0;
-    for (size_t p = base; p < Rb; ++p) {
-      cur += bit(p) ? +1 : -1;
-      if (cur == need) {
-        return p;
-      }
-    }
-    return npos;
+    return scan_leaf_fwd(base, std::min(base + segment_size_bits[v], num_bits),
+                         need);
   }
 
   /**
@@ -1280,8 +1417,7 @@ class RmMTree {
                      const int& need,
                      const size_t& right_border,
                      const bool& allow_rb) const noexcept {
-    const size_t leaf0 = first_leaf_index();
-    while (v < leaf0) {
+    while (v < first_leaf_index) {
       const size_t Lc = v << 1;
       const size_t Rc = Lc | 1;
       const int need_r = need - node_total_excess[Lc];
@@ -1319,35 +1455,10 @@ class RmMTree {
       return npos;
     }
 
-    const size_t Lb = base;
-    const size_t Rb = std::min(base + segment_size_bits[v], num_bits);
-    const size_t RB = std::min(right_border, Rb);
-
-    int cur = 0;
-    for (size_t p = Lb; p < RB; ++p) {
-      cur += bit(p) ? +1 : -1;
-    }
-
-    if (allow_rb && cur == need) {
-      return RB;
-    }
-
-    for (size_t p = RB; p > Lb;) {
-      --p;
-      cur += bit(p) ? -1 : +1;
-      if (cur == need) {
-        return p;
-      }
-      if (p == 0) {
-        break;
-      }
-    }
-
-    if ((Lb < right_border || allow_rb) && cur == need) {
-      return Lb;
-    }
-
-    return npos;
+    return scan_leaf_bwd(
+        base,
+        std::min(right_border, std::min(base + segment_size_bits[v], num_bits)),
+        need, allow_rb, right_border);
   }
 
   /**
@@ -1355,8 +1466,7 @@ class RmMTree {
    * (minimum).
    */
   size_t descend_first_min(size_t v, int d, size_t base) const noexcept {
-    const size_t leaf0 = first_leaf_index();
-    while (v < leaf0) {
+    while (v < first_leaf_index) {
       const size_t Lc = v << 1, Rc = Lc | 1;
       const int leftm = node_min_prefix_excess[Lc];
       const int rightm = node_total_excess[Lc] + node_min_prefix_excess[Rc];
@@ -1388,8 +1498,7 @@ class RmMTree {
                          int d,
                          size_t q,
                          size_t base) const noexcept {
-    const size_t leaf0 = first_leaf_index();
-    while (v < leaf0) {
+    while (v < first_leaf_index) {
       const size_t Lc = v << 1;
       const size_t Rc = Lc | 1;
       const int leftm = node_min_prefix_excess[Lc];
@@ -1529,24 +1638,13 @@ class RmMTree {
    * @return Bit index [0..63] or −1 if not found.
    */
   static inline int select_in_word(std::uint64_t w, size_t k) noexcept {
-#ifdef __GNUC__
     while (w) {
       if (--k == 0) {
-        return __builtin_ctzll(w);
+        return std::countr_zero(w);
       }
       w &= (w - 1);
     }
     return -1;
-#else
-    for (int i = 0; i < 64; ++i) {
-      if ((w >> i) & 1u) {
-        if (--k == 0) {
-          return i;
-        }
-      }
-    }
-    return -1;
-#endif
   }
 
   /**
@@ -1576,7 +1674,8 @@ class RmMTree {
                                    const size_t& Bpow2) noexcept {
     static constexpr size_t AUX_SLOT_BYTES =
         sizeof(uint32_t) + sizeof(int32_t) + sizeof(int32_t) + sizeof(int32_t) +
-        sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint8_t);
+        sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint8_t) +
+        sizeof(uint8_t) + sizeof(int16_t);
 
     size_t bb = ceil_div(Nbits, 64) * 8;
     if (bb == 0) {
@@ -1726,6 +1825,42 @@ class RmMTree {
   }
 
   /**
+   * @brief Cover the range of whole blocks [a..b] (inclusive) with tree nodes,
+   * writing them to `out` from left to right.
+   * @return The number of nodes written.
+   */
+  inline size_t cover_blocks_collect(const size_t& a,
+                                     const size_t& b,
+                                     size_t (&out)[64]) const noexcept {
+    if (leaf_count == 0 || a > b) {
+      return 0;
+    }
+    size_t l = first_leaf_index + a;
+    size_t r = first_leaf_index + b;
+    size_t Lnodes[32];
+    size_t Rnodes[32];
+    size_t Ln = 0, Rn = 0;
+    while (l <= r) {
+      if (l & 1) {
+        Lnodes[Ln++] = l++;
+      }
+      if ((r & 1) == 0) {
+        Rnodes[Rn++] = r--;
+      }
+      l >>= 1;
+      r >>= 1;
+    }
+    size_t ind = 0;
+    for (size_t i = 0; i < Ln; ++i) {
+      out[ind++] = Lnodes[i];
+    }
+    while (Rn > 0) {
+      out[ind++] = Rnodes[--Rn];
+    }
+    return ind;
+  }
+
+  /**
    * @brief Select q-th minimum (1-based) inside [l..r] inclusive in two 8-bit
    * passes.
    * @details First pass finds global minimum, second selects the q-th position.
@@ -1808,6 +1943,174 @@ class RmMTree {
       ++p;
     }
 
+    return npos;
+  }
+
+  /**
+   * @brief Efficiently searches for the first occurrence of a 16-bit value in
+   * the range [begin, end_excl) using AVX2 when available.
+   * @details Loads 16 consecutive int16_t elements (256 bits) per iteration.
+   * Compares them against the target value using vectorized equality.
+   * If any match is found, extracts the index of the first matching lane from
+   * the comparison mask. Falls back to a scalar tail loop for leftover
+   * elements, or to a fully scalar search if AVX2 is not supported.
+   * @returns The index of the first match, or npos if the value is not found.
+   */
+  static inline size_t find_forward_equal_i16_avx2(
+      const int16_t* arr,
+      const size_t& begin,
+      const size_t& end_excl,
+      const int16_t& target) noexcept {
+#if defined(__AVX2__)
+    static constexpr size_t STEP = 16;
+    __m256i vtarget = _mm256_set1_epi16(target);
+    size_t i = begin;
+    size_t n = end_excl;
+    for (; i + STEP <= n; i += STEP) {
+      unsigned mask = _mm256_movemask_epi8(_mm256_cmpeq_epi16(
+          _mm256_loadu_si256(reinterpret_cast<const __m256i*>(arr + i)),
+          vtarget));
+      if (mask) {
+        return i + (std::countr_zero(mask) >> 1);
+      }
+    }
+    for (; i < n; ++i) {
+      if (arr[i] == target) {
+        return i;
+      }
+    }
+    return npos;
+#else
+    for (size_t i = begin; i < end_excl; ++i) {
+      if (arr[i] == target) {
+        return i;
+      }
+    }
+    return npos;
+#endif
+  }
+
+  /**
+   * @brief Performs a backward search for a 16-bit value in a given range.
+   * @details Scans the array segment [begin .. end_incl] from right to left.
+   * If AVX2 is available, processes data in 256-bit blocks (16 × int16_t) using
+   * vectorized equality comparison for higher throughput. Falls back to a
+   * scalar backward scan when AVX2 is not supported. Returns the index of the
+   * rightmost occurrence of `target`, or `npos` if no match is found.
+   */
+  static inline size_t find_backward_equal_i16_avx2(
+      const int16_t* arr,
+      const size_t& begin,
+      const size_t& end_incl,
+      const int16_t& target) noexcept {
+    if (begin > end_incl) {
+      return npos;
+    }
+#if defined(__AVX2__)
+    static constexpr size_t STEP = 16;
+    size_t len = end_incl + 1 - begin;
+    size_t nblocks = len / STEP;
+    __m256i vtarget = _mm256_set1_epi16(target);
+    if (nblocks > 0) {
+      size_t first_block = begin + (len % STEP);
+      for (size_t p = first_block + (nblocks - 1) * STEP;;) {
+        unsigned mask = _mm256_movemask_epi8(_mm256_cmpeq_epi16(
+            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(arr + p)),
+            vtarget));
+        if (mask) {
+          return p + ((31u - std::countl_zero(mask)) >> 1);
+        }
+        if (p == first_block) {
+          break;
+        }
+        p -= STEP;
+      }
+
+      for (size_t i = first_block; i > begin;) {
+        --i;
+        if (arr[i] == target) {
+          return i;
+        }
+      }
+      return npos;
+    } else {
+      for (size_t i = end_incl + 1; i > begin;) {
+        --i;
+        if (arr[i] == target) {
+          return i;
+        }
+      }
+      return npos;
+    }
+#else
+    for (size_t i = end_incl + 1; i > begin;) {
+      --i;
+      if (arr[i] == target) {
+        return i;
+      }
+    }
+    return npos;
+#endif
+  }
+
+  /**
+   * @brief Performs a forward search within a single leaf.
+   * @details Starting from position `i` (global index) inside the leaf [Lb ..
+   * Lb+len), it looks for the nearest position where the excess changes by `d`
+   * relative to `i`. The function uses a SIMD-accelerated search over the
+   * leaf’s prefix-sum array `lp`. If a matching position is found, returns its
+   * global index. If not found, returns `npos` and sets `delta_leaf` to the net
+   * excess change from `i` to the end of the leaf.
+   */
+  inline size_t leaf_fwd_bp_simd(const size_t& leaf_ind,
+                                 const size_t& Lb,
+                                 const size_t& i,
+                                 const int& d,
+                                 int& delta_leaf) const noexcept {
+    const size_t len = segment_size_bits[first_leaf_index + leaf_ind];
+    const int16_t* lp = &leaf_prefix[leaf_ind * leaf_prefix_stride];
+    const size_t pos = i - Lb;
+    if (pos > len) {
+      delta_leaf = 0;
+      return npos;
+    }
+    const int16_t start_pref = lp[pos];
+    size_t match_ind =
+        find_forward_equal_i16_avx2(lp, pos + 1, len + 1, start_pref + d);
+    if (match_ind != npos) {
+      return Lb + match_ind - 1;
+    }
+    delta_leaf = lp[len] - start_pref;
+    return npos;
+  }
+
+  /**
+   * @brief Performs a backward search within a leaf segment for a position `p <
+   * i` such that the excess difference from `i` equals `d`.
+   * @details Uses SIMD (AVX2) to scan the leaf’s prefix-sum array of excess
+   * values. Returns the absolute bit position if found; otherwise returns npos
+   * and outputs the leaf-local excess delta at position `i`.
+   */
+  inline size_t leaf_bwd_bp_simd(const size_t& leaf_ind,
+                                 const size_t& Lb,
+                                 const size_t& i,
+                                 const int& d,
+                                 int& delta_leaf) const noexcept {
+    const int16_t* lp = &leaf_prefix[leaf_ind * leaf_prefix_stride];
+    const size_t pos = i - Lb;
+    if (pos > segment_size_bits[first_leaf_index + leaf_ind]) {
+      delta_leaf = 0;
+      return npos;
+    }
+    const int16_t start_pref = lp[pos];
+    if (pos > 0) {
+      const size_t match_ind =
+          find_backward_equal_i16_avx2(lp, 0, pos - 1, start_pref + d);
+      if (match_ind != npos) {
+        return Lb + match_ind;
+      }
+    }
+    delta_leaf = start_pref;
     return npos;
   }
 
@@ -1941,8 +2244,8 @@ class RmMTree {
 #endif
 
     leaf_count = ceil_div(num_bits, block_bits);
-    const size_t leaf0 = first_leaf_index();
-    const size_t tree_size = leaf0 + leaf_count - 1;
+    first_leaf_index = std::bit_ceil(std::max<size_t>(1, leaf_count));
+    const size_t tree_size = first_leaf_index + leaf_count - 1;
     segment_size_bits.assign(tree_size + 1, 0);
     node_total_excess.assign(tree_size + 1, 0);
     node_min_prefix_excess.assign(tree_size + 1, 0);
@@ -1951,10 +2254,12 @@ class RmMTree {
     node_pattern10_count.assign(tree_size + 1, 0);
     node_first_bit.assign(tree_size + 1, 0);
     node_last_bit.assign(tree_size + 1, 0);
+    leaf_prefix_stride = block_bits + 1;
+    leaf_prefix.assign(leaf_count * leaf_prefix_stride, 0);
 
     // leaves
     for (size_t k = 0; k < leaf_count; ++k) {
-      const size_t v = leaf0 + k;
+      const size_t v = first_leaf_index + k;
       const size_t Lb = k * block_bits;
       const size_t Rb = std::min(num_bits, Lb + block_bits);
       segment_size_bits[v] = Rb - Lb;
@@ -2032,9 +2337,16 @@ class RmMTree {
       node_max_prefix_excess[v] = (segment_size_bits[v] == 0 ? 0 : mx);
       node_min_count[v] = mn_cnt;
       node_pattern10_count[v] = (uint32_t)rrc;
+      int16_t* lp = &leaf_prefix[k * leaf_prefix_stride];
+      int16_t acc = 0;
+      lp[0] = 0;
+      for (size_t pos = Lb, i = 1; pos < Rb; ++pos, ++i) {
+        acc += bit(pos) ? 1 : -1;
+        lp[i] = acc;
+      }
     }
     // internal nodes
-    for (size_t v = leaf0 - 1; v >= 1; --v) {
+    for (size_t v = first_leaf_index - 1; v >= 1; --v) {
       const size_t Lc = v << 1;
       const size_t Rc = Lc | 1;
       const bool has_l = (Lc <= tree_size) && segment_size_bits[Lc];
