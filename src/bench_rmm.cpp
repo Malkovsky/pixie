@@ -435,8 +435,8 @@ int main(int argc, char** argv) {
   };
 
   static vector<string> extra;
-  if (!has("--benchmark_out_format")) {
-    extra.emplace_back("--benchmark_out_format=csv");
+  if (!has("--benchmark_format")) {
+    extra.emplace_back("--benchmark_format=csv");
   }
   if (!has("--benchmark_counters_tabular")) {
     extra.emplace_back("--benchmark_counters_tabular=true");
