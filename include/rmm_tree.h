@@ -1230,43 +1230,21 @@ class RmMTree {
       return npos;
     }
 
-    const auto& Agg = LUT8();
-    const auto& PosLast = LUT8_BWD_POS();
-    int cur = 0;
-    size_t pos = Lb;
-    size_t last = npos;
-    while (pos + 8 <= RB) {
-      const uint8_t b = get_byte(pos);
-      const auto& a = Agg[b];
-      const int local = need - cur;
-      if (local >= a.min_prefix && local <= a.max_prefix && local >= -8 &&
-          local <= 8) {
-        const int8_t offset = PosLast[b][local + 8];
-        if (offset >= 0) {
-          const size_t j = pos + size_t(offset) + 1ull;
-          if (j <= RB) {
-            last = j;
-          }
+    const int16_t* lp = &leaf_prefix[block_of(Lb) * leaf_prefix_stride];
+    const size_t end_incl = RB - Lb;
+    if (end_incl > 0) {
+#if defined(__AVX2__)
+      const size_t pos = find_backward_equal_i16_avx2(lp, 1, end_incl, need);
+      if (pos != npos) {
+        return Lb + pos;
+      }
+#else
+      for (size_t i = end_incl; i > 0; --i) {
+        if (lp[i] == need) {
+          return Lb + i;
         }
       }
-      cur += a.excess_total;
-      pos += 8;
-    }
-
-    while (pos < RB) {
-      cur += bit(pos) ? +1 : -1;
-      if (cur == need) {
-        last = pos + 1;
-      }
-      ++pos;
-    }
-
-    if (allow_rb && cur == need) {
-      return RB;
-    }
-
-    if (last != npos) {
-      return last;
+#endif
     }
 
     if ((Lb < right_border || allow_rb) && need == 0) {
