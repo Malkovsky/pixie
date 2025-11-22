@@ -58,7 +58,7 @@ After building:
 
 ### BitVector
 
-Benchmarks are random 50/50 0-1 bitvectors up to $2^34$ bits.
+Benchmarks are random 50/50 0-1 bitvectors up to $2^{34}$ bits.
 
 ```bash
 ./benchmarks
