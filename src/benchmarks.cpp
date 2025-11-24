@@ -1,13 +1,13 @@
 #include <benchmark/benchmark.h>
 #include <bitvector.h>
 #ifdef PIXIE_THIRD_PARTY_BENCHMARKS
-// TODO: change the pasta/bit_vector usage of std::aligned_alloc 
+// TODO: change the pasta/bit_vector usage of std::aligned_alloc
 #include <pasta/bit_vector/bit_vector.hpp>
 #endif
 #include <cstdlib>
-
 #include <random>
 #include <vector>
+
 
 static void BM_RankNonInterleaved(benchmark::State& state) {
   size_t n = state.range(0);
