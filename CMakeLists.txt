@@ -41,7 +41,7 @@ FetchContent_MakeAvailable(googlebenchmark)
 FetchContent_Declare(
   pasta_bit_vector
   GIT_REPOSITORY https://github.com/pasta-toolbox/bit_vector.git
-  GIT_TAG v1.0.1
+  GIT_TAG origin/main
 )
 FetchContent_MakeAvailable(pasta_bit_vector)
 
