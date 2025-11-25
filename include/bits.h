@@ -84,7 +84,7 @@ uint64_t rank_512(const uint64_t* x, uint64_t count) {
 
 #else
 
-  uint64_t last_uint = count >> 6;
+  uint64_t last_uint = count < 512 ? count >> 6 : 8;
 
   uint64_t pop_val = 0;
 
@@ -92,9 +92,9 @@ uint64_t rank_512(const uint64_t* x, uint64_t count) {
     pop_val += std::popcount(x[i]);
   }
 
-  uint64_t final = x[last_uint] & first_bits_mask(count & 63);
-
-  pop_val += std::popcount(final);
+  pop_val += count < 512
+                 ? std::popcount(x[last_uint] & first_bits_mask(count & 63))
+                 : 0;
   return pop_val;
 
 #endif

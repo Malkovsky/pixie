@@ -1,8 +1,24 @@
 cmake_minimum_required(VERSION 3.12)
 project(pixie)
 
+
 set(MARCH "native" CACHE STRING "march compilier flag")
 set(CMAKE_CXX_FLAGS "-march=${MARCH}")
+message(STATUS "MARCH is '${MARCH}'")
+
+option(DISABLE_AVX512 "Disable AVX512 instructions" OFF)
+if(DISABLE_AVX512)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mno-avx512f")
+    message(STATUS "DISABLE_AVX512 is ON")
+endif()
+
+option(ENABLE_ADDRESS_SANITIZER "Enable AddressSanitizer" OFF)
+if(ENABLE_ADDRESS_SANITIZER)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
+    set(CMAKE_LINKER_FLAGS "${CMAKE_LINKER_FLAGS} -fsanitize=address")
+    message(STATUS "AddressSanitizer is ON")
+endif()
+
 include(FetchContent)
 FetchContent_Declare(
     googletest
@@ -42,6 +58,17 @@ target_include_directories(unittests
 )
 set_property(TARGET unittests PROPERTY CXX_STANDARD 20)
 target_link_libraries(unittests
+    gtest
+    gtest_main)
+
+add_executable(benchmark_tests
+    src/benchmark_tests.cpp)
+target_include_directories(benchmark_tests
+    PUBLIC include
+    PUBLIC ${GOOGLETEST_SOURCE_DIR}/include
+)
+set_property(TARGET benchmark_tests PROPERTY CXX_STANDARD 20)
+target_link_libraries(benchmark_tests
     gtest
     gtest_main)
 
