@@ -1,12 +1,10 @@
 name: CMake Build and Run Benchmark Tests
 
 on:
-  schedule:
-    - cron: '0 0 * * *'
-
-  workflow_dispatch:
-  
   push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
   build-and-test:
