@@ -8,7 +8,6 @@
 #include <random>
 #include <vector>
 
-
 static void BM_RankNonInterleaved(benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
