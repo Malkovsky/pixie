@@ -6,10 +6,10 @@ set(MARCH "native" CACHE STRING "march compilier flag")
 set(CMAKE_CXX_FLAGS "-march=${MARCH}")
 message(STATUS "MARCH is '${MARCH}'")
 
-option(USE_NO_AVX512 "Disable AVX512 instructions" OFF)
-if(USE_NO_AVX512)
+option(DISABLE_AVX512 "Disable AVX512 instructions" OFF)
+if(DISABLE_AVX512)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mno-avx512f")
-    message(STATUS "USE_NO_AVX512 is ON")
+    message(STATUS "DISABLE_AVX512 is ON")
 endif()
 
 option(ENABLE_ADDRESS_SANITIZER "Enable AddressSanitizer" OFF)
@@ -61,14 +61,14 @@ target_link_libraries(unittests
     gtest
     gtest_main)
 
-add_executable(benchmarkstests
-    src/benchmarkstests.cpp)
-target_include_directories(benchmarkstests
+add_executable(benchmark_tests
+    src/benchmark_tests.cpp)
+target_include_directories(benchmark_tests
     PUBLIC include
     PUBLIC ${GOOGLETEST_SOURCE_DIR}/include
 )
-set_property(TARGET benchmarkstests PROPERTY CXX_STANDARD 20)
-target_link_libraries(benchmarkstests
+set_property(TARGET benchmark_tests PROPERTY CXX_STANDARD 20)
+target_link_libraries(benchmark_tests
     gtest
     gtest_main)
 
