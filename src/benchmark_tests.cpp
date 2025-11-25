@@ -13,7 +13,7 @@ TEST(BitVectorBenchmarkTest, SelectNonInterleaved10PercentFill) {
   for (size_t n = 4; n <= (1ull << 34); n <<= 2) {
     std::mt19937_64 rng(42);
 
-    std::vector<uint64_t> bits(1 + n / 64);
+    std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
     size_t num_ones = n * 0.1;
     for (int i = 0; i < num_ones; i++) {
       uint64_t pos = rng() % n;
@@ -34,7 +34,7 @@ TEST(BitVectorBenchmarkTest, SelectNonInterleaved90PercentFill) {
   for (size_t n = 4; n <= (1ull << 34); n <<= 2) {
     std::mt19937_64 rng(42);
 
-    std::vector<uint64_t> bits(1 + n / 64);
+    std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
     size_t num_ones = n * 0.9;
     for (int i = 0; i < num_ones; i++) {
       uint64_t pos = rng() % n;
@@ -55,7 +55,7 @@ TEST(BitVectorBenchmarkTest, SelectNonInterleaved) {
   for (size_t n = 4; n <= (1ull << 34); n <<= 2) {
     std::mt19937_64 rng(42);
 
-    std::vector<uint64_t> bits(1 + n / 64);
+    std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
     for (auto& x : bits) {
       x = rng();
     }

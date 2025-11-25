@@ -8,7 +8,7 @@ static void BM_RankNonInterleaved(benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
 
-  std::vector<uint64_t> bits(1 + n / 64);
+  std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
   for (auto& x : bits) {
     x = rng();
   }
@@ -24,7 +24,7 @@ static void BM_RankInterleaved(benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
 
-  std::vector<uint64_t> bits(1 + n / 64);
+  std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
   for (auto& x : bits) {
     x = rng();
   }
@@ -40,7 +40,7 @@ static void BM_SelectNonInterleaved(benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
 
-  std::vector<uint64_t> bits(1 + n / 64);
+  std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
   for (auto& x : bits) {
     x = rng();
   }
@@ -58,7 +58,7 @@ static void BM_RankNonInterleaved10PercentFill(benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
 
-  std::vector<uint64_t> bits(1 + n / 64);
+  std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
   size_t num_ones = n * 0.1;
   for (int i = 0; i < num_ones; i++) {
     uint64_t pos = rng() % n;
@@ -77,7 +77,7 @@ static void BM_SelectNonInterleaved10PercentFill(benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
 
-  std::vector<uint64_t> bits(1 + n / 64);
+  std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
   size_t num_ones = n * 0.1;
   for (int i = 0; i < num_ones; i++) {
     uint64_t pos = rng() % n;
@@ -98,7 +98,7 @@ static void BM_RankNonInterleaved90PercentFill(benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
 
-  std::vector<uint64_t> bits(1 + n / 64);
+  std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
   size_t num_ones = n * 0.9;
   for (int i = 0; i < num_ones; i++) {
     uint64_t pos = rng() % n;
@@ -117,7 +117,7 @@ static void BM_SelectNonInterleaved90PercentFill(benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
 
-  std::vector<uint64_t> bits(1 + n / 64);
+  std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
   size_t num_ones = n * 0.9;
   for (int i = 0; i < num_ones; i++) {
     uint64_t pos = rng() % n;
