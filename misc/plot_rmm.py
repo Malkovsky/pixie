@@ -1,17 +1,18 @@
 """
 Plot RmMTree benchmark results.
 
-This script reads a CSV produced by `bench_rmm.cpp` and,
+This script reads a JSON produced by `bench_rmm` and,
 for each operation, draws a scatter plot of individual points
 and a trend line (optionally median-smoothed).
 Plots are saved as PNG files and can also be shown interactively.
 
 Examples:
-  python3 plot_rmm.py rmm_bench.csv --save-dir plots --logx --smooth 3
-  python3 plot_rmm.py rmm_bench.csv --show
+  python3 plot_rmm.py rmm_bench.json --save-dir plots --logx --smooth 3
+  python3 plot_rmm.py rmm_bench.json --show
 """
 
 import argparse
+import json
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -41,20 +42,20 @@ OPS_ORDER = [
 def main():
     ap = argparse.ArgumentParser(
         description=(
-            "Read a CSV with RmMTree benchmark results and plot time per operation "
+            "Read a JSON with RmMTree benchmark results and plot time per operation "
             "versus sequence size N for each operation."
         ),
         epilog=(
             "Examples:\n"
-            "  python3 plot_rmm.py rmm_bench.csv --save-dir plots --logx --smooth 3\n"
-            "  python3 plot_rmm.py rmm_bench.csv --show"
+            "  python3 plot_rmm.py rmm_bench.json --save-dir plots --logx --smooth 3\n"
+            "  python3 plot_rmm.py rmm_bench.json --show"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument(
-        "csv",
-        metavar="CSV",
-        help="Path to the CSV file with results (output of bench_rmm.cpp).",
+        "json",
+        metavar="JSON",
+        help="Path to the JSON file with results (output of bench_rmm).",
     )
     ap.add_argument(
         "--save-dir",
@@ -77,7 +78,7 @@ def main():
         "--logx",
         action="store_true",
         help=(
-            "Use a logarithmic X axis (base 2). " "Handy when N grows in powers of two."
+            "Use a logarithmic X axis (base 2). Handy when N grows in powers of two."
         ),
     )
     ap.add_argument(
@@ -93,7 +94,11 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)
-    df = pd.read_csv(args.csv)
+    with open(args.json, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, dict) and "benchmarks" in data:
+        data = data["benchmarks"]
+    df = pd.DataFrame(data)
     df = df.dropna(subset=["cpu_time", "N"])
 
     for op in OPS_ORDER:
