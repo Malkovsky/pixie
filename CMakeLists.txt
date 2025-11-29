@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.12)
 project(pixie)
 
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(MARCH "native" CACHE STRING "march compilier flag")
 set(CMAKE_CXX_FLAGS "-march=${MARCH}")
@@ -35,16 +38,25 @@ FetchContent_Declare(
 set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "Disable Google Benchmark tests")
 FetchContent_MakeAvailable(googlebenchmark)
 
+FetchContent_Declare(
+  pasta_bit_vector
+  GIT_REPOSITORY https://github.com/pasta-toolbox/bit_vector.git
+  GIT_TAG origin/main
+)
+FetchContent_MakeAvailable(pasta_bit_vector)
+
+# add_subdirectory(third_party/pasta_bv)
+
 add_executable(benchmarks
     src/benchmarks.cpp)
 target_include_directories(benchmarks
     PUBLIC include
 )
-set_property(TARGET benchmarks PROPERTY CXX_STANDARD 20)
 
 target_link_libraries(benchmarks
     benchmark
-    benchmark_main)
+    benchmark_main
+    pasta_bit_vector)
 add_test(
     NAME Benchmarks
     COMMAND bt_benchmarks --benchmark_out=bm_report.csv --benchmark_out_format=csv
@@ -56,7 +68,6 @@ target_include_directories(unittests
     PUBLIC include
     PUBLIC ${GOOGLETEST_SOURCE_DIR}/include
 )
-set_property(TARGET unittests PROPERTY CXX_STANDARD 20)
 target_link_libraries(unittests
     gtest
     gtest_main)
@@ -77,7 +88,6 @@ add_executable(bench_rmm
 target_include_directories(bench_rmm
     PUBLIC include
 )
-set_property(TARGET bench_rmm PROPERTY CXX_STANDARD 20)
 target_link_libraries(bench_rmm
     benchmark)
 
@@ -87,7 +97,6 @@ target_include_directories(test_rmm
     PUBLIC include
     PUBLIC include/misc
 )
-set_property(TARGET test_rmm PROPERTY CXX_STANDARD 20)
 target_link_libraries(test_rmm
     gtest
     gtest_main)
