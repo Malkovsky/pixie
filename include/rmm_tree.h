@@ -1,4 +1,6 @@
 #pragma once
+#include <immintrin.h>
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -8,9 +10,8 @@
 #include <limits>
 #include <string>
 #include <vector>
-#if defined(__AVX2__)
-#include <immintrin.h>
-#endif
+
+#include "bits.h"
 
 namespace pixie {
 /**
@@ -132,8 +133,8 @@ class RmMTree {
   // --------- queries: rank/select/excess ----------
 
   /**
-   * @brief Number of ones in prefix [0, i).
-   * @details Returns 0 for i==0. Complexity: O(log n) with small constants.
+   * @brief Number of ones in prefix [0, @p i).
+   * @details Returns 0 for @p i == 0.
    */
   size_t rank1(const size_t& i) const {
     if (i == 0) {
@@ -155,14 +156,14 @@ class RmMTree {
   }
 
   /**
-   * @brief Number of zeros in prefix [0, i).
-   * @details Computed as i - rank1(i).
+   * @brief Number of zeros in prefix [0, @p i).
+   * @details Computed as @p i - rank1(@p i).
    */
   size_t rank0(const size_t& i) const { return i - rank1(i); }
 
   /**
-   * @brief 1-based select of the k-th one.
-   * @return Position of k-th '1' or npos if not found.
+   * @brief 1-based select of the @p k-th one.
+   * @return Position of @p k-th '1' or npos if not found.
    */
   size_t select1(size_t k) const {
     if (k == 0 || num_bits == 0) {
@@ -189,8 +190,8 @@ class RmMTree {
   }
 
   /**
-   * @brief 1-based select of the k-th zero.
-   * @return Position of k-th '0' or npos if not found.
+   * @brief 1-based select of the @p k-th zero.
+   * @return Position of @p k-th '0' or npos if not found.
    */
   size_t select0(size_t k) const {
     if (k == 0 || num_bits == 0) {
@@ -220,8 +221,8 @@ class RmMTree {
   }
 
   /**
-   * @brief Rank of the pattern "10" (starts) within [0, i).
-   * @details Counts p where bit[p]==1 and bit[p+1]==0 with p+1<i.
+   * @brief Rank of the pattern "10" (starts) within [0, @p i).
+   * @details Counts p where bit[p]==1 and bit[p+1]==0 with p+1<@p i.
    */
   size_t rank10(const size_t& i) const {
     if (i <= 1) {
@@ -251,7 +252,7 @@ class RmMTree {
   }
 
   /**
-   * @brief 1-based select of the k-th "10" start.
+   * @brief 1-based select of the @p k-th "10" start.
    * @return Position p such that bits[p..p+1]=="10", or npos if not found.
    */
   size_t select10(size_t k) const {
@@ -287,15 +288,15 @@ class RmMTree {
   }
 
   /**
-   * @brief Prefix excess on [0, i): +1 for '1', −1 for '0'.
+   * @brief Prefix excess on [0, @p i): +1 for '1', −1 for '0'.
    */
   inline int excess(const size_t& i) const {
     return int64_t(rank1(i)) * 2 - int64_t(i);
   }
 
   /**
-   * @brief Forward search: first position p ≥ i where excess(p) = excess(i) +
-   * d.
+   * @brief Forward search: first position p ≥ @p i where excess(p) =
+   * excess(@p i) + @p d.
    * @details Scans remainder of current leaf, then descends using precomputed
    * bounds. Returns npos if no such position exists.
    */
@@ -337,8 +338,8 @@ class RmMTree {
   }
 
   /**
-   * @brief Backward search: last position p ≤ i where excess(p) = excess(i) +
-   * d.
+   * @brief Backward search: last position p ≤ @p i where excess(p) =
+   * excess(@p i) + @p d.
    * @details Scans inside the leaf to the left, then climbs to examine left
    * siblings. Returns npos if no such position exists.
    */
@@ -394,7 +395,8 @@ class RmMTree {
   }
 
   /**
-   * @brief Position of the first minimum of excess on [i, j] (inclusive).
+   * @brief Position of the first minimum of excess on [@p i, @p j]
+   * (inclusive).
    * @return Position of first occurrence of minimum, or npos on invalid range.
    */
   size_t range_min_query_pos(const size_t& i, const size_t& j) const {
@@ -486,8 +488,10 @@ class RmMTree {
   }
 
   /**
-   * @brief Value of the minimum prefix excess on [i, j] relative to i.
-   * @details Equivalent to min_{t in [i..j]} (excess(t+1) - excess(i)).
+   * @brief Value of the minimum prefix excess on [@p i, @p j] relative to
+   * @p i.
+   * @details Equivalent to min_{t in [@p i..@p j]} (excess(t+1) - excess(@p
+   * i)).
    */
   int range_min_query_val(const size_t& i, const size_t& j) const {
     if (i > j || j >= num_bits) {
@@ -501,7 +505,8 @@ class RmMTree {
   }
 
   /**
-   * @brief Position of the first maximum of excess on [i, j] (inclusive).
+   * @brief Position of the first maximum of excess on [@p i, @p j]
+   * (inclusive).
    * @return Position of first occurrence of maximum, or npos on invalid range.
    */
   size_t range_max_query_pos(const size_t& i, const size_t& j) const {
@@ -593,7 +598,8 @@ class RmMTree {
   }
 
   /**
-   * @brief Value of the maximum prefix excess on [i, j] relative to i.
+   * @brief Value of the maximum prefix excess on [@p i, @p j] relative to
+   * @p i.
    */
   int range_max_query_val(const size_t& i, const size_t& j) const {
     if (i > j || j >= num_bits) {
@@ -607,7 +613,7 @@ class RmMTree {
   }
 
   /**
-   * @brief How many times the minimum prefix excess occurs on [i, j].
+   * @brief How many times the minimum prefix excess occurs on [@p i, @p j].
    */
   size_t mincount(const size_t& i, const size_t& j) const {
     if (i > j || j >= num_bits) {
@@ -681,8 +687,9 @@ class RmMTree {
   }
 
   /**
-   * @brief Position of the q-th (1-based) occurrence of the minimum on [i, j].
-   * @return Position or npos if q exceeds the number of minima.
+   * @brief Position of the @p q-th (1-based) occurrence of the minimum on
+   * [@p i, @p j].
+   * @return Position or npos if @p q exceeds the number of minima.
    */
   size_t minselect(const size_t& i, const size_t& j, size_t q) const {
     if (i > j || j >= num_bits || q == 0) {
@@ -823,7 +830,7 @@ class RmMTree {
   // ----- parentheses navigation (BP) -----
 
   /**
-   * @brief close(i): matching ')' for '(' at i.
+   * @brief close(@p i): matching ')' for '(' at @p i.
    * @return Position of matching ')', or npos.
    */
   inline size_t close(const size_t& i) const {
@@ -834,7 +841,7 @@ class RmMTree {
   }
 
   /**
-   * @brief open(i): matching '(' for ')' at i.
+   * @brief open(@p i): matching '(' for ')' at @p i.
    * @return Position of matching '(', or npos.
    */
   inline size_t open(const size_t& i) const {
@@ -847,7 +854,7 @@ class RmMTree {
   }
 
   /**
-   * @brief enclose(i): opening '(' that strictly encloses position i.
+   * @brief enclose(@p i): opening '(' that strictly encloses position @p i.
    * @return Position of enclosing '(', or npos.
    */
   inline size_t enclose(const size_t& i) const {
@@ -861,8 +868,8 @@ class RmMTree {
  private:
   /**
    * @brief Count "10" occurrences inside a 64-bit slice of given logical
-   * length.
-   * @details Only positions fully inside the slice are counted.
+   * length @p len.
+   * @details Only positions fully inside the slice @p slice are counted.
    */
   static inline size_t pop10_in_slice64(const std::uint64_t& slice,
                                         const int& len) noexcept {
@@ -879,8 +886,8 @@ class RmMTree {
   }
 
   /**
-   * @brief Rank of ones within [Lb, Rb).
-   * @details Works on word boundaries; Rb may equal Lb.
+   * @brief Rank of ones within [@p Lb, @p Rb).
+   * @details Works on word boundaries; @p Rb may equal @p Lb.
    */
   size_t rank1_in_block(const size_t& Lb, const size_t& Rb) const noexcept {
     if (Rb <= Lb) {
@@ -913,7 +920,7 @@ class RmMTree {
   }
 
   /**
-   * @brief Count "10" starts within [Lb, Rb).
+   * @brief Count "10" starts within [@p Lb, @p Rb).
    * @details Accounts for cross-word boundaries.
    */
   size_t rr_in_block(const size_t& Lb, const size_t& Rb) const noexcept {
@@ -961,7 +968,7 @@ class RmMTree {
   }
 
   /**
-   * @brief 1-based select of k-th "10" within [Lb, Rb).
+   * @brief 1-based select of @p k-th "10" within [@p Lb, @p Rb).
    * @return Position or npos.
    */
   size_t select10_in_block(const size_t& Lb,
@@ -1171,8 +1178,8 @@ class RmMTree {
   }
 
   /**
-   * @brief Forward search within a single leaf over the range [from, to).
-   * @param need required relative excess (relative to `from`).
+   * @brief Forward search within a single leaf over the range [@p from, @p to).
+   * @param need required relative excess (relative to @p from).
    * @return The position, or npos.
    */
   inline size_t scan_leaf_fwd(const size_t& from,
@@ -1212,10 +1219,10 @@ class RmMTree {
   }
 
   /**
-   * @brief Backward search within a single leaf over [Lb, RB) (does not look to
-   * the right of RB).
-   * @param need         relative excess from Lb.
-   * @param allow_rb     whether RB may be used as a valid answer.
+   * @brief Backward search within a single leaf over [@p Lb, @p RB) (does not
+   * look to the right of @p RB).
+   * @param need         relative excess from @p Lb.
+   * @param allow_rb     whether @p RB may be used as a valid answer.
    * @param right_border global right limit (as in descend_bwd).
    */
   inline size_t scan_leaf_bwd(const size_t& Lb,
@@ -1233,18 +1240,11 @@ class RmMTree {
     const int16_t* lp = &leaf_prefix[block_of(Lb) * leaf_prefix_stride];
     const size_t end_incl = RB - Lb;
     if (end_incl > 0) {
-#if defined(__AVX2__)
-      const size_t pos = find_backward_equal_i16_avx2(lp, 1, end_incl, need);
+      const size_t pos =
+          ::find_backward_equal_i16_avx2(lp, 1, end_incl, need, npos);
       if (pos != npos) {
         return Lb + pos;
       }
-#else
-      for (size_t i = end_incl; i > 0; --i) {
-        if (lp[i] == need) {
-          return Lb + i;
-        }
-      }
-#endif
     }
 
     if ((Lb < right_border || allow_rb) && need == 0) {
@@ -1255,7 +1255,8 @@ class RmMTree {
   }
 
   /**
-   * @brief Extract 8 bits starting at position pos (LSB-first across words).
+   * @brief Extract 8 bits starting at position @p pos (LSB-first across
+   * words).
    */
   inline uint8_t get_byte(const size_t& pos) const noexcept {
     const size_t w = pos >> 6;
@@ -1271,7 +1272,7 @@ class RmMTree {
 
   /**
    * @brief Descend to the first (leftmost) maximum with node-relative prefix
-   * equal to d.
+   * equal to @p d.
    * @param v Node index.
    * @param d Target prefix within node coordinates.
    * @param base Starting global position of node.
@@ -1308,19 +1309,19 @@ class RmMTree {
   size_t first_leaf_index = 1;
 
   /**
-   * @brief Block index containing position i.
+   * @brief Block index containing position @p i.
    */
   size_t block_of(const size_t& i) const noexcept { return i / block_bits; }
 
   /**
-   * @brief Heap index of the leaf whose segment starts at block_start.
+   * @brief Heap index of the leaf whose segment starts at @p block_start.
    */
   size_t leaf_index_of(const size_t& block_start) const noexcept {
     return first_leaf_index + block_of(block_start);
   }
 
   /**
-   * @brief Starting global position for node v (0-indexed).
+   * @brief Starting global position for node @p v (0-indexed).
    * @details Walk up to compute base for internal nodes; direct for leaves.
    */
   size_t node_base(size_t v) const noexcept {
@@ -1338,8 +1339,8 @@ class RmMTree {
   }
 
   /**
-   * @brief Cover a range of whole blocks [a..b] (inclusive) with O(log n)
-   * maximal nodes.
+   * @brief Cover a range of whole blocks [@p a..@p b] (inclusive) with O(log
+   * n) maximal nodes.
    * @details Returns node indices in left-to-right order.
    */
   std::vector<size_t> cover_blocks(const size_t& a, const size_t& b) const {
@@ -1363,7 +1364,7 @@ class RmMTree {
 
   /**
    * @brief Descend for fwdsearch to find first position where relative prefix
-   * equals 'need'.
+   * equals @p need.
    */
   size_t descend_fwd(size_t v, int need, size_t base) const noexcept {
     while (v < first_leaf_index) {
@@ -1385,9 +1386,9 @@ class RmMTree {
   /**
    * @brief Descend for bwdsearch to return the rightmost solution.
    * @param v Current node.
-   * @param base Left border of node v.
-   * @param need Target relative prefix inside v.
-   * @param right_border Global right limit (exclusive if !allow_rb).
+   * @param base Left border of node @p v.
+   * @param need Target relative prefix inside @p v.
+   * @param right_border Global right limit (exclusive if !@p allow_rb).
    * @param allow_rb Whether right border is allowed to match.
    */
   size_t descend_bwd(size_t v,
@@ -1440,8 +1441,8 @@ class RmMTree {
   }
 
   /**
-   * @brief Descend to find first position where node-relative prefix equals d
-   * (minimum).
+   * @brief Descend to find first position where node-relative prefix equals
+   * @p d (minimum).
    */
   size_t descend_first_min(size_t v, int d, size_t base) const noexcept {
     while (v < first_leaf_index) {
@@ -1469,8 +1470,8 @@ class RmMTree {
   }
 
   /**
-   * @brief Descend to find the q-th minimum (1-based) where node-relative
-   * prefix equals d.
+   * @brief Descend to find the @p q-th minimum (1-based) where node-relative
+   * prefix equals @p d.
    */
   size_t descend_qth_min(size_t v,
                          int d,
@@ -1501,7 +1502,7 @@ class RmMTree {
   }
 
   /**
-   * @brief 1-based select of k-th '1' within [Lb, Rb).
+   * @brief 1-based select of @p k-th '1' within [@p Lb, @p Rb).
    */
   size_t select1_in_block(const size_t& Lb,
                           const size_t& Rb,
@@ -1550,7 +1551,7 @@ class RmMTree {
   }
 
   /**
-   * @brief 1-based select of k-th '0' within [Lb, Rb).
+   * @brief 1-based select of @p k-th '0' within [@p Lb, @p Rb).
    */
   size_t select0_in_block(const size_t& Lb,
                           const size_t& Rb,
@@ -1612,7 +1613,7 @@ class RmMTree {
   }
 
   /**
-   * @brief 1-based select of k-th set bit inside a 64-bit word.
+   * @brief 1-based select of @p k-th set bit inside a 64-bit word.
    * @return Bit index [0..63] or −1 if not found.
    */
   static inline int select_in_word(std::uint64_t w, size_t k) noexcept {
@@ -1665,8 +1666,9 @@ class RmMTree {
   }
 
   /**
-   * @brief Choose minimal block size (power of two) keeping overhead ≤ cap.
-   * @details Returns 64 if cap < 0 (no constraint). Clamped to ≤16384 or Nbits.
+   * @brief Choose minimal block size (power of two) keeping overhead ≤ @p cap.
+   * @details Returns 64 if @p cap < 0 (no constraint). Clamped to ≤16384 or
+   * @p Nbits.
    */
   static inline size_t choose_block_bits_for_overhead(
       const size_t& Nbits,
@@ -1724,30 +1726,31 @@ class RmMTree {
   }
 
   /**
-   * @brief Read bit at position i (LSB-first across words).
+   * @brief Read bit at position @p i (LSB-first across words).
    */
   inline int bit(const size_t& i) const noexcept {
     return (bits[i >> 6] >> (i & 63)) & 1u;
   }
 
   /**
-   * @brief Set bit at position i to 1.
+   * @brief Set bit at position @p i to 1.
    */
   inline void set1(const size_t& i) noexcept {
     bits[i >> 6] |= (std::uint64_t(1) << (i & 63));
   }
 
   /**
-   * @brief Number of ones in node v computed from size and total excess.
+   * @brief Number of ones in node @p v computed from size and total excess.
    */
   inline uint32_t ones_in_node(const size_t& v) const noexcept {
     return ((int64_t)segment_size_bits[v] + (int64_t)node_total_excess[v]) >> 1;
   }
 
   /**
-   * @brief Scan [l..r] inclusive, computing minimum value and how many times it
-   * is attained.
-   * @details Uses 8-bit LUT for speed; outputs cur at end, mn, and count.
+   * @brief Scan [@p l..@p r] inclusive, computing minimum value and how many
+   * times it is attained.
+   * @details Uses 8-bit LUT for speed; outputs @p cur at end, @p mn, and
+   * @p cnt.
    */
   inline void scan_range_min_count8(size_t l,
                                     const size_t& r,
@@ -1803,8 +1806,8 @@ class RmMTree {
   }
 
   /**
-   * @brief Cover the range of whole blocks [a..b] (inclusive) with tree nodes,
-   * writing them to `out` from left to right.
+   * @brief Cover the range of whole blocks [@p a..@p b] (inclusive) with tree
+   * nodes, writing them to @p out from left to right.
    * @return The number of nodes written.
    */
   inline size_t cover_blocks_collect(const size_t& a,
@@ -1839,9 +1842,10 @@ class RmMTree {
   }
 
   /**
-   * @brief Select q-th minimum (1-based) inside [l..r] inclusive in two 8-bit
-   * passes.
-   * @details First pass finds global minimum, second selects the q-th position.
+   * @brief Select @p q-th minimum (1-based) inside [@p l..@p r] inclusive in
+   * two 8-bit passes.
+   * @details First pass finds global minimum, second selects the @p q-th
+   * position.
    */
   inline size_t qth_min_in_block(const size_t& l,
                                  const size_t& r,
@@ -1925,120 +1929,13 @@ class RmMTree {
   }
 
   /**
-   * @brief Efficiently searches for the first occurrence of a 16-bit value in
-   * the range [begin, end_excl) using AVX2 when available.
-   * @details Loads 16 consecutive int16_t elements (256 bits) per iteration.
-   * Compares them against the target value using vectorized equality.
-   * If any match is found, extracts the index of the first matching lane from
-   * the comparison mask. Falls back to a scalar tail loop for leftover
-   * elements, or to a fully scalar search if AVX2 is not supported.
-   * @returns The index of the first match, or npos if the value is not found.
-   */
-  static inline size_t find_forward_equal_i16_avx2(
-      const int16_t* arr,
-      const size_t& begin,
-      const size_t& end_excl,
-      const int16_t& target) noexcept {
-#if defined(__AVX2__)
-    static constexpr size_t STEP = 16;
-    __m256i vtarget = _mm256_set1_epi16(target);
-    size_t i = begin;
-    size_t n = end_excl;
-    for (; i + STEP <= n; i += STEP) {
-      unsigned mask = _mm256_movemask_epi8(_mm256_cmpeq_epi16(
-          _mm256_loadu_si256(reinterpret_cast<const __m256i*>(arr + i)),
-          vtarget));
-      if (mask) {
-        return i + (std::countr_zero(mask) >> 1);
-      }
-    }
-    for (; i < n; ++i) {
-      if (arr[i] == target) {
-        return i;
-      }
-    }
-    return npos;
-#else
-    for (size_t i = begin; i < end_excl; ++i) {
-      if (arr[i] == target) {
-        return i;
-      }
-    }
-    return npos;
-#endif
-  }
-
-  /**
-   * @brief Performs a backward search for a 16-bit value in a given range.
-   * @details Scans the array segment [begin .. end_incl] from right to left.
-   * If AVX2 is available, processes data in 256-bit blocks (16 × int16_t) using
-   * vectorized equality comparison for higher throughput. Falls back to a
-   * scalar backward scan when AVX2 is not supported. Returns the index of the
-   * rightmost occurrence of `target`, or `npos` if no match is found.
-   */
-  static inline size_t find_backward_equal_i16_avx2(
-      const int16_t* arr,
-      const size_t& begin,
-      const size_t& end_incl,
-      const int16_t& target) noexcept {
-    if (begin > end_incl) {
-      return npos;
-    }
-#if defined(__AVX2__)
-    static constexpr size_t STEP = 16;
-    size_t len = end_incl + 1 - begin;
-    size_t nblocks = len / STEP;
-    __m256i vtarget = _mm256_set1_epi16(target);
-    if (nblocks > 0) {
-      size_t first_block = begin + (len % STEP);
-      for (size_t p = first_block + (nblocks - 1) * STEP;;) {
-        unsigned mask = _mm256_movemask_epi8(_mm256_cmpeq_epi16(
-            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(arr + p)),
-            vtarget));
-        if (mask) {
-          return p + ((31u - std::countl_zero(mask)) >> 1);
-        }
-        if (p == first_block) {
-          break;
-        }
-        p -= STEP;
-      }
-
-      for (size_t i = first_block; i > begin;) {
-        --i;
-        if (arr[i] == target) {
-          return i;
-        }
-      }
-      return npos;
-    } else {
-      for (size_t i = end_incl + 1; i > begin;) {
-        --i;
-        if (arr[i] == target) {
-          return i;
-        }
-      }
-      return npos;
-    }
-#else
-    for (size_t i = end_incl + 1; i > begin;) {
-      --i;
-      if (arr[i] == target) {
-        return i;
-      }
-    }
-    return npos;
-#endif
-  }
-
-  /**
    * @brief Performs a forward search within a single leaf.
-   * @details Starting from position `i` (global index) inside the leaf [Lb ..
-   * Lb+len), it looks for the nearest position where the excess changes by `d`
-   * relative to `i`. The function uses a SIMD-accelerated search over the
-   * leaf’s prefix-sum array `lp`. If a matching position is found, returns its
-   * global index. If not found, returns `npos` and sets `delta_leaf` to the net
-   * excess change from `i` to the end of the leaf.
+   * @details Starting from position @p i (global index) inside the leaf [@p Lb
+   * .. Lb+len), it looks for the nearest position where the excess changes by
+   * @p d relative to @p i. The function uses a SIMD-accelerated search over the
+   * leaf’s prefix-sum array. If a matching position is found, returns its
+   * global index. If not found, returns npos and sets @p delta_leaf to the net
+   * excess change from @p i to the end of the leaf.
    */
   inline size_t leaf_fwd_bp_simd(const size_t& leaf_ind,
                                  const size_t& Lb,
@@ -2053,8 +1950,8 @@ class RmMTree {
       return npos;
     }
     const int16_t start_pref = lp[pos];
-    size_t match_ind =
-        find_forward_equal_i16_avx2(lp, pos + 1, len + 1, start_pref + d);
+    size_t match_ind = ::find_forward_equal_i16_avx2(lp, pos + 1, len + 1,
+                                                     start_pref + d, npos);
     if (match_ind != npos) {
       return Lb + match_ind - 1;
     }
@@ -2063,11 +1960,11 @@ class RmMTree {
   }
 
   /**
-   * @brief Performs a backward search within a leaf segment for a position `p <
-   * i` such that the excess difference from `i` equals `d`.
+   * @brief Performs a backward search within a leaf segment for a position
+   * earlier than @p i such that the excess difference from @p i equals @p d.
    * @details Uses SIMD (AVX2) to scan the leaf’s prefix-sum array of excess
    * values. Returns the absolute bit position if found; otherwise returns npos
-   * and outputs the leaf-local excess delta at position `i`.
+   * and outputs the leaf-local excess delta at position @p i.
    */
   inline size_t leaf_bwd_bp_simd(const size_t& leaf_ind,
                                  const size_t& Lb,
@@ -2083,7 +1980,7 @@ class RmMTree {
     const int16_t start_pref = lp[pos];
     if (pos > 0) {
       const size_t match_ind =
-          find_backward_equal_i16_avx2(lp, 0, pos - 1, start_pref + d);
+          ::find_backward_equal_i16_avx2(lp, 0, pos - 1, start_pref + d, npos);
       if (match_ind != npos) {
         return Lb + match_ind;
       }
@@ -2093,8 +1990,8 @@ class RmMTree {
   }
 
   /**
-   * @brief Find first minimum value and its first position in [l..r] inclusive
-   * using 8-bit LUT.
+   * @brief Find first minimum value and its first position in [@p l..@p r]
+   * inclusive using 8-bit LUT.
    * @param mn_out Output minimum value (0 if empty).
    * @param first_pos Output position of first minimum (npos if none).
    */
@@ -2143,8 +2040,8 @@ class RmMTree {
   }
 
   /**
-   * @brief Find first maximum value and its first position in [l..r] inclusive
-   * using 8-bit LUT.
+   * @brief Find first maximum value and its first position in [@p l..@p r]
+   * inclusive using 8-bit LUT.
    * @param mx_out Output maximum value (0 if empty).
    * @param first_pos Output position of first maximum (npos if none).
    */

@@ -405,3 +405,108 @@ void rank_32x8(const uint8_t* x, uint8_t* result) {
   }
 #endif
 }
+
+/**
+ * @brief Efficiently searches for the first occurrence of a 16-bit value in
+ * the range [@p begin, @p end_excl) using AVX2 when available.
+ * @details Loads 16 consecutive int16_t elements (256 bits) per iteration.
+ * Compares them against the @p target value using vectorized equality.
+ * If any match is found, extracts the index of the first matching lane from
+ * the comparison mask. Falls back to a scalar tail loop for leftover
+ * elements, or to a fully scalar search if AVX2 is not supported.
+ * @returns The index of the first match, or npos if the value is not found.
+ */
+static inline size_t find_forward_equal_i16_avx2(const int16_t* arr,
+                                                 const size_t& begin,
+                                                 const size_t& end_excl,
+                                                 const int16_t& target,
+                                                 const size_t& npos) noexcept {
+#ifdef PIXIE_AVX2_SUPPORT
+  static constexpr size_t STEP = 16;
+  __m256i vtarget = _mm256_set1_epi16(target);
+  size_t i = begin;
+  size_t n = end_excl;
+  for (; i + STEP <= n; i += STEP) {
+    unsigned mask = _mm256_movemask_epi8(_mm256_cmpeq_epi16(
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(arr + i)),
+        vtarget));
+    if (mask) {
+      return i + (std::countr_zero(mask) >> 1);
+    }
+  }
+  for (; i < n; ++i) {
+    if (arr[i] == target) {
+      return i;
+    }
+  }
+#else
+  for (size_t i = begin; i < end_excl; ++i) {
+    if (arr[i] == target) {
+      return i;
+    }
+  }
+#endif
+  return npos;
+}
+
+/**
+ * @brief Performs a backward search for a 16-bit value in a given range.
+ * @details Scans the array segment [@p begin .. @p end_incl] from right to
+ * left.
+ * If AVX2 is available, processes data in 256-bit blocks (16 × int16_t) using
+ * vectorized equality comparison for higher throughput. Falls back to a
+ * scalar backward scan when AVX2 is not supported. Returns the index of the
+ * rightmost occurrence of @p target, or `npos` if no match is found.
+ */
+static inline size_t find_backward_equal_i16_avx2(const int16_t* arr,
+                                                  const size_t& begin,
+                                                  const size_t& end_incl,
+                                                  const int16_t& target,
+                                                  const size_t& npos) noexcept {
+  if (begin > end_incl) {
+    return npos;
+  }
+#ifdef PIXIE_AVX2_SUPPORT
+  static constexpr size_t STEP = 16;
+  size_t len = end_incl + 1 - begin;
+  size_t nblocks = len / STEP;
+  __m256i vtarget = _mm256_set1_epi16(target);
+  if (nblocks > 0) {
+    size_t first_block = begin + (len % STEP);
+    for (size_t p = first_block + (nblocks - 1) * STEP;;) {
+      unsigned mask = _mm256_movemask_epi8(_mm256_cmpeq_epi16(
+          _mm256_loadu_si256(reinterpret_cast<const __m256i*>(arr + p)),
+          vtarget));
+      if (mask) {
+        return p + ((31u - std::countl_zero(mask)) >> 1);
+      }
+      if (p == first_block) {
+        break;
+      }
+      p -= STEP;
+    }
+
+    for (size_t i = first_block; i > begin;) {
+      --i;
+      if (arr[i] == target) {
+        return i;
+      }
+    }
+  } else {
+    for (size_t i = end_incl + 1; i > begin;) {
+      --i;
+      if (arr[i] == target) {
+        return i;
+      }
+    }
+  }
+#else
+  for (size_t i = end_incl + 1; i > begin;) {
+    --i;
+    if (arr[i] == target) {
+      return i;
+    }
+  }
+#endif
+  return npos;
+}
