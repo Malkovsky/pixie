@@ -414,7 +414,7 @@ void rank_32x8(const uint8_t* x, uint8_t* result) {
  * If any match is found, extracts the index of the first matching lane from
  * the comparison mask. Falls back to a scalar tail loop for leftover
  * elements, or to a fully scalar search if AVX2 is not supported.
- * @returns The index of the first match, or npos if the value is not found.
+ * @returns The index of the first match, or @p npos if the value is not found.
  */
 static inline size_t find_forward_equal_i16_avx2(const int16_t* arr,
                                                  const size_t& begin,
@@ -456,7 +456,7 @@ static inline size_t find_forward_equal_i16_avx2(const int16_t* arr,
  * If AVX2 is available, processes data in 256-bit blocks (16 × int16_t) using
  * vectorized equality comparison for higher throughput. Falls back to a
  * scalar backward scan when AVX2 is not supported. Returns the index of the
- * rightmost occurrence of @p target, or `npos` if no match is found.
+ * rightmost occurrence of @p target, or @p npos if no match is found.
  */
 static inline size_t find_backward_equal_i16_avx2(const int16_t* arr,
                                                   const size_t& begin,
