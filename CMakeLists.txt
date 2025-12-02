@@ -114,20 +114,9 @@ FetchContent_MakeAvailable(doxygen-awesome-css)
 # This allows us to get the path to doxygen-awesome.css
 FetchContent_GetProperties(doxygen-awesome-css SOURCE_DIR AWESOME_CSS_DIR)
 
-# Find Doxygen
-find_package(Doxygen REQUIRED)
-
-if(Doxygen_FOUND)
-  # Generate the Doxyfile
-  set(DOXYFILE_IN ${CMAKE_CURRENT_SOURCE_DIR}/src/docs/Doxyfile.in)
-  set(DOXYFILE_OUT ${CMAKE_CURRENT_BINARY_DIR}/docs/Doxyfile)
-  configure_file(${DOXYFILE_IN} ${DOXYFILE_OUT} @ONLY)
-  # Add a custom target to generate documentation
-  add_custom_target(doc
-    COMMAND ${DOXYGEN_EXECUTABLE} ${DOXYFILE_OUT}
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    COMMENT "Generating API documentation with Doxygen"
-    VERBATIM)
-endif()
+# Generate the Doxyfile
+set(DOXYFILE_IN ${CMAKE_CURRENT_SOURCE_DIR}/src/docs/Doxyfile.in)
+set(DOXYFILE_OUT ${CMAKE_CURRENT_BINARY_DIR}/docs/Doxyfile)
+configure_file(${DOXYFILE_IN} ${DOXYFILE_OUT} @ONLY)
 
 enable_testing()

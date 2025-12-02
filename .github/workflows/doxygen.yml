@@ -41,12 +41,12 @@ jobs:
       - name: Cmake configure
         run: cmake -S ${{github.workspace}} -B ${{github.workspace}}/build
       - name: Build docs
-        run: cmake --build ${{github.workspace}}/build --target doc
+        run: doxygen ${{github.workspace}}/build/docs/Doxyfile
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           # Upload entire repository
-          path: ${{github.workspace}}/build/doc/html
+          path: ${{github.workspace}}/doc/html
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
