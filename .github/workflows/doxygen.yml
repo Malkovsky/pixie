@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Doxygen v1.13.2
         run: |
-          transformed_version=$(echo "v1.13.2" | tr '.' '_')
+          transformed_version=$(echo "1.13.2" | tr '.' '_')
           wget https://github.com/doxygen/doxygen/releases/download/Release_${transformed_version}/doxygen-1.13.2.linux.bin.tar.gz
           tar -xzf doxygen-1.13.2.linux.bin.tar.gz
           sudo mv doxygen-1.13.2/bin/doxygen /usr/local/bin/doxygen
