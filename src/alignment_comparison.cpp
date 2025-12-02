@@ -13,7 +13,7 @@ static void BM_Loadu512(benchmark::State& state) {
   const __m512i* ptr = reinterpret_cast<const __m512i*>(data);
 
   for (auto _ : state) {
-    benchmark::DoNotOptimize(_mm256_loadu_si512(ptr));
+    benchmark::DoNotOptimize(_mm512_loadu_si512(ptr));
   }
 }
 
