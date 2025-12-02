@@ -3,4 +3,4 @@ build/
 Testing/
 plans/*
 venv/
-docs/
+docs/*
