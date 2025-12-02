@@ -34,9 +34,9 @@ jobs:
       - name: Install Doxygen v1.13.2
         run: |
           transformed_version=$(echo "v1.13.2" | tr '.' '_')
-          wget https://github.com/doxygen/doxygen/releases/download/Release_${transformed_version}/doxygen-v1.13.2.linux.bin.tar.gz
-          tar -xzf doxygen-v1.13.2.linux.bin.tar.gz
-          sudo mv doxygen-v1.13.2/bin/doxygen /usr/local/bin/doxygen
+          wget https://github.com/doxygen/doxygen/releases/download/Release_${transformed_version}/doxygen-1.13.2.linux.bin.tar.gz
+          tar -xzf doxygen-1.13.2.linux.bin.tar.gz
+          sudo mv doxygen-1.13.2/bin/doxygen /usr/local/bin/doxygen
         shell: bash
       - name: Cmake configure
         run: cmake -S ${{github.workspace}} -B ${{github.workspace}}/build
