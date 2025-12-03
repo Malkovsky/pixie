@@ -53,4 +53,9 @@ jobs:
 
     - name: Run Unittests
       working-directory: ./build
+      timeout-minutes: 20
       run: sde-external-9.58.0-2025-06-16-lin/sde64 -icl -emu-xinuse 0 -- ./unittests
+    
+    - name: Print Log
+      working-directory: ./build
+      run: pin-tool-log.txt
