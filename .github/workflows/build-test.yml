@@ -58,4 +58,4 @@ jobs:
     
     - name: Print Log
       working-directory: ./build
-      run: pin-tool-log.txt
+      run: cat pin-tool-log.txt
