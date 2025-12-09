@@ -106,17 +106,9 @@ static void BM_Loadu512_Random(benchmark::State& state) {
     const __m512i* ptr = reinterpret_cast<const __m512i*>(
         reinterpret_cast<uint8_t*>(data) + idx);
 
-    auto start = std::chrono::high_resolution_clock::now();
-
     _mm512_loadu_si512(ptr);
 
-    auto end = std::chrono::high_resolution_clock::now();
-
-    std::chrono::duration<double> duration = end - start;
-
     benchmark::DoNotOptimize(ptr);
-
-    state.SetIterationTime(duration.count());
   }
 
   std::free(data);
@@ -136,17 +128,9 @@ static void BM_Load512_Random(benchmark::State& state) {
     const __m512i* ptr = reinterpret_cast<const __m512i*>(
         reinterpret_cast<uint8_t*>(data) + idx);
 
-    auto start = std::chrono::high_resolution_clock::now();
-
     _mm512_load_si512(ptr);
 
-    auto end = std::chrono::high_resolution_clock::now();
-
     benchmark::DoNotOptimize(ptr);
-
-    std::chrono::duration<double> duration = end - start;
-
-    state.SetIterationTime(duration.count());
   }
 
   std::free(data);
@@ -167,17 +151,9 @@ static void BM_Storeu512_Random(benchmark::State& state) {
         reinterpret_cast<__m512i*>(reinterpret_cast<uint8_t*>(data) + idx);
     __m512i value = _mm512_setzero_si512();
 
-    auto start = std::chrono::high_resolution_clock::now();
-
     _mm512_storeu_si512(ptr, value);
 
-    auto end = std::chrono::high_resolution_clock::now();
-
-    std::chrono::duration<double> duration = end - start;
-
     benchmark::DoNotOptimize(ptr);
-
-    state.SetIterationTime(duration.count());
   }
 
   std::free(data);
@@ -198,17 +174,9 @@ static void BM_Store512_Random(benchmark::State& state) {
         reinterpret_cast<__m512i*>(reinterpret_cast<uint8_t*>(data) + idx);
     __m512i value = _mm512_setzero_si512();
 
-    auto start = std::chrono::high_resolution_clock::now();
-
     _mm512_store_si512(ptr, value);
 
-    auto end = std::chrono::high_resolution_clock::now();
-
     benchmark::DoNotOptimize(ptr);
-
-    std::chrono::duration<double> duration = end - start;
-
-    state.SetIterationTime(duration.count());
   }
 
   std::free(data);
@@ -217,26 +185,22 @@ static void BM_Store512_Random(benchmark::State& state) {
 BENCHMARK(BM_Loadu512_Random)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(2, 1 << 20)
-    ->UseManualTime();
+    ->Range(2, 1 << 20);
 
 BENCHMARK(BM_Load512_Random)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(2, 1 << 20)
-    ->UseManualTime();
+    ->Range(2, 1 << 20);
 
 BENCHMARK(BM_Storeu512_Random)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(2, 1 << 20)
-    ->UseManualTime();
+    ->Range(2, 1 << 20);
 
 BENCHMARK(BM_Store512_Random)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(2, 1 << 20)
-    ->UseManualTime();
+    ->Range(2, 1 << 20);
 
 #else
 
@@ -337,17 +301,7 @@ static void BM_Loadu256_Random(benchmark::State& state) {
     const __m256i* ptr = reinterpret_cast<const __m256i*>(
         reinterpret_cast<uint8_t*>(data) + idx);
 
-    auto start = std::chrono::high_resolution_clock::now();
-
-    _mm256_loadu_si256(ptr);
-
-    auto end = std::chrono::high_resolution_clock::now();
-
-    std::chrono::duration<double> duration = end - start;
-
-    benchmark::DoNotOptimize(ptr);
-
-    state.SetIterationTime(duration.count());
+    benchmark::DoNotOptimize(_mm256_loadu_si256(ptr));
   }
 
   std::free(data);
@@ -367,17 +321,7 @@ static void BM_Load256_Random(benchmark::State& state) {
     const __m256i* ptr = reinterpret_cast<const __m256i*>(
         reinterpret_cast<uint8_t*>(data) + idx);
 
-    auto start = std::chrono::high_resolution_clock::now();
-
-    _mm256_load_si256(ptr);
-
-    auto end = std::chrono::high_resolution_clock::now();
-
-    benchmark::DoNotOptimize(ptr);
-
-    std::chrono::duration<double> duration = end - start;
-
-    state.SetIterationTime(duration.count());
+    benchmark::DoNotOptimize(_mm256_load_si256(ptr));
   }
 
   std::free(data);
@@ -398,20 +342,10 @@ static void BM_Storeu256_Random(benchmark::State& state) {
         reinterpret_cast<__m256i*>(reinterpret_cast<uint8_t*>(data) + idx);
     __m256i value = _mm256_setzero_si256();
 
-    auto start = std::chrono::high_resolution_clock::now();
-
     _mm256_storeu_si256(ptr, value);
 
-    auto end = std::chrono::high_resolution_clock::now();
-
-    std::chrono::duration<double> duration = end - start;
-
     benchmark::DoNotOptimize(ptr);
-
-    state.SetIterationTime(duration.count());
   }
-
-  std::free(data);
 }
 
 static void BM_Store256_Random(benchmark::State& state) {
@@ -429,17 +363,9 @@ static void BM_Store256_Random(benchmark::State& state) {
         reinterpret_cast<__m256i*>(reinterpret_cast<uint8_t*>(data) + idx);
     __m256i value = _mm256_setzero_si256();
 
-    auto start = std::chrono::high_resolution_clock::now();
-
     _mm256_store_si256(ptr, value);
 
-    auto end = std::chrono::high_resolution_clock::now();
-
     benchmark::DoNotOptimize(ptr);
-
-    std::chrono::duration<double> duration = end - start;
-
-    state.SetIterationTime(duration.count());
   }
 
   std::free(data);
@@ -448,25 +374,21 @@ static void BM_Store256_Random(benchmark::State& state) {
 BENCHMARK(BM_Loadu256_Random)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(2, 1 << 20)
-    ->UseManualTime();
+    ->Range(2, 1 << 20);
 
 BENCHMARK(BM_Load256_Random)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(2, 1 << 20)
-    ->UseManualTime();
+    ->Range(2, 1 << 20);
 
 BENCHMARK(BM_Storeu256_Random)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(2, 1 << 20)
-    ->UseManualTime();
+    ->Range(2, 1 << 20);
 
 BENCHMARK(BM_Store256_Random)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(2, 1 << 20)
-    ->UseManualTime();
+    ->Range(2, 1 << 20);
 
 #endif
