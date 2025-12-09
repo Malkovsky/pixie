@@ -45,6 +45,8 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(pasta_bit_vector)
 
+
+
 # add_subdirectory(third_party/pasta_bv)
 
 add_executable(benchmarks
@@ -114,5 +116,19 @@ target_link_libraries(alignment_comparison
     benchmark
     benchmark_main
     )
+FetchContent_Declare(
+    doxygen-awesome-css
+    URL https://github.com/jothepro/doxygen-awesome-css/archive/refs/heads/main.zip
+)
+FetchContent_MakeAvailable(doxygen-awesome-css)
+
+# Save the location the files were cloned into
+# This allows us to get the path to doxygen-awesome.css
+FetchContent_GetProperties(doxygen-awesome-css SOURCE_DIR AWESOME_CSS_DIR)
+
+# Generate the Doxyfile
+set(DOXYFILE_IN ${CMAKE_CURRENT_SOURCE_DIR}/src/docs/Doxyfile.in)
+set(DOXYFILE_OUT ${CMAKE_CURRENT_BINARY_DIR}/docs/Doxyfile)
+configure_file(${DOXYFILE_IN} ${DOXYFILE_OUT} @ONLY)
 
 enable_testing()
