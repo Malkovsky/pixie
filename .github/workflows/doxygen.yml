@@ -1,0 +1,52 @@
+# Simple workflow for deploying static content to GitHub Pages
+name: Deploy static content to Pages
+
+on:
+  # Runs on pushes targeting the default branch
+  push:
+    branches: ["main", "feature/PIXIE-20_ci_benchmarks"]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
+# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  # Single deploy job since we're just deploying
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Doxygen v1.13.2
+        run: |
+          transformed_version=$(echo "1.13.2" | tr '.' '_')
+          wget https://github.com/doxygen/doxygen/releases/download/Release_${transformed_version}/doxygen-1.13.2.linux.bin.tar.gz
+          tar -xzf doxygen-1.13.2.linux.bin.tar.gz
+          sudo mv doxygen-1.13.2/bin/doxygen /usr/local/bin/doxygen
+        shell: bash
+      - name: Cmake configure
+        run: cmake -S ${{github.workspace}} -B ${{github.workspace}}/build
+      - name: Build docs
+        run: doxygen ${{github.workspace}}/build/docs/Doxyfile
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # Upload entire repository
+          path: ${{github.workspace}}/docs/html
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
