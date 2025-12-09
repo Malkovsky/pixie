@@ -92,7 +92,6 @@ BENCHMARK(BM_Storeu512_shift31);
 BENCHMARK(BM_Storeu512_shift0);
 BENCHMARK(BM_Store512_shift0);
 
-
 static void BM_Loadu512_Random(benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
@@ -239,7 +238,6 @@ BENCHMARK(BM_Store512_Random)
     ->Range(2, 1 << 20)
     ->UseManualTime();
 
-
 #else
 
 alignas(64) uint8_t data[128];
@@ -324,7 +322,6 @@ BENCHMARK(BM_Storeu256_shift63);
 BENCHMARK(BM_Storeu256_shift31);
 BENCHMARK(BM_Storeu256_shift0);
 BENCHMARK(BM_Store256_shift0);
-
 
 static void BM_Loadu256_Random(benchmark::State& state) {
   size_t n = state.range(0);
