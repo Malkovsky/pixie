@@ -7,339 +7,182 @@
 
 #include "bits.h"
 
+uint8_t data[1 << 29];
+
 #ifdef PIXIE_AVX512_SUPPORT
 
-alignas(64) uint8_t data[128];
-
-static void BM_Loadu512_shift63(benchmark::State& state) {
-  const __m512i* ptr = reinterpret_cast<const __m512i*>(data + 63);
+static void BM_Loadu512_aligned(benchmark::State& state) {
+  size_t n = state.range(0);
+  std::mt19937_64 rng(42);
 
   for (auto _ : state) {
+    size_t idx = 64 * (rng() % (n - 1));
+    const __m512i* ptr = reinterpret_cast<const __m512i*>(data + idx);
+
     benchmark::DoNotOptimize(_mm512_loadu_si512(ptr));
   }
 }
 
-static void BM_Loadu512_shift31(benchmark::State& state) {
-  const __m512i* ptr = reinterpret_cast<const __m512i*>(data + 31);
+static void BM_Loadu512_unaligned_crossing_64byte_border(benchmark::State& state) {
+  size_t n = state.range(0);
+  std::mt19937_64 rng(42);
 
   for (auto _ : state) {
+    size_t idx = 48 + 64 * (rng() % (n - 1));
+    const __m512i* ptr = reinterpret_cast<const __m512i*>(data + idx);
+
     benchmark::DoNotOptimize(_mm512_loadu_si512(ptr));
   }
 }
 
-static void BM_Loadu512_shift0(benchmark::State& state) {
-  const __m512i* ptr = reinterpret_cast<const __m512i*>(data);
+static void BM_Load512_aligned(benchmark::State& state) {
+  size_t n = state.range(0);
+  std::mt19937_64 rng(42);
 
   for (auto _ : state) {
-    benchmark::DoNotOptimize(_mm512_loadu_si512(ptr));
-  }
-}
+    size_t idx = 64 * (rng() % (n - 1));
+    const __m512i* ptr = reinterpret_cast<const __m512i*>(data + idx);
 
-static void BM_Load512_shift0(benchmark::State& state) {
-  const __m512i* ptr = reinterpret_cast<const __m512i*>(data);
-
-  for (auto _ : state) {
     benchmark::DoNotOptimize(_mm512_load_si512(ptr));
   }
 }
 
-static void BM_Storeu512_shift63(benchmark::State& state) {
-  __m512i value = _mm512_setzero_si512();
-  __m512i* ptr = reinterpret_cast<__m512i*>(data + 63);
-
-  for (auto _ : state) {
-    _mm512_storeu_si512(ptr, value);
-    benchmark::DoNotOptimize(*ptr);
-  }
-}
-
-static void BM_Storeu512_shift31(benchmark::State& state) {
-  __m512i value = _mm512_setzero_si512();
-  __m512i* ptr = reinterpret_cast<__m512i*>(data + 31);
-
-  for (auto _ : state) {
-    _mm512_storeu_si512(ptr, value);
-    benchmark::DoNotOptimize(*ptr);
-  }
-}
-
-static void BM_Storeu512_shift0(benchmark::State& state) {
-  __m512i value = _mm512_setzero_si512();
-  __m512i* ptr = reinterpret_cast<__m512i*>(data);
-
-  for (auto _ : state) {
-    _mm512_storeu_si512(ptr, value);
-    benchmark::DoNotOptimize(*ptr);
-  }
-}
-
-static void BM_Store512_shift0(benchmark::State& state) {
-  __m512i value = _mm512_setzero_si512();
-  __m512i* ptr = reinterpret_cast<__m512i*>(data);
-
-  for (auto _ : state) {
-    _mm512_store_si512(ptr, value);
-    benchmark::DoNotOptimize(*ptr);
-  }
-}
-
-BENCHMARK(BM_Loadu512_shift63);
-BENCHMARK(BM_Loadu512_shift31);
-BENCHMARK(BM_Loadu512_shift0);
-BENCHMARK(BM_Load512_shift0);
-BENCHMARK(BM_Storeu512_shift63);
-BENCHMARK(BM_Storeu512_shift31);
-BENCHMARK(BM_Storeu512_shift0);
-BENCHMARK(BM_Store512_shift0);
-
-static void BM_Loadu512_Random(benchmark::State& state) {
+static void BM_Storeu512_aligned(benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
-
-  size_t alignment = 64;
-  size_t size = 64 * n;
-
-  void* data = std::aligned_alloc(alignment, size);
-
-  for (auto _ : state) {
-    size_t idx = 1 + 64 * (rng() % (n - 1));
-    const __m512i* ptr = reinterpret_cast<const __m512i*>(
-        reinterpret_cast<uint8_t*>(data) + idx);
-
-    _mm512_loadu_si512(ptr);
-
-    benchmark::DoNotOptimize(ptr);
-  }
-
-  std::free(data);
-}
-
-static void BM_Load512_Random(benchmark::State& state) {
-  size_t n = state.range(0);
-  std::mt19937_64 rng(42);
-
-  size_t alignment = 64;
-  size_t size = 64 * n;
-
-  void* data = std::aligned_alloc(alignment, size);
 
   for (auto _ : state) {
     size_t idx = 64 * (rng() % (n - 1));
-    const __m512i* ptr = reinterpret_cast<const __m512i*>(
-        reinterpret_cast<uint8_t*>(data) + idx);
-
-    _mm512_load_si512(ptr);
-
-    benchmark::DoNotOptimize(ptr);
-  }
-
-  std::free(data);
-}
-
-static void BM_Storeu512_Random(benchmark::State& state) {
-  size_t n = state.range(0);
-  std::mt19937_64 rng(42);
-
-  size_t alignment = 64;
-  size_t size = 64 * n;
-
-  void* data = std::aligned_alloc(alignment, size);
-
-  for (auto _ : state) {
-    size_t idx = 1 + 64 * (rng() % (n - 1));
     __m512i* ptr =
-        reinterpret_cast<__m512i*>(reinterpret_cast<uint8_t*>(data) + idx);
+        reinterpret_cast<__m512i*>(data + idx);
     __m512i value = _mm512_setzero_si512();
 
     _mm512_storeu_si512(ptr, value);
 
     benchmark::DoNotOptimize(ptr);
   }
-
-  std::free(data);
 }
 
-static void BM_Store512_Random(benchmark::State& state) {
+static void BM_Storeu512_unaligned_crossing_64byte_border(benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
 
-  size_t alignment = 64;
-  size_t size = 64 * n;
+  for (auto _ : state) {
+    size_t idx = 48 + 64 * (rng() % (n - 1));
+    __m512i* ptr =
+        reinterpret_cast<__m512i*>(data + idx);
+    __m512i value = _mm512_setzero_si512();
 
-  void* data = std::aligned_alloc(alignment, size);
+    _mm512_storeu_si512(ptr, value);
+
+    benchmark::DoNotOptimize(ptr);
+  }
+}
+
+static void BM_Store512_aligned(benchmark::State& state) {
+  size_t n = state.range(0);
+  std::mt19937_64 rng(42);
 
   for (auto _ : state) {
     size_t idx = 64 * (rng() % (n - 1));
     __m512i* ptr =
-        reinterpret_cast<__m512i*>(reinterpret_cast<uint8_t*>(data) + idx);
+        reinterpret_cast<__m512i*>(data + idx);
     __m512i value = _mm512_setzero_si512();
 
     _mm512_store_si512(ptr, value);
 
     benchmark::DoNotOptimize(ptr);
   }
-
-  std::free(data);
 }
 
-BENCHMARK(BM_Loadu512_Random)
+BENCHMARK(BM_Loadu512_aligned)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(2, 1 << 20);
+    ->Range(2, 1 << 23);
 
-BENCHMARK(BM_Load512_Random)
+BENCHMARK(BM_Loadu512_unaligned_crossing_64byte_border)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(2, 1 << 20);
+    ->Range(2, 1 << 23);
 
-BENCHMARK(BM_Storeu512_Random)
+BENCHMARK(BM_Load512_aligned)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(2, 1 << 20);
+    ->Range(2, 1 << 23);
 
-BENCHMARK(BM_Store512_Random)
+BENCHMARK(BM_Storeu512_aligned)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(2, 1 << 20);
+    ->Range(2, 1 << 23);
+
+BENCHMARK(BM_Storeu512_unaligned_crossing_64byte_border)
+    ->ArgNames({"n"})
+    ->RangeMultiplier(4)
+    ->Range(2, 1 << 23);
+
+BENCHMARK(BM_Store512_aligned)
+    ->ArgNames({"n"})
+    ->RangeMultiplier(4)
+    ->Range(2, 1 << 23);
 
 #else
 
-alignas(64) uint8_t data[128];
-
-static void BM_Loadu256_shift63(benchmark::State& state) {
-  const __m256i* ptr = reinterpret_cast<const __m256i*>(data + 63);
+static void BM_Loadu256_aligned(benchmark::State& state) {
+  size_t n = state.range(0);
+  std::mt19937_64 rng(42);
 
   for (auto _ : state) {
+    size_t idx = 64 * (rng() % (n - 1));
+    const __m256i* ptr = reinterpret_cast<const __m256i*>(data + idx);
+
     benchmark::DoNotOptimize(_mm256_loadu_si256(ptr));
   }
 }
 
-static void BM_Loadu256_shift31(benchmark::State& state) {
-  const __m256i* ptr = reinterpret_cast<const __m256i*>(data + 31);
+static void BM_Loadu256_unaligned(benchmark::State& state) {
+  size_t n = state.range(0);
+  std::mt19937_64 rng(42);
 
   for (auto _ : state) {
+    size_t idx = 16 + 64 * (rng() % (n - 1));
+    const __m256i* ptr = reinterpret_cast<const __m256i*>(data + idx);
+
     benchmark::DoNotOptimize(_mm256_loadu_si256(ptr));
   }
 }
 
-static void BM_Loadu256_shift0(benchmark::State& state) {
-  const __m256i* ptr = reinterpret_cast<const __m256i*>(data);
+static void BM_Loadu256_unaligned_crossing_64byte_border(benchmark::State& state) {
+  size_t n = state.range(0);
+  std::mt19937_64 rng(42);
 
   for (auto _ : state) {
+    size_t idx = 48 + 64 * (rng() % (n - 1));
+    const __m256i* ptr = reinterpret_cast<const __m256i*>(data + idx);
+
     benchmark::DoNotOptimize(_mm256_loadu_si256(ptr));
   }
 }
 
-static void BM_Load256_shift0(benchmark::State& state) {
-  const __m256i* ptr = reinterpret_cast<const __m256i*>(data);
+static void BM_Load256_aligned(benchmark::State& state) {
+  size_t n = state.range(0);
+  std::mt19937_64 rng(42);
 
   for (auto _ : state) {
+    size_t idx = 64 * (rng() % (n - 1));
+    const __m256i* ptr = reinterpret_cast<const __m256i*>(data + idx);
+
     benchmark::DoNotOptimize(_mm256_load_si256(ptr));
   }
 }
 
-static void BM_Storeu256_shift63(benchmark::State& state) {
-  __m256i value = _mm256_setzero_si256();
-  __m256i* ptr = reinterpret_cast<__m256i*>(data + 63);
-
-  for (auto _ : state) {
-    _mm256_storeu_si256(ptr, value);
-    benchmark::DoNotOptimize(*ptr);
-  }
-}
-
-static void BM_Storeu256_shift31(benchmark::State& state) {
-  __m256i value = _mm256_setzero_si256();
-  __m256i* ptr = reinterpret_cast<__m256i*>(data + 31);
-
-  for (auto _ : state) {
-    _mm256_storeu_si256(ptr, value);
-    benchmark::DoNotOptimize(*ptr);
-  }
-}
-
-static void BM_Storeu256_shift0(benchmark::State& state) {
-  __m256i value = _mm256_setzero_si256();
-  __m256i* ptr = reinterpret_cast<__m256i*>(data);
-
-  for (auto _ : state) {
-    _mm256_storeu_si256(ptr, value);
-    benchmark::DoNotOptimize(*ptr);
-  }
-}
-
-static void BM_Store256_shift0(benchmark::State& state) {
-  __m256i value = _mm256_setzero_si256();
-  __m256i* ptr = reinterpret_cast<__m256i*>(data);
-
-  for (auto _ : state) {
-    _mm256_store_si256(ptr, value);
-    benchmark::DoNotOptimize(*ptr);
-  }
-}
-
-BENCHMARK(BM_Loadu256_shift63);
-BENCHMARK(BM_Loadu256_shift31);
-BENCHMARK(BM_Loadu256_shift0);
-BENCHMARK(BM_Load256_shift0);
-BENCHMARK(BM_Storeu256_shift63);
-BENCHMARK(BM_Storeu256_shift31);
-BENCHMARK(BM_Storeu256_shift0);
-BENCHMARK(BM_Store256_shift0);
-
-static void BM_Loadu256_Random(benchmark::State& state) {
+static void BM_Storeu256_aligned(benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
 
-  size_t alignment = 64;
-  size_t size = 64 * n;
-
-  void* data = std::aligned_alloc(alignment, size);
-
   for (auto _ : state) {
-    size_t idx = 1 + 32 * (rng() % (n - 1));
-    const __m256i* ptr = reinterpret_cast<const __m256i*>(
-        reinterpret_cast<uint8_t*>(data) + idx);
-
-    benchmark::DoNotOptimize(_mm256_loadu_si256(ptr));
-  }
-
-  std::free(data);
-}
-
-static void BM_Load256_Random(benchmark::State& state) {
-  size_t n = state.range(0);
-  std::mt19937_64 rng(42);
-
-  size_t alignment = 64;
-  size_t size = 64 * n;
-
-  void* data = std::aligned_alloc(alignment, size);
-
-  for (auto _ : state) {
-    size_t idx = 32 * (rng() % (n - 1));
-    const __m256i* ptr = reinterpret_cast<const __m256i*>(
-        reinterpret_cast<uint8_t*>(data) + idx);
-
-    benchmark::DoNotOptimize(_mm256_load_si256(ptr));
-  }
-
-  std::free(data);
-}
-
-static void BM_Storeu256_Random(benchmark::State& state) {
-  size_t n = state.range(0);
-  std::mt19937_64 rng(42);
-
-  size_t alignment = 64;
-  size_t size = 64 * n;
-
-  void* data = std::aligned_alloc(alignment, size);
-
-  for (auto _ : state) {
-    size_t idx = 1 + 32 * (rng() % (n - 1));
+    size_t idx = 64 * (rng() % (n - 1));
     __m256i* ptr =
-        reinterpret_cast<__m256i*>(reinterpret_cast<uint8_t*>(data) + idx);
+        reinterpret_cast<__m256i*>(data + idx);
     __m256i value = _mm256_setzero_si256();
 
     _mm256_storeu_si256(ptr, value);
@@ -348,47 +191,92 @@ static void BM_Storeu256_Random(benchmark::State& state) {
   }
 }
 
-static void BM_Store256_Random(benchmark::State& state) {
+static void BM_Storeu256_unaligned(benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
 
-  size_t alignment = 64;
-  size_t size = 64 * n;
+  for (auto _ : state) {
+    size_t idx = 16 + 64 * (rng() % (n - 1));
+    __m256i* ptr =
+        reinterpret_cast<__m256i*>(data + idx);
+    __m256i value = _mm256_setzero_si256();
 
-  void* data = std::aligned_alloc(alignment, size);
+    _mm256_storeu_si256(ptr, value);
+
+    benchmark::DoNotOptimize(ptr);
+  }
+}
+
+static void BM_Storeu256_unaligned_crossing_64byte_border(benchmark::State& state) {
+  size_t n = state.range(0);
+  std::mt19937_64 rng(42);
 
   for (auto _ : state) {
-    size_t idx = 32 * (rng() % (n - 1));
+    size_t idx = 48 + 64 * (rng() % (n - 1));
     __m256i* ptr =
-        reinterpret_cast<__m256i*>(reinterpret_cast<uint8_t*>(data) + idx);
+        reinterpret_cast<__m256i*>(data + idx);
+    __m256i value = _mm256_setzero_si256();
+
+    _mm256_storeu_si256(ptr, value);
+
+    benchmark::DoNotOptimize(ptr);
+  }
+}
+
+static void BM_Store256_aligned(benchmark::State& state) {
+  size_t n = state.range(0);
+  std::mt19937_64 rng(42);
+
+  for (auto _ : state) {
+    size_t idx = 64 * (rng() % (n - 1));
+    __m256i* ptr =
+        reinterpret_cast<__m256i*>(data + idx);
     __m256i value = _mm256_setzero_si256();
 
     _mm256_store_si256(ptr, value);
 
     benchmark::DoNotOptimize(ptr);
   }
-
-  std::free(data);
 }
 
-BENCHMARK(BM_Loadu256_Random)
+BENCHMARK(BM_Loadu256_aligned)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(2, 1 << 20);
+    ->Range(2, 1 << 23);
 
-BENCHMARK(BM_Load256_Random)
+BENCHMARK(BM_Loadu256_unaligned)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(2, 1 << 20);
+    ->Range(2, 1 << 23);
 
-BENCHMARK(BM_Storeu256_Random)
+BENCHMARK(BM_Loadu256_unaligned_crossing_64byte_border)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(2, 1 << 20);
+    ->Range(2, 1 << 23);
 
-BENCHMARK(BM_Store256_Random)
+BENCHMARK(BM_Load256_aligned)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(2, 1 << 20);
+    ->Range(2, 1 << 23);
+
+BENCHMARK(BM_Storeu256_aligned)
+    ->ArgNames({"n"})
+    ->RangeMultiplier(4)
+    ->Range(2, 1 << 23);
+
+BENCHMARK(BM_Storeu256_unaligned)
+    ->ArgNames({"n"})
+    ->RangeMultiplier(4)
+    ->Range(2, 1 << 23);
+
+BENCHMARK(BM_Storeu256_unaligned_crossing_64byte_border)
+    ->ArgNames({"n"})
+    ->RangeMultiplier(4)
+    ->Range(2, 1 << 23);
+
+BENCHMARK(BM_Store256_aligned)
+    ->ArgNames({"n"})
+    ->RangeMultiplier(4)
+    ->Range(2, 1 << 23);
 
 #endif
