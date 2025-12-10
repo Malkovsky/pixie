@@ -23,7 +23,8 @@ static void BM_Loadu512_aligned(benchmark::State& state) {
   }
 }
 
-static void BM_Loadu512_unaligned_crossing_64byte_border(benchmark::State& state) {
+static void BM_Loadu512_unaligned_crossing_64byte_border(
+    benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
 
@@ -53,8 +54,7 @@ static void BM_Storeu512_aligned(benchmark::State& state) {
 
   for (auto _ : state) {
     size_t idx = 64 * (rng() % (n - 1));
-    __m512i* ptr =
-        reinterpret_cast<__m512i*>(data + idx);
+    __m512i* ptr = reinterpret_cast<__m512i*>(data + idx);
     __m512i value = _mm512_setzero_si512();
 
     _mm512_storeu_si512(ptr, value);
@@ -63,14 +63,14 @@ static void BM_Storeu512_aligned(benchmark::State& state) {
   }
 }
 
-static void BM_Storeu512_unaligned_crossing_64byte_border(benchmark::State& state) {
+static void BM_Storeu512_unaligned_crossing_64byte_border(
+    benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
 
   for (auto _ : state) {
     size_t idx = 48 + 64 * (rng() % (n - 1));
-    __m512i* ptr =
-        reinterpret_cast<__m512i*>(data + idx);
+    __m512i* ptr = reinterpret_cast<__m512i*>(data + idx);
     __m512i value = _mm512_setzero_si512();
 
     _mm512_storeu_si512(ptr, value);
@@ -85,8 +85,7 @@ static void BM_Store512_aligned(benchmark::State& state) {
 
   for (auto _ : state) {
     size_t idx = 64 * (rng() % (n - 1));
-    __m512i* ptr =
-        reinterpret_cast<__m512i*>(data + idx);
+    __m512i* ptr = reinterpret_cast<__m512i*>(data + idx);
     __m512i value = _mm512_setzero_si512();
 
     _mm512_store_si512(ptr, value);
@@ -151,7 +150,8 @@ static void BM_Loadu256_unaligned(benchmark::State& state) {
   }
 }
 
-static void BM_Loadu256_unaligned_crossing_64byte_border(benchmark::State& state) {
+static void BM_Loadu256_unaligned_crossing_64byte_border(
+    benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
 
@@ -181,8 +181,7 @@ static void BM_Storeu256_aligned(benchmark::State& state) {
 
   for (auto _ : state) {
     size_t idx = 64 * (rng() % (n - 1));
-    __m256i* ptr =
-        reinterpret_cast<__m256i*>(data + idx);
+    __m256i* ptr = reinterpret_cast<__m256i*>(data + idx);
     __m256i value = _mm256_setzero_si256();
 
     _mm256_storeu_si256(ptr, value);
@@ -197,8 +196,7 @@ static void BM_Storeu256_unaligned(benchmark::State& state) {
 
   for (auto _ : state) {
     size_t idx = 16 + 64 * (rng() % (n - 1));
-    __m256i* ptr =
-        reinterpret_cast<__m256i*>(data + idx);
+    __m256i* ptr = reinterpret_cast<__m256i*>(data + idx);
     __m256i value = _mm256_setzero_si256();
 
     _mm256_storeu_si256(ptr, value);
@@ -207,14 +205,14 @@ static void BM_Storeu256_unaligned(benchmark::State& state) {
   }
 }
 
-static void BM_Storeu256_unaligned_crossing_64byte_border(benchmark::State& state) {
+static void BM_Storeu256_unaligned_crossing_64byte_border(
+    benchmark::State& state) {
   size_t n = state.range(0);
   std::mt19937_64 rng(42);
 
   for (auto _ : state) {
     size_t idx = 48 + 64 * (rng() % (n - 1));
-    __m256i* ptr =
-        reinterpret_cast<__m256i*>(data + idx);
+    __m256i* ptr = reinterpret_cast<__m256i*>(data + idx);
     __m256i value = _mm256_setzero_si256();
 
     _mm256_storeu_si256(ptr, value);
@@ -229,8 +227,7 @@ static void BM_Store256_aligned(benchmark::State& state) {
 
   for (auto _ : state) {
     size_t idx = 64 * (rng() % (n - 1));
-    __m256i* ptr =
-        reinterpret_cast<__m256i*>(data + idx);
+    __m256i* ptr = reinterpret_cast<__m256i*>(data + idx);
     __m256i value = _mm256_setzero_si256();
 
     _mm256_store_si256(ptr, value);
