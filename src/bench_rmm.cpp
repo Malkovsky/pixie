@@ -101,14 +101,51 @@ static void parse_args_and_strip(int& argc, char**& argv) {
   }
 }
 
-static std::string make_random_bits(std::size_t N,
+static std::string random_dyck_bits(std::size_t N,
                                     double p1,
                                     std::mt19937_64& rng) {
-  std::uniform_real_distribution<double> U(0.0, 1.0);
+  std::size_t pairs = N >> 1;
+  std::size_t L = pairs << 1;
   std::string s;
-  s.resize(N);
-  for (std::size_t i = 0; i < N; ++i) {
-    s[i] = (U(rng) < p1 ? '1' : '0');
+  s.resize(L);
+  if (L == 0) {
+    return s;
+  }
+  p1 = std::clamp(p1, 0., 1.);
+  std::size_t opens_left = pairs;
+  std::size_t closes_left = pairs;
+  int balance = 0;
+  std::uniform_real_distribution<double> U(0., 1.);
+  for (std::size_t i = 0; i < L; ++i) {
+    if (opens_left == 0) {
+      s[i] = '0';
+      --closes_left;
+      --balance;
+      continue;
+    }
+
+    if (closes_left == 0) {
+      s[i] = '1';
+      --opens_left;
+      ++balance;
+      continue;
+    }
+
+    if (balance == 0) {
+      s[i] = '1';
+      --opens_left;
+      ++balance;
+      continue;
+    }
+    if (U(rng) < p1) {
+      s[i] = '1';
+      --opens_left;
+      ++balance;
+    } else {
+      s[i] = '0';
+      --closes_left;
+      --balance;
+    }
   }
   return s;
 }
@@ -199,8 +236,9 @@ static Dataset build_dataset(std::size_t N) {
                       static_cast<std::uint64_t>(N) * 0x9E3779B185EBCA87ull);
 
   Dataset d;
-  d.N = N;
-  d.bits = make_random_bits(N, args.p1, rng);
+  d.bits = random_dyck_bits(N, args.p1, rng);
+  d.N = d.bits.size();
+  N = d.N;
 
   if (args.block_bits == 0) {
     d.t = RmMTree(d.bits, 0, -1.0f);
