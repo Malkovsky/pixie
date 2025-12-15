@@ -94,29 +94,21 @@ static void BM_Store512_aligned(benchmark::State& state) {
   }
 }
 
-BENCHMARK(BM_Loadu512_aligned)
-    ->ArgNames({"k"})
-    ->DenseRange(1, 23, 2);
+BENCHMARK(BM_Loadu512_aligned)->ArgNames({"k"})->DenseRange(1, 23, 2);
 
 BENCHMARK(BM_Loadu512_unaligned_crossing_64byte_border)
     ->ArgNames({"k"})
     ->DenseRange(1, 23, 2);
 
-BENCHMARK(BM_Load512_aligned)
-    ->ArgNames({"k"})
-    ->DenseRange(1, 23, 2);
+BENCHMARK(BM_Load512_aligned)->ArgNames({"k"})->DenseRange(1, 23, 2);
 
-BENCHMARK(BM_Storeu512_aligned)
-    ->ArgNames({"k"})
-    ->DenseRange(1, 23, 2);
+BENCHMARK(BM_Storeu512_aligned)->ArgNames({"k"})->DenseRange(1, 23, 2);
 
 BENCHMARK(BM_Storeu512_unaligned_crossing_64byte_border)
     ->ArgNames({"k"})
     ->DenseRange(1, 23, 2);
 
-BENCHMARK(BM_Store512_aligned)
-    ->ArgNames({"k"})
-    ->DenseRange(1, 23, 2);
+BENCHMARK(BM_Store512_aligned)->ArgNames({"k"})->DenseRange(1, 23, 2);
 
 #else
 
@@ -230,36 +222,24 @@ static void BM_Store256_aligned(benchmark::State& state) {
   }
 }
 
-BENCHMARK(BM_Loadu256_aligned)
-    ->ArgNames({"k"})
-    ->DenseRange(1, 23, 2);
+BENCHMARK(BM_Loadu256_aligned)->ArgNames({"k"})->DenseRange(1, 23, 2);
 
-BENCHMARK(BM_Loadu256_unaligned)
-    ->ArgNames({"k"})
-    ->DenseRange(1, 23, 2);
+BENCHMARK(BM_Loadu256_unaligned)->ArgNames({"k"})->DenseRange(1, 23, 2);
 
 BENCHMARK(BM_Loadu256_unaligned_crossing_64byte_border)
     ->ArgNames({"k"})
     ->DenseRange(1, 23, 2);
 
-BENCHMARK(BM_Load256_aligned)
-    ->ArgNames({"k"})
-    ->DenseRange(1, 23, 2);
+BENCHMARK(BM_Load256_aligned)->ArgNames({"k"})->DenseRange(1, 23, 2);
 
-BENCHMARK(BM_Storeu256_aligned)
-    ->ArgNames({"k"})
-    ->DenseRange(1, 23, 2);
+BENCHMARK(BM_Storeu256_aligned)->ArgNames({"k"})->DenseRange(1, 23, 2);
 
-BENCHMARK(BM_Storeu256_unaligned)
-    ->ArgNames({"k"})
-    ->DenseRange(1, 23, 2);
+BENCHMARK(BM_Storeu256_unaligned)->ArgNames({"k"})->DenseRange(1, 23, 2);
 
 BENCHMARK(BM_Storeu256_unaligned_crossing_64byte_border)
     ->ArgNames({"k"})
     ->DenseRange(1, 23, 2);
 
-BENCHMARK(BM_Store256_aligned)
-    ->ArgNames({"k"})
-    ->DenseRange(1, 23, 2);
+BENCHMARK(BM_Store256_aligned)->ArgNames({"k"})->DenseRange(1, 23, 2);
 
 #endif
