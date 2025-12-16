@@ -108,6 +108,13 @@ uint64_t select_64(uint64_t x, uint64_t rank) {
 }
 
 /**
+ * @brief Return position of @p rank0 0 bit in @p x
+ */
+uint64_t select0_64(uint64_t x, uint64_t rank0) {
+  return select_64(~x, rank0);
+}
+
+/**
  * @brief Return position of @p rank 1 bit in @p x
  * @details Selecting within 64-bit word can be done
  * using combination of _tzcnt_u64(_pdep_u64(1 << rank, x))
@@ -191,6 +198,57 @@ uint16_t lower_bound_4x64(const uint64_t* x, uint64_t y) {
 }
 
 /**
+ * @brief Compare 4 64-bit numbers of ( @p pos + @p dlt - @p x )
+ * with @p y and return the length of the prefix
+ * where @p y is less then ( @p pos + @p dlt - @p x )
+ */
+uint16_t lower_bound_zeros_4x64(const uint64_t* x, uint64_t y, const uint64_t* dlt, uint64_t pos) {
+#ifdef PIXIE_AVX512_SUPPORT
+
+  const __m256i dlt_256 = _mm256_loadu_epi64(dlt);
+  auto x_256 = _mm256_loadu_epi64(x);
+  auto pos_4 = _mm256_set1_epi64x(pos);
+  auto y_4 = _mm256_set1_epi64x(y);
+
+  auto tmp = _mm256_add_epi64(pos_4, dlt_256);
+  auto reg_256 = _mm256_sub_epi64(tmp, x_256);
+  auto cmp = _mm256_cmpge_epu64_mask(reg_256, y_4);
+
+  return _tzcnt_u16(cmp);
+
+#else
+#ifdef PIXIE_AVX2_SUPPORT
+
+  const __m256i dlt_256 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dlt));
+  auto x_256 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(x));
+  auto pos_4 = _mm256_set1_epi64x(pos);
+  auto y_4 = _mm256_set1_epi64x(y);
+
+  auto tmp = _mm256_add_epi64(pos_4, dlt_256);
+  auto reg_256 = _mm256_sub_epi64(tmp, x_256);
+
+  const __m256i offset = _mm256_set1_epi64x(0x8000000000000000ULL);
+  __m256i x_offset = _mm256_xor_si256(reg_256, offset);
+  __m256i y_offset = _mm256_xor_si256(y_4, offset);
+  auto mask = _mm256_movemask_epi8(_mm256_cmpgt_epi64(
+      x_offset, _mm256_sub_epi64(y_offset, _mm256_set1_epi64x(1))));
+
+  return _tzcnt_u32(mask) >> 3;
+
+#else
+
+  for (uint16_t i = 0; i < 4; ++i) {
+    if (pos + dlt[i] - x[i] >= y) {
+      return i;
+    }
+  }
+  return 4;
+
+#endif
+#endif
+}
+
+/**
  * @brief Compare 8 64-bit numbers of @p x with @p y and
  * return the length of the prefix where @p y is less then @p x
  */
@@ -218,6 +276,49 @@ uint16_t lower_bound_8x64(const uint64_t* x, uint64_t y) {
 
   for (uint16_t i = 0; i < 8; ++i) {
     if (x[i] >= y) {
+      return i;
+    }
+  }
+  return 8;
+
+#endif
+#endif
+}
+
+/**
+ * @brief Compare 8 64-bit numbers of ( @p pos + @p dlt - @p x )
+ * with @p y and return the length of the prefix
+ * where @p y is less then ( @p pos + @p dlt - @p x )
+ */
+uint16_t lower_bound_zeros_8x64(const uint64_t* x, uint64_t y, const uint64_t* dlt, uint64_t pos) {
+#ifdef PIXIE_AVX512_SUPPORT
+
+  const __m512i dlt_512 = _mm512_loadu_epi64(dlt);
+  auto x_512 = _mm512_loadu_epi64(x);
+  auto pos_8 = _mm512_set1_epi64(pos);
+  auto y_8 = _mm512_set1_epi64(y);
+
+  auto tmp = _mm512_add_epi64(pos_8, dlt_512);
+  auto reg_512 = _mm512_sub_epi64(tmp, x_512);
+  auto cmp = _mm512_cmpge_epu64_mask(reg_512, y_8);
+
+  return _tzcnt_u16(cmp);
+
+#else
+#ifdef PIXIE_AVX2_SUPPORT
+
+  uint16_t len = lower_bound_zeros_4x64(x, y, dlt, pos);
+
+  if (len < 4) {
+    return len;
+  }
+
+  return len + lower_bound_zeros_4x64(x + 4, y, dlt + 4, pos);
+
+#else
+
+  for (uint16_t i = 0; i < 8; ++i) {
+    if (pos + dlt[i] - x[i] >= y) {
       return i;
     }
   }

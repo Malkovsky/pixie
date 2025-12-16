@@ -330,6 +330,52 @@ TEST(LowerBound8x64, Random) {
   }
 }
 
+TEST(LowerBoundZeros4x64, Random) {
+  std::vector<uint64_t> x(8);
+  uint64_t dlt[8];
+  std::mt19937_64 rng(42);
+  for (size_t i = 0; i < 100000; i++) {
+    uint64_t y = rng();
+    uint64_t pos = rng();
+    uint16_t cnt = 0;
+    bool fl = 1;
+    for (size_t j = 0; j < 4; j++) {
+      dlt[j] = rng();
+      x[j] = rng();
+      fl &= pos + dlt[j] - x[j] < y;
+      cnt += fl;
+    }
+    if (cnt < 4) {
+      ASSERT_EQ(lower_bound_zeros_4x64(x.data(), y, dlt, pos), cnt);
+    } else {
+      ASSERT_GE(lower_bound_zeros_4x64(x.data(), y, dlt, pos), cnt);
+    }
+  }
+}
+
+TEST(LowerBoundZeros8x64, Random) {
+  std::vector<uint64_t> x(8);
+  uint64_t dlt[8];
+  std::mt19937_64 rng(42);
+  for (size_t i = 0; i < 100000; i++) {
+    uint64_t y = rng();
+    uint64_t pos = rng();
+    uint16_t cnt = 0;
+    bool fl = 1;
+    for (size_t j = 0; j < 8; j++) {
+      dlt[j] = rng();
+      x[j] = rng();
+      fl &= pos + dlt[j] - x[j] < y;
+      cnt += fl;
+    }
+    if (cnt < 8) {
+      ASSERT_EQ(lower_bound_zeros_8x64(x.data(), y, dlt, pos), cnt);
+    } else {
+      ASSERT_GE(lower_bound_zeros_8x64(x.data(), y, dlt, pos), cnt);
+    }
+  }
+}
+
 TEST(LowerBound32x16, Random) {
   std::vector<uint16_t> x(32);
   std::mt19937 rng(42);
