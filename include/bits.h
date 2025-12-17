@@ -202,7 +202,10 @@ uint16_t lower_bound_4x64(const uint64_t* x, uint64_t y) {
  * with @p y and return the length of the prefix
  * where @p y is less then ( @p pos + @p dlt - @p x )
  */
-uint16_t lower_bound_zeros_4x64(const uint64_t* x, uint64_t y, const uint64_t* dlt, uint64_t pos) {
+uint16_t lower_bound_zeros_4x64(const uint64_t* x,
+                                uint64_t y,
+                                const uint64_t* dlt,
+                                uint64_t pos) {
 #ifdef PIXIE_AVX512_SUPPORT
 
   const __m256i dlt_256 = _mm256_loadu_epi64(dlt);
@@ -219,7 +222,8 @@ uint16_t lower_bound_zeros_4x64(const uint64_t* x, uint64_t y, const uint64_t* d
 #else
 #ifdef PIXIE_AVX2_SUPPORT
 
-  const __m256i dlt_256 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dlt));
+  const __m256i dlt_256 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dlt));
   auto x_256 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(x));
   auto pos_4 = _mm256_set1_epi64x(pos);
   auto y_4 = _mm256_set1_epi64x(y);
@@ -290,7 +294,10 @@ uint16_t lower_bound_8x64(const uint64_t* x, uint64_t y) {
  * with @p y and return the length of the prefix
  * where @p y is less then ( @p pos + @p dlt - @p x )
  */
-uint16_t lower_bound_zeros_8x64(const uint64_t* x, uint64_t y, const uint64_t* dlt, uint64_t pos) {
+uint16_t lower_bound_zeros_8x64(const uint64_t* x,
+                                uint64_t y,
+                                const uint64_t* dlt,
+                                uint64_t pos) {
 #ifdef PIXIE_AVX512_SUPPORT
 
   const __m512i dlt_512 = _mm512_loadu_epi64(dlt);
