@@ -59,6 +59,7 @@ target_link_libraries(benchmarks
     benchmark
     benchmark_main
     pasta_bit_vector)
+
 add_test(
     NAME Benchmarks
     COMMAND bt_benchmarks --benchmark_out=bm_report.csv --benchmark_out_format=csv
@@ -104,6 +105,17 @@ target_link_libraries(test_rmm
     gtest_main)
 
 
+add_executable(alignment_comparison
+    src/alignment_comparison.cpp)
+
+target_include_directories(alignment_comparison
+    PUBLIC include
+)
+
+target_link_libraries(alignment_comparison
+    benchmark
+    benchmark_main
+    )
 FetchContent_Declare(
     doxygen-awesome-css
     URL https://github.com/jothepro/doxygen-awesome-css/archive/refs/heads/main.zip
