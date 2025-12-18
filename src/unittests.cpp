@@ -89,6 +89,14 @@ TEST(Select512, Ones) {
   }
 }
 
+TEST(SelectZero512, Zeros) {
+  std::array<uint64_t, 8> a{0, 0, 0, 0, 0, 0, 0, 0};
+  for (size_t i = 0; i < 512; ++i) {
+    auto p = select0_512(a.data(), i);
+    EXPECT_EQ(p, i);
+  }
+}
+
 TEST(Select512, Random) {
   std::array<uint64_t, 8> a{std::numeric_limits<uint64_t>::max(),
                             std::numeric_limits<uint64_t>::max(),
@@ -108,6 +116,31 @@ TEST(Select512, Random) {
     for (size_t i = 0; i < 512; ++i) {
       if (1 & (a[i >> 6] >> (i & 63))) {
         auto p = select_512(a.data(), rank++);
+        ASSERT_EQ(p, i);
+      }
+    }
+  }
+}
+
+TEST(SelectZero512, Random) {
+  std::array<uint64_t, 8> a{std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max()};
+
+  std::mt19937_64 rng(42);
+  for (size_t t = 0; t < 1000; ++t) {
+    for (auto& x : a) {
+      x = rng();
+    }
+    size_t rank = 0;
+    for (size_t i = 0; i < 512; ++i) {
+      if ((1 & (a[i >> 6] >> (i & 63))) == 0) {
+        auto p = select0_512(a.data(), rank++);
         ASSERT_EQ(p, i);
       }
     }
@@ -330,48 +363,48 @@ TEST(LowerBound8x64, Random) {
   }
 }
 
-TEST(LowerBoundZeros4x64, Random) {
-  std::vector<uint64_t> x(8);
-  uint64_t dlt[8];
+TEST(LowerBoundDlt4x64, Random) {
+  std::vector<uint64_t> x(4);
+  uint64_t dlt_array[4];
   std::mt19937_64 rng(42);
   for (size_t i = 0; i < 100000; i++) {
     uint64_t y = rng();
-    uint64_t pos = rng();
+    uint64_t dlt_scalar = rng();
     uint16_t cnt = 0;
     bool fl = 1;
     for (size_t j = 0; j < 4; j++) {
-      dlt[j] = rng();
+      dlt_array[j] = rng();
       x[j] = rng();
-      fl &= pos + dlt[j] - x[j] < y;
+      fl &= dlt_scalar + dlt_array[j] - x[j] < y;
       cnt += fl;
     }
     if (cnt < 4) {
-      ASSERT_EQ(lower_bound_zeros_4x64(x.data(), y, dlt, pos), cnt);
+      ASSERT_EQ(lower_bound_dlt_4x64(x.data(), y, dlt_array, dlt_scalar), cnt);
     } else {
-      ASSERT_GE(lower_bound_zeros_4x64(x.data(), y, dlt, pos), cnt);
+      ASSERT_GE(lower_bound_dlt_4x64(x.data(), y, dlt_array, dlt_scalar), cnt);
     }
   }
 }
 
-TEST(LowerBoundZeros8x64, Random) {
+TEST(LowerBoundDlt8x64, Random) {
   std::vector<uint64_t> x(8);
-  uint64_t dlt[8];
+  uint64_t dlt_array[8];
   std::mt19937_64 rng(42);
   for (size_t i = 0; i < 100000; i++) {
     uint64_t y = rng();
-    uint64_t pos = rng();
+    uint64_t dlt_scalar = rng();
     uint16_t cnt = 0;
     bool fl = 1;
     for (size_t j = 0; j < 8; j++) {
-      dlt[j] = rng();
+      dlt_array[j] = rng();
       x[j] = rng();
-      fl &= pos + dlt[j] - x[j] < y;
+      fl &= dlt_scalar + dlt_array[j] - x[j] < y;
       cnt += fl;
     }
     if (cnt < 8) {
-      ASSERT_EQ(lower_bound_zeros_8x64(x.data(), y, dlt, pos), cnt);
+      ASSERT_EQ(lower_bound_dlt_8x64(x.data(), y, dlt_array, dlt_scalar), cnt);
     } else {
-      ASSERT_GE(lower_bound_zeros_8x64(x.data(), y, dlt, pos), cnt);
+      ASSERT_GE(lower_bound_dlt_8x64(x.data(), y, dlt_array, dlt_scalar), cnt);
     }
   }
 }
@@ -387,6 +420,28 @@ TEST(LowerBound32x16, Random) {
       cnt += x[j] < y;
     }
     ASSERT_EQ(lower_bound_32x16(x.data(), y), cnt);
+  }
+}
+
+TEST(LowerBoundDlt32x16, Random) {
+  std::vector<uint16_t> x(32);
+  uint16_t dlt_array[32];
+  std::mt19937 rng(42);
+  for (size_t i = 0; i < 100000; i++) {
+    uint16_t y = rng();
+    uint16_t dlt_scalar = rng();
+    uint16_t cnt = 0;
+    for (size_t j = 0; j < 32; j++) {
+      x[j] = rng();
+      if (dlt_scalar < x[j]) {
+        dlt_array[j] =
+            x[j] - dlt_scalar + rng() % ((1 << 16) - x[j] + dlt_scalar);
+      } else {
+        dlt_array[j] = rng() % ((1 << 16) - dlt_scalar);
+      }
+      cnt += dlt_array[j] + dlt_scalar - x[j] < y;
+    }
+    ASSERT_EQ(lower_bound_dlt_32x16(x.data(), y, dlt_array, dlt_scalar), cnt);
   }
 }
 
