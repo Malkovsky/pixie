@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-//#include <iostream>
+// #include <iostream>
 
 #include "bits.h"
 
@@ -190,8 +190,7 @@ class BitVector {
     uint64_t left = select0_samples[rank0 / kSelectSampleFrequency];
 
     while (left + 7 < super_block_rank.size()) {
-      auto len = lower_bound_dlt_8x64(&super_block_rank[left], rank0,
-                                      dlt_super,
+      auto len = lower_bound_dlt_8x64(&super_block_rank[left], rank0, dlt_super,
                                       kSuperBlockSize * left);
       if (len < 8) {
         return left + len - 1;
@@ -199,8 +198,7 @@ class BitVector {
       left += 8;
     }
     if (left + 3 < super_block_rank.size()) {
-      auto len = lower_bound_dlt_4x64(&super_block_rank[left], rank0,
-                                      dlt_super,
+      auto len = lower_bound_dlt_4x64(&super_block_rank[left], rank0, dlt_super,
                                       kSuperBlockSize * left);
       if (len < 4) {
         return left + len - 1;

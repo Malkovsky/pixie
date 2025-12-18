@@ -289,75 +289,75 @@ TEST(BitVectorTest, MainSelectTest) {
 }
 
 TEST(BitVectorTest, RankZeroBasic) {
-    std::vector<uint64_t> bits(8, 0);
-    bits[0] = 0b10110;
-    BitVector bv(bits, 10);
+  std::vector<uint64_t> bits(8, 0);
+  bits[0] = 0b10110;
+  BitVector bv(bits, 10);
 
-    EXPECT_EQ(bv.rank0(0), 0);  
-    EXPECT_EQ(bv.rank0(1), 1);  
-    EXPECT_EQ(bv.rank0(2), 1); 
-    EXPECT_EQ(bv.rank0(3), 1);  
-    EXPECT_EQ(bv.rank0(4), 2);  
-    EXPECT_EQ(bv.rank0(5), 2);  
+  EXPECT_EQ(bv.rank0(0), 0);
+  EXPECT_EQ(bv.rank0(1), 1);
+  EXPECT_EQ(bv.rank0(2), 1);
+  EXPECT_EQ(bv.rank0(3), 1);
+  EXPECT_EQ(bv.rank0(4), 2);
+  EXPECT_EQ(bv.rank0(5), 2);
 }
 
 TEST(BitVectorTest, RankZeroWithOnes) {
-    std::vector<uint64_t> bits(8, 0);
-    BitVector bv(bits, 5);
+  std::vector<uint64_t> bits(8, 0);
+  BitVector bv(bits, 5);
 
-    for (size_t i = 0; i <= 5; i++) {
-        EXPECT_EQ(bv.rank0(i), i); 
-    }
+  for (size_t i = 0; i <= 5; i++) {
+    EXPECT_EQ(bv.rank0(i), i);
+  }
 }
 
 TEST(BitVectorTest, SelectZeroBasic) {
-    std::vector<uint64_t> bits(8, 0);
-    bits[0] = 0b1100010110010110;
-    BitVector bv(bits, 16);
+  std::vector<uint64_t> bits(8, 0);
+  bits[0] = 0b1100010110010110;
+  BitVector bv(bits, 16);
 
-    EXPECT_EQ(bv.select0(1), 0);  
-    EXPECT_EQ(bv.select0(2), 3);
-    EXPECT_EQ(bv.select0(3), 5);
-    EXPECT_EQ(bv.select0(4), 6);
-    EXPECT_EQ(bv.select0(5), 9);
-    EXPECT_EQ(bv.select0(6), 11);
-    EXPECT_EQ(bv.select0(7), 12);
-    EXPECT_EQ(bv.select0(8), 13);
+  EXPECT_EQ(bv.select0(1), 0);
+  EXPECT_EQ(bv.select0(2), 3);
+  EXPECT_EQ(bv.select0(3), 5);
+  EXPECT_EQ(bv.select0(4), 6);
+  EXPECT_EQ(bv.select0(5), 9);
+  EXPECT_EQ(bv.select0(6), 11);
+  EXPECT_EQ(bv.select0(7), 12);
+  EXPECT_EQ(bv.select0(8), 13);
 }
 
 TEST(BitVectorTest, MainRankZeroTest) {
-    std::mt19937_64 rng(42);
-    std::vector<uint64_t> bits(65536 * 32);
-    for (size_t i = 0; i < bits.size(); i++) {
-        bits[i] = rng();
-    }
+  std::mt19937_64 rng(42);
+  std::vector<uint64_t> bits(65536 * 32);
+  for (size_t i = 0; i < bits.size(); i++) {
+    bits[i] = rng();
+  }
 
-    BitVector bv(bits, bits.size() * 64);
-    uint64_t zero_count = 0;
-    for (size_t i = 0; i < bv.size(); ++i) {
-        ASSERT_EQ(zero_count, bv.rank0(i));
-        zero_count += (bv[i] == 0) ? 1 : 0;
-    }
+  BitVector bv(bits, bits.size() * 64);
+  uint64_t zero_count = 0;
+  for (size_t i = 0; i < bv.size(); ++i) {
+    ASSERT_EQ(zero_count, bv.rank0(i));
+    zero_count += (bv[i] == 0) ? 1 : 0;
+  }
 }
 
 TEST(BitVectorTest, MainSelectZeroTest) {
-    std::mt19937_64 rng(42);
-    std::vector<uint64_t> bits(65536 * 32);
-    for (size_t i = 0; i < bits.size(); i++) {
-        bits[i] = rng();
-    }
+  std::mt19937_64 rng(42);
+  std::vector<uint64_t> bits(65536 * 32);
+  for (size_t i = 0; i < bits.size(); i++) {
+    bits[i] = rng();
+  }
 
-    BitVector bv(bits, bits.size() * 64);
-    uint64_t zero_rank = 0;
+  BitVector bv(bits, bits.size() * 64);
+  uint64_t zero_rank = 0;
 
-    for (size_t i = 0; i < bv.size(); ++i) {
-        if (bv[i] == 0) {
-            zero_rank++;
-            EXPECT_EQ(bv.select0(zero_rank), i);
-            EXPECT_EQ(bv.rank0(i), zero_rank - 1);
-            EXPECT_EQ(bv.rank0(i + 1), zero_rank);
-        }
+  for (size_t i = 0; i < bv.size(); ++i) {
+    if (bv[i] == 0) {
+      zero_rank++;
+      EXPECT_EQ(bv.select0(zero_rank), i);
+      EXPECT_EQ(bv.rank0(i), zero_rank - 1);
+      EXPECT_EQ(bv.rank0(i + 1), zero_rank);
     }
+  }
 }
 
 TEST(BitVectorInterleavedTest, AtTest) {
