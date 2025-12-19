@@ -205,7 +205,7 @@ class BitVector {
       }
       left += 4;
     }
-    while (left < super_block_rank.size() && super_block_rank[left] < rank0) {
+    while (left < super_block_rank.size() && kSuperBlockSize * left - super_block_rank[left] < rank0) {
       left++;
     }
     return left - 1;
@@ -354,7 +354,7 @@ class BitVector {
    * rank_1(pos) = number of 1s in positions [0...pos-1]
    */
   uint64_t rank(size_t pos) const {
-    if (pos >= num_bits_) [[unlikely]] {
+    if (pos >= bits.size() * kWordSize) [[unlikely]] {
       return max_rank;
     }
     uint64_t b_block = pos / kBasicBlockSize;
@@ -371,7 +371,12 @@ class BitVector {
    * Rank zero operation: count the number of 0-bits up to position pos
    * (exclusive) rank_0(pos) = number of 0s in positions [0...pos-1]
    */
-  uint64_t rank0(size_t pos) const { return pos - rank(pos); }
+  uint64_t rank0(size_t pos) const {
+    if (pos >= bits.size() * kWordSize) [[unlikely]] {
+      return bits.size() * kWordSize - max_rank;
+    }
+    return pos - rank(pos);
+  }
 
   /**
    * Select operation: find the position of the i-th occurrence of a 1-bit
