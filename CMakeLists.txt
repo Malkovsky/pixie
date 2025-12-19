@@ -22,6 +22,83 @@ if(ENABLE_ADDRESS_SANITIZER)
     message(STATUS "AddressSanitizer is ON")
 endif()
 
+set(SDSL_ROOT "" CACHE PATH "Installation prefix of sdsl-lite (contains include/ and lib/)")
+
+find_path(
+    SDSL_INCLUDE_DIR
+    NAMES sdsl/config.hpp
+    HINTS
+        "${SDSL_ROOT}"
+    PATH_SUFFIXES
+        include
+    PATHS
+        "$ENV{HOME}"
+        /usr
+        /usr/local
+)
+
+if(NOT SDSL_INCLUDE_DIR)
+    message(FATAL_ERROR "Could not find sdsl/config.hpp. "
+                        "Set SDSL_ROOT or SDSL_INCLUDE_DIR manually.")
+endif()
+
+find_library(
+    SDSL_LIBRARY
+    NAMES sdsl
+    HINTS
+        "${SDSL_ROOT}"
+    PATH_SUFFIXES
+        lib
+        lib64
+    PATHS
+        "$ENV{HOME}"
+        /usr
+        /usr/local
+)
+
+find_library(
+    DIVSUFSORT_LIBRARY
+    NAMES divsufsort
+    HINTS
+        "${SDSL_ROOT}"
+    PATH_SUFFIXES
+        lib
+        lib64
+    PATHS
+        "$ENV{HOME}"
+        /usr
+        /usr/local
+)
+
+find_library(
+    DIVSUFSORT64_LIBRARY
+    NAMES divsufsort64
+    HINTS
+        "${SDSL_ROOT}"
+    PATH_SUFFIXES
+        lib
+        lib64
+    PATHS
+        "$ENV{HOME}"
+        /usr
+        /usr/local
+)
+
+if(NOT SDSL_LIBRARY OR NOT DIVSUFSORT_LIBRARY OR NOT DIVSUFSORT64_LIBRARY)
+    message(FATAL_ERROR "Could not find sdsl-lite libraries (sdsl, divsufsort, divsufsort64). "
+                        "Set SDSL_ROOT or SDSL_LIBRARY*/DIVSUFSORT* manually.")
+endif()
+
+add_library(sdsl_lite INTERFACE)
+target_include_directories(sdsl_lite INTERFACE "${SDSL_INCLUDE_DIR}")
+target_link_libraries(sdsl_lite INTERFACE
+    "${SDSL_LIBRARY}"
+    "${DIVSUFSORT_LIBRARY}"
+    "${DIVSUFSORT64_LIBRARY}"
+)
+message(STATUS "Found sdsl-lite includes in: ${SDSL_INCLUDE_DIR}")
+message(STATUS "Found sdsl-lite libs: ${SDSL_LIBRARY}; ${DIVSUFSORT_LIBRARY}; ${DIVSUFSORT64_LIBRARY}")
+
 include(FetchContent)
 FetchContent_Declare(
     googletest
@@ -103,6 +180,17 @@ target_link_libraries(test_rmm
     gtest
     gtest_main)
 
+add_executable(bench_rmm_sdsl
+    src/bench_rmm_sdsl.cpp
+)
+target_include_directories(bench_rmm_sdsl
+    PUBLIC include
+)
+target_link_libraries(bench_rmm_sdsl
+    PRIVATE
+        benchmark
+        sdsl_lite
+)
 
 FetchContent_Declare(
     doxygen-awesome-css

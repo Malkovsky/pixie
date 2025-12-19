@@ -1268,6 +1268,115 @@ class RmMTree {
   }
 
   /**
+   * @brief Range search: first index i in [@p begin, @p end_excl) with
+   * @p arr[i] == @p target.
+   */
+  static inline size_t find_first_equal_i16_range(
+      const int16_t* arr,
+      size_t begin,
+      size_t end_excl,
+      const int16_t& target) noexcept {
+    if (begin >= end_excl) {
+      return npos;
+    }
+#if defined(PIXIE_AVX512_SUPPORT)
+    static constexpr size_t STEP = 32;
+    size_t i = begin;
+    for (; i + STEP <= end_excl; i += STEP) {
+      const size_t offset =
+          ::find_forward_equal_i16_avx512(arr + i, target, npos);
+      if (offset != npos) {
+        return i + offset;
+      }
+    }
+    for (; i < end_excl; ++i) {
+      if (arr[i] == target) {
+        return i;
+      }
+    }
+#elif defined(PIXIE_AVX2_SUPPORT)
+    static constexpr size_t STEP = 16;
+    size_t i = begin;
+    for (; i + STEP <= end_excl; i += STEP) {
+      const size_t offset =
+          ::find_forward_equal_i16_avx2(arr + i, target, npos);
+      if (offset != npos) {
+        return i + offset;
+      }
+    }
+    for (; i < end_excl; ++i) {
+      if (arr[i] == target) {
+        return i;
+      }
+    }
+#else
+    for (size_t i = begin; i < end_excl; ++i) {
+      if (arr[i] == target) {
+        return i;
+      }
+    }
+#endif
+    return npos;
+  }
+
+  /**
+   * @brief Range search: last index i in [@p begin, @p end_excl) with
+   * @p arr[i] == @p target.
+   */
+  static inline size_t find_last_equal_i16_range(
+      const int16_t* arr,
+      size_t begin,
+      size_t end_excl,
+      const int16_t& target) noexcept {
+    if (begin >= end_excl) {
+      return npos;
+    }
+#if defined(PIXIE_AVX512_SUPPORT)
+    static constexpr size_t STEP = 32;
+    size_t block_start = end_excl;
+    while (block_start >= begin + STEP) {
+      block_start -= STEP;
+      const size_t offset =
+          ::find_backward_equal_i16_avx512(arr + block_start, target, npos);
+      if (offset != npos) {
+        return block_start + offset;
+      }
+    }
+    for (size_t i = block_start; i > begin;) {
+      --i;
+      if (arr[i] == target) {
+        return i;
+      }
+    }
+#elif defined(PIXIE_AVX2_SUPPORT)
+    static constexpr size_t STEP = 16;
+    size_t block_start = end_excl;
+    while (block_start >= begin + STEP) {
+      block_start -= STEP;
+      const size_t offset =
+          ::find_backward_equal_i16_avx2(arr + block_start, target, npos);
+      if (offset != npos) {
+        return block_start + offset;
+      }
+    }
+    for (size_t i = block_start; i > begin;) {
+      --i;
+      if (arr[i] == target) {
+        return i;
+      }
+    }
+#else
+    for (size_t i = end_excl; i > begin;) {
+      --i;
+      if (arr[i] == target) {
+        return i;
+      }
+    }
+#endif
+    return npos;
+  }
+
+  /**
    * @brief Forward search within a single leaf over the range [@p search_start,
    * @p search_end).
    * @param required_delta required relative excess (relative to @p
@@ -1337,8 +1446,8 @@ class RmMTree {
         &leaf_prefix[block_of(block_begin) * leaf_prefix_stride];
     const size_t end_inclusive = block_end - block_begin;
     if (end_inclusive > 0) {
-      const size_t position = ::find_backward_equal_i16_avx2(
-          leaf_prefix_ptr, 1, end_inclusive, required_delta, npos);
+      const size_t position = find_last_equal_i16_range(
+          leaf_prefix_ptr, 1, end_inclusive + 1, required_delta);
       if (position != npos) {
         return block_begin + position;
       }
@@ -2098,9 +2207,9 @@ class RmMTree {
       return npos;
     }
     const int16_t start_prefix = leaf_prefix_ptr[offset_in_leaf];
-    size_t match_index = ::find_forward_equal_i16_avx2(
-        leaf_prefix_ptr, offset_in_leaf + 1, leaf_length + 1,
-        start_prefix + delta, npos);
+    const size_t match_index =
+        find_first_equal_i16_range(leaf_prefix_ptr, offset_in_leaf + 1,
+                                   leaf_length + 1, start_prefix + delta);
     if (match_index != npos) {
       return leaf_block_begin + match_index - 1;
     }
@@ -2130,8 +2239,8 @@ class RmMTree {
     }
     const int16_t start_prefix = leaf_prefix_ptr[offset_in_leaf];
     if (offset_in_leaf > 0) {
-      const size_t match_index = ::find_backward_equal_i16_avx2(
-          leaf_prefix_ptr, 0, offset_in_leaf - 1, start_prefix + delta, npos);
+      const size_t match_index = find_last_equal_i16_range(
+          leaf_prefix_ptr, 0, offset_in_leaf, start_prefix + delta);
       if (match_index != npos) {
         return leaf_block_begin + match_index;
       }
