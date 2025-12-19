@@ -205,7 +205,8 @@ class BitVector {
       }
       left += 4;
     }
-    while (left < super_block_rank.size() && kSuperBlockSize * left - super_block_rank[left] < rank0) {
+    while (left < super_block_rank.size() &&
+           kSuperBlockSize * left - super_block_rank[left] < rank0) {
       left++;
     }
     return left - 1;
