@@ -6,6 +6,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 
 #if defined(__AVX512VPOPCNTDQ__) && defined(__AVX512F__) && \
@@ -18,7 +19,7 @@
 // Lookup table for 4-bit popcount
 // This table maps each 4-bit value (0-15) to its population count
 // clang-format off
-const __m256i lookup_popcount_4 = _mm256_setr_epi8(
+static inline const __m256i lookup_popcount_4 = _mm256_setr_epi8(
     0, 1, 1, 2,  // 0000, 0001, 0010, 0011
     1, 2, 2, 3,  // 0100, 0101, 0110, 0111
     1, 2, 2, 3,  // 1000, 1001, 1010, 1011
@@ -31,7 +32,7 @@ const __m256i lookup_popcount_4 = _mm256_setr_epi8(
     2, 3, 3, 4   // 1100, 1101, 1110, 1111
 );
 
-const __m256i mask_first_half = _mm256_setr_epi8(
+static inline const __m256i mask_first_half = _mm256_setr_epi8(
     0xFF, 0xFF, 0xFF, 0xFF,
     0xFF, 0xFF, 0xFF, 0xFF,
     0xFF, 0xFF, 0xFF, 0xFF,

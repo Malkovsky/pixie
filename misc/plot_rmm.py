@@ -128,7 +128,7 @@ def main():
     df_sdsl = None
     if args.sdsl_json is not None:
         df_sdsl = load_bench_json(args.sdsl_json)
-    
+
     rmm_ops = set(df_rmm["name"].dropna().astype(str).unique())
     if df_sdsl is not None:
         sdsl_ops = set(df_sdsl["name"].dropna().astype(str).unique())
@@ -193,7 +193,7 @@ def main():
                 d_sdsl["cpu_time"],
                 s=8,
                 alpha=0.3,
-                linewidths=0,
+                linewidths=0.9,
                 marker="x",
             )
             plt.plot(

@@ -72,15 +72,9 @@ class RmMTree {
   std::vector<uint32_t> node_pattern10_count;
 
   // node_first_bit = first bit (0/1), node_last_bit = last bit (0/1) of the
-  // segment (to handle "10" crossing) both needed for: rank10, select10.
+  // segment (to handle "10" crossing)
+  // both needed for: rank10, select10.
   std::vector<uint8_t> node_first_bit, node_last_bit;
-
-  // leaf_prefix[k * leaf_prefix_stride + j] =
-  // excess(block_begin + j) - excess(block_begin), j in [0..leaf_size],
-  // block_begin = k * block_bits. needed for:
-  // fwdsearch/bwdsearch/close/open/enclose
-  std::vector<int16_t> leaf_prefix;
-  size_t leaf_prefix_stride = 0;
 
  public:
   /**
@@ -336,23 +330,43 @@ class RmMTree {
     }
 
     int remaining_delta = delta - leaf_delta;
-    if (leaf_block_index + 1 < leaf_count) {
-      size_t nodes_buffer[64];
-      const size_t node_count = cover_blocks_collect(
-          leaf_block_index + 1, leaf_count - 1, nodes_buffer);
-      size_t segment_base = (leaf_block_index + 1) * block_bits;
-      for (size_t j = 0; j < node_count; ++j) {
-        const size_t node_index = nodes_buffer[j];
-        if (remaining_delta == 0) {
-          return segment_base;
+    size_t segment_base = block_end;
+    if (remaining_delta == 0) {
+      return segment_base;
+    }
+
+    // Tree-walk to the right:
+    // go up; whenever we come from a left child, try the right sibling subtree.
+    // If target is inside sibling -> descend; else skip it and continue up.
+    size_t node_index = leaf_index_of(block_begin);
+    const size_t tree_size = segment_size_bits.size() - 1;
+
+    // If we are already at/after the last leaf boundary, there's nothing to
+    // scan.
+    if (segment_base >= num_bits || leaf_block_index + 1 >= leaf_count) {
+      return npos;
+    }
+
+    while (node_index > 1) {
+      const bool is_left_child = ((node_index & 1u) == 0u);
+      if (is_left_child) {
+        const size_t sibling = node_index | 1u;  // right sibling
+        if (sibling <= tree_size && segment_size_bits[sibling]) {
+          // Boundary at sibling start already handled above via
+          // remaining_delta==0.
+          if (node_min_prefix_excess[sibling] <= remaining_delta &&
+              remaining_delta <= node_max_prefix_excess[sibling]) {
+            return descend_fwd(sibling, remaining_delta, segment_base);
+          }
+          // Skip whole sibling subtree.
+          remaining_delta -= node_total_excess[sibling];
+          segment_base += segment_size_bits[sibling];
+          if (remaining_delta == 0) {
+            return segment_base;
+          }
         }
-        if (node_min_prefix_excess[node_index] <= remaining_delta &&
-            remaining_delta <= node_max_prefix_excess[node_index]) {
-          return descend_fwd(node_index, remaining_delta, segment_base);
-        }
-        remaining_delta -= node_total_excess[node_index];
-        segment_base += segment_size_bits[node_index];
       }
+      node_index >>= 1;
     }
     return npos;
   }
@@ -1268,6 +1282,203 @@ class RmMTree {
   }
 
   /**
+   * @brief Extract 16 bits starting at @p position (LSB-first across words).
+   */
+  inline uint16_t get_u16(const size_t& position) const noexcept {
+    const size_t word_index = position >> 6;
+    const unsigned offset = unsigned(position & 63);
+    const std::uint64_t w0 =
+        (word_index < bits.size()) ? bits[word_index] : 0ULL;
+    if (offset == 0) {
+      return uint16_t(w0 & 0xFFFFu);
+    }
+    const std::uint64_t w1 =
+        (word_index + 1 < bits.size()) ? bits[word_index + 1] : 0ULL;
+    const std::uint64_t v = (w0 >> offset) | (w1 << (64u - offset));
+    return uint16_t(v & 0xFFFFu);
+  }
+
+#if defined(PIXIE_AVX2_SUPPORT)
+  static inline __m256i bit_masks_16x() noexcept {
+    // 16 lanes: (1<<0), (1<<1), ... (1<<15)
+    return _mm256_setr_epi16(0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020,
+                             0x0040, 0x0080, 0x0100, 0x0200, 0x0400, 0x0800,
+                             0x1000, 0x2000, 0x4000, (int16_t)0x8000);
+  }
+
+  static inline __m256i prefix_sum_16x_i16(__m256i v) noexcept {
+    // Inclusive prefix sum within 128-bit lanes, then fix carry into the high
+    // lane.
+    __m256i x = v;
+    __m256i t = _mm256_slli_si256(x, 2);
+    x = _mm256_add_epi16(x, t);
+    t = _mm256_slli_si256(x, 4);
+    x = _mm256_add_epi16(x, t);
+    t = _mm256_slli_si256(x, 8);
+    x = _mm256_add_epi16(x, t);
+
+    __m128i lo = _mm256_extracti128_si256(x, 0);
+    __m128i hi = _mm256_extracti128_si256(x, 1);
+    const int16_t carry =
+        (int16_t)_mm_extract_epi16(lo, 7);  // sum of first 8 elems
+    hi = _mm_add_epi16(hi, _mm_set1_epi16(carry));
+
+    __m256i out = _mm256_castsi128_si256(lo);
+    out = _mm256_inserti128_si256(out, hi, 1);
+    return out;
+  }
+
+  static inline int16_t last_prefix_16x_i16(__m256i pref) noexcept {
+    __m128i hi = _mm256_extracti128_si256(pref, 1);
+    return (int16_t)_mm_extract_epi16(hi, 7);  // lane 15
+  }
+
+  /**
+   * @brief SIMD forward scan: find first bit position p in [start,end) where
+   *        sum_{k=start..p} step(k) == required_delta.
+   * @param out_total If not null and not found, receives total sum on
+   * [start,end).
+   */
+  inline size_t scan_leaf_fwd_simd(const size_t& start,
+                                   const size_t& end,
+                                   const int& required_delta,
+                                   int* out_total) const noexcept {
+    if (start >= end) {
+      if (out_total) {
+        *out_total = 0;
+      }
+      return npos;
+    }
+    if (required_delta < -32768 || required_delta > 32767) {
+      if (out_total) {
+        const int len = int(end - start);
+        const int ones = int(rank1_in_block(start, end));
+        *out_total = ones * 2 - len;
+      }
+      return npos;
+    }
+
+    static const __m256i masks = bit_masks_16x();
+    static const __m256i vzero = _mm256_setzero_si256();
+    static const __m256i vallones = _mm256_cmpeq_epi16(vzero, vzero);
+    static const __m256i vminus1 = _mm256_set1_epi16(-1);
+    static const __m256i vtwo = _mm256_set1_epi16(2);
+    const __m256i vtarget = _mm256_set1_epi16((int16_t)required_delta);
+
+    int cur = 0;
+    size_t pos = start;
+    while (pos + 16 <= end) {
+      const uint16_t bits16 = get_u16(pos);
+      const __m256i vb = _mm256_set1_epi16((int16_t)bits16);
+      const __m256i m = _mm256_and_si256(vb, masks);
+      const __m256i is_zero = _mm256_cmpeq_epi16(m, vzero);
+      const __m256i is_set = _mm256_andnot_si256(is_zero, vallones);
+      const __m256i steps =
+          _mm256_add_epi16(vminus1, _mm256_and_si256(is_set, vtwo));
+
+      const __m256i pref_rel = prefix_sum_16x_i16(steps);
+      const __m256i base = _mm256_set1_epi16((int16_t)cur);
+      const __m256i pref = _mm256_add_epi16(pref_rel, base);
+      const __m256i cmp = _mm256_cmpeq_epi16(pref, vtarget);
+      const uint32_t mask = (uint32_t)_mm256_movemask_epi8(cmp);
+      if (mask) {
+        const int lane = int(std::countr_zero(mask)) >> 1;
+        return pos + (size_t)lane;
+      }
+      cur += (int)last_prefix_16x_i16(pref_rel);
+      pos += 16;
+    }
+    while (pos < end) {
+      cur += bit(pos) ? +1 : -1;
+      if (cur == required_delta) {
+        return pos;
+      }
+      ++pos;
+    }
+    if (out_total) {
+      *out_total = cur;
+    }
+    return npos;
+  }
+#endif  // PIXIE_AVX2_SUPPORT
+
+  /**
+   * @brief Faster small-delta forward scan for tiny tails (LUT8 + direct byte
+   * loads).
+   * @details This avoids the heavy AVX2 prefix-sum setup cost when the tail is
+   * small. Requires little-endian layout (x86_64).
+   */
+  inline size_t scan_leaf_fwd_lut8_fast(const size_t& start,
+                                        const size_t& end,
+                                        const int& required_delta,
+                                        int* out_total) const noexcept {
+    if (start >= end) {
+      if (out_total) {
+        *out_total = 0;
+      }
+      return npos;
+    }
+    int cur = 0;
+
+    size_t pos = start;
+    while (pos < end && (pos & 7)) {
+      cur += bit(pos) ? +1 : -1;
+      if (cur == required_delta) {
+        if (out_total) {
+          *out_total = cur;
+        }
+        return pos;
+      }
+      ++pos;
+    }
+
+    // Byte-aligned fast path: read bytes directly.
+    // bits are LSB-first; on little-endian x86 the in-memory byte order matches
+    // bit groups [pos..pos+7].
+    const uint8_t* bytep =
+        reinterpret_cast<const uint8_t*>(bits.data()) + (pos >> 3);
+    const auto& agg = LUT8();
+    const auto& fwd = LUT8_FWD_POS();
+
+    while (pos + 8 <= end) {
+      const uint8_t bv = *bytep++;
+      const auto& a = agg[bv];
+      const int need = required_delta - cur;
+      // need must be in [-8..8] for a match inside one byte.
+      if ((unsigned)(need + 8) <= 16u) {
+        // min/max pruning first, then position lookup.
+        if (need >= a.min_prefix && need <= a.max_prefix) {
+          const int8_t off = fwd[bv][need + 8];
+          if (off >= 0) {
+            if (out_total) {
+              *out_total = cur + a.excess_total;  // not exact end, but caller
+                                                  // only uses when not found
+            }
+            return pos + (size_t)off;
+          }
+        }
+      }
+      cur += a.excess_total;
+      pos += 8;
+    }
+
+    while (pos < end) {
+      cur += bit(pos) ? +1 : -1;
+      if (cur == required_delta) {
+        if (out_total) {
+          *out_total = cur;
+        }
+        return pos;
+      }
+      ++pos;
+    }
+    if (out_total) {
+      *out_total = cur;
+    }
+    return npos;
+  }
+
+  /**
    * @brief Range search: first index i in [@p begin, @p end_excl) with
    * @p arr[i] == @p target.
    */
@@ -1433,8 +1644,24 @@ class RmMTree {
       const size_t& block_end,
       const int& required_delta,
       const bool& allow_right_boundary,
-      const size_t& global_right_border) const noexcept {
-    if (block_begin >= block_end) {
+      const size_t& global_right_border,
+      const int& prefix_at_boundary_max /*=kNoPrefixOverride*/) const noexcept {
+    // We scan bits in [block_begin, block_end) and look for the LAST boundary
+    // where prefix == required_delta, with optional exclusion of the right
+    // boundary.
+    if (block_begin > block_end) {
+      return npos;
+    }
+
+    // Maximum allowed boundary (inclusive) inside this scan.
+    // If right boundary is forbidden, we forbid boundary == block_end.
+    size_t boundary_max = block_end;
+    if (!allow_right_boundary && boundary_max > block_begin) {
+      --boundary_max;
+    }
+
+    // No bits to scan -> only possible answer is the left boundary.
+    if (block_begin >= boundary_max) {
       if ((block_begin < global_right_border || allow_right_boundary) &&
           required_delta == 0) {
         return block_begin;
@@ -1442,22 +1669,109 @@ class RmMTree {
       return npos;
     }
 
-    const int16_t* leaf_prefix_ptr =
-        &leaf_prefix[block_of(block_begin) * leaf_prefix_stride];
-    const size_t end_inclusive = block_end - block_begin;
-    if (end_inclusive > 0) {
-      const size_t position = find_last_equal_i16_range(
-          leaf_prefix_ptr, 1, end_inclusive + 1, required_delta);
-      if (position != npos) {
-        return block_begin + position;
+    if (required_delta < -32768 || required_delta > 32767) {
+      // Just in case. Should be impossible.
+      if ((block_begin < global_right_border || allow_right_boundary) &&
+          required_delta == 0) {
+        return block_begin;
       }
+      return npos;
     }
 
+#if defined(PIXIE_AVX2_SUPPORT)
+    // Fast reverse scan with early exit:
+    // find the RIGHTMOST boundary j in (block_begin..boundary_max] such that
+    // prefix(j) == required_delta.
+
+    // prefix_end = prefix(boundary_max) relative to block_begin
+    int prefix_end = prefix_at_boundary_max;
+    if (prefix_end == kNoPrefixOverride) {
+      const int len = int(boundary_max - block_begin);
+      const int ones = int(rank1_in_block(block_begin, boundary_max));
+      prefix_end = ones * 2 - len;
+    }
+
+    const __m256i masks = bit_masks_16x();
+    const __m256i vzero = _mm256_setzero_si256();
+    const __m256i vallones = _mm256_cmpeq_epi16(vzero, vzero);
+    const __m256i vminus1 = _mm256_set1_epi16(-1);
+    const __m256i vtwo = _mm256_set1_epi16(2);
+    const __m256i vtarget = _mm256_set1_epi16((int16_t)required_delta);
+
+    size_t pos_end = boundary_max;  // boundary (not bit index)
+    int cur_end = prefix_end;       // prefix(pos_end)
+
+    // Vector chunks: process 16 bits ending at pos_end.
+    while (pos_end >= block_begin + 16) {
+      const size_t pos = pos_end - 16;  // bit index of the chunk start
+      const uint16_t bits16 = get_u16(pos);
+      const __m256i vb = _mm256_set1_epi16((int16_t)bits16);
+      const __m256i m = _mm256_and_si256(vb, masks);
+      const __m256i is_zero = _mm256_cmpeq_epi16(m, vzero);
+      const __m256i is_set = _mm256_andnot_si256(is_zero, vallones);
+      const __m256i steps =
+          _mm256_add_epi16(vminus1, _mm256_and_si256(is_set, vtwo));
+
+      const __m256i pref_rel =
+          prefix_sum_16x_i16(steps);  // prefix after each bit (relative)
+      const int16_t sum16 =
+          last_prefix_16x_i16(pref_rel);  // total sum on this 16-bit chunk
+      const int cur_start =
+          cur_end - (int)sum16;  // prefix at boundary pos (chunk start)
+
+      const __m256i base = _mm256_set1_epi16((int16_t)cur_start);
+      const __m256i pref = _mm256_add_epi16(
+          pref_rel, base);  // prefix at boundaries (pos+1..pos+16)
+      const __m256i cmp = _mm256_cmpeq_epi16(pref, vtarget);
+      const uint32_t mask = (uint32_t)_mm256_movemask_epi8(cmp);
+      if (mask) {
+        const int bit_i = 31 - int(std::countl_zero(mask));
+        const int lane = bit_i >> 1;
+        const size_t boundary = pos + (size_t)lane + 1;
+        if (boundary < global_right_border || allow_right_boundary) {
+          return boundary;
+        }
+        return npos;
+      }
+
+      cur_end = cur_start;
+      pos_end = pos;
+    }
+
+    while (pos_end > block_begin) {
+      // boundary pos_end corresponds to prefix cur_end
+      if (cur_end == required_delta) {
+        if (pos_end < global_right_border || allow_right_boundary) {
+          return pos_end;
+        }
+        return npos;
+      }
+      const size_t bit_pos = pos_end - 1;
+      cur_end -= bit(bit_pos) ? +1 : -1;  // move one bit to the left
+      pos_end = bit_pos;
+    }
+#else
+    size_t last_boundary = npos;
+    int cur = 0;
+    for (size_t pos = block_begin; pos < boundary_max; ++pos) {
+      cur += bit(pos) ? +1 : -1;
+      if (cur == required_delta) {
+        last_boundary = pos + 1;
+      }
+    }
+    if (last_boundary != npos) {
+      if (last_boundary < global_right_border || allow_right_boundary) {
+        return last_boundary;
+      }
+      return npos;
+    }
+#endif
+
+    // Left boundary (prefix == 0) is always the final candidate.
     if ((block_begin < global_right_border || allow_right_boundary) &&
         required_delta == 0) {
       return block_begin;
     }
-
     return npos;
   }
 
@@ -1521,6 +1835,12 @@ class RmMTree {
    * @brief Heap index of the first leaf node.
    */
   size_t first_leaf_index = 1;
+
+  /**
+   * @brief Sentinel to tell scan_leaf_bwd(): "prefix at right boundary not
+   * provided".
+   */
+  static constexpr int kNoPrefixOverride = std::numeric_limits<int>::min();
 
   /**
    * @brief Block index containing position @p position.
@@ -1598,10 +1918,13 @@ class RmMTree {
         node_index = right_child;
       }
     }
-    return scan_leaf_fwd(
-        segment_base,
-        std::min(segment_base + segment_size_bits[node_index], num_bits),
-        required_delta);
+    const size_t seg_end =
+        std::min(segment_base + segment_size_bits[node_index], num_bits);
+#if defined(PIXIE_AVX2_SUPPORT)
+    return scan_leaf_fwd_simd(segment_base, seg_end, required_delta, nullptr);
+#else
+    return scan_leaf_fwd(segment_base, seg_end, required_delta);
+#endif
   }
 
   /**
@@ -1659,12 +1982,26 @@ class RmMTree {
       return npos;
     }
 
-    return scan_leaf_bwd(
-        segment_base,
-        std::min(
-            global_right_border,
-            std::min(segment_base + segment_size_bits[node_index], num_bits)),
-        required_delta, allow_right_boundary, global_right_border);
+    const size_t seg_end =
+        std::min(segment_base + segment_size_bits[node_index], num_bits);
+    const size_t block_end = std::min(global_right_border, seg_end);
+
+    int prefix_override = kNoPrefixOverride;
+    // If we scan the full leaf up to its end boundary, we know
+    // prefix(block_end) from node_total_excess[leaf]. If the right boundary is
+    // forbidden, we can still derive prefix(block_end-1) cheaply.
+    if (block_end == seg_end) {
+      const int total = node_total_excess[node_index];
+      if (!allow_right_boundary && block_end > segment_base) {
+        prefix_override = total - (bit(block_end - 1) ? +1 : -1);
+      } else {
+        prefix_override = total;
+      }
+    }
+
+    return scan_leaf_bwd(segment_base, block_end, required_delta,
+                         allow_right_boundary, global_right_border,
+                         prefix_override);
   }
 
   /**
@@ -1901,8 +2238,7 @@ class RmMTree {
                                    const size_t& block_size_pow2) noexcept {
     static constexpr size_t AUX_SLOT_BYTES =
         sizeof(uint32_t) + sizeof(int32_t) + sizeof(int32_t) + sizeof(int32_t) +
-        sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint8_t) +
-        sizeof(uint8_t) + sizeof(int16_t);
+        sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint8_t);
 
     size_t bitvector_bytes = ceil_div(bit_count, 64) * 8;
     if (bitvector_bytes == 0) {
@@ -2199,22 +2535,38 @@ class RmMTree {
                                  const int& delta,
                                  int& leaf_delta) const noexcept {
     const size_t leaf_length = segment_size_bits[first_leaf_index + leaf_index];
-    const int16_t* leaf_prefix_ptr =
-        &leaf_prefix[leaf_index * leaf_prefix_stride];
-    const size_t offset_in_leaf = start_position - leaf_block_begin;
-    if (offset_in_leaf > leaf_length) {
+    const size_t leaf_end = std::min(num_bits, leaf_block_begin + leaf_length);
+    if (start_position >= leaf_end) {
       leaf_delta = 0;
       return npos;
     }
-    const int16_t start_prefix = leaf_prefix_ptr[offset_in_leaf];
-    const size_t match_index =
-        find_first_equal_i16_range(leaf_prefix_ptr, offset_in_leaf + 1,
-                                   leaf_length + 1, start_prefix + delta);
-    if (match_index != npos) {
-      return leaf_block_begin + match_index - 1;
+#if defined(PIXIE_AVX2_SUPPORT)
+    int total = 0;
+    // Heuristic: for tiny tails and tiny deltas, LUT8 wins because AVX2 setup
+    // is heavy...
+    // At least I think so...
+    const size_t tail_len = leaf_end - start_position;
+    size_t res = npos;
+    if (delta >= -8 && delta <= 8 && tail_len <= 256) {
+      res = scan_leaf_fwd_lut8_fast(start_position, leaf_end, delta, &total);
+    } else {
+      res = scan_leaf_fwd_simd(start_position, leaf_end, delta, &total);
     }
-    leaf_delta = leaf_prefix_ptr[leaf_length] - start_prefix;
+    if (res != npos) {
+      return res;
+    }
+    leaf_delta = total;
     return npos;
+#else
+    const size_t res = scan_leaf_fwd(start_position, leaf_end, delta);
+    if (res != npos) {
+      return res;
+    }
+    const int len = int(leaf_end - start_position);
+    const int ones = int(rank1_in_block(start_position, leaf_end));
+    leaf_delta = ones * 2 - len;
+    return npos;
+#endif
   }
 
   /**
@@ -2230,23 +2582,36 @@ class RmMTree {
                                  const size_t& start_position,
                                  const int& delta,
                                  int& leaf_delta) const noexcept {
-    const int16_t* leaf_prefix_ptr =
-        &leaf_prefix[leaf_index * leaf_prefix_stride];
-    const size_t offset_in_leaf = start_position - leaf_block_begin;
-    if (offset_in_leaf > segment_size_bits[first_leaf_index + leaf_index]) {
+    const size_t leaf_length = segment_size_bits[first_leaf_index + leaf_index];
+    const size_t leaf_end = std::min(num_bits, leaf_block_begin + leaf_length);
+    if (start_position < leaf_block_begin || start_position > leaf_end) {
       leaf_delta = 0;
       return npos;
     }
-    const int16_t start_prefix = leaf_prefix_ptr[offset_in_leaf];
-    if (offset_in_leaf > 0) {
-      const size_t match_index = find_last_equal_i16_range(
-          leaf_prefix_ptr, 0, offset_in_leaf, start_prefix + delta);
-      if (match_index != npos) {
-        return leaf_block_begin + match_index;
-      }
+
+    // leaf_delta = excess(start_position) - excess(leaf_block_begin)
+    //            = 2*rank1([leaf_begin, start)) - (start - leaf_begin)
+    const int len = int(start_position - leaf_block_begin);
+    const int ones = int(rank1_in_block(leaf_block_begin, start_position));
+    leaf_delta = ones * 2 - len;
+
+    // Must find a boundary strictly < start_position (so
+    // boundary==start_position forbidden).
+    if (start_position == leaf_block_begin) {
+      return npos;
     }
-    leaf_delta = start_prefix;
-    return npos;
+    const int target_prefix = leaf_delta + delta;
+    return scan_leaf_bwd(
+        leaf_block_begin,
+        start_position,  // do not look to the right of start_position
+        target_prefix,
+        false,  // right boundary (=start_position) forbidden
+        start_position,
+        // prefix at boundary_max = start_position-1:
+        // leaf_delta is prefix at start_position, subtract last step
+        (start_position > leaf_block_begin
+             ? (leaf_delta - (bit(start_position - 1) ? +1 : -1))
+             : 0));
   }
 
   /**
@@ -2389,8 +2754,6 @@ class RmMTree {
     node_pattern10_count.assign(tree_size + 1, 0);
     node_first_bit.assign(tree_size + 1, 0);
     node_last_bit.assign(tree_size + 1, 0);
-    leaf_prefix_stride = block_bits + 1;
-    leaf_prefix.assign(leaf_count * leaf_prefix_stride, 0);
 
     // leaves
     for (size_t leaf_block_index = 0; leaf_block_index < leaf_count;
@@ -2476,15 +2839,6 @@ class RmMTree {
           (segment_size_bits[leaf_node_index] == 0 ? 0 : max_value);
       node_min_count[leaf_node_index] = min_count;
       node_pattern10_count[leaf_node_index] = (uint32_t)pattern10_count;
-      int16_t* leaf_prefix_ptr =
-          &leaf_prefix[leaf_block_index * leaf_prefix_stride];
-      int16_t prefix_accumulator = 0;
-      leaf_prefix_ptr[0] = 0;
-      for (size_t position_in_leaf = segment_begin, prefix_index = 1;
-           position_in_leaf < segment_end; ++position_in_leaf, ++prefix_index) {
-        prefix_accumulator += bit(position_in_leaf) ? 1 : -1;
-        leaf_prefix_ptr[prefix_index] = prefix_accumulator;
-      }
     }
     // internal nodes
     for (size_t node_index = first_leaf_index - 1; node_index >= 1;
