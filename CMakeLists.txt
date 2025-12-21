@@ -103,6 +103,15 @@ target_link_libraries(test_rmm
     gtest
     gtest_main)
 
+add_executable(louds_tree_tests
+    src/louds_tree_tests.cpp)
+target_include_directories(louds_tree_tests
+    PUBLIC include
+    PUBLIC ${GOOGLETEST_SOURCE_DIR}/include
+)
+target_link_libraries(louds_tree_tests
+    gtest
+    gtest_main)
 
 FetchContent_Declare(
     doxygen-awesome-css
