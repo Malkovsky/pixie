@@ -28,13 +28,15 @@ std::vector<std::vector<size_t>> bfs_order(
     const std::vector<std::vector<size_t>>& adj) {
   std::vector<std::vector<size_t>> bfs_adj(tree_size);
   std::queue<std::pair<size_t, size_t>> q;
+  bfs_adj[0].push_back(0);
   q.push({0, 0});
   int cnt = 1;
   while (!q.empty()) {
     size_t old_v = q.front().first;
     size_t cur_v = q.front().second;
     q.pop();
-    for (size_t old_u : adj[old_v]) {
+    for (size_t i = 1; i < adj[old_v].size(); i++) {
+      size_t old_u = adj[old_v][i];
       size_t cur_u = cnt++;
       q.push({old_u, cur_u});
       bfs_adj[cur_u].push_back(cur_v);
@@ -51,7 +53,7 @@ std::vector<uint64_t> adj_to_louds(
   std::vector<uint64_t> louds((louds_size + 63) / 64, 0);
   size_t pos = 0;
   for (size_t i = 0; i < tree_size; i++) {
-    louds[pos >> 6] = louds[pos >> 6] | (1 << (pos & 63));
+    louds[pos >> 6] = louds[pos >> 6] | (1ULL << (pos & 63));
     pos += adj[i].size();
   }
   return louds;
@@ -108,13 +110,32 @@ class AdjListTree {
   }
 
   /**
+   * @brief Returns the first child of @p node
+   */
+  AdjListNode first_child(const AdjListNode& node) const {
+    return AdjListNode(adj[node.number][1]);
+  }
+
+  /**
    * @brief Returns the parent of a @p node if @p node is not root,
    * else returns root
    */
   AdjListNode parent(const AdjListNode& node) const {
-    if (node.number == 0) {
-      return root();
-    }
     return AdjListNode(adj[node.number][0]);
+  }
+
+  /**
+   * @brief Indicates if @p node is last child
+   */
+  bool is_last_child(const AdjListNode& node) const {
+    size_t p = parent(node).number;
+    return adj[p].back() == node.number;
+  }
+
+  /**
+   * @brief Returns next sibling of a @p node
+   */
+  AdjListNode next_sibling(const AdjListNode& node) const {
+    return AdjListNode(node.number + 1);
   }
 };

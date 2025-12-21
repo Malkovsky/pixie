@@ -61,11 +61,19 @@ class LoudsTree {
   }
 
   /**
-   * @brief Returns the i-child of a @p node
+   * @brief Returns the i-th child of @p node
    * Indexing starts at 0
    */
   LoudsNode child(const LoudsNode& node, size_t i) const {
     size_t zeros = node.pos + i + 1 - node.number;
+    return LoudsNode(zeros, bv.select(zeros + 1));
+  }
+
+  /**
+   * @brief Returns first child of a @p node
+   */
+  LoudsNode first_child(const LoudsNode& node) const {
+    size_t zeros = node.pos + 1 - node.number;
     return LoudsNode(zeros, bv.select(zeros + 1));
   }
 
@@ -80,6 +88,22 @@ class LoudsTree {
     size_t zero_pos = bv.select0(node.number);
     size_t parent_number = zero_pos - node.number;
     return LoudsNode(parent_number, bv.select(parent_number + 1));
+  }
+
+  /**
+   * @brief Indicates if @p node is last child
+   */
+  bool is_last_child(const LoudsNode& node) const {
+    size_t zero_pos = bv.select0(node.number);
+    return bv[zero_pos + 1];
+  }
+
+  /**
+   * @brief Returns next sibling of a @p node
+   */
+  LoudsNode next_sibling(const LoudsNode& node) const {
+    size_t sibling_number = node.number + 1;
+    return LoudsNode(sibling_number, bv.select(sibling_number + 1));
   }
 };
 
