@@ -2,11 +2,10 @@
 
 #include <gtest/gtest.h>
 
+#include <iostream>
 #include <numeric>
 #include <random>
 #include <stack>
-
-#include <iostream>
 
 #include "utils.h"
 
@@ -32,7 +31,6 @@ TEST(LoudsTreeTest, Basic) {
   EXPECT_EQ(cur, debug);
 }
 
-
 TEST(LoudsTreeTest, RandomTreeDFS) {
   std::mt19937_64 rng(42);
   for (size_t tree_size = 8; tree_size < (1 << 22); tree_size <<= 1) {
@@ -42,7 +40,7 @@ TEST(LoudsTreeTest, RandomTreeDFS) {
     LoudsTree louds_tree(louds, tree_size);
     AdjListTree debug_tree(adj);
 
-    std::stack <std::pair<LoudsNode, AdjListNode>> st;
+    std::stack<std::pair<LoudsNode, AdjListNode>> st;
 
     st.push({louds_tree.root(), debug_tree.root()});
 
