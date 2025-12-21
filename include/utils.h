@@ -95,6 +95,11 @@ class AdjListTree {
   }
 
   /**
+   * @brief Checks if @p node is a root
+   */
+  bool is_root(const AdjListNode& node) const { return node.number == 0; }
+
+  /**
    * @brief Returns the number of children of @p node
    */
   size_t degree(const AdjListNode& node) const {

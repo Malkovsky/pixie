@@ -51,6 +51,11 @@ class LoudsTree {
   }
 
   /**
+   * @brief Indicates if @p node is a root
+   */
+  bool is_root(const LoudsNode& node) const { return node.number == 0; }
+
+  /**
    * @brief Returns the number of children of a @p node
    */
   size_t degree(const LoudsNode& node) const {
