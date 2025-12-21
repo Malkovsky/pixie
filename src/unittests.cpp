@@ -89,6 +89,14 @@ TEST(Select512, Ones) {
   }
 }
 
+TEST(SelectZero512, Zeros) {
+  std::array<uint64_t, 8> a{0, 0, 0, 0, 0, 0, 0, 0};
+  for (size_t i = 0; i < 512; ++i) {
+    auto p = select0_512(a.data(), i);
+    EXPECT_EQ(p, i);
+  }
+}
+
 TEST(Select512, Random) {
   std::array<uint64_t, 8> a{std::numeric_limits<uint64_t>::max(),
                             std::numeric_limits<uint64_t>::max(),
@@ -108,6 +116,31 @@ TEST(Select512, Random) {
     for (size_t i = 0; i < 512; ++i) {
       if (1 & (a[i >> 6] >> (i & 63))) {
         auto p = select_512(a.data(), rank++);
+        ASSERT_EQ(p, i);
+      }
+    }
+  }
+}
+
+TEST(SelectZero512, Random) {
+  std::array<uint64_t, 8> a{std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max()};
+
+  std::mt19937_64 rng(42);
+  for (size_t t = 0; t < 1000; ++t) {
+    for (auto& x : a) {
+      x = rng();
+    }
+    size_t rank = 0;
+    for (size_t i = 0; i < 512; ++i) {
+      if ((1 & (a[i >> 6] >> (i & 63))) == 0) {
+        auto p = select0_512(a.data(), rank++);
         ASSERT_EQ(p, i);
       }
     }
@@ -209,7 +242,7 @@ TEST(BitVectorTest, RankWithZeros) {
 TEST(BitVectorTest, SelectBasic) {
   std::vector<uint64_t> bits(8, 0);
   bits[0] = 0b1100010110010110;
-  BitVector bv(bits, 5);
+  BitVector bv(bits, 16);
 
   EXPECT_EQ(bv.select(1), 1);
   EXPECT_EQ(bv.select(2), 2);
@@ -251,6 +284,78 @@ TEST(BitVectorTest, MainSelectTest) {
       ASSERT_EQ(bv.select(++rank), i);
       ASSERT_EQ(bv.rank(i), rank - 1);
       ASSERT_EQ(bv.rank(i + 1), rank);
+    }
+  }
+}
+
+TEST(BitVectorTest, RankZeroBasic) {
+  std::vector<uint64_t> bits(8, 0);
+  bits[0] = 0b10110;
+  BitVector bv(bits, 10);
+
+  EXPECT_EQ(bv.rank0(0), 0);
+  EXPECT_EQ(bv.rank0(1), 1);
+  EXPECT_EQ(bv.rank0(2), 1);
+  EXPECT_EQ(bv.rank0(3), 1);
+  EXPECT_EQ(bv.rank0(4), 2);
+  EXPECT_EQ(bv.rank0(5), 2);
+}
+
+TEST(BitVectorTest, RankZeroWithOnes) {
+  std::vector<uint64_t> bits(8, 0);
+  BitVector bv(bits, 5);
+
+  for (size_t i = 0; i <= 5; i++) {
+    EXPECT_EQ(bv.rank0(i), i);
+  }
+}
+
+TEST(BitVectorTest, SelectZeroBasic) {
+  std::vector<uint64_t> bits(8, 0);
+  bits[0] = 0b1100010110010110;
+  BitVector bv(bits, 16);
+
+  EXPECT_EQ(bv.select0(1), 0);
+  EXPECT_EQ(bv.select0(2), 3);
+  EXPECT_EQ(bv.select0(3), 5);
+  EXPECT_EQ(bv.select0(4), 6);
+  EXPECT_EQ(bv.select0(5), 9);
+  EXPECT_EQ(bv.select0(6), 11);
+  EXPECT_EQ(bv.select0(7), 12);
+  EXPECT_EQ(bv.select0(8), 13);
+}
+
+TEST(BitVectorTest, MainRankZeroTest) {
+  std::mt19937_64 rng(42);
+  std::vector<uint64_t> bits(65536 * 32);
+  for (size_t i = 0; i < bits.size(); i++) {
+    bits[i] = rng();
+  }
+
+  BitVector bv(bits, bits.size() * 64);
+  uint64_t zero_count = 0;
+  for (size_t i = 0; i < bv.size(); ++i) {
+    ASSERT_EQ(zero_count, bv.rank0(i));
+    zero_count += (bv[i] == 0) ? 1 : 0;
+  }
+}
+
+TEST(BitVectorTest, MainSelectZeroTest) {
+  std::mt19937_64 rng(42);
+  std::vector<uint64_t> bits(65536 * 32);
+  for (size_t i = 0; i < bits.size(); i++) {
+    bits[i] = rng();
+  }
+
+  BitVector bv(bits, bits.size() * 64);
+  uint64_t zero_rank = 0;
+
+  for (size_t i = 0; i < bv.size(); ++i) {
+    if (bv[i] == 0) {
+      zero_rank++;
+      EXPECT_EQ(bv.select0(zero_rank), i);
+      EXPECT_EQ(bv.rank0(i), zero_rank - 1);
+      EXPECT_EQ(bv.rank0(i + 1), zero_rank);
     }
   }
 }
@@ -330,6 +435,52 @@ TEST(LowerBound8x64, Random) {
   }
 }
 
+TEST(LowerBoundDlt4x64, Random) {
+  std::vector<uint64_t> x(4);
+  uint64_t dlt_array[4];
+  std::mt19937_64 rng(42);
+  for (size_t i = 0; i < 100000; i++) {
+    uint64_t y = rng();
+    uint64_t dlt_scalar = rng();
+    uint16_t cnt = 0;
+    bool fl = 1;
+    for (size_t j = 0; j < 4; j++) {
+      dlt_array[j] = rng();
+      x[j] = rng();
+      fl &= dlt_scalar + dlt_array[j] - x[j] < y;
+      cnt += fl;
+    }
+    if (cnt < 4) {
+      ASSERT_EQ(lower_bound_dlt_4x64(x.data(), y, dlt_array, dlt_scalar), cnt);
+    } else {
+      ASSERT_GE(lower_bound_dlt_4x64(x.data(), y, dlt_array, dlt_scalar), cnt);
+    }
+  }
+}
+
+TEST(LowerBoundDlt8x64, Random) {
+  std::vector<uint64_t> x(8);
+  uint64_t dlt_array[8];
+  std::mt19937_64 rng(42);
+  for (size_t i = 0; i < 100000; i++) {
+    uint64_t y = rng();
+    uint64_t dlt_scalar = rng();
+    uint16_t cnt = 0;
+    bool fl = 1;
+    for (size_t j = 0; j < 8; j++) {
+      dlt_array[j] = rng();
+      x[j] = rng();
+      fl &= dlt_scalar + dlt_array[j] - x[j] < y;
+      cnt += fl;
+    }
+    if (cnt < 8) {
+      ASSERT_EQ(lower_bound_dlt_8x64(x.data(), y, dlt_array, dlt_scalar), cnt);
+    } else {
+      ASSERT_GE(lower_bound_dlt_8x64(x.data(), y, dlt_array, dlt_scalar), cnt);
+    }
+  }
+}
+
 TEST(LowerBound32x16, Random) {
   std::vector<uint16_t> x(32);
   std::mt19937 rng(42);
@@ -341,6 +492,28 @@ TEST(LowerBound32x16, Random) {
       cnt += x[j] < y;
     }
     ASSERT_EQ(lower_bound_32x16(x.data(), y), cnt);
+  }
+}
+
+TEST(LowerBoundDlt32x16, Random) {
+  std::vector<uint16_t> x(32);
+  uint16_t dlt_array[32];
+  std::mt19937 rng(42);
+  for (size_t i = 0; i < 100000; i++) {
+    uint16_t y = rng();
+    uint16_t dlt_scalar = rng();
+    uint16_t cnt = 0;
+    for (size_t j = 0; j < 32; j++) {
+      x[j] = rng();
+      if (dlt_scalar < x[j]) {
+        dlt_array[j] =
+            x[j] - dlt_scalar + rng() % ((1 << 16) - x[j] + dlt_scalar);
+      } else {
+        dlt_array[j] = rng() % ((1 << 16) - dlt_scalar);
+      }
+      cnt += dlt_array[j] + dlt_scalar - x[j] < y;
+    }
+    ASSERT_EQ(lower_bound_dlt_32x16(x.data(), y, dlt_array, dlt_scalar), cnt);
   }
 }
 
