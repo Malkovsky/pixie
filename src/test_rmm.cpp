@@ -58,47 +58,45 @@ static std::string random_bits(std::mt19937_64& rng, size_t n) {
 }
 
 static std::string random_dyck_bits(std::mt19937_64& rng, size_t m) {
-  std::string s(2 * m, '0');
-  if (m == 0) {
+  std::size_t L = m << 1;
+  std::string s;
+  s.resize(L);
+  if (L == 0) {
     return s;
   }
-  size_t opens_left = m;
-  size_t closes_left = m;
-  int h = 0;
-  std::bernoulli_distribution coin(0.5);
-  for (size_t pos = 0; pos < 2 * m; ++pos) {
+  std::size_t opens_left = m;
+  std::size_t closes_left = m;
+  int balance = 0;
+  std::uniform_real_distribution<double> U(0., 1.);
+  for (std::size_t i = 0; i < L; ++i) {
     if (opens_left == 0) {
-      s[pos] = '0';
+      s[i] = '0';
       --closes_left;
-      --h;
+      --balance;
       continue;
     }
+
     if (closes_left == 0) {
-      s[pos] = '1';
+      s[i] = '1';
       --opens_left;
-      ++h;
+      ++balance;
       continue;
     }
-    if (h == 0) {
-      s[pos] = '1';
+
+    if (balance == 0) {
+      s[i] = '1';
       --opens_left;
-      ++h;
+      ++balance;
       continue;
     }
-    if ((size_t)h == closes_left) {
-      s[pos] = '0';
-      --closes_left;
-      --h;
-      continue;
-    }
-    if (coin(rng)) {
-      s[pos] = '1';
+    if (U(rng) < 0.5) {
+      s[i] = '1';
       --opens_left;
-      ++h;
+      ++balance;
     } else {
-      s[pos] = '0';
+      s[i] = '0';
       --closes_left;
-      --h;
+      --balance;
     }
   }
   return s;

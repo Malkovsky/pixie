@@ -10,14 +10,17 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <sdsl/bit_vectors.hpp>
+#include <sdsl/bp_support_sada.hpp>
+#include <sdsl/util.hpp>
 #include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "rmm_tree.h"
-
-using pixie::RmMTree;
+using sdsl::bit_vector;
+using sdsl::bp_support_sada;
+using BpSupport = bp_support_sada<>;
 
 struct Args {
   int min_exp = 14;
@@ -245,7 +248,8 @@ struct Pools {
 struct Dataset {
   std::size_t N{};
   std::string bits;
-  RmMTree t;
+  bit_vector bv;
+  BpSupport t;
 
   std::size_t cnt1{}, cnt0{}, cnt10{};
   Pools pool;
@@ -266,33 +270,33 @@ static std::size_t count10(const std::string& s) {
   return c;
 }
 
-static Dataset build_dataset(std::size_t N) {
+static std::shared_ptr<Dataset> build_dataset(std::size_t N) {
   std::mt19937_64 rng(args.seed ^
                       static_cast<std::uint64_t>(N) * 0x9E3779B185EBCA87ull);
 
-  Dataset d;
-  d.bits = random_dyck_bits(N, args.p1, rng);
-  d.N = d.bits.size();
-  N = d.N;
+  auto d = std::make_shared<Dataset>();
+  d->bits = random_dyck_bits(N, args.p1, rng);
+  d->N = d->bits.size();
+  N = d->N;
 
-  if (args.block_bits == 0) {
-    d.t = RmMTree(d.bits, 0, -1.0f);
-  } else {
-    d.t = RmMTree(d.bits, args.block_bits);
+  d->bv = bit_vector(N);
+  for (std::size_t i = 0; i < N; ++i) {
+    d->bv[i] = (d->bits[i] == '1');
   }
+  d->t = BpSupport(&d->bv);
 
-  d.cnt1 = std::count(d.bits.begin(), d.bits.end(), '1');
-  d.cnt0 = N - d.cnt1;
-  d.cnt10 = count10(d.bits);
+  d->cnt1 = std::count(d->bits.begin(), d->bits.end(), '1');
+  d->cnt0 = N - d->cnt1;
+  d->cnt10 = count10(d->bits);
 
   std::vector<std::size_t> open_positions_zero_based;
   std::vector<std::size_t> open_positions_one_based;
   std::vector<std::size_t> close_positions_one_based;
-  open_positions_zero_based.reserve(d.N >> 1);
-  open_positions_one_based.reserve(d.N >> 1);
-  close_positions_one_based.reserve(d.N >> 1);
+  open_positions_zero_based.reserve(d->N >> 1);
+  open_positions_one_based.reserve(d->N >> 1);
+  close_positions_one_based.reserve(d->N >> 1);
   for (std::size_t i = 0; i < N; ++i) {
-    if (d.bits[i] == '1') {
+    if (d->bits[i] == '1') {
       open_positions_zero_based.push_back(i);
       open_positions_one_based.push_back(i + 1);
     } else {
@@ -311,12 +315,12 @@ static Dataset build_dataset(std::size_t N) {
       N >= 2 ? 2 : 0, N >= 2 ? N : 0);
   std::uniform_int_distribution<int> delta_distribution(-8, +8);
 
-  d.pool.inds_any.resize(sample_count);
-  d.pool.rank10_end_positions.resize(sample_count);
-  d.pool.inds.resize(sample_count);
-  d.pool.inds_1N.resize(sample_count);
-  d.pool.deltas.resize(sample_count);
-  d.pool.segs.resize(sample_count);
+  d->pool.inds_any.resize(sample_count);
+  d->pool.rank10_end_positions.resize(sample_count);
+  d->pool.inds.resize(sample_count);
+  d->pool.inds_1N.resize(sample_count);
+  d->pool.deltas.resize(sample_count);
+  d->pool.segs.resize(sample_count);
 
   auto rand_ij = [&]() -> std::pair<std::size_t, std::size_t> {
     if (N == 0) {
@@ -330,12 +334,12 @@ static Dataset build_dataset(std::size_t N) {
   };
 
   for (std::size_t i = 0; i < sample_count; ++i) {
-    d.pool.inds_any[i] = nonedge_index_distribution(rng);
-    d.pool.rank10_end_positions[i] = rank10_end_position_distribution(rng);
-    d.pool.inds[i] = (N ? ind_dist(rng) : 0);
-    d.pool.inds_1N[i] = (N ? ind_dist_1N(rng) : 0);
-    d.pool.deltas[i] = delta_distribution(rng);
-    d.pool.segs[i] = rand_ij();
+    d->pool.inds_any[i] = nonedge_index_distribution(rng);
+    d->pool.rank10_end_positions[i] = rank10_end_position_distribution(rng);
+    d->pool.inds[i] = (N ? ind_dist(rng) : 0);
+    d->pool.inds_1N[i] = (N ? ind_dist_1N(rng) : 0);
+    d->pool.deltas[i] = delta_distribution(rng);
+    d->pool.segs[i] = rand_ij();
   }
 
   auto fill_from_candidates = [&](const std::vector<std::size_t>& candidates,
@@ -355,11 +359,11 @@ static Dataset build_dataset(std::size_t N) {
   };
   const std::size_t one_based_fallback = (N > 0 ? 1 : 0);
   fill_from_candidates(open_positions_zero_based,
-                       d.pool.open_positions_zero_based, 0);
+                       d->pool.open_positions_zero_based, 0);
   fill_from_candidates(open_positions_one_based,
-                       d.pool.open_positions_one_based, one_based_fallback);
+                       d->pool.open_positions_one_based, one_based_fallback);
   fill_from_candidates(close_positions_one_based,
-                       d.pool.close_positions_one_based, one_based_fallback);
+                       d->pool.close_positions_one_based, one_based_fallback);
 
   auto fill_ks = [&](std::size_t total, std::vector<std::size_t>& out) {
     out.resize(sample_count);
@@ -372,20 +376,11 @@ static Dataset build_dataset(std::size_t N) {
       out[i] = dist(rng);
     }
   };
-  fill_ks(d.cnt1, d.pool.ks1);
-  fill_ks(d.cnt0, d.pool.ks0);
-  fill_ks(d.cnt10, d.pool.ks10);
+  fill_ks(d->cnt1, d->pool.ks1);
+  fill_ks(d->cnt0, d->pool.ks0);
+  fill_ks(d->cnt10, d->pool.ks10);
 
-  d.pool.minselect_q.resize(sample_count);
-  for (std::size_t i = 0; i < sample_count; ++i) {
-    auto [l, r] = d.pool.segs[i];
-    std::size_t c = d.t.mincount(l, r);
-    if (c == 0) {
-      c = 1;
-    }
-    std::uniform_int_distribution<std::size_t> uq(1, c);
-    d.pool.minselect_q[i] = uq(rng);
-  }
+  d->pool.minselect_q.clear();
 
   return d;
 }
@@ -414,116 +409,96 @@ static void register_op(const std::string& op,
 static void register_all() {
   auto Ns = build_size_grid();
   for (std::size_t N : Ns) {
-    auto data = std::make_shared<Dataset>(build_dataset(N));
+    auto data = build_dataset(N);
     keepalive.push_back(data);
 
     const auto& P = data->pool;
 
     register_op("rank1", data,
                 [&](benchmark::State&, const Dataset& D, std::size_t k) {
-                  auto r = D.t.rank1(P.inds_any[k % P.inds_any.size()]);
+                  if (D.N == 0) {
+                    benchmark::DoNotOptimize(0);
+                    return;
+                  }
+                  std::size_t pos = P.inds_any[k % P.inds_any.size()];
+                  std::size_t r = 0;
+                  if (pos > 0) {
+                    r = D.t.rank(pos - 1);
+                  }
                   benchmark::DoNotOptimize(r);
                 });
 
     register_op("rank0", data,
                 [&](benchmark::State&, const Dataset& D, std::size_t k) {
-                  auto r = D.t.rank0(P.inds_any[k % P.inds_any.size()]);
+                  if (D.N == 0) {
+                    benchmark::DoNotOptimize(0);
+                    return;
+                  }
+                  std::size_t pos = P.inds_any[k % P.inds_any.size()];
+                  std::size_t r = 0;
+                  if (pos == 0) {
+                    r = 0;
+                  } else if (pos >= D.N) {
+                    r = D.cnt0;
+                  } else {
+                    r = D.t.preceding_closing_parentheses(pos);
+                  }
                   benchmark::DoNotOptimize(r);
                 });
 
     register_op("select1", data,
                 [&](benchmark::State&, const Dataset& D, std::size_t k) {
-                  auto r = D.t.select1(P.ks1[k % P.ks1.size()]);
-                  benchmark::DoNotOptimize(r);
-                });
-
-    register_op("select0", data,
-                [&](benchmark::State&, const Dataset& D, std::size_t k) {
-                  auto r = D.t.select0(P.ks0[k % P.ks0.size()]);
-                  benchmark::DoNotOptimize(r);
-                });
-
-    register_op(
-        "rank10", data,
-        [&](benchmark::State&, const Dataset& dataset,
-            std::size_t sample_index) {
-          benchmark::DoNotOptimize(dataset.t.rank10(
-              dataset.pool.rank10_end_positions
-                  [sample_index % dataset.pool.rank10_end_positions.size()]));
-        });
-
-    register_op("select10", data,
-                [&](benchmark::State&, const Dataset& D, std::size_t k) {
-                  auto r = D.t.select10(P.ks10[k % P.ks10.size()]);
+                  if (D.cnt1 == 0) {
+                    benchmark::DoNotOptimize(0);
+                    return;
+                  }
+                  std::size_t q = P.ks1[k % P.ks1.size()];
+                  auto r = D.t.select(q);
                   benchmark::DoNotOptimize(r);
                 });
 
     register_op("excess", data,
                 [&](benchmark::State&, const Dataset& D, std::size_t k) {
-                  auto r = D.t.excess(P.inds_any[k % P.inds_any.size()]);
-                  benchmark::DoNotOptimize(r);
-                });
-
-    register_op("fwdsearch", data,
-                [&](benchmark::State&, const Dataset& D, std::size_t k) {
-                  auto r = D.t.fwdsearch(P.inds[k % P.inds.size()],
-                                         P.deltas[k % P.deltas.size()]);
-                  benchmark::DoNotOptimize(r);
-                });
-
-    register_op("bwdsearch", data,
-                [&](benchmark::State&, const Dataset& D, std::size_t k) {
-                  auto r = D.t.bwdsearch(P.inds_1N[k % P.inds_1N.size()],
-                                         P.deltas[k % P.deltas.size()]);
+                  if (D.N == 0) {
+                    benchmark::DoNotOptimize(0);
+                    return;
+                  }
+                  std::size_t pos = P.inds_any[k % P.inds_any.size()];
+                  BpSupport::difference_type r = 0;
+                  if (pos > 0) {
+                    r = D.t.excess(pos - 1);
+                  }
                   benchmark::DoNotOptimize(r);
                 });
 
     register_op("range_min_query_pos", data,
                 [&](benchmark::State&, const Dataset& D, std::size_t k) {
+                  if (D.N == 0) {
+                    benchmark::DoNotOptimize(0);
+                    return;
+                  }
                   const std::size_t segment_index = k % P.segs.size();
                   auto [range_begin, range_end] = P.segs[segment_index];
-                  auto min_position =
-                      D.t.range_min_query_pos(range_begin, range_end);
+                  auto min_position = D.t.rmq(range_begin, range_end);
                   benchmark::DoNotOptimize(min_position);
                 });
 
     register_op("range_min_query_val", data,
                 [&](benchmark::State&, const Dataset& D, std::size_t k) {
+                  if (D.N == 0) {
+                    benchmark::DoNotOptimize(0);
+                    return;
+                  }
                   const std::size_t segment_index = k % P.segs.size();
                   auto [range_begin, range_end] = P.segs[segment_index];
-                  auto min_value =
-                      D.t.range_min_query_val(range_begin, range_end);
+                  auto min_position = D.t.rmq(range_begin, range_end);
+                  BpSupport::difference_type min_value = 0;
+                  if (min_position < D.N) {
+                    const auto base_excess =
+                        (range_begin == 0 ? 0 : D.t.excess(range_begin - 1));
+                    min_value = D.t.excess(min_position) - base_excess;
+                  }
                   benchmark::DoNotOptimize(min_value);
-                });
-
-    register_op("range_max_query_pos", data,
-                [&](benchmark::State&, const Dataset& D, std::size_t k) {
-                  auto [i, j] = P.segs[k % P.segs.size()];
-                  auto r = D.t.range_max_query_pos(i, j);
-                  benchmark::DoNotOptimize(r);
-                });
-
-    register_op("range_max_query_val", data,
-                [&](benchmark::State&, const Dataset& D, std::size_t k) {
-                  auto [i, j] = P.segs[k % P.segs.size()];
-                  auto r = D.t.range_max_query_val(i, j);
-                  benchmark::DoNotOptimize(r);
-                });
-
-    register_op("mincount", data,
-                [&](benchmark::State&, const Dataset& D, std::size_t k) {
-                  auto [i, j] = P.segs[k % P.segs.size()];
-                  auto r = D.t.mincount(i, j);
-                  benchmark::DoNotOptimize(r);
-                });
-
-    register_op("minselect", data,
-                [&](benchmark::State&, const Dataset& D, std::size_t k) {
-                  const std::size_t idx = k % P.segs.size();
-                  auto [i, j] = P.segs[idx];
-                  auto q = P.minselect_q[idx];
-                  auto r = D.t.minselect(i, j, q);
-                  benchmark::DoNotOptimize(r);
                 });
 
     register_op("close", data,
@@ -537,28 +512,41 @@ static void register_all() {
                       dataset.pool.open_positions_zero_based
                           [sample_index %
                            dataset.pool.open_positions_zero_based.size()];
-                  benchmark::DoNotOptimize(dataset.t.close(open_position));
+                  benchmark::DoNotOptimize(dataset.t.find_close(open_position));
                 });
 
     register_op(
         "open", data,
         [&](benchmark::State&, const Dataset& dataset,
             std::size_t sample_index) {
+          if (dataset.N == 0) {
+            benchmark::DoNotOptimize(0);
+            return;
+          }
           const std::size_t close_position_one_based =
               dataset.pool.close_positions_one_based
                   [sample_index %
                    dataset.pool.close_positions_one_based.size()];
-          benchmark::DoNotOptimize(dataset.t.open(close_position_one_based));
+          const std::size_t close_position_zero_based =
+              (close_position_one_based > 0 ? close_position_one_based - 1 : 0);
+          benchmark::DoNotOptimize(
+              dataset.t.find_open(close_position_zero_based));
         });
 
     register_op(
         "enclose", data,
         [&](benchmark::State&, const Dataset& dataset,
             std::size_t sample_index) {
+          if (dataset.N == 0) {
+            benchmark::DoNotOptimize(0);
+            return;
+          }
           const std::size_t open_position_one_based =
               dataset.pool.open_positions_one_based
                   [sample_index % dataset.pool.open_positions_one_based.size()];
-          benchmark::DoNotOptimize(dataset.t.enclose(open_position_one_based));
+          const std::size_t open_position_zero_based =
+              (open_position_one_based > 0 ? open_position_one_based - 1 : 0);
+          benchmark::DoNotOptimize(dataset.t.enclose(open_position_zero_based));
         });
   }
 }
