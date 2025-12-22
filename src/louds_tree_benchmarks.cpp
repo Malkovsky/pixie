@@ -16,14 +16,19 @@ using pixie::LoudsTree;
 static void BM_LoudsTreeDFS(benchmark::State& state) {
   size_t tree_size = state.range(0);
   std::mt19937_64 rng(42);
-  std::vector<std::vector<size_t>> adj = generate_random_tree(tree_size, rng);
-  adj = bfs_order(tree_size, adj);
-  std::vector<uint64_t> louds = adj_to_louds(tree_size, adj);
-  LoudsTree tree(louds, tree_size);
 
   for (auto _ : state) {
+    state.PauseTiming();
+
+    std::vector<std::vector<size_t>> adj = generate_random_tree(tree_size, rng);
+    adj = bfs_order(tree_size, adj);
+    std::vector<uint64_t> louds = adj_to_louds(tree_size, adj);
+    LoudsTree tree(louds, tree_size);
+
     LoudsNode cur = tree.root();
     bool above = 1;
+
+    state.ResumeTiming();
 
     benchmark::DoNotOptimize(cur);
 
@@ -58,13 +63,18 @@ static void BM_LoudsTreeDFS(benchmark::State& state) {
 static void BM_AdjListTreeDFS(benchmark::State& state) {
   size_t tree_size = state.range(0);
   std::mt19937_64 rng(42);
-  std::vector<std::vector<size_t>> adj = generate_random_tree(tree_size, rng);
-  adj = bfs_order(tree_size, adj);
-  AdjListTree tree(adj);
 
   for (auto _ : state) {
+    state.PauseTiming();
+
+    std::vector<std::vector<size_t>> adj = generate_random_tree(tree_size, rng);
+    adj = bfs_order(tree_size, adj);
+    AdjListTree tree(adj);
+
     AdjListNode cur = tree.root();
     bool above = 1;
+
+    state.ResumeTiming();
 
     benchmark::DoNotOptimize(cur);
 
@@ -96,9 +106,11 @@ static void BM_AdjListTreeDFS(benchmark::State& state) {
 BENCHMARK(BM_LoudsTreeDFS)
     ->ArgNames({"tree_size"})
     ->RangeMultiplier(2)
-    ->Range(8, 1ull << 22);
+    ->Range(1ull << 8, 1ull << 22)
+    ->Iterations(10);
 
 BENCHMARK(BM_AdjListTreeDFS)
     ->ArgNames({"tree_size"})
     ->RangeMultiplier(2)
-    ->Range(8, 1ull << 22);
+    ->Range(1ull << 8, 1ull << 22)
+    ->Iterations(10);
