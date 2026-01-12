@@ -94,6 +94,20 @@ target_include_directories(bench_rmm
 target_link_libraries(bench_rmm
     benchmark)
 
+
+add_executable(louds_tree_benchmarks
+    src/louds_tree_benchmarks.cpp)
+
+target_include_directories(louds_tree_benchmarks
+    PUBLIC include
+)
+
+target_link_libraries(louds_tree_benchmarks
+    benchmark
+    benchmark_main
+)
+
+
 add_executable(test_rmm
     src/test_rmm.cpp)
 target_include_directories(test_rmm
@@ -104,6 +118,15 @@ target_link_libraries(test_rmm
     gtest
     gtest_main)
 
+add_executable(louds_tree_tests
+    src/louds_tree_tests.cpp)
+target_include_directories(louds_tree_tests
+    PUBLIC include
+    PUBLIC ${GOOGLETEST_SOURCE_DIR}/include
+)
+target_link_libraries(louds_tree_tests
+    gtest
+    gtest_main)
 
 add_executable(alignment_comparison
     src/alignment_comparison.cpp)
