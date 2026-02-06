@@ -136,6 +136,7 @@ target_link_libraries(benchmarks
     benchmark
     benchmark_main
     pasta_bit_vector)
+
 add_test(
     NAME Benchmarks
     COMMAND bt_benchmarks --benchmark_out=bm_report.csv --benchmark_out_format=csv
@@ -170,6 +171,20 @@ target_include_directories(bench_rmm
 target_link_libraries(bench_rmm
     benchmark)
 
+
+add_executable(louds_tree_benchmarks
+    src/louds_tree_benchmarks.cpp)
+
+target_include_directories(louds_tree_benchmarks
+    PUBLIC include
+)
+
+target_link_libraries(louds_tree_benchmarks
+    benchmark
+    benchmark_main
+)
+
+
 add_executable(test_rmm
     src/test_rmm.cpp)
 target_include_directories(test_rmm
@@ -191,7 +206,27 @@ target_link_libraries(bench_rmm_sdsl
         benchmark
         sdsl_lite
 )
+add_executable(louds_tree_tests
+    src/louds_tree_tests.cpp)
+target_include_directories(louds_tree_tests
+    PUBLIC include
+    PUBLIC ${GOOGLETEST_SOURCE_DIR}/include
+)
+target_link_libraries(louds_tree_tests
+    gtest
+    gtest_main)
 
+add_executable(alignment_comparison
+    src/alignment_comparison.cpp)
+
+target_include_directories(alignment_comparison
+    PUBLIC include
+)
+
+target_link_libraries(alignment_comparison
+    benchmark
+    benchmark_main
+    )
 FetchContent_Declare(
     doxygen-awesome-css
     URL https://github.com/jothepro/doxygen-awesome-css/archive/refs/heads/main.zip

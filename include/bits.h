@@ -130,8 +130,8 @@ uint64_t select_512(const uint64_t* x, uint64_t rank) {
 #ifdef PIXIE_AVX512_SUPPORT
 
   __m512i res = _mm512_loadu_epi64(x);
-  std::array<uint64_t, 8> counts;
-  _mm512_storeu_epi64(counts.data(), _mm512_popcnt_epi64(res));
+  alignas(64) std::array<uint64_t, 8> counts;
+  _mm512_store_epi64(counts.data(), _mm512_popcnt_epi64(res));
 
   size_t i = 0;
   while (i < 8 && counts[i] <= rank) {
@@ -148,6 +148,37 @@ uint64_t select_512(const uint64_t* x, uint64_t rank) {
     popcount = std::popcount(x[++i]);
   }
   return i * 64 + select_64(x[i], rank);
+
+#endif
+}
+
+/**
+ * @brief Return position of @p rank0 0 bit in @p x
+ * @details select_512 with bit inversion.
+ */
+uint64_t select0_512(const uint64_t* x, uint64_t rank0) {
+#ifdef PIXIE_AVX512_SUPPORT
+
+  __m512i res = _mm512_loadu_epi64(x);
+  res = _mm512_xor_epi64(res, _mm512_set1_epi64(-1));
+  alignas(64) std::array<uint64_t, 8> counts;
+  _mm512_store_epi64(counts.data(), _mm512_popcnt_epi64(res));
+
+  size_t i = 0;
+  while (i < 8 && counts[i] <= rank0) {
+    rank0 -= counts[i++];
+  }
+  return i * 64 + select_64(~x[i], rank0);
+
+#else
+
+  size_t i = 0;
+  int popcount = std::popcount(~x[0]);
+  while (i < 7 && popcount <= rank0) {
+    rank0 -= popcount;
+    popcount = std::popcount(~x[++i]);
+  }
+  return i * 64 + select_64(~x[i], rank0);
 
 #endif
 }
@@ -183,6 +214,61 @@ uint16_t lower_bound_4x64(const uint64_t* x, uint64_t y) {
 
   for (uint16_t i = 0; i < 4; ++i) {
     if (x[i] >= y) {
+      return i;
+    }
+  }
+  return 4;
+
+#endif
+#endif
+}
+
+/**
+ * @brief Compare 4 64-bit numbers of ( @p dlt_array + @p dlt_scalar - @p x )
+ * with @p y and return the length of the prefix
+ * where @p y is less then ( @p dlt_array + @p dlt_scalar - @p x )
+ */
+uint16_t lower_bound_dlt_4x64(const uint64_t* x,
+                              uint64_t y,
+                              const uint64_t* dlt_array,
+                              uint64_t dlt_scalar) {
+#ifdef PIXIE_AVX512_SUPPORT
+
+  const __m256i dlt_256 = _mm256_loadu_epi64(dlt_array);
+  auto x_256 = _mm256_loadu_epi64(x);
+  auto dlt_4 = _mm256_set1_epi64x(dlt_scalar);
+  auto y_4 = _mm256_set1_epi64x(y);
+
+  auto tmp = _mm256_add_epi64(dlt_4, dlt_256);
+  auto reg_256 = _mm256_sub_epi64(tmp, x_256);
+  auto cmp = _mm256_cmpge_epu64_mask(reg_256, y_4);
+
+  return _tzcnt_u16(cmp);
+
+#else
+#ifdef PIXIE_AVX2_SUPPORT
+
+  const __m256i dlt_256 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dlt_array));
+  auto x_256 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(x));
+  auto dlt_4 = _mm256_set1_epi64x(dlt_scalar);
+  auto y_4 = _mm256_set1_epi64x(y);
+
+  auto tmp = _mm256_add_epi64(dlt_4, dlt_256);
+  auto reg_256 = _mm256_sub_epi64(tmp, x_256);
+
+  const __m256i offset = _mm256_set1_epi64x(0x8000000000000000ULL);
+  __m256i x_offset = _mm256_xor_si256(reg_256, offset);
+  __m256i y_offset = _mm256_xor_si256(y_4, offset);
+  auto mask = _mm256_movemask_epi8(_mm256_cmpgt_epi64(
+      x_offset, _mm256_sub_epi64(y_offset, _mm256_set1_epi64x(1))));
+
+  return _tzcnt_u32(mask) >> 3;
+
+#else
+
+  for (uint16_t i = 0; i < 4; ++i) {
+    if (dlt_array[i] + dlt_scalar - x[i] >= y) {
       return i;
     }
   }
@@ -230,10 +316,56 @@ uint16_t lower_bound_8x64(const uint64_t* x, uint64_t y) {
 }
 
 /**
+ * @brief Compare 8 64-bit numbers of ( @p dlt_array + @p dlt_scalar - @p x )
+ * with @p y and return the length of the prefix
+ * where @p y is less then ( @p dlt_array + @p dlt_scalar - @p x )
+ */
+uint16_t lower_bound_dlt_8x64(const uint64_t* x,
+                              uint64_t y,
+                              const uint64_t* dlt_array,
+                              uint64_t dlt_scalar) {
+#ifdef PIXIE_AVX512_SUPPORT
+
+  const __m512i dlt_512 = _mm512_loadu_epi64(dlt_array);
+  auto x_512 = _mm512_loadu_epi64(x);
+  auto dlt_8 = _mm512_set1_epi64(dlt_scalar);
+  auto y_8 = _mm512_set1_epi64(y);
+
+  auto tmp = _mm512_add_epi64(dlt_8, dlt_512);
+  auto reg_512 = _mm512_sub_epi64(tmp, x_512);
+  auto cmp = _mm512_cmpge_epu64_mask(reg_512, y_8);
+
+  return _tzcnt_u16(cmp);
+
+#else
+#ifdef PIXIE_AVX2_SUPPORT
+
+  uint16_t len = lower_bound_dlt_4x64(x, y, dlt_array, dlt_scalar);
+
+  if (len < 4) {
+    return len;
+  }
+
+  return len + lower_bound_dlt_4x64(x + 4, y, dlt_array + 4, dlt_scalar);
+
+#else
+
+  for (uint16_t i = 0; i < 8; ++i) {
+    if (dlt_array[i] + dlt_scalar - x[i] >= y) {
+      return i;
+    }
+  }
+  return 8;
+
+#endif
+#endif
+}
+
+/**
  * @brief Compare 32 16-bit numbers of @p x with @p y and
  * return the count of numbers where @p x is less then @p y
  */
-uint16_t lower_bound_32x16(const uint16_t* x, uint64_t y) {
+uint16_t lower_bound_32x16(const uint16_t* x, uint16_t y) {
 #ifdef PIXIE_AVX512_SUPPORT
 
   auto y_32 = _mm512_set1_epi16(y);
@@ -266,6 +398,72 @@ uint16_t lower_bound_32x16(const uint16_t* x, uint64_t y) {
   uint16_t cnt = 0;
   for (uint16_t i = 0; i < 32; ++i) {
     if (x[i] < y) {
+      cnt++;
+    }
+  }
+  return cnt;
+
+#endif
+#endif
+}
+
+/**
+ * @brief Compare 32 16-bit numbers of ( @p dlt_array + @p dlt_scalar - @p x )
+ * with @p y and return the count of numbers where
+ * ( @p dlt_array + @p dlt_scalar - @p x ) is less then @p y
+ */
+uint16_t lower_bound_dlt_32x16(const uint16_t* x,
+                               uint16_t y,
+                               const uint16_t* dlt_array,
+                               uint16_t dlt_scalar) {
+#ifdef PIXIE_AVX512_SUPPORT
+
+  const __m512i dlt_512 = _mm512_loadu_epi64(dlt_array);
+  auto x_512 = _mm512_loadu_epi64(x);
+  auto dlt_32 = _mm512_set1_epi16(dlt_scalar);
+  auto y_32 = _mm512_set1_epi16(y);
+
+  auto tmp = _mm512_add_epi16(dlt_32, dlt_512);
+  auto reg_512 = _mm512_sub_epi16(tmp, x_512);
+  auto cmp = _mm512_cmplt_epu16_mask(reg_512, y_32);
+  return std::popcount(cmp);
+
+#else
+#ifdef PIXIE_AVX2_SUPPORT
+
+  auto dlt_256 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dlt_array));
+  auto x_256 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(x));
+  auto dlt_16 = _mm256_set1_epi16(dlt_scalar);
+  auto y_16 = _mm256_set1_epi16(y);
+
+  auto tmp = _mm256_add_epi16(dlt_16, dlt_256);
+  auto reg_256 = _mm256_sub_epi16(tmp, x_256);
+
+  const __m256i offset = _mm256_set1_epi16(0x8000);
+  __m256i x_offset = _mm256_xor_si256(reg_256, offset);
+  __m256i y_offset = _mm256_xor_si256(y_16, offset);
+  uint32_t mask = _mm256_movemask_epi8(_mm256_cmpgt_epi16(y_offset, x_offset));
+
+  uint16_t count = std::popcount(mask) >> 1;
+
+  dlt_256 =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dlt_array + 16));
+  x_256 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(x + 16));
+
+  tmp = _mm256_add_epi16(dlt_16, dlt_256);
+  reg_256 = _mm256_sub_epi16(tmp, x_256);
+
+  x_offset = _mm256_xor_si256(reg_256, offset);
+  mask = _mm256_movemask_epi8(_mm256_cmpgt_epi16(y_offset, x_offset));
+
+  return count + (std::popcount(mask) >> 1);
+
+#else
+
+  uint16_t cnt = 0;
+  for (uint16_t i = 0; i < 32; ++i) {
+    if (dlt_array[i] + dlt_scalar - x[i] < y) {
       cnt++;
     }
   }

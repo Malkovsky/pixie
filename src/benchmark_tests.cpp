@@ -10,7 +10,7 @@ using pixie::BitVector;
 using pixie::BitVectorInterleaved;
 
 TEST(BitVectorBenchmarkTest, SelectNonInterleaved10PercentFill) {
-  for (size_t n = 4; n <= (1ull << 34); n <<= 2) {
+  for (size_t n = 8; n <= (1ull << 34); n <<= 2) {
     std::mt19937_64 rng(42);
 
     std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
@@ -30,8 +30,29 @@ TEST(BitVectorBenchmarkTest, SelectNonInterleaved10PercentFill) {
   }
 }
 
+TEST(BitVectorBenchmarkTest, SelectZeroNonInterleaved10PercentFill) {
+  for (size_t n = 8; n <= (1ull << 34); n <<= 2) {
+    std::mt19937_64 rng(42);
+
+    std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
+    size_t num_ones = n * 0.1;
+    for (int i = 0; i < num_ones; i++) {
+      uint64_t pos = rng() % n;
+      bits[pos / 64] |= (1ULL << pos % 64);
+    }
+
+    pixie::BitVector bv(bits, n);
+
+    auto max_rank0 = bv.rank0(bv.size()) + 1;
+    for (int i = 0; i < 100000; i++) {
+      uint64_t rank0 = rng() % max_rank0;
+      bv.select0(rank0);
+    }
+  }
+}
+
 TEST(BitVectorBenchmarkTest, SelectNonInterleaved90PercentFill) {
-  for (size_t n = 4; n <= (1ull << 34); n <<= 2) {
+  for (size_t n = 8; n <= (1ull << 34); n <<= 2) {
     std::mt19937_64 rng(42);
 
     std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
@@ -51,8 +72,29 @@ TEST(BitVectorBenchmarkTest, SelectNonInterleaved90PercentFill) {
   }
 }
 
+TEST(BitVectorBenchmarkTest, SelectZeroNonInterleaved90PercentFill) {
+  for (size_t n = 8; n <= (1ull << 34); n <<= 2) {
+    std::mt19937_64 rng(42);
+
+    std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
+    size_t num_ones = n * 0.9;
+    for (int i = 0; i < num_ones; i++) {
+      uint64_t pos = rng() % n;
+      bits[pos / 64] |= (1ULL << pos % 64);
+    }
+
+    pixie::BitVector bv(bits, n);
+
+    auto max_rank0 = bv.rank0(bv.size()) + 1;
+    for (int i = 0; i < 100000; i++) {
+      uint64_t rank0 = rng() % max_rank0;
+      bv.select0(rank0);
+    }
+  }
+}
+
 TEST(BitVectorBenchmarkTest, SelectNonInterleaved) {
-  for (size_t n = 4; n <= (1ull << 34); n <<= 2) {
+  for (size_t n = 8; n <= (1ull << 34); n <<= 2) {
     std::mt19937_64 rng(42);
 
     std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
@@ -66,6 +108,25 @@ TEST(BitVectorBenchmarkTest, SelectNonInterleaved) {
     for (int i = 0; i < 100000; i++) {
       uint64_t rank = rng() % max_rank;
       bv.select(rank);
+    }
+  }
+}
+
+TEST(BitVectorBenchmarkTest, SelectZeroNonInterleaved) {
+  for (size_t n = 8; n <= (1ull << 34); n <<= 2) {
+    std::mt19937_64 rng(42);
+
+    std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
+    for (auto& x : bits) {
+      x = rng();
+    }
+    pixie::BitVector bv(bits, n);
+
+    auto max_rank0 = bv.rank0(bv.size()) + 1;
+
+    for (int i = 0; i < 100000; i++) {
+      uint64_t rank0 = rng() % max_rank0;
+      bv.select0(rank0);
     }
   }
 }
