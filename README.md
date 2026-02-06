@@ -70,7 +70,14 @@ Benchmarks are random 50/50 0-1 bitvectors up to $2^{34}$ bits.
 ./bench_rmm
 ```
 
-For visualization, write the JSON output to a file using `--benchmark_out=<file>` (e.g. `./bench_rmm --benchmark_out=rmm_bench.json`) and plot it with `misc/plot_rmm.py`.
+For comparison with range min-max tree implementation from [sdsl-lite](https://github.com/simongog/sdsl-lite) (Release build required: `cmake .. -DCMAKE_BUILD_TYPE=Release`):
+
+```bash
+sudo cpupower frequency-set --governor performance
+./bench_rmm_sdsl --benchmark_out=rmm_bench_sdsl.json
+```
+
+For visualization, write the JSON output to a file using `--benchmark_out=<file>` (e.g. `./bench_rmm --benchmark_out=rmm_bench.json`) and plot it with `misc/plot_rmm.py` (add `--sdsl-json rmm_bench_sdsl.json` for comparison).
 
 ---
 
