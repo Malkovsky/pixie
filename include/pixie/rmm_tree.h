@@ -1,5 +1,6 @@
 #pragma once
 #include <immintrin.h>
+#include <pixie/bits.h>
 
 #include <algorithm>
 #include <array>
@@ -10,8 +11,6 @@
 #include <limits>
 #include <string>
 #include <vector>
-
-#include "bits.h"
 
 namespace pixie {
 /**

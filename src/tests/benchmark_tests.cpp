@@ -1,10 +1,9 @@
 #include <gtest/gtest.h>
+#include <pixie/bits.h>
+#include <pixie/bitvector.h>
 
 #include <numeric>
 #include <random>
-
-#include "bits.h"
-#include "bitvector.h"
 
 using pixie::BitVector;
 using pixie::BitVectorInterleaved;

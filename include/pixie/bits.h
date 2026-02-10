@@ -224,19 +224,27 @@ uint16_t lower_bound_4x64(const uint64_t* x, uint64_t y) {
 }
 
 /**
- * @brief Compare 4 64-bit numbers of ( @p dlt_array + @p dlt_scalar - @p x )
- * with @p y and return the length of the prefix
- * where @p y is less then ( @p dlt_array + @p dlt_scalar - @p x )
+ * @brief Compare 4 64-bit numbers of ( @p delta_array + @p delta_scalar - @p x
+
+ * * ) with @p y and return the length of the prefix
+ * where @p y is less then
+ * ( @p delta_array + @p delta_scalar - @p x )
+ * @param x Base input array.
+ *
+ * @param y Threshold value for comparison.
+ * @param delta_array Per-lane delta
+ * offsets.
+ * @param delta_scalar Shared delta offset.
  */
-uint16_t lower_bound_dlt_4x64(const uint64_t* x,
-                              uint64_t y,
-                              const uint64_t* dlt_array,
-                              uint64_t dlt_scalar) {
+uint16_t lower_bound_delta_4x64(const uint64_t* x,
+                                uint64_t y,
+                                const uint64_t* delta_array,
+                                uint64_t delta_scalar) {
 #ifdef PIXIE_AVX512_SUPPORT
 
-  const __m256i dlt_256 = _mm256_loadu_epi64(dlt_array);
+  const __m256i dlt_256 = _mm256_loadu_epi64(delta_array);
   auto x_256 = _mm256_loadu_epi64(x);
-  auto dlt_4 = _mm256_set1_epi64x(dlt_scalar);
+  auto dlt_4 = _mm256_set1_epi64x(delta_scalar);
   auto y_4 = _mm256_set1_epi64x(y);
 
   auto tmp = _mm256_add_epi64(dlt_4, dlt_256);
@@ -249,9 +257,9 @@ uint16_t lower_bound_dlt_4x64(const uint64_t* x,
 #ifdef PIXIE_AVX2_SUPPORT
 
   const __m256i dlt_256 =
-      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dlt_array));
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(delta_array));
   auto x_256 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(x));
-  auto dlt_4 = _mm256_set1_epi64x(dlt_scalar);
+  auto dlt_4 = _mm256_set1_epi64x(delta_scalar);
   auto y_4 = _mm256_set1_epi64x(y);
 
   auto tmp = _mm256_add_epi64(dlt_4, dlt_256);
@@ -268,7 +276,7 @@ uint16_t lower_bound_dlt_4x64(const uint64_t* x,
 #else
 
   for (uint16_t i = 0; i < 4; ++i) {
-    if (dlt_array[i] + dlt_scalar - x[i] >= y) {
+    if (delta_array[i] + delta_scalar - x[i] >= y) {
       return i;
     }
   }
@@ -316,19 +324,27 @@ uint16_t lower_bound_8x64(const uint64_t* x, uint64_t y) {
 }
 
 /**
- * @brief Compare 8 64-bit numbers of ( @p dlt_array + @p dlt_scalar - @p x )
- * with @p y and return the length of the prefix
- * where @p y is less then ( @p dlt_array + @p dlt_scalar - @p x )
+ * @brief Compare 8 64-bit numbers of ( @p delta_array + @p delta_scalar - @p x
+
+ * * ) with @p y and return the length of the prefix
+ * where @p y is less then
+ * ( @p delta_array + @p delta_scalar - @p x )
+ * @param x Base input array.
+ *
+ * @param y Threshold value for comparison.
+ * @param delta_array Per-lane delta
+ * offsets.
+ * @param delta_scalar Shared delta offset.
  */
-uint16_t lower_bound_dlt_8x64(const uint64_t* x,
-                              uint64_t y,
-                              const uint64_t* dlt_array,
-                              uint64_t dlt_scalar) {
+uint16_t lower_bound_delta_8x64(const uint64_t* x,
+                                uint64_t y,
+                                const uint64_t* delta_array,
+                                uint64_t delta_scalar) {
 #ifdef PIXIE_AVX512_SUPPORT
 
-  const __m512i dlt_512 = _mm512_loadu_epi64(dlt_array);
+  const __m512i dlt_512 = _mm512_loadu_epi64(delta_array);
   auto x_512 = _mm512_loadu_epi64(x);
-  auto dlt_8 = _mm512_set1_epi64(dlt_scalar);
+  auto dlt_8 = _mm512_set1_epi64(delta_scalar);
   auto y_8 = _mm512_set1_epi64(y);
 
   auto tmp = _mm512_add_epi64(dlt_8, dlt_512);
@@ -340,18 +356,18 @@ uint16_t lower_bound_dlt_8x64(const uint64_t* x,
 #else
 #ifdef PIXIE_AVX2_SUPPORT
 
-  uint16_t len = lower_bound_dlt_4x64(x, y, dlt_array, dlt_scalar);
+  uint16_t len = lower_bound_delta_4x64(x, y, delta_array, delta_scalar);
 
   if (len < 4) {
     return len;
   }
 
-  return len + lower_bound_dlt_4x64(x + 4, y, dlt_array + 4, dlt_scalar);
+  return len + lower_bound_delta_4x64(x + 4, y, delta_array + 4, delta_scalar);
 
 #else
 
   for (uint16_t i = 0; i < 8; ++i) {
-    if (dlt_array[i] + dlt_scalar - x[i] >= y) {
+    if (delta_array[i] + delta_scalar - x[i] >= y) {
       return i;
     }
   }
@@ -408,19 +424,27 @@ uint16_t lower_bound_32x16(const uint16_t* x, uint16_t y) {
 }
 
 /**
- * @brief Compare 32 16-bit numbers of ( @p dlt_array + @p dlt_scalar - @p x )
- * with @p y and return the count of numbers where
- * ( @p dlt_array + @p dlt_scalar - @p x ) is less then @p y
+ * @brief Compare 32 16-bit numbers of ( @p delta_array + @p delta_scalar - @p
+ * x
+ * ) with @p y and return the count of numbers where
+ * ( @p delta_array +
+ * @p delta_scalar - @p x ) is less then @p y
+ * @param x Base input array.
+ *
+ * @param y Threshold value for comparison.
+ * @param delta_array Per-lane delta
+ * offsets.
+ * @param delta_scalar Shared delta offset.
  */
-uint16_t lower_bound_dlt_32x16(const uint16_t* x,
-                               uint16_t y,
-                               const uint16_t* dlt_array,
-                               uint16_t dlt_scalar) {
+uint16_t lower_bound_delta_32x16(const uint16_t* x,
+                                 uint16_t y,
+                                 const uint16_t* delta_array,
+                                 uint16_t delta_scalar) {
 #ifdef PIXIE_AVX512_SUPPORT
 
-  const __m512i dlt_512 = _mm512_loadu_epi64(dlt_array);
+  const __m512i dlt_512 = _mm512_loadu_epi64(delta_array);
   auto x_512 = _mm512_loadu_epi64(x);
-  auto dlt_32 = _mm512_set1_epi16(dlt_scalar);
+  auto dlt_32 = _mm512_set1_epi16(delta_scalar);
   auto y_32 = _mm512_set1_epi16(y);
 
   auto tmp = _mm512_add_epi16(dlt_32, dlt_512);
@@ -432,9 +456,9 @@ uint16_t lower_bound_dlt_32x16(const uint16_t* x,
 #ifdef PIXIE_AVX2_SUPPORT
 
   auto dlt_256 =
-      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dlt_array));
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(delta_array));
   auto x_256 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(x));
-  auto dlt_16 = _mm256_set1_epi16(dlt_scalar);
+  auto dlt_16 = _mm256_set1_epi16(delta_scalar);
   auto y_16 = _mm256_set1_epi16(y);
 
   auto tmp = _mm256_add_epi16(dlt_16, dlt_256);
@@ -448,7 +472,7 @@ uint16_t lower_bound_dlt_32x16(const uint16_t* x,
   uint16_t count = std::popcount(mask) >> 1;
 
   dlt_256 =
-      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dlt_array + 16));
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(delta_array + 16));
   x_256 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(x + 16));
 
   tmp = _mm256_add_epi16(dlt_16, dlt_256);
@@ -463,7 +487,7 @@ uint16_t lower_bound_dlt_32x16(const uint16_t* x,
 
   uint16_t cnt = 0;
   for (uint16_t i = 0; i < 32; ++i) {
-    if (dlt_array[i] + dlt_scalar - x[i] < y) {
+    if (delta_array[i] + delta_scalar - x[i] < y) {
       cnt++;
     }
   }

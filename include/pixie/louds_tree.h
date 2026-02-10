@@ -1,9 +1,9 @@
 #pragma once
 
+#include <pixie/bitvector.h>
+
 #include <cstdint>
 #include <span>
-
-#include "bitvector.h"
 
 namespace pixie {
 

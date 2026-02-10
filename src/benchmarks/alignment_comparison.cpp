@@ -1,11 +1,10 @@
 #include <benchmark/benchmark.h>
 #include <immintrin.h>
+#include <pixie/bits.h>
 
 #include <chrono>
 #include <random>
 #include <vector>
-
-#include "bits.h"
 
 alignas(64) uint8_t data[(1 << 29) + 1];
 

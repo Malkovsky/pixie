@@ -1,11 +1,10 @@
 #include <benchmark/benchmark.h>
+#include <pixie/louds_tree.h>
+#include <pixie/utils.h>
 
 #include <numeric>
 #include <random>
 #include <stack>
-
-#include "louds_tree.h"
-#include "utils.h"
 
 using pixie::LoudsNode;
 using pixie::LoudsTree;
@@ -106,11 +105,23 @@ static void BM_AdjListTreeDFS(benchmark::State& state) {
 BENCHMARK(BM_LoudsTreeDFS)
     ->ArgNames({"tree_size"})
     ->RangeMultiplier(2)
-    ->Range(1ull << 8, 1ull << 22)
+    ->Range(1ull << 8, 1ull << 18)
+    ->Iterations(100);
+
+BENCHMARK(BM_LoudsTreeDFS)
+    ->ArgNames({"tree_size"})
+    ->RangeMultiplier(2)
+    ->Range(1ull << 18, 1ull << 26)
     ->Iterations(10);
 
 BENCHMARK(BM_AdjListTreeDFS)
     ->ArgNames({"tree_size"})
     ->RangeMultiplier(2)
-    ->Range(1ull << 8, 1ull << 22)
+    ->Range(1ull << 8, 1ull << 18)
+    ->Iterations(100);
+
+BENCHMARK(BM_AdjListTreeDFS)
+    ->ArgNames({"tree_size"})
+    ->RangeMultiplier(2)
+    ->Range(1ull << 18, 1ull << 26)
     ->Iterations(10);

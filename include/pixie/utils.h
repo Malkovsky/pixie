@@ -1,10 +1,10 @@
 #pragma once
 
+#include <pixie/louds_tree.h>
+
 #include <queue>
 #include <random>
 #include <vector>
-
-#include "louds_tree.h"
 
 using pixie::LoudsNode;
 

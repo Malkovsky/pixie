@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.12)
+cmake_minimum_required(VERSION 3.18)
 project(pixie)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -22,224 +22,171 @@ if(ENABLE_ADDRESS_SANITIZER)
     message(STATUS "AddressSanitizer is ON")
 endif()
 
-set(SDSL_ROOT "" CACHE PATH "Installation prefix of sdsl-lite (contains include/ and lib/)")
+# ---------------------------------------------------------------------------
+# Build options
+# ---------------------------------------------------------------------------
+option(PIXIE_TESTS "Build unit tests" ON)
+option(PIXIE_BENCHMARKS "Build benchmarks (includes comparison benchmarks against third-party libraries)" ON)
+option(PIXIE_DOCS "Build Doxygen documentation" OFF)
 
-find_path(
-    SDSL_INCLUDE_DIR
-    NAMES sdsl/config.hpp
-    HINTS
-        "${SDSL_ROOT}"
-    PATH_SUFFIXES
-        include
-    PATHS
-        "$ENV{HOME}"
-        /usr
-        /usr/local
-)
-
-if(NOT SDSL_INCLUDE_DIR)
-    message(FATAL_ERROR "Could not find sdsl/config.hpp. "
-                        "Set SDSL_ROOT or SDSL_INCLUDE_DIR manually.")
-endif()
-
-find_library(
-    SDSL_LIBRARY
-    NAMES sdsl
-    HINTS
-        "${SDSL_ROOT}"
-    PATH_SUFFIXES
-        lib
-        lib64
-    PATHS
-        "$ENV{HOME}"
-        /usr
-        /usr/local
-)
-
-find_library(
-    DIVSUFSORT_LIBRARY
-    NAMES divsufsort
-    HINTS
-        "${SDSL_ROOT}"
-    PATH_SUFFIXES
-        lib
-        lib64
-    PATHS
-        "$ENV{HOME}"
-        /usr
-        /usr/local
-)
-
-find_library(
-    DIVSUFSORT64_LIBRARY
-    NAMES divsufsort64
-    HINTS
-        "${SDSL_ROOT}"
-    PATH_SUFFIXES
-        lib
-        lib64
-    PATHS
-        "$ENV{HOME}"
-        /usr
-        /usr/local
-)
-
-if(NOT SDSL_LIBRARY OR NOT DIVSUFSORT_LIBRARY OR NOT DIVSUFSORT64_LIBRARY)
-    message(FATAL_ERROR "Could not find sdsl-lite libraries (sdsl, divsufsort, divsufsort64). "
-                        "Set SDSL_ROOT or SDSL_LIBRARY*/DIVSUFSORT* manually.")
-endif()
-
-add_library(sdsl_lite INTERFACE)
-target_include_directories(sdsl_lite INTERFACE "${SDSL_INCLUDE_DIR}")
-target_link_libraries(sdsl_lite INTERFACE
-    "${SDSL_LIBRARY}"
-    "${DIVSUFSORT_LIBRARY}"
-    "${DIVSUFSORT64_LIBRARY}"
-)
-message(STATUS "Found sdsl-lite includes in: ${SDSL_INCLUDE_DIR}")
-message(STATUS "Found sdsl-lite libs: ${SDSL_LIBRARY}; ${DIVSUFSORT_LIBRARY}; ${DIVSUFSORT64_LIBRARY}")
-
+# ---------------------------------------------------------------------------
+# Dependencies (fetched only when needed)
+# ---------------------------------------------------------------------------
 include(FetchContent)
-FetchContent_Declare(
-    googletest
-    GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG v1.17.0
-)
-include(GoogleTest)
-FetchContent_MakeAvailable(googletest)
-FetchContent_Declare(
-  googlebenchmark
-  GIT_REPOSITORY https://github.com/google/benchmark.git
-  GIT_TAG v1.9.4  # Replace with the desired version/tag
-)
-set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "Disable Google Benchmark tests")
-FetchContent_MakeAvailable(googlebenchmark)
 
-FetchContent_Declare(
-  pasta_bit_vector
-  GIT_REPOSITORY https://github.com/pasta-toolbox/bit_vector.git
-  GIT_TAG origin/main
-)
-FetchContent_MakeAvailable(pasta_bit_vector)
-
-
-
-# add_subdirectory(third_party/pasta_bv)
-
-add_executable(benchmarks
-    src/benchmarks.cpp)
-target_include_directories(benchmarks
-    PUBLIC include
-)
-
-target_link_libraries(benchmarks
-    benchmark
-    benchmark_main
-    pasta_bit_vector)
-
-add_test(
-    NAME Benchmarks
-    COMMAND bt_benchmarks --benchmark_out=bm_report.csv --benchmark_out_format=csv
-)
-
-add_executable(unittests
-    src/unittests.cpp)
-target_include_directories(unittests
-    PUBLIC include
-    PUBLIC ${GOOGLETEST_SOURCE_DIR}/include
-)
-target_link_libraries(unittests
-    gtest
-    gtest_main)
-
-add_executable(benchmark_tests
-    src/benchmark_tests.cpp)
-target_include_directories(benchmark_tests
-    PUBLIC include
-    PUBLIC ${GOOGLETEST_SOURCE_DIR}/include
-)
-set_property(TARGET benchmark_tests PROPERTY CXX_STANDARD 20)
-target_link_libraries(benchmark_tests
-    gtest
-    gtest_main)
-
-add_executable(bench_rmm
-    src/bench_rmm.cpp)
-target_include_directories(bench_rmm
-    PUBLIC include
-)
-target_link_libraries(bench_rmm
-    benchmark)
-
-
-add_executable(louds_tree_benchmarks
-    src/louds_tree_benchmarks.cpp)
-
-target_include_directories(louds_tree_benchmarks
-    PUBLIC include
-)
-
-target_link_libraries(louds_tree_benchmarks
-    benchmark
-    benchmark_main
-)
-
-
-add_executable(test_rmm
-    src/test_rmm.cpp)
-target_include_directories(test_rmm
-    PUBLIC include
-    PUBLIC include/misc
-)
-target_link_libraries(test_rmm
-    gtest
-    gtest_main)
-
-add_executable(bench_rmm_sdsl
-    src/bench_rmm_sdsl.cpp
-)
-target_include_directories(bench_rmm_sdsl
-    PUBLIC include
-)
-target_link_libraries(bench_rmm_sdsl
-    PRIVATE
-        benchmark
-        sdsl_lite
-)
-add_executable(louds_tree_tests
-    src/louds_tree_tests.cpp)
-target_include_directories(louds_tree_tests
-    PUBLIC include
-    PUBLIC ${GOOGLETEST_SOURCE_DIR}/include
-)
-target_link_libraries(louds_tree_tests
-    gtest
-    gtest_main)
-
-add_executable(alignment_comparison
-    src/alignment_comparison.cpp)
-
-target_include_directories(alignment_comparison
-    PUBLIC include
-)
-
-target_link_libraries(alignment_comparison
-    benchmark
-    benchmark_main
+if(PIXIE_BENCHMARKS)
+    FetchContent_Declare(
+        googlebenchmark
+        GIT_REPOSITORY https://github.com/google/benchmark.git
+        GIT_TAG v1.9.4
     )
-FetchContent_Declare(
-    doxygen-awesome-css
-    URL https://github.com/jothepro/doxygen-awesome-css/archive/refs/heads/main.zip
-)
-FetchContent_MakeAvailable(doxygen-awesome-css)
+    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "Disable Google Benchmark tests")
+    FetchContent_MakeAvailable(googlebenchmark)
 
-# Save the location the files were cloned into
-# This allows us to get the path to doxygen-awesome.css
-FetchContent_GetProperties(doxygen-awesome-css SOURCE_DIR AWESOME_CSS_DIR)
+    # Third-party libraries for comparison benchmarks
+    FetchContent_Declare(
+        pasta_bit_vector
+        GIT_REPOSITORY https://github.com/pasta-toolbox/bit_vector.git
+        GIT_TAG origin/main
+    )
+    FetchContent_MakeAvailable(pasta_bit_vector)
 
-# Generate the Doxyfile
-set(DOXYFILE_IN ${CMAKE_CURRENT_SOURCE_DIR}/src/docs/Doxyfile.in)
-set(DOXYFILE_OUT ${CMAKE_CURRENT_BINARY_DIR}/docs/Doxyfile)
-configure_file(${DOXYFILE_IN} ${DOXYFILE_OUT} @ONLY)
+    if(NOT WIN32)
+        # Disable sdsl-lite's own tests/examples/tutorials
+        set(SDSL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(SDSL_BUILD_TUTORIAL OFF CACHE BOOL "" FORCE)
+        set(SDSL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(
+            sdsl_lite
+            GIT_REPOSITORY https://github.com/xxsds/sdsl-lite.git
+            GIT_TAG v3.0.3
+        )
+        FetchContent_MakeAvailable(sdsl_lite)
+    endif()
+endif()
 
-enable_testing()
+if(PIXIE_TESTS)
+    if(NOT TARGET gtest_main)
+        FetchContent_Declare(
+            googletest
+            GIT_REPOSITORY https://github.com/google/googletest.git
+            GIT_TAG v1.17.0
+        )
+        FetchContent_MakeAvailable(googletest)
+    endif()
+    include(GoogleTest)
+endif()
+
+# ---------------------------------------------------------------------------
+# Unit tests
+# ---------------------------------------------------------------------------
+if(PIXIE_TESTS)
+    enable_testing()
+
+    add_executable(unittests
+        src/tests/unittests.cpp)
+    target_include_directories(unittests
+        PUBLIC include)
+    target_link_libraries(unittests
+        gtest
+        gtest_main)
+
+    add_executable(benchmark_tests
+        src/tests/benchmark_tests.cpp)
+    target_include_directories(benchmark_tests
+        PUBLIC include)
+    target_link_libraries(benchmark_tests
+        gtest
+        gtest_main)
+
+    add_executable(test_rmm
+        src/tests/test_rmm.cpp)
+    target_include_directories(test_rmm
+        PUBLIC include
+        PUBLIC include/misc)
+    target_link_libraries(test_rmm
+        gtest
+        gtest_main)
+
+    add_executable(louds_tree_tests
+        src/tests/louds_tree_tests.cpp)
+    target_include_directories(louds_tree_tests
+        PUBLIC include)
+    target_link_libraries(louds_tree_tests
+        gtest
+        gtest_main)
+endif()
+
+# ---------------------------------------------------------------------------
+# Benchmarks (Pixie-only and comparison benchmarks)
+# ---------------------------------------------------------------------------
+if(PIXIE_BENCHMARKS)
+    add_executable(benchmarks
+        src/benchmarks/benchmarks.cpp)
+    target_include_directories(benchmarks
+        PUBLIC include)
+    target_link_libraries(benchmarks
+        benchmark
+        benchmark_main
+        pasta_bit_vector)
+    target_compile_definitions(benchmarks PRIVATE PIXIE_THIRD_PARTY_BENCHMARKS)
+
+    add_executable(bench_rmm
+        src/benchmarks/bench_rmm.cpp)
+    target_include_directories(bench_rmm
+        PUBLIC include)
+    target_link_libraries(bench_rmm
+        benchmark)
+
+    if(NOT WIN32)
+        add_executable(bench_rmm_sdsl
+            src/benchmarks/bench_rmm_sdsl.cpp)
+        target_include_directories(bench_rmm_sdsl
+            PUBLIC include)
+        target_link_libraries(bench_rmm_sdsl
+            PRIVATE
+                benchmark
+                sdsl-lite)
+    endif()
+
+    add_executable(louds_tree_benchmarks
+        src/benchmarks/louds_tree_benchmarks.cpp)
+    target_include_directories(louds_tree_benchmarks
+        PUBLIC include)
+    target_link_libraries(louds_tree_benchmarks
+        benchmark
+        benchmark_main)
+
+    add_executable(alignment_comparison
+        src/benchmarks/alignment_comparison.cpp)
+    target_include_directories(alignment_comparison
+        PUBLIC include)
+    target_link_libraries(alignment_comparison
+        benchmark
+        benchmark_main)
+endif()
+
+# ---------------------------------------------------------------------------
+# Documentation (Doxygen)
+# ---------------------------------------------------------------------------
+if(PIXIE_DOCS)
+    find_package(Doxygen REQUIRED)
+
+    FetchContent_Declare(
+        doxygen-awesome-css
+        URL https://github.com/jothepro/doxygen-awesome-css/archive/refs/heads/main.zip
+    )
+    FetchContent_MakeAvailable(doxygen-awesome-css)
+
+    FetchContent_GetProperties(doxygen-awesome-css SOURCE_DIR AWESOME_CSS_DIR)
+
+    set(DOXYFILE_IN ${CMAKE_CURRENT_SOURCE_DIR}/src/docs/Doxyfile.in)
+    set(DOXYFILE_OUT ${CMAKE_CURRENT_BINARY_DIR}/docs/Doxyfile)
+    configure_file(${DOXYFILE_IN} ${DOXYFILE_OUT} @ONLY)
+
+    add_custom_target(docs
+        COMMAND ${DOXYGEN_EXECUTABLE} ${DOXYFILE_OUT}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        COMMENT "Generating API documentation with Doxygen"
+        VERBATIM)
+endif()

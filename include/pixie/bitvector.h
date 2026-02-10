@@ -1,5 +1,7 @@
 #pragma once
 
+#include <pixie/bits.h>
+
 #include <algorithm>
 #include <bit>
 #include <cstdint>
@@ -7,59 +9,51 @@
 #include <string>
 #include <vector>
 
-#include "bits.h"
-
 namespace pixie {
 
 /**
- * @brief Non-interleaved non owning version of the bit vector class with rank
- * and select operations.
+ * @brief Non-interleaved, non-owning bit vector with rank and select.
+ *
  *
  * @details
- * Implementation follows ideas from
+ * This is a two-level rank/select index for a bit vector stored
+ * externally as
+ * 64-bit words. The layout follows ideas from:
  *
- * {1} "SPIDER: Improved Succint Rank and Select Performance"
- * Matthew D. Laws, Jocelyn Bliven, Kit Conklin, Elyes Laalai, Samuel McCauley,
- * Zach S. Sturdevant
+ * {1}
+ * "SPIDER: Improved Succinct Rank and Select Performance"
+ * Matthew D. Laws,
+ * Jocelyn Bliven, Kit Conklin, Elyes Laalai, Samuel McCauley,
+ * Zach S.
+ * Sturdevant
  * https://github.com/williams-cs/spider
  *
- * {2} "Engineering compact data structures for rank and select queries on
- * bit vectors" Kurpicz F.
+ * {2} "Engineering
+ * compact data structures for rank and select queries on
+ * bit vectors"
+ * Kurpicz F.
  * https://github.com/pasta-toolbox/bit_vector
  *
- * Essentially it is a 2 level structure of
- * - Super blocks of 2^16 bits
- * - Basic blocks of 512 bits
- * - Super block ranks of 64 bits resulting in ~ 0.98% overhead
- * - Basic block ranks of 16 bits resulting in ~ 3.125% overhead
- * - 64 bit Select samples of each 16384 bit ~ 0.39% overhead
+ * Structure
+ * overview:
+ * - Super blocks of 2^16 bits with 64-bit ranks (~0.98%
+ * overhead).
+ * - Basic blocks of 512 bits with 16-bit ranks (~3.125%
+ * overhead).
+ * - Select samples every 16384 bits (~0.39% overhead).
  *
- * Rank is 2 table lookups + SIMD popcount in a 512 block.
  *
- * Select is
- * - Initial super block guess by precomputed sampling
- * - SIMD supported linear scan to find superblock
- * --- For random data we expect the scan to quickly find the block
- * --- As 8 64-bit ranks fits into a cache line we probably expect a single
- * --- cache miss to find a superblock. SIMD allows to perform a single scan
- * --- can of 8 ranks in 3-4 ops.
- * - SIMD supported linear scan to find basicblock
- * --- Super block consits of 128 basic blocks 16 bits rank each
- * --- This fits into 4x512-bit cache lines. The best way seems to
- * --- be just to linearly scan linearly, AVX-512 allowes to scan
- * --- the whole cache line at once.
+ * Rank: 2 table lookups plus SIMD popcount in the 512-bit block.
  *
- * Currently I didn't compare it against {1} or {2}, performance is compatible
- * and is bottlenecked by cache misses. Usage of AVX-512 makes it limited for
- * current generation processors.
+ * Select:
+
+ * * - Start from a sampled super block.
+ * - SIMD linear scan to find the super
+ * block.
+ * - SIMD linear scan to find the basic block.
  *
- * This implementation does not involve interleaving, it is notable that
- * interleaving makes linear scans harder. I'd suggest that if interleaving is
- * to be involved it's probably super-basic rank interleaving like in {2}. We
- * lose ability to effectively perform linear scan on superblocks as we already
- * expect to have good guesses from select samples. Interleanign original data
- * with basic block ranks like in {1} some special guessing technique should be
- * involved (like {1} does).
+ * This variant does
+ * not interleave data and index, favoring simpler scans.
  */
 class BitVector {
  private:
@@ -72,21 +66,21 @@ class BitVector {
   constexpr static size_t kSelectSampleFrequency = 16384;
   constexpr static size_t kBlocksPerSuperBlock = 128;
 
-  alignas(64) uint64_t dlt_super[8];
-  alignas(64) uint16_t dlt_basic[32];
+  alignas(64) uint64_t delta_super[8];
+  alignas(64) uint16_t delta_basic[32];
 
-  std::vector<uint64_t> super_block_rank;
-  std::vector<uint16_t> basic_block_rank;
-  std::vector<uint64_t> select_samples;
-  std::vector<uint64_t> select0_samples;
+  std::vector<uint64_t> super_block_rank_;
+  std::vector<uint16_t> basic_block_rank_;
+  std::vector<uint64_t> select1_samples_;
+  std::vector<uint64_t> select0_samples_;
   const size_t num_bits_;
   const size_t padded_size_;
-  size_t max_rank;
+  size_t max_rank_;
 
-  std::span<const uint64_t> bits;
+  std::span<const uint64_t> bits_;
 
   /**
-   * Precompute rank for fast queries
+   * @brief Precompute rank for fast queries.
    */
   void build_rank() {
     size_t num_superblocks = 8 + (padded_size_ - 1) / kSuperBlockSize;
@@ -95,52 +89,52 @@ class BitVector {
     // This reduces branching in select
     num_superblocks = ((num_superblocks + 7) / 8) * 8;
     size_t num_basicblocks = num_superblocks * kBlocksPerSuperBlock;
-    super_block_rank.resize(num_superblocks);
-    basic_block_rank.resize(num_basicblocks);
+    super_block_rank_.resize(num_superblocks);
+    basic_block_rank_.resize(num_basicblocks);
 
     uint64_t super_block_sum = 0;
     uint16_t basic_block_sum = 0;
 
-    for (size_t i = 0; i / kBasicBlockSize < basic_block_rank.size();
+    for (size_t i = 0; i / kBasicBlockSize < basic_block_rank_.size();
          i += kWordSize) {
       if (i % kSuperBlockSize == 0) {
         super_block_sum += basic_block_sum;
-        super_block_rank[i / kSuperBlockSize] = super_block_sum;
+        super_block_rank_[i / kSuperBlockSize] = super_block_sum;
         basic_block_sum = 0;
       }
       if (i % kBasicBlockSize == 0) {
-        basic_block_rank[i / kBasicBlockSize] = basic_block_sum;
+        basic_block_rank_[i / kBasicBlockSize] = basic_block_sum;
       }
-      if (i / kWordSize < bits.size()) {
-        basic_block_sum += std::popcount(bits[i / kWordSize]);
+      if (i / kWordSize < bits_.size()) {
+        basic_block_sum += std::popcount(bits_[i / kWordSize]);
       }
     }
-    max_rank = super_block_sum + basic_block_sum;
+    max_rank_ = super_block_sum + basic_block_sum;
   }
 
   /**
-   * @brief Calculate select samples
+   * @brief Calculate select samples.
    */
   void build_select() {
     uint64_t milestone = kSelectSampleFrequency;
     uint64_t milestone0 = kSelectSampleFrequency;
     uint64_t rank = 0;
     uint64_t rank0 = 0;
-    select_samples.emplace_back(0);
-    select0_samples.emplace_back(0);
-    for (size_t i = 0; i < bits.size(); ++i) {
-      auto ones = std::popcount(bits[i]);
+    select1_samples_.emplace_back(0);
+    select0_samples_.emplace_back(0);
+    for (size_t i = 0; i < bits_.size(); ++i) {
+      auto ones = std::popcount(bits_[i]);
       auto zeros = 64 - ones;
       if (rank + ones >= milestone) {
-        auto pos = select_64(bits[i], milestone - rank - 1);
+        auto pos = select_64(bits_[i], milestone - rank - 1);
         // TODO: try including global rank into select samples to save
         //       a cache miss on global rank scan
-        select_samples.emplace_back((64 * i + pos) / kSuperBlockSize);
+        select1_samples_.emplace_back((64 * i + pos) / kSuperBlockSize);
         milestone += kSelectSampleFrequency;
       }
       if (rank0 + zeros >= milestone0) {
-        auto pos = select_64(~bits[i], milestone0 - rank0 - 1);
-        select0_samples.emplace_back((64 * i + pos) / kSuperBlockSize);
+        auto pos = select_64(~bits_[i], milestone0 - rank0 - 1);
+        select0_samples_.emplace_back((64 * i + pos) / kSuperBlockSize);
         milestone0 += kSelectSampleFrequency;
       }
       rank += ones;
@@ -148,78 +142,87 @@ class BitVector {
     }
 
     for (size_t i = 0; i < 8; ++i) {
-      dlt_super[i] = i * kSuperBlockSize;
+      delta_super[i] = i * kSuperBlockSize;
     }
     for (size_t i = 0; i < 32; ++i) {
-      dlt_basic[i] = i * kBasicBlockSize;
+      delta_basic[i] = i * kBasicBlockSize;
     }
   }
 
   /**
-   * @brief first step of the select operation
+   * @brief First step of the select operation.
+   * @param rank 1-based
+   * rank of the 1-bit to locate.
    */
   uint64_t find_superblock(uint64_t rank) const {
-    uint64_t left = select_samples[rank / kSelectSampleFrequency];
+    uint64_t left = select1_samples_[rank / kSelectSampleFrequency];
 
-    while (left + 7 < super_block_rank.size()) {
-      auto len = lower_bound_8x64(&super_block_rank[left], rank);
+    while (left + 7 < super_block_rank_.size()) {
+      auto len = lower_bound_8x64(&super_block_rank_[left], rank);
       if (len < 8) {
         return left + len - 1;
       }
       left += 8;
     }
-    if (left + 3 < super_block_rank.size()) {
-      auto len = lower_bound_4x64(&super_block_rank[left], rank);
+    if (left + 3 < super_block_rank_.size()) {
+      auto len = lower_bound_4x64(&super_block_rank_[left], rank);
       if (len < 4) {
         return left + len - 1;
       }
       left += 4;
     }
-    while (left < super_block_rank.size() && super_block_rank[left] < rank) {
+    while (left < super_block_rank_.size() && super_block_rank_[left] < rank) {
       left++;
     }
     return left - 1;
   }
 
   /**
-   * @brief first step of the select0 operation
+   * @brief First step of the select0 operation.
+   * @param rank0 1-based
+   * rank of the 0-bit to locate.
    */
   uint64_t find_superblock_zeros(uint64_t rank0) const {
-    uint64_t left = select0_samples[rank0 / kSelectSampleFrequency];
+    uint64_t left = select0_samples_[rank0 / kSelectSampleFrequency];
 
-    while (left + 7 < super_block_rank.size()) {
-      auto len = lower_bound_dlt_8x64(&super_block_rank[left], rank0, dlt_super,
-                                      kSuperBlockSize * left);
+    while (left + 7 < super_block_rank_.size()) {
+      auto len = lower_bound_delta_8x64(&super_block_rank_[left], rank0,
+                                        delta_super, kSuperBlockSize * left);
       if (len < 8) {
         return left + len - 1;
       }
       left += 8;
     }
-    if (left + 3 < super_block_rank.size()) {
-      auto len = lower_bound_dlt_4x64(&super_block_rank[left], rank0, dlt_super,
-                                      kSuperBlockSize * left);
+    if (left + 3 < super_block_rank_.size()) {
+      auto len = lower_bound_delta_4x64(&super_block_rank_[left], rank0,
+                                        delta_super, kSuperBlockSize * left);
       if (len < 4) {
         return left + len - 1;
       }
       left += 4;
     }
-    while (left < super_block_rank.size() &&
-           kSuperBlockSize * left - super_block_rank[left] < rank0) {
+    while (left < super_block_rank_.size() &&
+           kSuperBlockSize * left - super_block_rank_[left] < rank0) {
       left++;
     }
     return left - 1;
   }
 
   /**
-   * @brief SIMD-optimized linear scan
+   * @brief SIMD-optimized linear scan.
+   * @param local_rank Rank within
+   * the super block.
+   * @param s_block Super block index.
    * @details
+   *
    * Processes 32 16-bit entries at once (full cache line), so there is at most
-   * 4 iterations.
+
+   * * 4 iterations.
    */
   uint64_t find_basicblock(uint16_t local_rank, uint64_t s_block) const {
     for (size_t pos = 0; pos < kBlocksPerSuperBlock; pos += 32) {
       auto count = lower_bound_32x16(
-          &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank);
+          &basic_block_rank_[kBlocksPerSuperBlock * s_block + pos], local_rank);
       if (count < 32) {
         return kBlocksPerSuperBlock * s_block + pos + count - 1;
       }
@@ -228,16 +231,21 @@ class BitVector {
   }
 
   /**
-   * @brief SIMD-optimized linear scan
+   * @brief SIMD-optimized linear scan.
+   * @param local_rank0 Rank of
+   * zeros within the super block.
+   * @param s_block Super block index.
+   *
    * @details
-   * Processes 32 16-bit entries at once (full cache line), so there is at most
+   * Processes 32 16-bit entries at once (full cache line), so
+   * there is at most
    * 4 iterations.
    */
   uint64_t find_basicblock_zeros(uint16_t local_rank0, uint64_t s_block) const {
     for (size_t pos = 0; pos < kBlocksPerSuperBlock; pos += 32) {
-      auto count = lower_bound_dlt_32x16(
-          &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank0,
-          dlt_basic, kBasicBlockSize * pos);
+      auto count = lower_bound_delta_32x16(
+          &basic_block_rank_[kBlocksPerSuperBlock * s_block + pos], local_rank0,
+          delta_basic, kBasicBlockSize * pos);
       if (count < 32) {
         return kBlocksPerSuperBlock * s_block + pos + count - 1;
       }
@@ -246,24 +254,32 @@ class BitVector {
   }
 
   /**
-   * @brief Interpolation search with SIMD optimization
+   * @brief Interpolation search with SIMD optimization.
+   * @param
+   * local_rank Rank within the super block.
+   * @param s_block Super block
+   * index.
    * @details
-   * Similar to find_basicblock but initial guess is based on linear
-   * interpolation, for random data it should make initial guess correct
-   * most of the times, we start from the 32 wide block with interpolation
-   * guess at the center, if we see that select result lie in lower blocks
+   * Similar to find_basicblock but initial guess is
+   * based on linear
+   * interpolation, for random data it should make initial
+   * guess correct
+   * most of the times, we start from the 32 wide block with
+   * interpolation
+   * guess at the center, if we see that select result lie in
+   * lower blocks
    * we backoff to find_basicblock
    */
   uint64_t find_basicblock_is(uint16_t local_rank, uint64_t s_block) const {
-    auto lower = super_block_rank[s_block];
-    auto upper = super_block_rank[s_block + 1];
+    auto lower = super_block_rank_[s_block];
+    auto upper = super_block_rank_[s_block + 1];
 
     uint64_t pos = kBlocksPerSuperBlock * local_rank / (upper - lower);
     pos = pos + 16 < 32 ? 0 : (pos - 16);
     pos = pos > 96 ? 96 : pos;
     while (pos < 96) {
       auto count = lower_bound_32x16(
-          &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank);
+          &basic_block_rank_[kBlocksPerSuperBlock * s_block + pos], local_rank);
       if (count == 0) {
         return find_basicblock(local_rank, s_block);
       }
@@ -274,7 +290,7 @@ class BitVector {
     }
     pos = 96;
     auto count = lower_bound_32x16(
-        &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank);
+        &basic_block_rank_[kBlocksPerSuperBlock * s_block + pos], local_rank);
     if (count == 0) {
       return find_basicblock(local_rank, s_block);
     }
@@ -282,27 +298,36 @@ class BitVector {
   }
 
   /**
-   * @brief Interpolation search with SIMD optimization
+   * @brief Interpolation search with SIMD optimization.
+   * @param
+   * local_rank0 Rank of zeros within the super block.
+   * @param s_block Super
+   * block index.
    * @details
-   * Similar to find_basicblock_zeros but initial guess is based on linear
-   * interpolation, for random data it should make initial guess correct
-   * most of the times, we start from the 32 wide block with interpolation
-   * guess at the center, if we see that select result lie in lower blocks
+   * Similar to find_basicblock_zeros but
+   * initial guess is based on linear
+   * interpolation, for random data it
+   * should make initial guess correct
+   * most of the times, we start from the
+   * 32 wide block with interpolation
+   * guess at the center, if we see that
+   * select result lie in lower blocks
    * we backoff to find_basicblock_zeros
+
    */
   uint64_t find_basicblock_is_zeros(uint16_t local_rank0,
                                     uint64_t s_block) const {
-    auto lower = kSuperBlockSize * s_block - super_block_rank[s_block];
+    auto lower = kSuperBlockSize * s_block - super_block_rank_[s_block];
     auto upper =
-        kSuperBlockSize * (s_block + 1) - super_block_rank[s_block + 1];
+        kSuperBlockSize * (s_block + 1) - super_block_rank_[s_block + 1];
 
     uint64_t pos = kBlocksPerSuperBlock * local_rank0 / (upper - lower);
     pos = pos + 16 < 32 ? 0 : (pos - 16);
     pos = pos > 96 ? 96 : pos;
     while (pos < 96) {
-      auto count = lower_bound_dlt_32x16(
-          &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank0,
-          dlt_basic, kBasicBlockSize * pos);
+      auto count = lower_bound_delta_32x16(
+          &basic_block_rank_[kBlocksPerSuperBlock * s_block + pos], local_rank0,
+          delta_basic, kBasicBlockSize * pos);
       if (count == 0) {
         return find_basicblock_zeros(local_rank0, s_block);
       }
@@ -312,9 +337,9 @@ class BitVector {
       pos += 32;
     }
     pos = 96;
-    auto count = lower_bound_dlt_32x16(
-        &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank0,
-        dlt_basic, kBasicBlockSize * pos);
+    auto count = lower_bound_delta_32x16(
+        &basic_block_rank_[kBlocksPerSuperBlock * s_block + pos], local_rank0,
+        delta_basic, kBasicBlockSize * pos);
     if (count == 0) {
       return find_basicblock_zeros(local_rank0, s_block);
     }
@@ -323,121 +348,137 @@ class BitVector {
 
  public:
   /**
-   * Constructor from an external array of uint64_t.
+   * @brief Construct from an external array of 64-bit words.
+   * @param
+   * bit_vector Backing data, not owned.
+   * @param num_bits Number of valid
+   * bits in the vector.
    */
   explicit BitVector(std::span<const uint64_t> bit_vector, size_t num_bits)
       : num_bits_(std::min(num_bits, bit_vector.size() * kWordSize)),
         padded_size_(((num_bits_ + kWordSize - 1) / kWordSize) * kWordSize),
-        bits(bit_vector) {
+        bits_(bit_vector) {
     build_rank();
     build_select();
   }
 
   /**
-   * Returns the number of bits in the vector
+   * @brief Returns the number of valid bits.
    */
   size_t size() const { return num_bits_; }
 
   /**
-   * Get the bit at the specified position
+   * @brief Returns the bit at the given position.
+   * @param pos Bit
+   * index in [0, size()).
    */
   int operator[](size_t pos) const {
     size_t word_idx = pos / kWordSize;
     size_t bit_off = pos % kWordSize;
 
-    return (bits[word_idx] >> bit_off) & 1;
+    return (bits_[word_idx] >> bit_off) & 1;
   }
 
   /**
-   * Rank operation: count the number of 1-bits up to position pos (exclusive)
-   * rank_1(pos) = number of 1s in positions [0...pos-1]
+   * @brief Rank of 1s up to position pos (exclusive).
+   * @param pos Bit
+   * index in [0, size()].
+   * @return Number of 1s in [0, pos).
    */
   uint64_t rank(size_t pos) const {
-    if (pos >= bits.size() * kWordSize) [[unlikely]] {
-      return max_rank;
+    if (pos >= bits_.size() * kWordSize) [[unlikely]] {
+      return max_rank_;
     }
     uint64_t b_block = pos / kBasicBlockSize;
     uint64_t s_block = pos / kSuperBlockSize;
     // Precomputed rank
-    uint64_t result = super_block_rank[s_block] + basic_block_rank[b_block];
+    uint64_t result = super_block_rank_[s_block] + basic_block_rank_[b_block];
     // Basic block tail
-    result += rank_512(&bits[b_block * kWordsPerBlock],
+    result += rank_512(&bits_[b_block * kWordsPerBlock],
                        pos - (b_block * kBasicBlockSize));
     return result;
   }
 
   /**
-   * Rank zero operation: count the number of 0-bits up to position pos
-   * (exclusive) rank_0(pos) = number of 0s in positions [0...pos-1]
+   * @brief Rank of 0s up to position pos (exclusive).
+   * @param pos Bit
+   * index in [0, size()].
+   * @return Number of 0s in [0, pos).
    */
   uint64_t rank0(size_t pos) const {
-    if (pos >= bits.size() * kWordSize) [[unlikely]] {
-      return bits.size() * kWordSize - max_rank;
+    if (pos >= bits_.size() * kWordSize) [[unlikely]] {
+      return bits_.size() * kWordSize - max_rank_;
     }
     return pos - rank(pos);
   }
 
   /**
-   * Select operation: find the position of the i-th occurrence of a 1-bit
-   * select_1(rank) = index of the rank-th occurrence of 1-bit
+   * @brief Select the position of the rank-th 1-bit (1-indexed).
+   *
+   * @param rank 1-based rank of the 1-bit to select.
+   * @return Bit index, or
+   * size() if rank is out of range.
    */
   uint64_t select(size_t rank) const {
-    if (rank > max_rank) [[unlikely]] {
+    if (rank > max_rank_) [[unlikely]] {
       return num_bits_;
     }
     if (rank == 0) [[unlikely]] {
       return 0;
     }
     uint64_t s_block = find_superblock(rank);
-    rank -= super_block_rank[s_block];
+    rank -= super_block_rank_[s_block];
     auto pos = find_basicblock_is(rank, s_block);
-    rank -= basic_block_rank[pos];
+    rank -= basic_block_rank_[pos];
     pos *= kWordsPerBlock;
 
     // Final search
     if (pos + kWordsPerBlock - 1 < kWordsPerBlock) [[unlikely]] {
-      size_t ones = std::popcount(bits[pos]);
-      while (pos < bits.size() && ones < rank) {
+      size_t ones = std::popcount(bits_[pos]);
+      while (pos < bits_.size() && ones < rank) {
         rank -= ones;
-        ones = std::popcount(bits[++pos]);
+        ones = std::popcount(bits_[++pos]);
       }
-      return kWordSize * pos + select_64(bits[pos], rank - 1);
+      return kWordSize * pos + select_64(bits_[pos], rank - 1);
     }
-    return kWordSize * pos + select_512(&bits[pos], rank - 1);
+    return kWordSize * pos + select_512(&bits_[pos], rank - 1);
   }
 
   /**
-   * Select zero operation: find the position of the i-th occurrence of a 0-bit
-   * select_0(rank0) = index of the rank0-th occurrence of 0-bit
+   * @brief Select the position of the rank0-th 0-bit (1-indexed).
+   *
+   * @param rank0 1-based rank of the 0-bit to select.
+   * @return Bit index,
+   * or size() if rank0 is out of range.
    */
   uint64_t select0(size_t rank0) const {
-    if (rank0 > num_bits_ - max_rank) [[unlikely]] {
+    if (rank0 > num_bits_ - max_rank_) [[unlikely]] {
       return num_bits_;
     }
     if (rank0 == 0) [[unlikely]] {
       return 0;
     }
     uint64_t s_block = find_superblock_zeros(rank0);
-    rank0 -= kSuperBlockSize * s_block - super_block_rank[s_block];
+    rank0 -= kSuperBlockSize * s_block - super_block_rank_[s_block];
     auto pos = find_basicblock_is_zeros(rank0, s_block);
     auto pos_in_super_block = pos & (kBlocksPerSuperBlock - 1);
-    rank0 -= kBasicBlockSize * pos_in_super_block - basic_block_rank[pos];
+    rank0 -= kBasicBlockSize * pos_in_super_block - basic_block_rank_[pos];
     pos *= kWordsPerBlock;
 
     // Final search
     if (pos + kWordsPerBlock - 1 < kWordsPerBlock) [[unlikely]] {
-      size_t zeros = std::popcount(~bits[pos]);
-      while (pos < bits.size() && zeros < rank0) {
+      size_t zeros = std::popcount(~bits_[pos]);
+      while (pos < bits_.size() && zeros < rank0) {
         rank0 -= zeros;
-        zeros = std::popcount(~bits[++pos]);
+        zeros = std::popcount(~bits_[++pos]);
       }
-      return kWordSize * pos + select_64(~bits[pos], rank0 - 1);
+      return kWordSize * pos + select_64(~bits_[pos], rank0 - 1);
     }
-    return kWordSize * pos + select0_512(&bits[pos], rank0 - 1);
+    return kWordSize * pos + select0_512(&bits_[pos], rank0 - 1);
   }
 
   /**
-   * Convert the bit vector to a binary string, for debug purpose only
+   * @brief Convert to a binary string (debug helper).
    */
   std::string to_string() const {
     std::string result;
@@ -452,20 +493,21 @@ class BitVector {
 };
 
 /**
- * Iterleaved owning version of the bit vector class with rank and
- * select operations. Interleaving in SDS is the optimization
- * that stores auxiliary index and original in the same array which
- * reduces the average number of cache misses.
+ * @brief Interleaved, owning bit vector with rank and select.
  *
- * If we can afford copying original data then interleaved version
- * is prefered over regular one.
  *
- * Implementation follows the paper
+ * @details
+ * This variant interleaves data with local rank metadata to reduce
+ * cache
+ * misses for rank queries. It copies input bits into an interleaved
+ * layout.
  *
- * "SPIDER: Improved Succint Rank and Select Performance"
- * Matthew D. Laws, Jocelyn Bliven, Kit Conklin, Elyes Laalai, Samuel McCauley,
+ * Based on:
+ * "SPIDER: Improved Succinct Rank and Select
+ * Performance"
+ * Matthew D. Laws, Jocelyn Bliven, Kit Conklin, Elyes Laalai,
+ * Samuel McCauley,
  * Zach S. Sturdevant
- *
  */
 class BitVectorInterleaved {
  private:
@@ -488,7 +530,7 @@ class BitVectorInterleaved {
 
   const size_t num_bits_;
   std::vector<uint64_t> bits_interleaved;
-  std::vector<uint64_t> super_block_rank;
+  std::vector<uint64_t> super_block_rank_;
 
   class BitReader {
     size_t iterator_64_ = 0;
@@ -521,7 +563,11 @@ class BitVectorInterleaved {
 
  public:
   /**
-   * Constructor from an external array of uint64_t.
+   * @brief Construct from an external array of 64-bit words.
+   * @param
+   * bit_vector Backing data to copy and interleave.
+   * @param num_bits Number
+   * of valid bits in the vector.
    */
   explicit BitVectorInterleaved(std::span<const uint64_t> bit_vector,
                                 size_t num_bits)
@@ -529,17 +575,22 @@ class BitVectorInterleaved {
     build_rank_interleaved(bit_vector, num_bits);
   }
 
+  /**
+   * @brief Mask with the lowest num bits set.
+   */
   static inline uint64_t first_bits_mask(size_t num) {
     return num >= 64 ? UINT64_MAX : ((1llu << num) - 1);
   }
 
   /**
-   * Returns the number of bits in the vector
+   * @brief Returns the number of valid bits.
    */
   size_t size() const { return num_bits_; }
 
   /**
-   * Get the bit at the specified position
+   * @brief Returns the bit at the given position.
+   * @param pos Bit
+   * index in [0, size()).
    */
   int operator[](size_t pos) const {
     size_t block_id = pos / kBasicBlockSize;
@@ -552,11 +603,15 @@ class BitVectorInterleaved {
   }
 
   /**
-   * Precompute rank for fast queries
+   * @brief Build the interleaved layout and rank index.
+   * @param bits
+   * Source bit vector as 64-bit words.
+   * @param num_bits Number of valid
+   * bits in the source.
    */
   void build_rank_interleaved(std::span<const uint64_t> bits, size_t num_bits) {
     size_t num_superblocks = 1 + (num_bits_ - 1) / kSuperBlockSize;
-    super_block_rank.resize(num_superblocks);
+    super_block_rank_.resize(num_superblocks);
     size_t num_basicblocks = 1 + (num_bits_ - 1) / kBasicBlockSize;
     bits_interleaved.resize(num_basicblocks * (512 / kWordSize));
 
@@ -567,7 +622,7 @@ class BitVectorInterleaved {
     for (size_t i = 0; i * kBasicBlockSize < num_bits; ++i) {
       if (i % (kSuperBlockSize / kBasicBlockSize) == 0) {
         super_block_sum += basic_block_sum;
-        super_block_rank[i / (kSuperBlockSize / kBasicBlockSize)] =
+        super_block_rank_[i / (kSuperBlockSize / kBasicBlockSize)] =
             super_block_sum;
         basic_block_sum = 0;
       }
@@ -591,8 +646,10 @@ class BitVectorInterleaved {
   }
 
   /**
-   * Rank operation: count the number of 1-bits up to position pos (exclusive)
-   * rank_1(pos) = number of 1s in positions [0...pos-1]
+   * @brief Rank of 1s up to position pos (exclusive).
+   * @param pos Bit
+   * index in [0, size()].
+   * @return Number of 1s in [0, pos).
    */
   uint64_t rank(size_t pos) const {
     // Multiplication/devisions
@@ -600,7 +657,7 @@ class BitVectorInterleaved {
     uint64_t s_block = b_block / kBlocksPerSuperBlock;
     uint64_t b_block_pos = b_block * kWordsPerBlock;
     // Super block rank
-    uint64_t result = super_block_rank[s_block];
+    uint64_t result = super_block_rank_[s_block];
     /**
      * Ok, so here's quite the important factor to load 512-bit region
      * at &bits_interleaved[b_block_pos], we store local rank as 16 last
@@ -615,7 +672,7 @@ class BitVectorInterleaved {
   }
 
   /**
-   * Convert the bit vector to a binary string, for debug purpose only
+   * @brief Convert to a binary string (debug helper).
    */
   std::string to_string() const {
     std::string result;

@@ -1,13 +1,11 @@
-#include "louds_tree.h"
-
 #include <gtest/gtest.h>
+#include <pixie/louds_tree.h>
+#include <pixie/utils.h>
 
 #include <iostream>
 #include <numeric>
 #include <random>
 #include <stack>
-
-#include "utils.h"
 
 using pixie::LoudsNode;
 using pixie::LoudsTree;

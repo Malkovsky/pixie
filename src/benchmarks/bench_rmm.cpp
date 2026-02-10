@@ -1,4 +1,5 @@
 #include <benchmark/benchmark.h>
+#include <pixie/rmm_tree.h>
 
 #include <algorithm>
 #include <cctype>
@@ -14,8 +15,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-#include "rmm_tree.h"
 
 using pixie::RmMTree;
 

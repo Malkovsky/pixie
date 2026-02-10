@@ -1,10 +1,9 @@
 #include <gtest/gtest.h>
+#include <pixie/bits.h>
+#include <pixie/bitvector.h>
 
 #include <numeric>
 #include <random>
-
-#include "bits.h"
-#include "bitvector.h"
 
 using pixie::BitVector;
 using pixie::BitVectorInterleaved;
@@ -435,7 +434,7 @@ TEST(LowerBound8x64, Random) {
   }
 }
 
-TEST(LowerBoundDlt4x64, Random) {
+TEST(LowerBoundDelta4x64, Random) {
   std::vector<uint64_t> x(4);
   uint64_t dlt_array[4];
   std::mt19937_64 rng(42);
@@ -451,14 +450,14 @@ TEST(LowerBoundDlt4x64, Random) {
       cnt += fl;
     }
     if (cnt < 4) {
-      ASSERT_EQ(lower_bound_dlt_4x64(x.data(), y, dlt_array, dlt_scalar), cnt);
+      ASSERT_EQ(lower_bound_delta_4x64(x.data(), y, dlt_array, dlt_scalar), cnt);
     } else {
-      ASSERT_GE(lower_bound_dlt_4x64(x.data(), y, dlt_array, dlt_scalar), cnt);
+      ASSERT_GE(lower_bound_delta_4x64(x.data(), y, dlt_array, dlt_scalar), cnt);
     }
   }
 }
 
-TEST(LowerBoundDlt8x64, Random) {
+TEST(LowerBoundDelta8x64, Random) {
   std::vector<uint64_t> x(8);
   uint64_t dlt_array[8];
   std::mt19937_64 rng(42);
@@ -474,9 +473,9 @@ TEST(LowerBoundDlt8x64, Random) {
       cnt += fl;
     }
     if (cnt < 8) {
-      ASSERT_EQ(lower_bound_dlt_8x64(x.data(), y, dlt_array, dlt_scalar), cnt);
+      ASSERT_EQ(lower_bound_delta_8x64(x.data(), y, dlt_array, dlt_scalar), cnt);
     } else {
-      ASSERT_GE(lower_bound_dlt_8x64(x.data(), y, dlt_array, dlt_scalar), cnt);
+      ASSERT_GE(lower_bound_delta_8x64(x.data(), y, dlt_array, dlt_scalar), cnt);
     }
   }
 }
@@ -495,7 +494,7 @@ TEST(LowerBound32x16, Random) {
   }
 }
 
-TEST(LowerBoundDlt32x16, Random) {
+TEST(LowerBoundDelta32x16, Random) {
   std::vector<uint16_t> x(32);
   uint16_t dlt_array[32];
   std::mt19937 rng(42);
@@ -513,7 +512,7 @@ TEST(LowerBoundDlt32x16, Random) {
       }
       cnt += dlt_array[j] + dlt_scalar - x[j] < y;
     }
-    ASSERT_EQ(lower_bound_dlt_32x16(x.data(), y, dlt_array, dlt_scalar), cnt);
+    ASSERT_EQ(lower_bound_delta_32x16(x.data(), y, dlt_array, dlt_scalar), cnt);
   }
 }
 
