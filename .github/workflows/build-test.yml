@@ -18,7 +18,7 @@ jobs:
 
     - name: Configure CMake
       working-directory: ./build
-      run: cmake -DDISABLE_AVX512=ON -DENABLE_ADDRESS_SANITIZER=ON ..
+      run: cmake -DDISABLE_AVX512=ON -DENABLE_ADDRESS_SANITIZER=ON -DPIXIE_BENCHMARKS=OFF ..
 
     - name: Build Project
       working-directory: ./build

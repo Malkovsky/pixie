@@ -26,7 +26,7 @@ endif()
 # Build options
 # ---------------------------------------------------------------------------
 option(PIXIE_TESTS "Build unit tests" ON)
-option(PIXIE_BENCHMARKS "Build benchmarks (includes comparison benchmarks against third-party libraries)" ON)
+option(PIXIE_BENCHMARKS "Build benchmarks (includes comparison benchmarks against third-party libraries)" OFF)
 option(PIXIE_DOCS "Build Doxygen documentation" OFF)
 
 # ---------------------------------------------------------------------------
@@ -138,16 +138,15 @@ if(PIXIE_BENCHMARKS)
     target_link_libraries(bench_rmm
         benchmark)
 
-    if(NOT WIN32)
-        add_executable(bench_rmm_sdsl
-            src/benchmarks/bench_rmm_sdsl.cpp)
-        target_include_directories(bench_rmm_sdsl
-            PUBLIC include)
-        target_link_libraries(bench_rmm_sdsl
-            PRIVATE
-                benchmark
-                sdsl-lite)
-    endif()
+    add_executable(bench_rmm_sdsl
+        src/benchmarks/bench_rmm_sdsl.cpp)
+    target_include_directories(bench_rmm_sdsl
+        PUBLIC include
+        PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
+    target_link_libraries(bench_rmm_sdsl
+        PRIVATE
+            benchmark
+            sdsl-lite)
 
     add_executable(louds_tree_benchmarks
         src/benchmarks/louds_tree_benchmarks.cpp)

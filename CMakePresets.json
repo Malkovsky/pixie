@@ -1,0 +1,64 @@
+{
+    "version": 4,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 18,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "debug",
+            "displayName": "Debug",
+            "binaryDir": "${sourceDir}/build/debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "release",
+            "displayName": "Release",
+            "binaryDir": "${sourceDir}/build/release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "benchmarks-all",
+            "displayName": "All Benchmarks",
+            "binaryDir": "${sourceDir}/build/release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "PIXIE_BENCHMARKS": "ON"
+            }
+        },
+        {
+            "name": "docs",
+            "displayName": "Docs",
+            "binaryDir": "${sourceDir}/build/docs",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "PIXIE_DOCS": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "debug",
+            "displayName": "Build Debug",
+            "configurePreset": "debug"
+        },
+        {
+            "name": "release",
+            "displayName": "Build Release",
+            "configurePreset": "release"
+        },
+        {
+            "name": "docs",
+            "displayName": "Build Docs",
+            "configurePreset": "docs",
+            "targets": [
+                "docs"
+            ]
+        }
+    ]
+}
