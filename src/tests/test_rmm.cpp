@@ -14,7 +14,6 @@
 #include <string>
 #include <vector>
 
-
 using std::size_t;
 
 static std::string bits_to_parens(const std::string& bits) {
