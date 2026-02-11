@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
-#include <reference_implementations/naive_rmm_tree.h>
 #include <pixie/rmm_tree.h>
+#include <reference_implementations/naive_rmm_tree.h>
 
 #include <algorithm>
 #include <array>
