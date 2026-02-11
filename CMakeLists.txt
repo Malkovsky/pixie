@@ -51,18 +51,20 @@ if(PIXIE_BENCHMARKS)
     )
     FetchContent_MakeAvailable(pasta_bit_vector)
 
-    if(NOT WIN32)
-        # Disable sdsl-lite's own tests/examples/tutorials
-        set(SDSL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-        set(SDSL_BUILD_TUTORIAL OFF CACHE BOOL "" FORCE)
-        set(SDSL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-        FetchContent_Declare(
-            sdsl_lite
-            GIT_REPOSITORY https://github.com/xxsds/sdsl-lite.git
-            GIT_TAG v3.0.3
-        )
-        FetchContent_MakeAvailable(sdsl_lite)
-    endif()
+    # Disable sdsl-lite's own tests/examples/tutorials
+    set(SDSL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(SDSL_BUILD_TUTORIAL OFF CACHE BOOL "" FORCE)
+    set(SDSL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        sdsl_lite
+        GIT_REPOSITORY https://github.com/xxsds/sdsl-lite.git
+        GIT_TAG v3.0.3
+        PATCH_COMMAND ${CMAKE_COMMAND}
+            -DROOT_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DSDSL_SOURCE_DIR=<SOURCE_DIR>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sdsl-lite/patch.cmake
+    )
+    FetchContent_MakeAvailable(sdsl_lite)
 endif()
 
 if(PIXIE_TESTS)
@@ -145,8 +147,7 @@ if(PIXIE_BENCHMARKS)
         PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
     target_link_libraries(bench_rmm_sdsl
         PRIVATE
-            benchmark
-            sdsl-lite)
+            benchmark)
 
     add_executable(louds_tree_benchmarks
         src/benchmarks/louds_tree_benchmarks.cpp)
