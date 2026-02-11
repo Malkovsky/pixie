@@ -450,9 +450,11 @@ TEST(LowerBoundDelta4x64, Random) {
       cnt += fl;
     }
     if (cnt < 4) {
-      ASSERT_EQ(lower_bound_delta_4x64(x.data(), y, dlt_array, dlt_scalar), cnt);
+      ASSERT_EQ(lower_bound_delta_4x64(x.data(), y, dlt_array, dlt_scalar),
+                cnt);
     } else {
-      ASSERT_GE(lower_bound_delta_4x64(x.data(), y, dlt_array, dlt_scalar), cnt);
+      ASSERT_GE(lower_bound_delta_4x64(x.data(), y, dlt_array, dlt_scalar),
+                cnt);
     }
   }
 }
@@ -473,9 +475,11 @@ TEST(LowerBoundDelta8x64, Random) {
       cnt += fl;
     }
     if (cnt < 8) {
-      ASSERT_EQ(lower_bound_delta_8x64(x.data(), y, dlt_array, dlt_scalar), cnt);
+      ASSERT_EQ(lower_bound_delta_8x64(x.data(), y, dlt_array, dlt_scalar),
+                cnt);
     } else {
-      ASSERT_GE(lower_bound_delta_8x64(x.data(), y, dlt_array, dlt_scalar), cnt);
+      ASSERT_GE(lower_bound_delta_8x64(x.data(), y, dlt_array, dlt_scalar),
+                cnt);
     }
   }
 }
