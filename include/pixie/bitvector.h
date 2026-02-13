@@ -61,10 +61,10 @@ class BitVector {
   constexpr static size_t kSuperBlockRankIntSize = 64;
   constexpr static size_t kBasicBlockRankIntSize = 16;
   constexpr static size_t kBasicBlockSize = 512;
-  constexpr static size_t kSuperBlockSize = 65536;
   constexpr static size_t kWordsPerBlock = 8;
-  constexpr static size_t kSelectSampleFrequency = 16384;
+  constexpr static size_t kSuperBlockSize = 65536;
   constexpr static size_t kBlocksPerSuperBlock = 128;
+  constexpr static size_t kSelectSampleFrequency = 16384;
 
   alignas(64) uint64_t delta_super[8];
   alignas(64) uint16_t delta_basic[32];

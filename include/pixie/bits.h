@@ -46,17 +46,17 @@ static inline const __m256i mask_first_half = _mm256_setr_epi8(
 // clang-format on
 #endif
 
-inline uint64_t first_bits_mask(size_t num) {
+static inline uint64_t first_bits_mask(size_t num) {
   return num >= 64 ? UINT64_MAX : ((1llu << num) - 1);
 }
 
 /**
  * @brief Number of 1 bits in positions 0 .. count - 1
- * @details
- * Surprisingly one cannot just do (1 << L) - 1 for
- * L > 64 to produce mask of ones of length L.
- * The best we can do with a single instruction is (1 << L) - 1 for L=8k
- * using maskz_set1.
+ * @details Assumes count
+ * < 512.
+ * @details Surprisingly one cannot just do (1 << L) - 1 for L > 64 to
+ * produce mask of ones of length L. The best we can do with a single
+ * instruction is (1 << L) - 1 for L=8k using maskz_set1.
  *
  * To make mask for arbitrary L we use shldv instuction, it doesn't
  * really matter what epi is used the recipe is the following:
@@ -70,7 +70,7 @@ inline uint64_t first_bits_mask(size_t num) {
  * The rest is standard, i.e. popcount_epi64 to perform popcount on
  * 64 bits and then reduce_add to sum the result.
  */
-uint64_t rank_512(const uint64_t* x, uint64_t count) {
+static inline uint64_t rank_512(const uint64_t* x, uint64_t count) {
 #ifdef PIXIE_AVX512_SUPPORT
 
   __m512i a = _mm512_maskz_set1_epi64((1ull << ((count >> 6))) - 1,
@@ -105,7 +105,7 @@ uint64_t rank_512(const uint64_t* x, uint64_t count) {
 /**
  * @brief Return position of @p rank 1 bit in @p x
  */
-uint64_t select_64(uint64_t x, uint64_t rank) {
+static inline uint64_t select_64(uint64_t x, uint64_t rank) {
   return _tzcnt_u64(_pdep_u64(1ull << rank, x));
 }
 
@@ -126,18 +126,34 @@ uint64_t select_64(uint64_t x, uint64_t rank) {
  * It can also be used as an alternative for linear search but i don't
  * see a proper SIMD algorithm to make it faster.
  */
-uint64_t select_512(const uint64_t* x, uint64_t rank) {
+static inline uint64_t select_512(const uint64_t* x, uint64_t rank) {
 #ifdef PIXIE_AVX512_SUPPORT
 
   __m512i res = _mm512_loadu_epi64(x);
-  alignas(64) std::array<uint64_t, 8> counts;
-  _mm512_store_epi64(counts.data(), _mm512_popcnt_epi64(res));
+  __m512i counts = _mm512_popcnt_epi64(res);
+  __m512i prefix = counts;
 
-  size_t i = 0;
-  while (i < 8 && counts[i] <= rank) {
-    rank -= counts[i++];
+  const __m512i idx_shift1 = _mm512_set_epi64(6, 5, 4, 3, 2, 1, 0, 0);
+  const __m512i idx_shift2 = _mm512_set_epi64(5, 4, 3, 2, 1, 0, 0, 0);
+  const __m512i idx_shift4 = _mm512_set_epi64(3, 2, 1, 0, 0, 0, 0, 0);
+
+  __m512i tmp = _mm512_maskz_permutexvar_epi64(0xFE, idx_shift1, prefix);
+  prefix = _mm512_add_epi64(prefix, tmp);
+  tmp = _mm512_maskz_permutexvar_epi64(0xFC, idx_shift2, prefix);
+  prefix = _mm512_add_epi64(prefix, tmp);
+  tmp = _mm512_maskz_permutexvar_epi64(0xF0, idx_shift4, prefix);
+  prefix = _mm512_add_epi64(prefix, tmp);
+
+  __mmask8 mask = _mm512_cmpgt_epu64_mask(prefix, _mm512_set1_epi64(rank));
+  uint32_t i = _tzcnt_u32(static_cast<uint32_t>(mask));
+  uint64_t prev = 0;
+  if (i != 0) {
+    __m512i idx_prev = _mm512_set1_epi64(static_cast<int64_t>(i - 1));
+    __m512i prev_vec = _mm512_permutexvar_epi64(idx_prev, prefix);
+    prev = static_cast<uint64_t>(
+        _mm_cvtsi128_si64(_mm512_castsi512_si128(prev_vec)));
   }
-  return i * 64 + select_64(x[i], rank);
+  return i * 64 + select_64(x[i], rank - prev);
 
 #else
 
@@ -156,19 +172,35 @@ uint64_t select_512(const uint64_t* x, uint64_t rank) {
  * @brief Return position of @p rank0 0 bit in @p x
  * @details select_512 with bit inversion.
  */
-uint64_t select0_512(const uint64_t* x, uint64_t rank0) {
+static inline uint64_t select0_512(const uint64_t* x, uint64_t rank0) {
 #ifdef PIXIE_AVX512_SUPPORT
 
   __m512i res = _mm512_loadu_epi64(x);
   res = _mm512_xor_epi64(res, _mm512_set1_epi64(-1));
-  alignas(64) std::array<uint64_t, 8> counts;
-  _mm512_store_epi64(counts.data(), _mm512_popcnt_epi64(res));
+  __m512i counts = _mm512_popcnt_epi64(res);
+  __m512i prefix = counts;
 
-  size_t i = 0;
-  while (i < 8 && counts[i] <= rank0) {
-    rank0 -= counts[i++];
+  const __m512i idx_shift1 = _mm512_set_epi64(6, 5, 4, 3, 2, 1, 0, 0);
+  const __m512i idx_shift2 = _mm512_set_epi64(5, 4, 3, 2, 1, 0, 0, 0);
+  const __m512i idx_shift4 = _mm512_set_epi64(3, 2, 1, 0, 0, 0, 0, 0);
+
+  __m512i tmp = _mm512_maskz_permutexvar_epi64(0xFE, idx_shift1, prefix);
+  prefix = _mm512_add_epi64(prefix, tmp);
+  tmp = _mm512_maskz_permutexvar_epi64(0xFC, idx_shift2, prefix);
+  prefix = _mm512_add_epi64(prefix, tmp);
+  tmp = _mm512_maskz_permutexvar_epi64(0xF0, idx_shift4, prefix);
+  prefix = _mm512_add_epi64(prefix, tmp);
+
+  __mmask8 mask = _mm512_cmpgt_epu64_mask(prefix, _mm512_set1_epi64(rank0));
+  uint32_t i = _tzcnt_u32(static_cast<uint32_t>(mask));
+  uint64_t prev = 0;
+  if (i != 0) {
+    __m512i idx_prev = _mm512_set1_epi64(static_cast<int64_t>(i - 1));
+    __m512i prev_vec = _mm512_permutexvar_epi64(idx_prev, prefix);
+    prev = static_cast<uint64_t>(
+        _mm_cvtsi128_si64(_mm512_castsi512_si128(prev_vec)));
   }
-  return i * 64 + select_64(~x[i], rank0);
+  return i * 64 + select_64(~x[i], rank0 - prev);
 
 #else
 
@@ -187,7 +219,7 @@ uint64_t select0_512(const uint64_t* x, uint64_t rank0) {
  * @brief Compare 4 64-bit numbers of @p x with @p y and
  * return the length of the prefix where @p y is less then @p x
  */
-uint16_t lower_bound_4x64(const uint64_t* x, uint64_t y) {
+static inline uint16_t lower_bound_4x64(const uint64_t* x, uint64_t y) {
 #ifdef PIXIE_AVX512_SUPPORT
 
   auto y_4 = _mm256_set1_epi64x(y);
@@ -236,10 +268,10 @@ uint16_t lower_bound_4x64(const uint64_t* x, uint64_t y) {
  * offsets.
  * @param delta_scalar Shared delta offset.
  */
-uint16_t lower_bound_delta_4x64(const uint64_t* x,
-                                uint64_t y,
-                                const uint64_t* delta_array,
-                                uint64_t delta_scalar) {
+static inline uint16_t lower_bound_delta_4x64(const uint64_t* x,
+                                              uint64_t y,
+                                              const uint64_t* delta_array,
+                                              uint64_t delta_scalar) {
 #ifdef PIXIE_AVX512_SUPPORT
 
   const __m256i dlt_256 = _mm256_loadu_epi64(delta_array);
@@ -290,7 +322,7 @@ uint16_t lower_bound_delta_4x64(const uint64_t* x,
  * @brief Compare 8 64-bit numbers of @p x with @p y and
  * return the length of the prefix where @p y is less then @p x
  */
-uint16_t lower_bound_8x64(const uint64_t* x, uint64_t y) {
+static inline uint16_t lower_bound_8x64(const uint64_t* x, uint64_t y) {
 #ifdef PIXIE_AVX512_SUPPORT
 
   auto y_8 = _mm512_set1_epi64(y);
@@ -336,10 +368,10 @@ uint16_t lower_bound_8x64(const uint64_t* x, uint64_t y) {
  * offsets.
  * @param delta_scalar Shared delta offset.
  */
-uint16_t lower_bound_delta_8x64(const uint64_t* x,
-                                uint64_t y,
-                                const uint64_t* delta_array,
-                                uint64_t delta_scalar) {
+static inline uint16_t lower_bound_delta_8x64(const uint64_t* x,
+                                              uint64_t y,
+                                              const uint64_t* delta_array,
+                                              uint64_t delta_scalar) {
 #ifdef PIXIE_AVX512_SUPPORT
 
   const __m512i dlt_512 = _mm512_loadu_epi64(delta_array);
@@ -591,10 +623,14 @@ void popcount_32x8(const uint8_t* x, uint8_t* result) {
 
 /**
  * @brief Calculates 32 bit ranks of every 8th bit, result is stored as 32
- * 8-bit integers.
+
+ * * 8-bit integers.
+ * @details Prefix sums are computed modulo 256 (uint8_t
+ * wraparound).
  *
  * @param x Pointer to 32 input 8-bit integers
- * @param result Pointer to store the resulting 32 8-bit integers
+ * @param
+ * result Pointer to store the resulting 32 8-bit integers
  */
 void rank_32x8(const uint8_t* x, uint8_t* result) {
 #ifdef PIXIE_AVX512_SUPPORT
