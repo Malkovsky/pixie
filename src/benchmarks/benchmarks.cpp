@@ -6,6 +6,7 @@
 // TODO: change the pasta/bit_vector usage of std::aligned_alloc
 #include <pasta/bit_vector/bit_vector.hpp>
 #endif
+#include <bit>
 #include <cstdlib>
 #include <random>
 #include <vector>
