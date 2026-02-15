@@ -8,7 +8,7 @@
  * @brief A simple struct to represent a aligned storage for a cache line.
  */
 struct alignas(64) CacheLine {
-  std::byte data[64];
+  std::array<std::byte, 64> data;
 };
 
 /**
