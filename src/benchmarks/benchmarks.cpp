@@ -85,7 +85,7 @@ static void PrepareRandomBits87p5Fill(std::span<uint64_t> bits) {
 static void BM_RankNonInterleaved(benchmark::State& state) {
   size_t n = state.range(0);
   AlignedStorage bits(n);
-  auto bits_as_words = bits.AsWords();
+  auto bits_as_words = bits.As64BitInts();
   PrepareRandomBits50pFill(bits_as_words);
   pixie::BitVector bv(bits_as_words, n);
 
@@ -100,8 +100,8 @@ static void BM_RankZeroNonInterleaved(benchmark::State& state) {
   size_t n = state.range(0);
 
   AlignedStorage bits(n);
-  PrepareRandomBits50pFill(bits.AsWords());
-  pixie::BitVector bv(bits.AsWords(), n);
+  PrepareRandomBits50pFill(bits.As64BitInts());
+  pixie::BitVector bv(bits.As64BitInts(), n);
 
   std::mt19937_64 rng(42);
   for (auto _ : state) {
@@ -114,8 +114,8 @@ static void BM_RankInterleaved(benchmark::State& state) {
   size_t n = state.range(0);
 
   AlignedStorage bits(n);
-  PrepareRandomBits50pFill(bits.AsWords());
-  pixie::BitVectorInterleaved bv(bits.AsWords(), n);
+  PrepareRandomBits50pFill(bits.As64BitInts());
+  pixie::BitVectorInterleaved bv(bits.As64BitInts(), n);
 
   std::mt19937_64 rng(42);
   for (auto _ : state) {
@@ -128,8 +128,8 @@ static void BM_SelectNonInterleaved(benchmark::State& state) {
   size_t n = state.range(0);
 
   AlignedStorage bits(n);
-  PrepareRandomBits50pFill(bits.AsWords());
-  pixie::BitVector bv(bits.AsWords(), n);
+  PrepareRandomBits50pFill(bits.As64BitInts());
+  pixie::BitVector bv(bits.As64BitInts(), n);
 
   auto max_rank = bv.rank(bv.size()) + 1;
 
@@ -144,8 +144,8 @@ static void BM_SelectZeroNonInterleaved(benchmark::State& state) {
   size_t n = state.range(0);
 
   AlignedStorage bits(n);
-  PrepareRandomBits50pFill(bits.AsWords());
-  pixie::BitVector bv(bits.AsWords(), n);
+  PrepareRandomBits50pFill(bits.As64BitInts());
+  pixie::BitVector bv(bits.As64BitInts(), n);
 
   auto max_rank0 = bv.rank0(bv.size()) + 1;
 
@@ -160,8 +160,8 @@ static void BM_RankNonInterleaved12p5PercentFill(benchmark::State& state) {
   size_t n = state.range(0);
 
   AlignedStorage bits(n);
-  PrepareRandomBits12p5Fill(bits.AsWords());
-  pixie::BitVector bv(bits.AsWords(), n);
+  PrepareRandomBits12p5Fill(bits.As64BitInts());
+  pixie::BitVector bv(bits.As64BitInts(), n);
 
   std::mt19937_64 rng(42);
   if (std::popcount(n) == 1) {
@@ -181,8 +181,8 @@ static void BM_RankZeroNonInterleaved12p5PercentFill(benchmark::State& state) {
   size_t n = state.range(0);
 
   AlignedStorage bits(n);
-  PrepareRandomBits12p5Fill(bits.AsWords());
-  pixie::BitVector bv(bits.AsWords(), n);
+  PrepareRandomBits12p5Fill(bits.As64BitInts());
+  pixie::BitVector bv(bits.As64BitInts(), n);
 
   std::mt19937_64 rng(42);
   for (auto _ : state) {
@@ -195,8 +195,8 @@ static void BM_SelectNonInterleaved12p5PercentFill(benchmark::State& state) {
   size_t n = state.range(0);
 
   AlignedStorage bits(n);
-  PrepareRandomBits12p5Fill(bits.AsWords());
-  pixie::BitVector bv(bits.AsWords(), n);
+  PrepareRandomBits12p5Fill(bits.As64BitInts());
+  pixie::BitVector bv(bits.As64BitInts(), n);
 
   auto max_rank = bv.rank(bv.size()) + 1;
 
@@ -212,8 +212,8 @@ static void BM_SelectZeroNonInterleaved12p5PercentFill(
   size_t n = state.range(0);
 
   AlignedStorage bits(n);
-  PrepareRandomBits12p5Fill(bits.AsWords());
-  pixie::BitVector bv(bits.AsWords(), n);
+  PrepareRandomBits12p5Fill(bits.As64BitInts());
+  pixie::BitVector bv(bits.As64BitInts(), n);
 
   auto max_rank0 = bv.rank0(bv.size()) + 1;
 
@@ -228,8 +228,8 @@ static void BM_RankNonInterleaved87p5PercentFill(benchmark::State& state) {
   size_t n = state.range(0);
 
   AlignedStorage bits(n);
-  PrepareRandomBits87p5Fill(bits.AsWords());
-  pixie::BitVector bv(bits.AsWords(), n);
+  PrepareRandomBits87p5Fill(bits.As64BitInts());
+  pixie::BitVector bv(bits.As64BitInts(), n);
 
   std::mt19937_64 rng(42);
   for (auto _ : state) {
@@ -242,8 +242,8 @@ static void BM_RankZeroNonInterleaved87p5PercentFill(benchmark::State& state) {
   size_t n = state.range(0);
 
   AlignedStorage bits(n);
-  PrepareRandomBits87p5Fill(bits.AsWords());
-  pixie::BitVector bv(bits.AsWords(), n);
+  PrepareRandomBits87p5Fill(bits.As64BitInts());
+  pixie::BitVector bv(bits.As64BitInts(), n);
 
   std::mt19937_64 rng(42);
   for (auto _ : state) {
@@ -256,8 +256,8 @@ static void BM_SelectNonInterleaved87p5PercentFill(benchmark::State& state) {
   size_t n = state.range(0);
 
   AlignedStorage bits(n);
-  PrepareRandomBits87p5Fill(bits.AsWords());
-  pixie::BitVector bv(bits.AsWords(), n);
+  PrepareRandomBits87p5Fill(bits.As64BitInts());
+  pixie::BitVector bv(bits.As64BitInts(), n);
 
   auto max_rank = bv.rank(bv.size()) + 1;
 
@@ -273,8 +273,8 @@ static void BM_SelectZeroNonInterleaved87p5PercentFill(
   size_t n = state.range(0);
 
   AlignedStorage bits(n);
-  PrepareRandomBits87p5Fill(bits.AsWords());
-  pixie::BitVector bv(bits.AsWords(), n);
+  PrepareRandomBits87p5Fill(bits.As64BitInts());
+  pixie::BitVector bv(bits.As64BitInts(), n);
 
   auto max_rank0 = bv.rank0(bv.size()) + 1;
 

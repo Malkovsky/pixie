@@ -1,6 +1,7 @@
 #pragma once
 
 #include <pixie/bits.h>
+#include <pixie/cache_line.h>
 
 #include <algorithm>
 #include <bit>
@@ -69,10 +70,10 @@ class BitVector {
   alignas(64) uint64_t delta_super[8];
   alignas(64) uint16_t delta_basic[32];
 
-  std::vector<uint64_t> super_block_rank_;
-  std::vector<uint16_t> basic_block_rank_;
-  std::vector<uint64_t> select1_samples_;
-  std::vector<uint64_t> select0_samples_;
+  AlignedStorage super_block_rank_;  // 64-bit global prefix sums
+  AlignedStorage basic_block_rank_;  // 16-bit local prefix sums
+  AlignedStorage select1_samples_;   // 64-bit global positions
+  AlignedStorage select0_samples_;   // 64-bit global positions
   const size_t num_bits_;
   const size_t padded_size_;
   size_t max_rank_;
@@ -89,21 +90,24 @@ class BitVector {
     // This reduces branching in select
     num_superblocks = ((num_superblocks + 7) / 8) * 8;
     size_t num_basicblocks = num_superblocks * kBlocksPerSuperBlock;
-    super_block_rank_.resize(num_superblocks);
-    basic_block_rank_.resize(num_basicblocks);
+    super_block_rank_.resize(num_superblocks * 64);
+    basic_block_rank_.resize(num_basicblocks * 16);
+
+    auto super_block_rank = super_block_rank_.As64BitInts();
+    auto basic_block_rank = basic_block_rank_.As16BitInts();
 
     uint64_t super_block_sum = 0;
     uint16_t basic_block_sum = 0;
 
-    for (size_t i = 0; i / kBasicBlockSize < basic_block_rank_.size();
+    for (size_t i = 0; i / kBasicBlockSize < basic_block_rank.size();
          i += kWordSize) {
       if (i % kSuperBlockSize == 0) {
         super_block_sum += basic_block_sum;
-        super_block_rank_[i / kSuperBlockSize] = super_block_sum;
+        super_block_rank[i / kSuperBlockSize] = super_block_sum;
         basic_block_sum = 0;
       }
       if (i % kBasicBlockSize == 0) {
-        basic_block_rank_[i / kBasicBlockSize] = basic_block_sum;
+        basic_block_rank[i / kBasicBlockSize] = basic_block_sum;
       }
       if (i / kWordSize < bits_.size()) {
         basic_block_sum += std::popcount(bits_[i / kWordSize]);
@@ -120,8 +124,23 @@ class BitVector {
     uint64_t milestone0 = kSelectSampleFrequency;
     uint64_t rank = 0;
     uint64_t rank0 = 0;
-    select1_samples_.emplace_back(0);
-    select0_samples_.emplace_back(0);
+
+    size_t num_one_samples =
+        1 + (max_rank_ + kSelectSampleFrequency - 1) / kSelectSampleFrequency;
+    size_t num_zero_samples =
+        1 + (num_bits_ - max_rank_ + kSelectSampleFrequency - 1) /
+                kSelectSampleFrequency;
+
+    select1_samples_.resize(num_one_samples * 64);
+    select0_samples_.resize(num_zero_samples * 64);
+    auto select1_samples = select1_samples_.As64BitInts();
+    auto select0_samples = select0_samples_.As64BitInts();
+
+    select1_samples[0] = 0;
+    select0_samples[0] = 0;
+
+    size_t num_zeros = 0, num_ones = 0;
+
     for (size_t i = 0; i < bits_.size(); ++i) {
       auto ones = std::popcount(bits_[i]);
       auto zeros = 64 - ones;
@@ -129,12 +148,12 @@ class BitVector {
         auto pos = select_64(bits_[i], milestone - rank - 1);
         // TODO: try including global rank into select samples to save
         //       a cache miss on global rank scan
-        select1_samples_.emplace_back((64 * i + pos) / kSuperBlockSize);
+        select1_samples[num_ones++] = (64 * i + pos) / kSuperBlockSize;
         milestone += kSelectSampleFrequency;
       }
       if (rank0 + zeros >= milestone0) {
         auto pos = select_64(~bits_[i], milestone0 - rank0 - 1);
-        select0_samples_.emplace_back((64 * i + pos) / kSuperBlockSize);
+        select0_samples[num_zeros++] = (64 * i + pos) / kSuperBlockSize;
         milestone0 += kSelectSampleFrequency;
       }
       rank += ones;
@@ -155,23 +174,26 @@ class BitVector {
    * rank of the 1-bit to locate.
    */
   uint64_t find_superblock(uint64_t rank) const {
-    uint64_t left = select1_samples_[rank / kSelectSampleFrequency];
+    auto select1_samples = select1_samples_.AsConst64BitInts();
+    auto super_block_rank = super_block_rank_.AsConst64BitInts();
 
-    while (left + 7 < super_block_rank_.size()) {
-      auto len = lower_bound_8x64(&super_block_rank_[left], rank);
+    uint64_t left = select1_samples[rank / kSelectSampleFrequency];
+
+    while (left + 7 < super_block_rank.size()) {
+      auto len = lower_bound_8x64(&super_block_rank[left], rank);
       if (len < 8) {
         return left + len - 1;
       }
       left += 8;
     }
-    if (left + 3 < super_block_rank_.size()) {
-      auto len = lower_bound_4x64(&super_block_rank_[left], rank);
+    if (left + 3 < super_block_rank.size()) {
+      auto len = lower_bound_4x64(&super_block_rank[left], rank);
       if (len < 4) {
         return left + len - 1;
       }
       left += 4;
     }
-    while (left < super_block_rank_.size() && super_block_rank_[left] < rank) {
+    while (left < super_block_rank.size() && super_block_rank[left] < rank) {
       left++;
     }
     return left - 1;
@@ -183,26 +205,29 @@ class BitVector {
    * rank of the 0-bit to locate.
    */
   uint64_t find_superblock_zeros(uint64_t rank0) const {
-    uint64_t left = select0_samples_[rank0 / kSelectSampleFrequency];
+    auto select0_samples = select0_samples_.AsConst64BitInts();
+    auto super_block_rank = super_block_rank_.AsConst64BitInts();
 
-    while (left + 7 < super_block_rank_.size()) {
-      auto len = lower_bound_delta_8x64(&super_block_rank_[left], rank0,
+    uint64_t left = select0_samples[rank0 / kSelectSampleFrequency];
+
+    while (left + 7 < super_block_rank.size()) {
+      auto len = lower_bound_delta_8x64(&super_block_rank[left], rank0,
                                         delta_super, kSuperBlockSize * left);
       if (len < 8) {
         return left + len - 1;
       }
       left += 8;
     }
-    if (left + 3 < super_block_rank_.size()) {
-      auto len = lower_bound_delta_4x64(&super_block_rank_[left], rank0,
+    if (left + 3 < super_block_rank.size()) {
+      auto len = lower_bound_delta_4x64(&super_block_rank[left], rank0,
                                         delta_super, kSuperBlockSize * left);
       if (len < 4) {
         return left + len - 1;
       }
       left += 4;
     }
-    while (left < super_block_rank_.size() &&
-           kSuperBlockSize * left - super_block_rank_[left] < rank0) {
+    while (left < super_block_rank.size() &&
+           kSuperBlockSize * left - super_block_rank[left] < rank0) {
       left++;
     }
     return left - 1;
@@ -220,9 +245,11 @@ class BitVector {
    * * 4 iterations.
    */
   uint64_t find_basicblock(uint16_t local_rank, uint64_t s_block) const {
+    auto basic_block_rank = basic_block_rank_.AsConst16BitInts();
+
     for (size_t pos = 0; pos < kBlocksPerSuperBlock; pos += 32) {
       auto count = lower_bound_32x16(
-          &basic_block_rank_[kBlocksPerSuperBlock * s_block + pos], local_rank);
+          &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank);
       if (count < 32) {
         return kBlocksPerSuperBlock * s_block + pos + count - 1;
       }
@@ -242,9 +269,10 @@ class BitVector {
    * 4 iterations.
    */
   uint64_t find_basicblock_zeros(uint16_t local_rank0, uint64_t s_block) const {
+    auto basic_block_rank = basic_block_rank_.AsConst16BitInts();
     for (size_t pos = 0; pos < kBlocksPerSuperBlock; pos += 32) {
       auto count = lower_bound_delta_32x16(
-          &basic_block_rank_[kBlocksPerSuperBlock * s_block + pos], local_rank0,
+          &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank0,
           delta_basic, kBasicBlockSize * pos);
       if (count < 32) {
         return kBlocksPerSuperBlock * s_block + pos + count - 1;
@@ -271,15 +299,18 @@ class BitVector {
    * we backoff to find_basicblock
    */
   uint64_t find_basicblock_is(uint16_t local_rank, uint64_t s_block) const {
-    auto lower = super_block_rank_[s_block];
-    auto upper = super_block_rank_[s_block + 1];
+    auto super_block_rank = super_block_rank_.AsConst64BitInts();
+    auto basic_block_rank = basic_block_rank_.AsConst16BitInts();
+
+    auto lower = super_block_rank[s_block];
+    auto upper = super_block_rank[s_block + 1];
 
     uint64_t pos = kBlocksPerSuperBlock * local_rank / (upper - lower);
     pos = pos + 16 < 32 ? 0 : (pos - 16);
     pos = pos > 96 ? 96 : pos;
     while (pos < 96) {
       auto count = lower_bound_32x16(
-          &basic_block_rank_[kBlocksPerSuperBlock * s_block + pos], local_rank);
+          &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank);
       if (count == 0) {
         return find_basicblock(local_rank, s_block);
       }
@@ -290,7 +321,7 @@ class BitVector {
     }
     pos = 96;
     auto count = lower_bound_32x16(
-        &basic_block_rank_[kBlocksPerSuperBlock * s_block + pos], local_rank);
+        &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank);
     if (count == 0) {
       return find_basicblock(local_rank, s_block);
     }
@@ -317,16 +348,19 @@ class BitVector {
    */
   uint64_t find_basicblock_is_zeros(uint16_t local_rank0,
                                     uint64_t s_block) const {
-    auto lower = kSuperBlockSize * s_block - super_block_rank_[s_block];
+    auto super_block_rank = super_block_rank_.AsConst64BitInts();
+    auto basic_block_rank = basic_block_rank_.AsConst16BitInts();
+
+    auto lower = kSuperBlockSize * s_block - super_block_rank[s_block];
     auto upper =
-        kSuperBlockSize * (s_block + 1) - super_block_rank_[s_block + 1];
+        kSuperBlockSize * (s_block + 1) - super_block_rank[s_block + 1];
 
     uint64_t pos = kBlocksPerSuperBlock * local_rank0 / (upper - lower);
     pos = pos + 16 < 32 ? 0 : (pos - 16);
     pos = pos > 96 ? 96 : pos;
     while (pos < 96) {
       auto count = lower_bound_delta_32x16(
-          &basic_block_rank_[kBlocksPerSuperBlock * s_block + pos], local_rank0,
+          &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank0,
           delta_basic, kBasicBlockSize * pos);
       if (count == 0) {
         return find_basicblock_zeros(local_rank0, s_block);
@@ -338,7 +372,7 @@ class BitVector {
     }
     pos = 96;
     auto count = lower_bound_delta_32x16(
-        &basic_block_rank_[kBlocksPerSuperBlock * s_block + pos], local_rank0,
+        &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank0,
         delta_basic, kBasicBlockSize * pos);
     if (count == 0) {
       return find_basicblock_zeros(local_rank0, s_block);
@@ -389,10 +423,14 @@ class BitVector {
     if (pos >= bits_.size() * kWordSize) [[unlikely]] {
       return max_rank_;
     }
+
+    auto super_block_rank = super_block_rank_.AsConst64BitInts();
+    auto basic_block_rank = basic_block_rank_.AsConst16BitInts();
+
     uint64_t b_block = pos / kBasicBlockSize;
     uint64_t s_block = pos / kSuperBlockSize;
     // Precomputed rank
-    uint64_t result = super_block_rank_[s_block] + basic_block_rank_[b_block];
+    uint64_t result = super_block_rank[s_block] + basic_block_rank[b_block];
     // Basic block tail
     result += rank_512(&bits_[b_block * kWordsPerBlock],
                        pos - (b_block * kBasicBlockSize));
@@ -426,10 +464,13 @@ class BitVector {
     if (rank == 0) [[unlikely]] {
       return 0;
     }
+    auto super_block_rank = super_block_rank_.AsConst64BitInts();
+    auto basic_block_rank = basic_block_rank_.AsConst16BitInts();
+
     uint64_t s_block = find_superblock(rank);
-    rank -= super_block_rank_[s_block];
+    rank -= super_block_rank[s_block];
     auto pos = find_basicblock_is(rank, s_block);
-    rank -= basic_block_rank_[pos];
+    rank -= basic_block_rank[pos];
     pos *= kWordsPerBlock;
 
     // Final search
@@ -458,11 +499,14 @@ class BitVector {
     if (rank0 == 0) [[unlikely]] {
       return 0;
     }
+    auto super_block_rank = super_block_rank_.AsConst64BitInts();
+    auto basic_block_rank = basic_block_rank_.AsConst16BitInts();
+
     uint64_t s_block = find_superblock_zeros(rank0);
-    rank0 -= kSuperBlockSize * s_block - super_block_rank_[s_block];
+    rank0 -= kSuperBlockSize * s_block - super_block_rank[s_block];
     auto pos = find_basicblock_is_zeros(rank0, s_block);
     auto pos_in_super_block = pos & (kBlocksPerSuperBlock - 1);
-    rank0 -= kBasicBlockSize * pos_in_super_block - basic_block_rank_[pos];
+    rank0 -= kBasicBlockSize * pos_in_super_block - basic_block_rank[pos];
     pos *= kWordsPerBlock;
 
     // Final search
