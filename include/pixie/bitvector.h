@@ -139,7 +139,7 @@ class BitVector {
     select1_samples[0] = 0;
     select0_samples[0] = 0;
 
-    size_t num_zeros = 0, num_ones = 0;
+    size_t num_zeros = 1, num_ones = 1;
 
     for (size_t i = 0; i < bits_.size(); ++i) {
       auto ones = std::popcount(bits_[i]);
