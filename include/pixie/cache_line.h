@@ -2,8 +2,10 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <vector>
+
 
 /**
  * @brief A simple struct to represent a aligned storage for a cache line.
