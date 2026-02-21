@@ -32,6 +32,15 @@
             }
         },
         {
+            "name": "benchmarks-rwdi",
+            "displayName": "All Benchmarks RelWithDebInfo",
+            "binaryDir": "${sourceDir}/build/release-with-deb",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "PIXIE_BENCHMARKS": "ON"
+            }
+        },
+        {
             "name": "docs",
             "displayName": "Docs",
             "binaryDir": "${sourceDir}/build/docs",

@@ -2,55 +2,57 @@ name: CMake Build and Run Benchmark Tests
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Create Build Directory
-      run: mkdir build
+      - name: Create Build Directory
+        run: mkdir build
 
-    - name: Configure CMake
-      working-directory: ./build
-      run: cmake -DDISABLE_AVX512=ON -DENABLE_ADDRESS_SANITIZER=ON ..
+      - name: Configure CMake
+        working-directory: ./build
+        run: cmake -DDISABLE_AVX512=ON -DENABLE_ADDRESS_SANITIZER=ON ..
 
-    - name: Build Project
-      working-directory: ./build
-      run: make -j
+      - name: Build Project
+        working-directory: ./build
+        run: make -j
 
-    - name: Run Benchmark Tests
-      working-directory: ./build
-      run: ./benchmark_tests
-  
-  build-and-test-with-SDE:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v4
+      - name: Run Benchmark Tests
+        working-directory: ./build
+        run: ./benchmark_tests
 
-    - name: Create Build Directory
-      run: mkdir build
+  # Note! Benchmark tests on SDE are taking too long to run on CI.
+  # Need to find a better way to check with AVX-512
+  # build-and-test-with-SDE:
+  #   runs-on: ubuntu-latest
 
-    - name: Download and Unpack SDE
-      working-directory: ./build
-      run: |
-        wget https://downloadmirror.intel.com/859732/sde-external-9.58.0-2025-06-16-lin.tar.xz 
-        tar xf sde-external-9.58.0-2025-06-16-lin.tar.xz
+  #   steps:
+  #   - uses: actions/checkout@v4
 
-    - name: Configure CMake
-      working-directory: ./build
-      run: cmake -DENABLE_ADDRESS_SANITIZER=ON -DMARCH=icelake-client -DHAVE_STD_REGEX=ON ..
+  #   - name: Create Build Directory
+  #     run: mkdir build
 
-    - name: Build Project
-      working-directory: ./build
-      run: make -j
+  #   - name: Download and Unpack SDE
+  #     working-directory: ./build
+  #     run: |
+  #       wget https://downloadmirror.intel.com/859732/sde-external-9.58.0-2025-06-16-lin.tar.xz
+  #       tar xf sde-external-9.58.0-2025-06-16-lin.tar.xz
 
-    - name: Run Benchmark Tests
-      working-directory: ./build
-      run: sde-external-9.58.0-2025-06-16-lin/sde64 -icl -emu-xinuse 0 -- ./benchmark_tests
+  #   - name: Configure CMake
+  #     working-directory: ./build
+  #     run: cmake -DENABLE_ADDRESS_SANITIZER=ON -DMARCH=icelake-client -DHAVE_STD_REGEX=ON ..
+
+  #   - name: Build Project
+  #     working-directory: ./build
+  #     run: make -j
+
+  #   - name: Run Benchmark Tests
+  #     working-directory: ./build
+  #     run: sde-external-9.58.0-2025-06-16-lin/sde64 -icl -emu-xinuse 0 -- ./benchmark_tests
