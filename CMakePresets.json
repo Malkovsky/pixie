@@ -32,10 +32,11 @@
             }
         },
         {
-            "name": "benchmarks-rwdi",
+            "name": "benchmarks-diagnostic",
             "displayName": "All Benchmarks RelWithDebInfo",
             "binaryDir": "${sourceDir}/build/release-with-deb",
             "cacheVariables": {
+                "BENCHMARK_ENABLE_LIBPFM": "ON",
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo",
                 "PIXIE_BENCHMARKS": "ON"
             }
@@ -60,6 +61,11 @@
             "name": "release",
             "displayName": "Build Release",
             "configurePreset": "release"
+        },
+        {
+            "name": "benchmarks-diagnostic",
+            "displayName": "Build ReleaseWithDebugInfo",
+            "configurePreset": "benchmarks-diagnostic"
         },
         {
             "name": "docs",
