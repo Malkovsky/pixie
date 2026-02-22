@@ -1,6 +1,6 @@
 # Pixie
 
-<img src="https://raw.githubusercontent.com/Malkovsky/pixie/master/src/docs/images/logo.png" alt="Pixie logo" width="256" style="float: left; margin-right: 16px; margin-bottom: 8px;" />
+<img src="https://raw.githubusercontent.com/Malkovsky/pixie/master/src/docs/images/logo.png" alt="Pixie logo" width="256" align="left" style="float: left; margin-right: 16px; margin-bottom: 8px;" />
 
 `pixie` is a **succinct data structures library**.
 
