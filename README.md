@@ -3,7 +3,7 @@
 <img src="https://raw.githubusercontent.com/Malkovsky/pixie/master/src/docs/images/logo.png" alt="Pixie logo" width="256" align="left" style="float: left; margin-right: 16px; margin-bottom: 8px;" />
 
 [![Build & Test](https://github.com/Malkovsky/pixie/actions/workflows/build-test.yml/badge.svg?branch=main)](https://github.com/Malkovsky/pixie/actions/workflows/build-test.yml)
-
+[![codecov](https://codecov.io/github/Malkovsky/pixie/graph/badge.svg?token=413VBX7M2U)](https://codecov.io/github/Malkovsky/pixie)
 
 `pixie` is a **succinct data structures library**.
 
@@ -133,7 +133,7 @@ For visualization, write the JSON output to a file using `--benchmark_out=<file>
 ## Example Usage
 
 ```cpp
-#include "bitvector.h"
+#include <pixie/bitvector.h>
 #include <vector>
 #include <iostream>
 
@@ -150,7 +150,7 @@ int main() {
 ```
 
 ```cpp
-#include "rmm_tree.h"
+#include <pixie/rmm_tree.h>
 #include <string>
 #include <iostream>
 

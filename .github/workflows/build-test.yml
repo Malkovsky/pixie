@@ -1,4 +1,4 @@
-name: unittests
+name: Tests (Asan)
 
 on:
   push:
@@ -31,6 +31,15 @@ jobs:
     - name: Run LOUDS Tree Tests
       working-directory: ./build
       run: ./louds_tree_tests
+
+    - name: Run Benchmark Tests
+      working-directory: ./build
+      run: ./benchmark_tests
+
+    #   TODO: fix RmM tests under Asan
+    # - name: Run RmM Tree Tests
+    #   working-directory: ./build
+    #   run: ./test_rmm
   
   build-and-test-with-SDE:
     runs-on: ubuntu-latest

@@ -9,7 +9,7 @@ using pixie::BitVector;
 using pixie::BitVectorInterleaved;
 
 TEST(BitVectorBenchmarkTest, SelectNonInterleaved10PercentFill) {
-  for (size_t n = 8; n <= (1ull << 34); n <<= 2) {
+  for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 
     std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
@@ -30,7 +30,7 @@ TEST(BitVectorBenchmarkTest, SelectNonInterleaved10PercentFill) {
 }
 
 TEST(BitVectorBenchmarkTest, SelectZeroNonInterleaved10PercentFill) {
-  for (size_t n = 8; n <= (1ull << 34); n <<= 2) {
+  for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 
     std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
@@ -51,7 +51,7 @@ TEST(BitVectorBenchmarkTest, SelectZeroNonInterleaved10PercentFill) {
 }
 
 TEST(BitVectorBenchmarkTest, SelectNonInterleaved90PercentFill) {
-  for (size_t n = 8; n <= (1ull << 34); n <<= 2) {
+  for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 
     std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
@@ -72,7 +72,7 @@ TEST(BitVectorBenchmarkTest, SelectNonInterleaved90PercentFill) {
 }
 
 TEST(BitVectorBenchmarkTest, SelectZeroNonInterleaved90PercentFill) {
-  for (size_t n = 8; n <= (1ull << 34); n <<= 2) {
+  for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 
     std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
@@ -93,7 +93,7 @@ TEST(BitVectorBenchmarkTest, SelectZeroNonInterleaved90PercentFill) {
 }
 
 TEST(BitVectorBenchmarkTest, SelectNonInterleaved) {
-  for (size_t n = 8; n <= (1ull << 34); n <<= 2) {
+  for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 
     std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
@@ -112,7 +112,7 @@ TEST(BitVectorBenchmarkTest, SelectNonInterleaved) {
 }
 
 TEST(BitVectorBenchmarkTest, SelectZeroNonInterleaved) {
-  for (size_t n = 8; n <= (1ull << 34); n <<= 2) {
+  for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 
     std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);

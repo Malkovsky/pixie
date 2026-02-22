@@ -60,6 +60,16 @@
                 "PIXIE_BENCHMARKS": "OFF",
                 "PIXIE_COVERAGE": "ON"
             }
+        },
+        {
+            "name": "asan",
+            "displayName": "AddressSanitizer",
+            "binaryDir": "${sourceDir}/build/asan",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "PIXIE_BENCHMARKS": "OFF",
+                "ENABLE_ADDRESS_SANITIZER": "ON"
+            }
         }
     ],
     "buildPresets": [
@@ -90,6 +100,11 @@
             "name": "coverage",
             "displayName": "Build Coverage",
             "configurePreset": "coverage"
+        },
+        {
+            "name": "asan",
+            "displayName": "Build AddressSanitizer",
+            "configurePreset": "asan"
         }
     ]
 }
