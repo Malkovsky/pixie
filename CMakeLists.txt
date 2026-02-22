@@ -27,12 +27,31 @@ endif()
 # ---------------------------------------------------------------------------
 option(PIXIE_TESTS "Build unit tests" ON)
 option(PIXIE_BENCHMARKS "Build benchmarks (includes comparison benchmarks against third-party libraries)" OFF)
+option(PIXIE_DIAGNOSTICS "Include diagnostic logs" OFF)
 option(PIXIE_DOCS "Build Doxygen documentation" OFF)
+
+if(PIXIE_DIAGNOSTICS)
+    add_compile_definitions(PIXIE_DIAGNOSTICS)
+    set(PIXIE_DIAGNOSTICS_LIBS spdlog::spdlog_header_only)
+endif()
 
 # ---------------------------------------------------------------------------
 # Dependencies (fetched only when needed)
 # ---------------------------------------------------------------------------
 include(FetchContent)
+
+if(PIXIE_DIAGNOSTICS)
+    set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(SPDLOG_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+    set(SPDLOG_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(SPDLOG_INSTALL OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        spdlog
+        GIT_REPOSITORY https://github.com/gabime/spdlog.git
+        GIT_TAG v1.14.1
+    )
+    FetchContent_MakeAvailable(spdlog)
+endif()
 
 if(PIXIE_BENCHMARKS)
     FetchContent_Declare(
@@ -91,7 +110,8 @@ if(PIXIE_TESTS)
         PUBLIC include)
     target_link_libraries(unittests
         gtest
-        gtest_main)
+        gtest_main
+        ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(benchmark_tests
         src/tests/benchmark_tests.cpp)
@@ -99,7 +119,8 @@ if(PIXIE_TESTS)
         PUBLIC include)
     target_link_libraries(benchmark_tests
         gtest
-        gtest_main)
+        gtest_main
+        ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(test_rmm
         src/tests/test_rmm.cpp)
@@ -108,7 +129,8 @@ if(PIXIE_TESTS)
         PUBLIC include/misc)
     target_link_libraries(test_rmm
         gtest
-        gtest_main)
+        gtest_main
+        ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(louds_tree_tests
         src/tests/louds_tree_tests.cpp)
@@ -116,7 +138,8 @@ if(PIXIE_TESTS)
         PUBLIC include)
     target_link_libraries(louds_tree_tests
         gtest
-        gtest_main)
+        gtest_main
+        ${PIXIE_DIAGNOSTICS_LIBS})
 endif()
 
 # ---------------------------------------------------------------------------
@@ -130,7 +153,8 @@ if(PIXIE_BENCHMARKS)
     target_link_libraries(benchmarks
         benchmark
         benchmark_main
-        pasta_bit_vector)
+        pasta_bit_vector
+        ${PIXIE_DIAGNOSTICS_LIBS})
     target_compile_definitions(benchmarks PRIVATE PIXIE_THIRD_PARTY_BENCHMARKS)
 
     add_executable(bench_rmm
@@ -138,7 +162,8 @@ if(PIXIE_BENCHMARKS)
     target_include_directories(bench_rmm
         PUBLIC include)
     target_link_libraries(bench_rmm
-        benchmark)
+        benchmark
+        ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(bench_rmm_sdsl
         src/benchmarks/bench_rmm_sdsl.cpp)
@@ -147,7 +172,8 @@ if(PIXIE_BENCHMARKS)
         PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
     target_link_libraries(bench_rmm_sdsl
         PRIVATE
-            benchmark)
+            benchmark
+            ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(louds_tree_benchmarks
         src/benchmarks/louds_tree_benchmarks.cpp)
@@ -155,7 +181,8 @@ if(PIXIE_BENCHMARKS)
         PUBLIC include)
     target_link_libraries(louds_tree_benchmarks
         benchmark
-        benchmark_main)
+        benchmark_main
+        ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(alignment_comparison
         src/benchmarks/alignment_comparison.cpp)
@@ -163,7 +190,8 @@ if(PIXIE_BENCHMARKS)
         PUBLIC include)
     target_link_libraries(alignment_comparison
         benchmark
-        benchmark_main)
+        benchmark_main
+        ${PIXIE_DIAGNOSTICS_LIBS})
 endif()
 
 # ---------------------------------------------------------------------------

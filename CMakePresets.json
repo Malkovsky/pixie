@@ -38,6 +38,7 @@
             "cacheVariables": {
                 "BENCHMARK_ENABLE_LIBPFM": "ON",
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "PIXIE_DIAGNOSTICS": "ON",
                 "PIXIE_BENCHMARKS": "ON"
             }
         },

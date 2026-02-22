@@ -1,24 +1,31 @@
-# pixie
+# Pixie
+
+<img src="src/docs/images/logo.png" alt="Pixie logo" width="256" align="left" style="float: left; margin-right: 16px; margin-bottom: 8px;" />
 
 `pixie` is a **succinct data structures library**.
+
+<br clear="left" />
+
 ---
 
 ## Features
 
 * **BitVector**
-  * Data structure with 3.61% overhead supporting rank and select for 1 bits. Select support for 0 bits require additional 0.39%, currently not implemented
+  * Data structure with 3.61% overhead supporting rank and select for 1 bits.
   * Supports:
     * `rank(i)`: number of set bits (`1`s) up to position `i`.
     * `select(k)`: position of the `k`-th set bit.
-  * Implementation mainly follows [1] with SIMD optimizations similar to [2] 
-  * AVX-512 support is mandatory for now and thus will not compile without it.
+    * Similar operations `rank0/select0` for `0`.
+  * Implementation mainly follows [1] with SIMD optimizations similar to [2]
+  * Optimized via AVX-512/AVX-2, for large binary sequences performance is I/O bounded.
+* **RmMTree**
+  * Implementation of a range min-max tree, it supports `rank`, `select` and `excess`-related operations allowing for a fast navigation in DFUDS/BP trees.
 ---
 
 ## Requirements
 
 * C++20
-* Compiler with AVX-512 support recommended for best performance.
-* [CMake](https://cmake.org/) ≥ 3.15.
+* [CMake](https://cmake.org/) ≥ 3.18.
 
 ---
 
@@ -27,57 +34,78 @@
 ```bash
 git clone https://github.com/Malkovsky/pixie.git
 cd pixie
-mkdir build && cd build
-cmake ..
-make -j
+cmake --preset release
+cmake --build --preset release
 ```
 
-This will build the library along with benchmarks and tests.
+Manual alternative:
+
+```bash
+mkdir -p build/release
+cmake -B build/release -DCMAKE_BUILD_TYPE=Release
+cmake --build build/release -j
+```
+
+Tests are enabled by default (`PIXIE_TESTS=ON`). Benchmarks are opt-in; enable with `-DPIXIE_BENCHMARKS=ON` or configure with the `benchmarks-all` preset, you can use `benchmark-diagnostic` preset for performance diagnostics (Release with debug info + performance counters support). 
 
 ---
 
 ## Running Tests
 
-After building:
+After building with presets, binaries are located in `build/release`.
 
 ### BitVector
 
 ```bash
-./unittests
+./build/release/unittests
 ```
 
 ### RmM Tree
 
 ```bash
-./test_rmm
+./build/release/test_rmm
 ```
 
 ---
 
 ## Running Benchmarks
 
+Before running benchmarks, configure with presets:
+
+```bash
+cmake --preset benchmarks-all
+cmake --build --preset release
+```
+
+For a RelWithDebInfo diagnostic build, use:
+
+```bash
+cmake --preset benchmarks-diagnostic
+cmake --build --preset release
+```
+
 ### BitVector
 
 Benchmarks are random 50/50 0-1 bitvectors up to $2^{34}$ bits.
 
 ```bash
-./benchmarks
+./build/release/benchmarks
 ```
 
 ### RmM Tree
 
 ```bash
-./bench_rmm
+./build/release/bench_rmm
 ```
 
-For comparison with range min-max tree implementation from [sdsl-lite](https://github.com/simongog/sdsl-lite) (Release build required: `cmake .. -DCMAKE_BUILD_TYPE=Release`):
+For comparison with range min-max tree implementation from [sdsl-lite](https://github.com/simongog/sdsl-lite) (Release build required; use the release preset or `-DCMAKE_BUILD_TYPE=Release`):
 
 ```bash
 sudo cpupower frequency-set --governor performance
-./bench_rmm_sdsl --benchmark_out=rmm_bench_sdsl.json
+./build/release/bench_rmm_sdsl --benchmark_out=rmm_bench_sdsl.json
 ```
 
-For visualization, write the JSON output to a file using `--benchmark_out=<file>` (e.g. `./bench_rmm --benchmark_out=rmm_bench.json`) and plot it with `misc/plot_rmm.py` (add `--sdsl-json rmm_bench_sdsl.json` for comparison).
+For visualization, write the JSON output to a file using `--benchmark_out=<file>` (e.g. `./build/release/bench_rmm --benchmark_out=rmm_bench.json`) and plot it with `scripts/plot_rmm.py` (add `--sdsl-json rmm_bench_sdsl.json` for comparison).
 
 ---
 

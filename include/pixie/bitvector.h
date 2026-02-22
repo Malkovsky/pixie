@@ -10,6 +10,10 @@
 #include <string>
 #include <vector>
 
+#ifdef PIXIE_DIAGNOSTICS
+#include <spdlog/spdlog.h>
+#endif
+
 namespace pixie {
 
 /**
@@ -381,6 +385,55 @@ class BitVector {
   }
 
  public:
+#ifdef PIXIE_DIAGNOSTICS
+  struct DiagnosticsBytes {
+    size_t source_bitvector_bytes = 0;
+    size_t super_block_rank_bytes = 0;
+    size_t basic_block_rank_bytes = 0;
+    size_t select1_samples_bytes = 0;
+    size_t select0_samples_bytes = 0;
+    size_t total_bytes = 0;
+  };
+
+  /**
+   * @brief Returns the number of bytes used by each internal component.
+   */
+  DiagnosticsBytes diagnostics_bytes() const {
+    DiagnosticsBytes result;
+    result.source_bitvector_bytes = (num_bits_ + 7) / 8;
+    result.super_block_rank_bytes = super_block_rank_.AsConstBytes().size();
+    result.basic_block_rank_bytes = basic_block_rank_.AsConstBytes().size();
+    result.select1_samples_bytes = select1_samples_.AsConstBytes().size();
+    result.select0_samples_bytes = select0_samples_.AsConstBytes().size();
+    result.total_bytes = result.super_block_rank_bytes +
+                         result.basic_block_rank_bytes +
+                         result.select1_samples_bytes +
+                         result.select0_samples_bytes;
+    return result;
+  }
+
+  /**
+   * @brief Log memory usage of internal components.
+   */
+  void memory_report() const {
+    const auto diagnostics = diagnostics_bytes();
+    const double source_bytes =
+        static_cast<double>(diagnostics.source_bitvector_bytes);
+    const auto log_bytes = [&](std::string_view label, size_t bytes) {
+      const double percentage =
+          source_bytes > 0.0 ? 100.0 * static_cast<double>(bytes) / source_bytes
+                             : 0.0;
+      spdlog::info("BitVector {}: {} bytes ({:.2f}% of source)", label, bytes,
+                   percentage);
+    };
+    log_bytes("source_bitvector", diagnostics.source_bitvector_bytes);
+    log_bytes("super_block_rank", diagnostics.super_block_rank_bytes);
+    log_bytes("basic_block_rank", diagnostics.basic_block_rank_bytes);
+    log_bytes("select1_samples", diagnostics.select1_samples_bytes);
+    log_bytes("select0_samples", diagnostics.select0_samples_bytes);
+    log_bytes("total", diagnostics.total_bytes);
+  }
+#endif
   /**
    * @brief Construct from an external array of 64-bit words.
    * @param

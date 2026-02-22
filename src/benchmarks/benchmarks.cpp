@@ -89,6 +89,9 @@ static void BM_RankNonInterleaved(benchmark::State& state) {
   auto bits_as_words = bits.As64BitInts();
   PrepareRandomBits50pFill(bits_as_words);
   pixie::BitVector bv(bits_as_words, n);
+#ifdef PIXIE_DIAGNOSTICS
+  bv.memory_report();
+#endif
 
   std::mt19937_64 rng(42);
   for (auto _ : state) {
