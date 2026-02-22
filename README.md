@@ -20,6 +20,7 @@
   * Optimized via AVX-512/AVX-2, for large binary sequences performance is I/O bounded.
 * **RmMTree**
   * Implementation of a range min-max tree, it supports `rank`, `select` and `excess`-related operations allowing for a fast navigation in DFUDS/BP trees.
+  
 ---
 
 ## Requirements
