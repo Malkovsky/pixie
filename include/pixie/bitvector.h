@@ -405,10 +405,9 @@ class BitVector {
     result.basic_block_rank_bytes = basic_block_rank_.AsConstBytes().size();
     result.select1_samples_bytes = select1_samples_.AsConstBytes().size();
     result.select0_samples_bytes = select0_samples_.AsConstBytes().size();
-    result.total_bytes = result.super_block_rank_bytes +
-                         result.basic_block_rank_bytes +
-                         result.select1_samples_bytes +
-                         result.select0_samples_bytes;
+    result.total_bytes =
+        result.super_block_rank_bytes + result.basic_block_rank_bytes +
+        result.select1_samples_bytes + result.select0_samples_bytes;
     return result;
   }
 
