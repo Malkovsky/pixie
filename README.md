@@ -4,6 +4,7 @@
 
 [![Build & Test](https://github.com/Malkovsky/pixie/actions/workflows/build-test.yml/badge.svg?branch=main)](https://github.com/Malkovsky/pixie/actions/workflows/build-test.yml)
 [![codecov](https://codecov.io/github/Malkovsky/pixie/graph/badge.svg?token=413VBX7M2U)](https://codecov.io/github/Malkovsky/pixie)
+[![Documentation](https://img.shields.io/badge/docs-doxygen-green.svg)](https://malkovsky.github.io/pixie/)
 
 `pixie` is a **succinct data structures library**.
 
