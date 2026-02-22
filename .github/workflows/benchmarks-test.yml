@@ -1,4 +1,4 @@
-name: CMake Build and Run Benchmark Tests
+name: Benchmark Tests
 
 on:
   push:

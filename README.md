@@ -2,6 +2,9 @@
 
 <img src="https://raw.githubusercontent.com/Malkovsky/pixie/master/src/docs/images/logo.png" alt="Pixie logo" width="256" align="left" style="float: left; margin-right: 16px; margin-bottom: 8px;" />
 
+[![Build & Test](https://github.com/Malkovsky/pixie/actions/workflows/build-test.yml/badge.svg?branch=main)](https://github.com/Malkovsky/pixie/actions/workflows/build-test.yml)
+
+
 `pixie` is a **succinct data structures library**.
 
 <br clear="left" />
@@ -65,6 +68,23 @@ After building with presets, binaries are located in `build/release`.
 
 ```sh
 ./build/release/test_rmm
+```
+
+---
+
+## Coverage
+
+Configure a coverage build with GCC (benchmarks disabled):
+
+```sh
+cmake --preset coverage
+cmake --build --preset coverage
+```
+
+Run tests and generate the gcov text report:
+
+```sh
+./scripts/coverage_report.sh
 ```
 
 ---

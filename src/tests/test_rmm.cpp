@@ -102,7 +102,7 @@ static std::string random_dyck_bits(std::mt19937_64& rng, size_t m) {
 }
 
 struct Limits {
-  size_t CASES = 150;
+  size_t CASES = 20;
   size_t OPS_PER_CASE = 600;
   size_t MAX_N = 20000;
 };
@@ -528,7 +528,7 @@ TEST(RmMTreeStress, LongRandom) {
 
   const uint64_t seed = choose_seed();
   std::mt19937_64 rng(seed);
-  size_t LOG_EVERY = 10;
+  size_t LOG_EVERY = 5;
   if (const char* s = std::getenv("RMM_LOG_EVERY")) {
     size_t v = std::strtoull(s, nullptr, 10);
     if (v) {

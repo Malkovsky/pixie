@@ -1,0 +1,35 @@
+name: coverage
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Create Build Directory
+      run: mkdir build
+
+    - name: Run coverage
+      run: ./scripts/coverage_report.sh
+
+    - name: Upload to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        files: build/coverage/coverage.txt
+        flags: gcov
+        fail_ci_if_error: false
+
+    - name: Upload coverage artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-gcov
+        path: |
+          build/coverage/coverage.txt
+          build/coverage/*.gcov

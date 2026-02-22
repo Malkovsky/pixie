@@ -50,6 +50,16 @@
                 "CMAKE_BUILD_TYPE": "Release",
                 "PIXIE_DOCS": "ON"
             }
+        },
+        {
+            "name": "coverage",
+            "displayName": "Coverage",
+            "binaryDir": "${sourceDir}/build/coverage",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "PIXIE_BENCHMARKS": "OFF",
+                "PIXIE_COVERAGE": "ON"
+            }
         }
     ],
     "buildPresets": [
@@ -75,6 +85,11 @@
             "targets": [
                 "docs"
             ]
+        },
+        {
+            "name": "coverage",
+            "displayName": "Build Coverage",
+            "configurePreset": "coverage"
         }
     ]
 }

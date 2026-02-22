@@ -22,6 +22,14 @@ if(ENABLE_ADDRESS_SANITIZER)
     message(STATUS "AddressSanitizer is ON")
 endif()
 
+option(PIXIE_COVERAGE "Enable coverage instrumentation" OFF)
+if(PIXIE_COVERAGE)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g --coverage")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --coverage")
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} --coverage")
+    message(STATUS "Coverage instrumentation is ON")
+endif()
+
 # ---------------------------------------------------------------------------
 # Build options
 # ---------------------------------------------------------------------------
