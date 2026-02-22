@@ -1,6 +1,6 @@
 # Pixie
 
-<img src="src/docs/images/logo.png" alt="Pixie logo" width="256" align="left" style="float: left; margin-right: 16px; margin-bottom: 8px;" />
+<img src="https://raw.githubusercontent.com/Malkovsky/pixie/master/src/docs/images/logo.png" alt="Pixie logo" width="256" style="float: left; margin-right: 16px; margin-bottom: 8px;" />
 
 `pixie` is a **succinct data structures library**.
 
@@ -32,7 +32,7 @@
 
 ## Build Instructions
 
-```bash
+```sh
 git clone https://github.com/Malkovsky/pixie.git
 cd pixie
 cmake --preset release
@@ -41,7 +41,7 @@ cmake --build --preset release
 
 Manual alternative:
 
-```bash
+```sh
 mkdir -p build/release
 cmake -B build/release -DCMAKE_BUILD_TYPE=Release
 cmake --build build/release -j
@@ -57,13 +57,13 @@ After building with presets, binaries are located in `build/release`.
 
 ### BitVector
 
-```bash
+```sh
 ./build/release/unittests
 ```
 
 ### RmM Tree
 
-```bash
+```sh
 ./build/release/test_rmm
 ```
 
@@ -73,14 +73,14 @@ After building with presets, binaries are located in `build/release`.
 
 Before running benchmarks, configure with presets:
 
-```bash
+```sh
 cmake --preset benchmarks-all
 cmake --build --preset release
 ```
 
 For a RelWithDebInfo diagnostic build, use:
 
-```bash
+```sh
 cmake --preset benchmarks-diagnostic
 cmake --build --preset release
 ```
@@ -89,13 +89,13 @@ cmake --build --preset release
 
 Benchmarks are random 50/50 0-1 bitvectors up to $2^{34}$ bits.
 
-```bash
+```sh
 ./build/release/benchmarks
 ```
 
 ### RmM Tree
 
-```bash
+```sh
 ./build/release/bench_rmm
 ```
 
