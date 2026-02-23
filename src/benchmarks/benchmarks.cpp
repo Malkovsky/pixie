@@ -293,89 +293,89 @@ BENCHMARK(BM_RankInterleaved)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
     ->Range(8, 1ull << 34)
-    ->Iterations(100000)
-    ->Repetitions(100);
+    ->Iterations(10000000)
+    ->Repetitions(10);
 
 BENCHMARK(BM_RankNonInterleaved)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
     ->Range(8, 1ull << 34)
-    ->Iterations(100000)
-    ->Repetitions(100);
+    ->Iterations(10000000)
+    ->Repetitions(10);
 
 BENCHMARK(BM_RankZeroNonInterleaved)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
     ->Range(8, 1ull << 34)
-    ->Iterations(100000)
-    ->Repetitions(100);
+    ->Iterations(10000000)
+    ->Repetitions(10);
 
 BENCHMARK(BM_SelectNonInterleaved)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
     ->Range(8, 1ull << 34)
-    ->Iterations(100000)
-    ->Repetitions(100);
+    ->Iterations(5000000)
+    ->Repetitions(10);
 
 BENCHMARK(BM_SelectZeroNonInterleaved)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
     ->Range(8, 1ull << 34)
-    ->Iterations(100000)
-    ->Repetitions(100);
+    ->Iterations(5000000)
+    ->Repetitions(10);
 
 BENCHMARK(BM_RankNonInterleaved12p5PercentFill)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
     ->Range(8, 1ull << 34)
-    ->Iterations(100000)
-    ->Repetitions(100);
+    ->Iterations(10000000)
+    ->Repetitions(10);
 
 BENCHMARK(BM_RankZeroNonInterleaved12p5PercentFill)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
     ->Range(8, 1ull << 34)
-    ->Iterations(100000)
-    ->Repetitions(100);
+    ->Iterations(10000000)
+    ->Repetitions(10);
 
 BENCHMARK(BM_SelectNonInterleaved12p5PercentFill)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
     ->Range(8, 1ull << 34)
-    ->Iterations(100000)
-    ->Repetitions(100);
+    ->Iterations(5000000)
+    ->Repetitions(10);
 
 BENCHMARK(BM_SelectZeroNonInterleaved12p5PercentFill)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
     ->Range(8, 1ull << 34)
-    ->Iterations(100000)
-    ->Repetitions(100);
+    ->Iterations(5000000)
+    ->Repetitions(10);
 
 BENCHMARK(BM_RankNonInterleaved87p5PercentFill)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
     ->Range(8, 1ull << 34)
-    ->Iterations(100000)
-    ->Repetitions(100);
+    ->Iterations(10000000)
+    ->Repetitions(10);
 
 BENCHMARK(BM_RankZeroNonInterleaved87p5PercentFill)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
     ->Range(8, 1ull << 34)
-    ->Iterations(100000)
-    ->Repetitions(100);
+    ->Iterations(10000000)
+    ->Repetitions(10);
 
 BENCHMARK(BM_SelectNonInterleaved87p5PercentFill)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
     ->Range(8, 1ull << 34)
-    ->Iterations(100000)
-    ->Repetitions(100);
+    ->Iterations(5000000)
+    ->Repetitions(10);
 
 BENCHMARK(BM_SelectZeroNonInterleaved87p5PercentFill)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
     ->Range(8, 1ull << 34)
-    ->Iterations(100000)
-    ->Repetitions(100);
+    ->Iterations(5000000)
+    ->Repetitions(10);
