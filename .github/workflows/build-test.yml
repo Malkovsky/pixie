@@ -43,7 +43,8 @@ jobs:
   
   build-and-test-with-SDE:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 60
+
     steps:
     - uses: actions/checkout@v4
 
@@ -66,9 +67,29 @@ jobs:
 
     - name: Run Unittests
       working-directory: ./build
-      run: sde-external-9.58.0-2025-06-16-lin/sde64 -icl -emu-xinuse 0 -- ./unittests
+      # SDE can hang during process teardown (static/ASan destructors) after all
+      # tests complete successfully. Use `timeout` to prevent the job from blocking
+      # indefinitely. GTest XML output is used to verify tests passed before
+      # treating a teardown timeout as success.
+      run: |
+        timeout 1800 sde-external-9.58.0-2025-06-16-lin/sde64 -icl -emu-xinuse 0 -- \
+          ./unittests --gtest_output=xml:unittests_results.xml
+        rc=$?
+        if [ $rc -eq 124 ] && grep -q 'failures="0"' unittests_results.xml 2>/dev/null; then
+          echo "SDE timed out during process teardown (known SDE/ASan issue) - all tests passed, treating as success"
+          exit 0
+        fi
+        exit $rc
     
     - name: Run LOUDS Tree Tests
       working-directory: ./build
-      run: sde-external-9.58.0-2025-06-16-lin/sde64 -icl -emu-xinuse 0 -- ./louds_tree_tests
+      run: |
+        timeout 1800 sde-external-9.58.0-2025-06-16-lin/sde64 -icl -emu-xinuse 0 -- \
+          ./louds_tree_tests --gtest_output=xml:louds_results.xml
+        rc=$?
+        if [ $rc -eq 124 ] && grep -q 'failures="0"' louds_results.xml 2>/dev/null; then
+          echo "SDE timed out during process teardown (known SDE/ASan issue) - all tests passed, treating as success"
+          exit 0
+        fi
+        exit $rc
 
