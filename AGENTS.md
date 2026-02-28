@@ -6,6 +6,10 @@ Pixie is a **succinct data structures library** written in C++20. It provides sp
 
 Current implementations include BitVector, RmM Tree, and LOUDS Tree. Planned additions include wavelet trees, FM-index, compressed suffix arrays, and other succinct data structures.
 
+## Skills
+
+./.opencode/skills/ contains several project-specific skill, use it when appropriate 
+
 ## Architecture
 
 ### Project Layout Conventions
