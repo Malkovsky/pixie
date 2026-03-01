@@ -602,6 +602,27 @@ TEST(RmMEdgeCases, PartialLastLeafSelects) {
   expect_rank_select_equal(rm_select0, nv_select0, n);
 }
 
+TEST(RmMEdgeCases, Select10OnIncompleteInternalNode) {
+  constexpr size_t leaf_block_bits = 256;
+  const size_t n = (leaf_block_bits * 2) + 32;  // exactly 3 leaves
+  std::string bits(n, '1');
+
+  // Put all "10" patterns into the last (partial) leaf.
+  for (size_t i = leaf_block_bits * 2; i + 1 < n; i += 4) {
+    bits[i] = '1';
+    bits[i + 1] = '0';
+  }
+
+  pixie::RmMTree rm(bits, leaf_block_bits);
+  NaiveRmM nv(bits);
+
+  const size_t pairs10 = nv.rank10(n);
+  ASSERT_GT(pairs10, 0u);
+  for (size_t k = 1; k <= pairs10 + 1; ++k) {
+    EXPECT_EQ(rm.select10(k), nv.select10(k)) << "select10 k=" << k;
+  }
+}
+
 /**
  * Invalid arguments should fail fast and return npos/0 as specified.
  * Covers bad ranks, bad ranges and out-of-bounds BP navigation calls.

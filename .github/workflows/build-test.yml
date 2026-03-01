@@ -36,10 +36,9 @@ jobs:
       working-directory: ./build
       run: ./benchmark_tests
 
-    #   TODO: fix RmM tests under Asan
-    # - name: Run RmM Tree Tests
-    #   working-directory: ./build
-    #   run: ./test_rmm
+    - name: Run RmM Tree Tests
+      working-directory: ./build
+      run: ./test_rmm
   
   build-and-test-with-SDE:
     runs-on: ubuntu-latest
