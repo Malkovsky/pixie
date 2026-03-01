@@ -513,7 +513,7 @@ TEST(RmMEdgeCases, EmptyInput) {
 
 static void expect_rank_select_equal(const pixie::RmMTree& rm,
                                      const NaiveRmM& nv,
-                                     const size_t& n) {
+                                     size_t n) {
   for (size_t x = 0; x <= n; ++x) {
     EXPECT_EQ(rm.rank1(x), nv.rank1(x)) << "rank1 x=" << x;
     EXPECT_EQ(rm.rank0(x), nv.rank0(x)) << "rank0 x=" << x;
@@ -537,12 +537,13 @@ static void expect_rank_select_equal(const pixie::RmMTree& rm,
 
 static void expect_range_ops_equal(const pixie::RmMTree& rm,
                                    const NaiveRmM& nv,
-                                   const size_t& n) {
+                                   size_t n) {
   if (n == 0) {
     return;
   }
   std::mt19937_64 rng(42);
   std::uniform_int_distribution<size_t> pos(0, n - 1);
+  std::uniform_int_distribution<size_t> k_dist;
   for (int t = 0; t < 512; ++t) {
     size_t i = pos(rng);
     size_t j = pos(rng);
@@ -557,7 +558,8 @@ static void expect_range_ops_equal(const pixie::RmMTree& rm,
 
     size_t cnt = nv.mincount(i, j);
     EXPECT_EQ(rm.mincount(i, j), cnt);
-    size_t k = std::uniform_int_distribution<size_t>(1, cnt + 1)(rng);
+    k_dist.param(std::uniform_int_distribution<size_t>::param_type(1, cnt + 1));
+    size_t k = k_dist(rng);
     EXPECT_EQ(rm.minselect(i, j, k), nv.minselect(i, j, k));
   }
 }
@@ -670,7 +672,7 @@ TEST(RmMEdgeCases, WordsConstructorResizesInputStorage) {
   std::vector<std::uint64_t> words = {0xAAAAAAAAAAAAAAAAull};
   const size_t bit_count = 300;
 
-  pixie::RmMTree rm(words, bit_count, /*leaf_block_bits=*/64);
+  pixie::RmMTree rm(words, bit_count);
   NaiveRmM nv(words, bit_count);
 
   expect_rank_select_equal(rm, nv, bit_count);
