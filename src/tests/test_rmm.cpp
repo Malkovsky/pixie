@@ -511,6 +511,177 @@ TEST(RmMEdgeCases, EmptyInput) {
   EXPECT_EQ(rm.range_max_query_pos(0, 0), nv.range_max_query_pos(0, 0));
 }
 
+static void expect_rank_select_equal(const pixie::RmMTree& rm,
+                                     const NaiveRmM& nv,
+                                     const size_t& n) {
+  for (size_t x = 0; x <= n; ++x) {
+    EXPECT_EQ(rm.rank1(x), nv.rank1(x)) << "rank1 x=" << x;
+    EXPECT_EQ(rm.rank0(x), nv.rank0(x)) << "rank0 x=" << x;
+    EXPECT_EQ(rm.rank10(x), nv.rank10(x)) << "rank10 x=" << x;
+  }
+
+  const size_t ones = nv.rank1(n);
+  const size_t zeros = n - ones;
+  const size_t pairs10 = (n >= 2 ? nv.rank10(n) : 0);
+
+  for (size_t k = 1; k <= ones + 1; ++k) {
+    EXPECT_EQ(rm.select1(k), nv.select1(k)) << "select1 k=" << k;
+  }
+  for (size_t k = 1; k <= zeros + 1; ++k) {
+    EXPECT_EQ(rm.select0(k), nv.select0(k)) << "select0 k=" << k;
+  }
+  for (size_t k = 1; k <= pairs10 + 1; ++k) {
+    EXPECT_EQ(rm.select10(k), nv.select10(k)) << "select10 k=" << k;
+  }
+}
+
+static void expect_range_ops_equal(const pixie::RmMTree& rm,
+                                   const NaiveRmM& nv,
+                                   const size_t& n) {
+  if (n == 0) {
+    return;
+  }
+  std::mt19937_64 rng(42);
+  std::uniform_int_distribution<size_t> pos(0, n - 1);
+  for (int t = 0; t < 512; ++t) {
+    size_t i = pos(rng);
+    size_t j = pos(rng);
+    if (i > j) {
+      std::swap(i, j);
+    }
+
+    EXPECT_EQ(rm.range_min_query_pos(i, j), nv.range_min_query_pos(i, j));
+    EXPECT_EQ(rm.range_min_query_val(i, j), nv.range_min_query_val(i, j));
+    EXPECT_EQ(rm.range_max_query_pos(i, j), nv.range_max_query_pos(i, j));
+    EXPECT_EQ(rm.range_max_query_val(i, j), nv.range_max_query_val(i, j));
+
+    size_t cnt = nv.mincount(i, j);
+    EXPECT_EQ(rm.mincount(i, j), cnt);
+    size_t k = std::uniform_int_distribution<size_t>(1, cnt + 1)(rng);
+    EXPECT_EQ(rm.minselect(i, j, k), nv.minselect(i, j, k));
+  }
+}
+
+TEST(RmMEdgeCases, MultiwordPattern10AcrossWordBoundaries) {
+  const size_t n = 640;
+  std::string bits(n, '1');
+
+  for (size_t i = 0; i + 1 < n; i += 3) {
+    bits[i] = '1';
+    bits[i + 1] = '0';
+  }
+  for (size_t boundary = 63; boundary + 1 < n; boundary += 64) {
+    bits[boundary] = '1';
+    bits[boundary + 1] = '0';
+  }
+
+  pixie::RmMTree rm(bits, /*leaf_block_bits=*/256);
+  NaiveRmM nv(bits);
+
+  expect_rank_select_equal(rm, nv, n);
+  expect_range_ops_equal(rm, nv, n);
+}
+
+TEST(RmMEdgeCases, PartialLastLeafSelects) {
+  const size_t n = 600;
+
+  std::string mostly_zero(n, '0');
+  for (size_t i = 576; i < n; ++i) {
+    mostly_zero[i] = '1';
+  }
+  pixie::RmMTree rm_select1(mostly_zero, /*leaf_block_bits=*/256);
+  NaiveRmM nv_select1(mostly_zero);
+  expect_rank_select_equal(rm_select1, nv_select1, n);
+
+  std::string mostly_one(n, '1');
+  for (size_t i = 576; i < n; ++i) {
+    mostly_one[i] = '0';
+  }
+  pixie::RmMTree rm_select0(mostly_one, /*leaf_block_bits=*/256);
+  NaiveRmM nv_select0(mostly_one);
+  expect_rank_select_equal(rm_select0, nv_select0, n);
+}
+
+/**
+ * Invalid arguments should fail fast and return npos/0 as specified.
+ * Covers bad ranks, bad ranges and out-of-bounds BP navigation calls.
+ */
+TEST(RmMEdgeCases, InvalidArgumentsGuards) {
+  const size_t n = 600;
+  std::string bits(n, '1');
+  for (size_t i = 0; i < n; i += 5) {
+    bits[i] = '0';
+  }
+
+  pixie::RmMTree rm(bits, /*leaf_block_bits=*/256);
+
+  EXPECT_EQ(rm.select1(0), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.select0(0), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.select10(0), pixie::RmMTree::npos);
+
+  EXPECT_EQ(rm.fwdsearch(n, 0), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.bwdsearch(0, 0), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.bwdsearch(n + 1, 0), pixie::RmMTree::npos);
+
+  EXPECT_EQ(rm.range_min_query_pos(10, 9), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.range_min_query_pos(0, n), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.range_max_query_pos(10, 9), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.range_max_query_pos(0, n), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.range_min_query_val(10, 9), 0);
+  EXPECT_EQ(rm.range_max_query_val(10, 9), 0);
+  EXPECT_EQ(rm.mincount(10, 9), 0);
+  EXPECT_EQ(rm.minselect(10, 9, 1), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.minselect(0, n - 1, 0), pixie::RmMTree::npos);
+
+  EXPECT_EQ(rm.close(n), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.open(0), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.open(n + 1), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.enclose(0), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.enclose(n + 1), pixie::RmMTree::npos);
+}
+
+/**
+ * bit_count is larger than the provided words buffer.
+ * Verifies that words beyond the provided buffer are treated as zeros after
+ * resize.
+ */
+TEST(RmMEdgeCases, WordsConstructorResizesInputStorage) {
+  std::vector<std::uint64_t> words = {0xAAAAAAAAAAAAAAAAull};
+  const size_t bit_count = 300;
+
+  pixie::RmMTree rm(words, bit_count, /*leaf_block_bits=*/64);
+  NaiveRmM nv(words, bit_count);
+
+  expect_rank_select_equal(rm, nv, bit_count);
+  expect_range_ops_equal(rm, nv, bit_count);
+}
+
+/**
+ * Same bitvector built through different configuration paths (auto vs explicit
+ * leaf size, different overhead caps, and words-based constructor). Query
+ * results must be identical.
+ */
+TEST(RmMEdgeCases, ExplicitBuildParametersAndOverheadCap) {
+  std::mt19937_64 rng(42);
+  const size_t n = 128;
+  const std::string bits = random_bits(rng, n);
+  NaiveRmM nv(bits);
+
+  pixie::RmMTree rm_auto(bits, /*leaf_block_bits=*/0, /*max_overhead=*/1.f);
+  pixie::RmMTree rm_explicit(bits, /*leaf_block_bits=*/512,
+                             /*max_overhead=*/2.f);
+  auto words = pack_words_lsb_first(bits);
+  pixie::RmMTree rm_words(words, n, /*leaf_block_bits=*/256,
+                          /*max_overhead=*/1.f);
+
+  expect_rank_select_equal(rm_auto, nv, n);
+  expect_range_ops_equal(rm_auto, nv, n);
+  expect_rank_select_equal(rm_explicit, nv, n);
+  expect_range_ops_equal(rm_explicit, nv, n);
+  expect_rank_select_equal(rm_words, nv, n);
+  expect_range_ops_equal(rm_words, nv, n);
+}
+
 TEST(RmMTreeStress, LongRandom) {
   Limits L;
   L.OPS_PER_CASE = 2000;

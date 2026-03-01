@@ -12,7 +12,7 @@ cmake --build --preset coverage
 "${BUILD_DIR}/test_rmm"
 
 cd "${BUILD_DIR}"
-find . -name "*.gcno" -o -name "*.gcda" > gcov_files.txt
+find . -name "*.gcda" > gcov_files.txt
 while read -r f; do
   case "${f}" in
     *"/third_party/"*|*"/src/benchmarks/"*)
