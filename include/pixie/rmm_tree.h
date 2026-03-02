@@ -270,26 +270,41 @@ class RmMTree {
     if (node_pattern10_count[node_index] < target_pattern_rank) {
       return npos;
     }
+    const size_t tree_size = segment_size_bits.size() - 1;
     size_t segment_base = 0;
     while (node_index < first_leaf_index) {
-      const size_t left_child = node_index << 1, right_child = left_child | 1;
+      const size_t left_child = node_index << 1;
+      const size_t left_segment_size =
+          (left_child <= tree_size) ? segment_size_bits[left_child] : 0;
+      if (left_segment_size == 0) {
+        return npos;
+      }
+
+      const size_t left_count = node_pattern10_count[left_child];
+      if (left_count >= target_pattern_rank) {
+        node_index = left_child;
+        continue;
+      }
+
+      size_t remaining_rank = target_pattern_rank - left_count;
+      const size_t right_child = left_child | 1;
+      const bool has_right =
+          (right_child <= tree_size) && (segment_size_bits[right_child] != 0);
+      if (!has_right) {
+        return npos;
+      }
+
       const size_t crossing_pattern =
           (node_last_bit[left_child] == 1 && node_first_bit[right_child] == 0)
               ? 1u
               : 0u;
-      if (node_pattern10_count[left_child] >= target_pattern_rank) {
-        node_index = left_child;
-        continue;
-      }
-      size_t remaining_rank =
-          target_pattern_rank - node_pattern10_count[left_child];
       if (crossing_pattern) {
         if (remaining_rank == 1) {
-          return segment_base + segment_size_bits[left_child] - 1;
+          return segment_base + left_segment_size - 1;
         }
         --remaining_rank;
       }
-      segment_base += segment_size_bits[left_child];
+      segment_base += left_segment_size;
       node_index = right_child;
       target_pattern_rank = remaining_rank;
     }
