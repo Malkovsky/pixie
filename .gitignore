@@ -4,4 +4,5 @@ Testing/
 plans/*
 venv/
 docs/*
+src/docs/presentations/*
 CMakeUserPresets.json

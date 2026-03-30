@@ -20,8 +20,6 @@ Current implementations include BitVector, RmM Tree, and LOUDS Tree. Planned add
 - **`src/*_benchmarks.cpp`**: Performance benchmarks (Google Benchmark)
 - **`src/docs/`**: Doxygen configuration
 
-> **Note**: Future versions may reorganize headers under `include/pixie/` to support `#include <pixie/bitvector.h>` style imports.
-
 ### Key Design Decisions
 
 1. **Header-only library** (see rationale below)
