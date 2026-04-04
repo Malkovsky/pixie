@@ -1,0 +1,60 @@
+name: Kilo Dispatch
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: Prompt passed to Kilo CLI
+        required: true
+        type: string
+      timeout_minutes:
+        description: Timeout in minutes for job and Kilo run
+        required: false
+        default: "30"
+        type: string
+
+jobs:
+  run-kilo:
+    name: run-kilo
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Kilo CLI
+        run: npm install -g @kilocode/cli
+
+      - name: Verify KILO_API_TOKEN secret
+        run: |
+          if [ -z "${{ secrets.KILO_API_TOKEN }}" ]; then
+            echo "KILO_API_TOKEN secret is missing. Add it in repository settings before running this workflow."
+            exit 1
+          fi
+
+      - name: Run Kilo CLI
+        env:
+          KILO_API_TOKEN: ${{ secrets.KILO_API_TOKEN }}
+          KILO_API_KEY: ${{ secrets.KILO_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          : > kilo-run.log
+          kilo --version 2>&1 | tee -a kilo-run.log
+          if kilo run --help 2>&1 | grep -q -- '--timeout'; then
+            kilo run --auto "${{ inputs.prompt }}" --timeout "${{ inputs.timeout_minutes }}m" 2>&1 | tee -a kilo-run.log
+          else
+            echo "kilo run does not support --timeout; relying on job timeout-minutes." | tee -a kilo-run.log
+            kilo run --auto "${{ inputs.prompt }}" 2>&1 | tee -a kilo-run.log
+          fi
+
+      - name: Upload Kilo run log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kilo-run-log
+          path: kilo-run.log
