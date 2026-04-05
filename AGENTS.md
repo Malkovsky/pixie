@@ -8,7 +8,7 @@ Current implementations include BitVector, RmM Tree, and LOUDS Tree. Planned add
 
 ## Skills
 
-./.opencode/skills/ contains several project-specific skill, use it when appropriate 
+./.kilo/skills/ contains several project-specific skills, use them when appropriate
 
 ## Architecture
 

@@ -24,7 +24,7 @@
         },
         {
             "name": "benchmarks-all",
-            "displayName": "All Benchmarks",
+            "displayName": "Benchmarks",
             "binaryDir": "${sourceDir}/build/release",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
@@ -33,7 +33,7 @@
         },
         {
             "name": "benchmarks-diagnostic",
-            "displayName": "All Benchmarks RelWithDebInfo",
+            "displayName": "Benchmarks diagnostic build",
             "binaryDir": "${sourceDir}/build/release-with-deb",
             "cacheVariables": {
                 "BENCHMARK_ENABLE_LIBPFM": "ON",
@@ -85,7 +85,7 @@
         },
         {
             "name": "benchmarks-diagnostic",
-            "displayName": "Build ReleaseWithDebugInfo",
+            "displayName": "Benchmarks diagnostic",
             "configurePreset": "benchmarks-diagnostic"
         },
         {
