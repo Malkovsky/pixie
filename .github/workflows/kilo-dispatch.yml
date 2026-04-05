@@ -4,14 +4,50 @@ on:
   workflow_dispatch:
     inputs:
       prompt:
-        description: Prompt passed to Kilo CLI
-        required: true
+        description: Fallback prompt when command is not provided
+        required: false
+        default: ""
+        type: string
+      command:
+        description: Kilo command to run (without leading slash), e.g. local-review
+        required: false
+        default: ""
+        type: string
+      command_args:
+        description: Optional arguments passed to command mode
+        required: false
+        default: ""
         type: string
       timeout_minutes:
         description: Timeout in minutes for job and Kilo run
         required: false
         default: "30"
         type: string
+      model:
+        description: Gateway model ID for kilocode provider
+        required: false
+        default: "openai/gpt-5.3-codex"
+        type: string
+      pr_number:
+        description: Pull request number to post result to
+        required: false
+        default: ""
+        type: string
+      review_comment_id:
+        description: Optional PR review comment ID to reply to
+        required: false
+        default: ""
+        type: string
+      parent_comment_id:
+        description: Optional parent comment ID (preferred over review_comment_id)
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
 
 jobs:
   run-kilo:
@@ -25,7 +61,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Install Kilo CLI
         run: npm install -g @kilocode/cli
@@ -36,21 +72,131 @@ jobs:
             echo "KILO_API_TOKEN secret is missing. Add it in repository settings before running this workflow."
             exit 1
           fi
+          if [ -z "${{ secrets.NIKOLAY_REVIEWER_APP_ID }}" ]; then
+            echo "NIKOLAY_REVIEWER_APP_ID secret is missing. Add it in repository settings before running this workflow."
+            exit 1
+          fi
+          if [ -z "${{ secrets.NIKOLAY_REVIEWER_PRIVATE_KEY }}" ]; then
+            echo "NIKOLAY_REVIEWER_PRIVATE_KEY secret is missing. Add it in repository settings before running this workflow."
+            exit 1
+          fi
+
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.NIKOLAY_REVIEWER_APP_ID }}
+          private-key: ${{ secrets.NIKOLAY_REVIEWER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
 
       - name: Run Kilo CLI
         env:
           KILO_API_TOKEN: ${{ secrets.KILO_API_TOKEN }}
           KILO_API_KEY: ${{ secrets.KILO_API_TOKEN }}
+          KILO_PROVIDER: kilocode
+          KILOCODE_MODEL: ${{ inputs.model }}
         run: |
           set -euo pipefail
           : > kilo-run.log
+          : > kilo-events.log
+          : > kilo-output.log
           kilo --version 2>&1 | tee -a kilo-run.log
+
+          has_timeout=false
           if kilo run --help 2>&1 | grep -q -- '--timeout'; then
-            kilo run --auto "${{ inputs.prompt }}" --timeout "${{ inputs.timeout_minutes }}m" 2>&1 | tee -a kilo-run.log
-          else
-            echo "kilo run does not support --timeout; relying on job timeout-minutes." | tee -a kilo-run.log
-            kilo run --auto "${{ inputs.prompt }}" 2>&1 | tee -a kilo-run.log
+            has_timeout=true
           fi
+
+          kilo_args=(kilo run --auto --format json)
+
+          if [ -n "${{ inputs.command }}" ]; then
+            kilo_args+=(--command "${{ inputs.command }}")
+            if [ -n "${{ inputs.command_args }}" ]; then
+              kilo_args+=("${{ inputs.command_args }}")
+            fi
+          elif [ -n "${{ inputs.prompt }}" ]; then
+            kilo_args+=("${{ inputs.prompt }}")
+          else
+            echo "Either 'command' or 'prompt' must be provided." | tee -a kilo-run.log
+            exit 1
+          fi
+
+          if [ "$has_timeout" = true ]; then
+            "${kilo_args[@]}" --timeout "${{ inputs.timeout_minutes }}m" 2>&1 | tee -a kilo-events.log | tee -a kilo-run.log
+          else
+            echo "kilo run does not support --timeout; relying on job timeout-minutes." >> kilo-run.log
+            "${kilo_args[@]}" 2>&1 | tee -a kilo-events.log | tee -a kilo-run.log
+          fi
+
+          node -e "const fs=require('fs');const strip=(s)=>s.replace(/\x1B\[[0-9;]*[A-Za-z]/g,'');const lines=fs.readFileSync('kilo-events.log','utf8').split(/\r?\n/);const texts=[];for(const line of lines){if(!line.trim())continue;try{const evt=JSON.parse(line);if(evt&&evt.type==='text'&&evt.part&&typeof evt.part.text==='string'){const t=evt.part.text.trim();if(t)texts.push(t);}}catch{}}let out='';if(texts.length){out=texts[texts.length-1];}else{const fallback=strip(fs.readFileSync('kilo-events.log','utf8')).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);out=fallback.length?fallback[fallback.length-1]:'';}fs.writeFileSync('kilo-output.log',out+(out.endsWith('\n')?'':'\n'));"
+
+      - name: Post result as GitHub App comment
+        if: ${{ always() && inputs.pr_number != '' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const fs = require('fs');
+            const prNumber = Number('${{ inputs.pr_number }}');
+            const parentCommentIdRaw = ('${{ inputs.parent_comment_id }}' || '${{ inputs.review_comment_id }}').trim();
+            const parentCommentId = parentCommentIdRaw ? Number(parentCommentIdRaw) : null;
+            let outputContent = '';
+            try {
+              outputContent = fs.readFileSync('kilo-output.log', 'utf8');
+            } catch {
+              outputContent = 'kilo-output.log not found.';
+            }
+
+            const body = outputContent.trim() || '(empty Kilo output)';
+
+            if (parentCommentId) {
+              try {
+                await github.rest.pulls.createReplyForReviewComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber,
+                  comment_id: parentCommentId,
+                  body
+                });
+                return;
+              } catch (error) {
+                const status = error?.status;
+                if (status !== 404 && status !== 422) {
+                  throw error;
+                }
+
+                let prefix = '';
+                try {
+                  const parent = await github.rest.issues.getComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: parentCommentId
+                  });
+                  const login = parent?.data?.user?.login;
+                  if (login) {
+                    prefix = `@${login} `;
+                  }
+                } catch {
+                  // Fallback to plain issue comment if parent lookup fails.
+                }
+
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  body: `${prefix}${body}`
+                });
+                return;
+              }
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body
+            });
 
       - name: Upload Kilo run log
         if: always()

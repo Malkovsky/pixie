@@ -5,7 +5,7 @@ description: Compare benchmark performance between two git revisions by building
 
 # Benchmarks Compare Revisions Skill
 
-Use this skill to compare performance between two git revisions. It focuses on the compare workflow and relies on the existing benchmarks skill for build/run details (see .opencode/skills/benchmarks/SKILL.md).
+Use this skill to compare performance between two git revisions. It focuses on the compare workflow and relies on the existing benchmarks skill for build/run details (see .kilo/skills/benchmarks/SKILL.md).
 
 ## Goal
 
@@ -29,12 +29,12 @@ Use the existing benchmarks skill build steps, but set the build suffix to inclu
 # Baseline
 BUILD_SUFFIX=bench_${BASELINE}
 git checkout ${BASELINE}
-# Follow .opencode/skills/benchmarks/SKILL.md build instructions with this suffix
+# Follow .kilo/skills/benchmarks/SKILL.md build instructions with this suffix
 
 # Contender
 BUILD_SUFFIX=bench_${CONTENDER}
 git checkout ${CONTENDER}
-# Follow .opencode/skills/benchmarks/SKILL.md build instructions with this suffix
+# Follow .kilo/skills/benchmarks/SKILL.md build instructions with this suffix
 ```
 
 ## Step 2 — Compare using compare.py
