@@ -110,8 +110,6 @@ jobs:
 
       - name: Run Kilo CLI
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           KILO_API_TOKEN: ${{ secrets.KILO_API_TOKEN }}
           KILO_API_KEY: ${{ secrets.KILO_API_TOKEN }}
           KILO_PROVIDER: kilocode
