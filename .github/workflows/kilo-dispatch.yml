@@ -81,7 +81,8 @@ jobs:
             libpfm4 libpfm4-dev
           cmake --version
           python3 --version
-          pkg-config --modversion libpfm
+          dpkg-query -W -f='${Package} ${Version}\n' libpfm4 libpfm4-dev
+          test -f /usr/include/perfmon/pfmlib.h
 
       - name: Verify KILO_API_TOKEN secret
         run: |
@@ -151,7 +152,7 @@ jobs:
           node -e "const fs=require('fs');const strip=(s)=>s.replace(/\x1B\[[0-9;]*[A-Za-z]/g,'');const lines=fs.readFileSync('kilo-events.log','utf8').split(/\r?\n/);const texts=[];for(const line of lines){if(!line.trim())continue;try{const evt=JSON.parse(line);if(evt&&evt.type==='text'&&evt.part&&typeof evt.part.text==='string'){const t=evt.part.text.trim();if(t)texts.push(t);}}catch{}}let out='';if(texts.length){out=texts[texts.length-1];}else{const fallback=strip(fs.readFileSync('kilo-events.log','utf8')).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);out=fallback.length?fallback[fallback.length-1]:'';}fs.writeFileSync('kilo-output.log',out+(out.endsWith('\n')?'':'\n'));"
 
       - name: Post result as GitHub App comment
-        if: ${{ always() && inputs.pr_number != '' }}
+        if: ${{ always() && inputs.pr_number != '' && steps.app-token.outputs.token != '' }}
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.app-token.outputs.token }}
