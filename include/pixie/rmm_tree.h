@@ -2215,6 +2215,7 @@ class RmMTree {
     build(leaf_block_bits, max_overhead);
   }
 
+ public:
   /**
    * @brief Read bit at position @p position (LSB-first across words).
    */
@@ -2222,6 +2223,7 @@ class RmMTree {
     return (bits[position >> 6] >> (position & 63)) & 1u;
   }
 
+ private:
   /**
    * @brief Set bit at position @p position to 1.
    */
