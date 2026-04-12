@@ -39,29 +39,62 @@ git checkout ${CONTENDER}
 
 ## Step 2 — Compare using compare.py
 
-Use Google Benchmark’s compare.py to run both binaries and compute a statistical comparison.
+Use Google Benchmark compare tooling with a JSON-first flow to avoid long-running binary-vs-binary retries.
 
 Locate compare.py from the Google Benchmark dependency (installed under the build tree):
 ```bash
 COMPARE_PY=build/benchmarks-all_bench_${BASELINE}/_deps/googlebenchmark-src/tools/compare.py
 ```
 
-Run the comparison (benchmarks mode):
+Verify Python deps once (compare.py imports numpy/scipy):
 ```bash
-python3 ${COMPARE_PY} benchmarks \
-  build/benchmarks-all_bench_${BASELINE}/benchmarks \
-  build/benchmarks-all_bench_${CONTENDER}/benchmarks
+python3 -c "import numpy, scipy"
 ```
 
-### Optional: filter to reduce noise
-
-Pass benchmark options after the binaries so compare.py forwards them:
+Generate baseline/contender JSON sequentially with explicit file outputs:
 ```bash
-python3 ${COMPARE_PY} benchmarks \
-  build/benchmarks-all_bench_${BASELINE}/benchmarks \
-  build/benchmarks-all_bench_${CONTENDER}/benchmarks \
-  --benchmark_filter="BM_Rank"
+BASE_JSON=/tmp/bench_${BASELINE}.json
+CONT_JSON=/tmp/bench_${CONTENDER}.json
+
+build/benchmarks-all_bench_${BASELINE}/benchmarks \
+  --benchmark_report_aggregates_only=true \
+  --benchmark_display_aggregates_only=true \
+  --benchmark_format=json \
+  --benchmark_out=${BASE_JSON} > /tmp/bench_${BASELINE}.log 2>&1
+
+build/benchmarks-all_bench_${CONTENDER}/benchmarks \
+  --benchmark_report_aggregates_only=true \
+  --benchmark_display_aggregates_only=true \
+  --benchmark_format=json \
+  --benchmark_out=${CONT_JSON} > /tmp/bench_${CONTENDER}.log 2>&1
 ```
+
+Validate JSON before comparing:
+```bash
+python3 -m json.tool ${BASE_JSON} > /dev/null
+python3 -m json.tool ${CONT_JSON} > /dev/null
+```
+
+Run the comparison:
+```bash
+python3 ${COMPARE_PY} -a benchmarks ${BASE_JSON} ${CONT_JSON}
+```
+
+### Optional: filter to reduce noise and runtime
+
+Pass filter when generating JSON files:
+```bash
+FILTER="BM_Rank"
+build/benchmarks-all_bench_${BASELINE}/benchmarks --benchmark_filter="${FILTER}" --benchmark_report_aggregates_only=true --benchmark_display_aggregates_only=true ...
+build/benchmarks-all_bench_${CONTENDER}/benchmarks --benchmark_filter="${FILTER}" --benchmark_report_aggregates_only=true --benchmark_display_aggregates_only=true ...
+```
+
+## Retry and Timeout Policy
+
+1. Run benchmarks sequentially; do not background with `nohup`/`&`.
+2. If a run times out, narrow filter and retry once.
+3. Maximum retries per benchmark group: 1.
+4. If still failing, emit blocked/partial findings instead of repeated attempts.
 
 ## Step 3 — Record findings
 

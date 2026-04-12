@@ -78,9 +78,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build pkg-config \
             python3 python3-pip \
+            python3-numpy python3-scipy \
             libpfm4 libpfm4-dev
           cmake --version
           python3 --version
+          python3 -c "import numpy, scipy; print(f'numpy {numpy.__version__}'); print(f'scipy {scipy.__version__}')"
           dpkg-query -W -f='${Package} ${Version}\n' libpfm4 libpfm4-dev
           test -f /usr/include/perfmon/pfmlib.h
 
@@ -228,11 +230,21 @@ jobs:
 
           node --experimental-strip-types scripts/kilo-postprocess.ts kilo-events.log kilo-output.log kilo-readable.log
 
+      - name: Create GitHub App token for final comment
+        if: ${{ always() && inputs.pr_number != '' }}
+        id: app-token-final
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.NIKOLAY_REVIEWER_APP_ID }}
+          private-key: ${{ secrets.NIKOLAY_REVIEWER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
       - name: Post result as GitHub App comment
-        if: ${{ always() && inputs.pr_number != '' && steps.app-token.outputs.token != '' }}
+        if: ${{ always() && inputs.pr_number != '' && steps.app-token-final.outputs.token != '' }}
         uses: actions/github-script@v7
         with:
-          github-token: ${{ steps.app-token.outputs.token }}
+          github-token: ${{ steps.app-token-final.outputs.token }}
           script: |
             const fs = require('fs');
             const prNumber = Number('${{ inputs.pr_number }}');
