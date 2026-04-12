@@ -147,7 +147,7 @@ jobs:
             "${kilo_args[@]}" 2>&1 | tee -a kilo-events.log | tee -a kilo-run.log
           fi
 
-          node -e "const fs=require('fs');const strip=(s)=>s.replace(/\x1B\[[0-9;]*[A-Za-z]/g,'');const lines=fs.readFileSync('kilo-events.log','utf8').split(/\r?\n/);const texts=[];for(const line of lines){if(!line.trim())continue;try{const evt=JSON.parse(line);if(evt&&evt.type==='text'&&evt.part&&typeof evt.part.text==='string'){const t=evt.part.text.trim();if(t)texts.push(t);}}catch{}}let out='';if(texts.length){out=texts[texts.length-1];}else{const fallback=strip(fs.readFileSync('kilo-events.log','utf8')).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);out=fallback.length?fallback[fallback.length-1]:'';}fs.writeFileSync('kilo-output.log',out+(out.endsWith('\n')?'':'\n'));"
+          node --experimental-strip-types scripts/kilo-postprocess.ts kilo-events.log kilo-output.log kilo-readable.log
 
       - name: Post result as GitHub App comment
         if: ${{ always() && inputs.pr_number != '' && steps.app-token.outputs.token != '' }}
@@ -221,4 +221,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: kilo-run-log
-          path: kilo-run.log
+          path: |
+            kilo-run.log
+            kilo-readable.log

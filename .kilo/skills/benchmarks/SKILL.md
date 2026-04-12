@@ -25,6 +25,8 @@ BUILD_SUFFIX=local
 
 ## Step 1 — Build
 
+If benchmarks affected by the changes are easily tractable build only related targets.
+
 **Pure timing (benchmarks-all, Release):**
 ```bash
 cmake -B build/benchmarks-all_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Release -DPIXIE_BENCHMARKS=ON
@@ -38,6 +40,8 @@ cmake --build build/benchmarks-diagnostic_${BUILD_SUFFIX} --config RelWithDebInf
 ```
 
 ## Step 2 — Run
+
+Prefer running benchmarks with filtering passing the benchmarks that should be affected.
 
 ### Available benchmark binaries
 
