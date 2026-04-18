@@ -19,119 +19,43 @@ Non-negotiable requirements:
 If arguments are omitted:
 - Default target branch to PR base branch from `gh pr view --json baseRefName` when available.
 - Fall back target branch to `main`.
-- Default filter must be **targeted**, not full-suite:
-  - Derive from changed files and changed symbols.
-  - If `include/pixie/bitvector.h` changed in select path, default to `BM_Select` and add `BM_RankNonInterleaved` as control.
-  - Run full selected suites only as last resort when mapping fails.
 
-## Step 1 - Resolve Branches and Revisions
+Filter handling:
+- If `--filter` is provided, pass it through.
+- Else use the filter produced by `benchmarks-affected` through `benchmarks-compare-revisions`.
+- If no filter can be derived, run conservative full-binary compare for impacted binaries.
 
-1. Identify contender branch and hash:
-   - Contender branch: current checked-out branch (or `HEAD` if detached).
-   - Contender hash: `git rev-parse --short HEAD`.
-2. Identify baseline branch:
-   - Use `--target` if provided.
-   - Else use PR base branch from GitHub CLI when available.
-   - Else use `main`.
-3. Resolve baseline hash with `git rev-parse --short <baseline-ref>`.
-4. Print branch and hash mapping before running benchmarks.
+## Step 1 - Resolve branches and hashes
 
-## Step 2 - Select Relevant Benchmark Binaries
+1. Resolve contender from current checkout (`HEAD`) and compute short hash.
+2. Resolve baseline branch using precedence: `--target` -> PR base from `gh pr view --json baseRefName` -> `main`.
+3. Resolve baseline short hash.
+4. Print branch/hash mapping before benchmark execution.
 
-Inspect changed files with:
+## Step 2 - Run timing comparison via skill (single source of truth)
 
-`git diff --name-only <baseline-ref>...HEAD`
+Use `benchmarks-compare-revisions` as the single source of truth for revision builds, benchmark scope, compare.py flow, retry policy, and guardrails.
 
-Map file paths to benchmark binaries:
+Do not duplicate or override its internal build/run steps in this command.
 
-| Changed path pattern | Benchmark binary | Coverage |
-|---|---|---|
-| `include/pixie/bitvector*`, `include/*bit_vector*`, `include/interleaved*` | `benchmarks` | BitVector rank/select |
-| `include/rmm*` | `bench_rmm` | RmM tree operations |
-| `include/louds*` | `louds_tree_benchmarks` | LOUDS traversal |
-| `include/simd*`, `include/aligned*` | `alignment_comparison` | SIMD and alignment |
-| `include/misc/*` | all relevant | Differential helpers |
-| `CMakeLists.txt`, benchmark infra, broad/unknown changes | all benchmarks | Conservative full run |
+Pass-through inputs:
+- Baseline ref/hash from Step 1.
+- Contender ref/hash from Step 1.
+- Optional `--filter` override.
 
-Available benchmark binaries:
-- `benchmarks`
-- `bench_rmm`
-- `bench_rmm_sdsl`
-- `louds_tree_benchmarks`
-- `alignment_comparison`
-
-If the mapping is ambiguous, run all benchmark binaries but still apply a focused filter first.
-If `--filter` is provided, pass it through as `--benchmark_filter`.
-Print selected binaries and why they were selected.
+Consume outputs from `benchmarks-compare-revisions`:
+- Baseline and contender benchmark JSON artifacts.
+- compare.py output per binary.
+- Effective filter used.
+- Scope metadata from `benchmarks-affected` (`affected_benchmark_targets`, `affected_benchmarks`) when available.
 
 Execution guardrails:
-- Do not use background jobs (`nohup`, `&`) for benchmark runs in CI.
-- Do not interleave multiple benchmark runs into one shell command stream.
-- Run one benchmark command at a time and wait for completion.
+- Run benchmarks sequentially.
+- No background jobs (`nohup`, `&`).
+- Use Release timing builds only.
+- If timing comparison fails, return blocked verdict with exact failure points.
 
-## Step 3 - Build Both Revisions (Timing and Profiling Builds)
-
-Use isolated build directories per short hash.
-
-1. Capture original ref (`git rev-parse --abbrev-ref HEAD` or detached `HEAD`).
-2. If worktree is dirty, stash safely with untracked files:
-   - `git stash push -u -m "perf-review-auto-stash"`
-3. Build baseline revision:
-   - `git checkout <baseline-hash-or-ref>`
-   - Timing build (required):
-     - `cmake -B build/benchmarks-all_bench_<baseline_hash> -DCMAKE_BUILD_TYPE=Release -DPIXIE_BENCHMARKS=ON`
-     - `cmake --build build/benchmarks-all_bench_<baseline_hash> --config Release -j`
-   - Profiling build (Linux only, recommended):
-     - `cmake -B build/benchmarks-diagnostic_bench_<baseline_hash> -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPIXIE_BENCHMARKS=ON -DBENCHMARK_ENABLE_LIBPFM=ON -DPIXIE_DIAGNOSTICS=ON`
-     - `cmake --build build/benchmarks-diagnostic_bench_<baseline_hash> --config RelWithDebInfo -j`
-4. Build contender revision:
-   - `git checkout <contender-hash-or-original-ref>`
-   - Repeat timing and profiling build with contender hash suffix.
-5. Restore original ref and restore stashed state if a stash was created.
-
-Critical guardrails:
-- Never use Debug binaries for timing review.
-- Timing comparisons must use `benchmarks-all` Release builds.
-- Profiling counters should use `benchmarks-diagnostic` RelWithDebInfo builds.
-
-## Step 4 - Resolve Binary Paths
-
-Support both generator layouts:
-
-- Multi-config: `build/<dir>/Release/<binary>` or `build/<dir>/RelWithDebInfo/<binary>`
-- Single-config: `build/<dir>/<binary>`
-
-For each needed binary, detect the existing executable path before running.
-If a required binary is missing, report failure and stop with a blocked verdict.
-
-## Step 5 - Run Timing Comparison (Primary Judgment)
-
-Use a deterministic JSON-first workflow. Do not rely on long-running `compare.py` binary-vs-binary mode.
-
-1. Verify Python benchmark tooling once before runs:
-   - `python3 -c "import numpy, scipy"`
-2. For each selected benchmark binary, run baseline then contender sequentially, each with explicit JSON out:
-   - `--benchmark_filter="<filter>"`
-   - `--benchmark_format=json`
-   - `--benchmark_out=<file>.json`
-   - `--benchmark_report_aggregates_only=true`
-   - `--benchmark_display_aggregates_only=true`
-3. Suppress benchmark stdout/stderr noise when generating JSON artifacts so files stay valid:
-   - `> <file>.log 2>&1`
-4. Validate both JSON files before comparison:
-   - `python3 -m json.tool <file>.json > /dev/null`
-5. Compare using one of:
-   - `python3 <compare.py> -a benchmarks <baseline.json> <contender.json>`
-   - or a deterministic local Python diff script over aggregate means.
-6. Keep raw JSON files and comparison output for auditability.
-
-Timeout and retry policy:
-- Use command timeouts that match benchmark scope.
-- If a run times out once, narrow filter immediately and retry once.
-- Maximum retry count per benchmark group: 1.
-- If still timing out, produce a blocked/partial verdict with explicit scope limitations.
-
-## Step 6 - Collect Hardware Counter Profiles (Linux Only)
+## Step 3 - Collect hardware counter profiles (Linux only, optional)
 
 Run a preflight first to avoid wasted attempts:
 1. Execute one tiny benchmark with perf counters (e.g. one benchmark case) and inspect output for counter availability.
@@ -157,7 +81,7 @@ Compute derived metrics when denominators are non-zero:
 
 If profiling is unavailable (non-Linux, libpfm missing, or perf permissions blocked), continue with timing-only review and explicitly mark profiling as unavailable in the report.
 
-## Step 7 - Analyze Timing and Counter Data
+## Step 4 - Analyze timing and counter data
 
 Timing classification per benchmark entry:
 - Improvement: time delta < -5%
@@ -181,7 +105,7 @@ Noise-control expectations:
 - Include at least one control benchmark family expected to be unaffected by the code change.
 - Treat isolated swings without pattern as noise unless reproduced across related sizes/fill ratios.
 
-## Step 8 - Produce Final Markdown Report
+## Step 5 - Produce final markdown report
 
 Return a structured markdown report with this shape:
 
