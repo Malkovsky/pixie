@@ -521,8 +521,7 @@ class BitVector {
 
     uint64_t s_block = find_superblock(rank);
     rank -= super_block_rank[s_block];
-    // auto pos = find_basicblock_is(rank, s_block);
-    auto pos = find_basicblock(rank, s_block);
+    auto pos = find_basicblock_is(rank, s_block);
     rank -= basic_block_rank[pos];
     pos *= kWordsPerBlock;
 
