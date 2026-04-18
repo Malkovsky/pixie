@@ -25,6 +25,8 @@ BUILD_SUFFIX=local
 
 ## Step 1 — Build
 
+If benchmarks affected by the changes are easily tractable build only related targets.
+
 **Pure timing (benchmarks-all, Release):**
 ```bash
 cmake -B build/benchmarks-all_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Release -DPIXIE_BENCHMARKS=ON
@@ -38,6 +40,13 @@ cmake --build build/benchmarks-diagnostic_${BUILD_SUFFIX} --config RelWithDebInf
 ```
 
 ## Step 2 — Run
+
+Prefer running benchmarks with filtering passing the benchmarks that should be affected.
+
+Execution guardrails:
+- Run benchmark commands sequentially in CI.
+- Avoid background jobs (`nohup`, `&`) for benchmark collection.
+- Always write machine-readable results with `--benchmark_out` when data is later parsed.
 
 ### Available benchmark binaries
 
@@ -103,8 +112,15 @@ build/benchmarks-diagnostic_${BUILD_SUFFIX}/RelWithDebInfo/benchmarks \
 ```bash
 build/benchmarks-all_${BUILD_SUFFIX}/Release/benchmarks \
   --benchmark_filter="${FILTER}" \
+  --benchmark_report_aggregates_only=true \
+  --benchmark_display_aggregates_only=true \
   --benchmark_format=json \
   --benchmark_out=results.json
+```
+
+Validate output before consuming:
+```bash
+python3 -m json.tool results.json > /dev/null
 ```
 
 ## Step 3 — Profile with perf (Linux only)
@@ -157,3 +173,6 @@ perf script -F +pid > perf.data.txt
 5. **Pin CPU frequency** before timing runs: `sudo cpupower frequency-set -g performance`
 6. **Filter to reduce noise**: narrow the filter regex to the benchmark under investigation
 7. **Save JSON output** when comparing before/after changes: use `--benchmark_out` and diff the files
+8. **Fail fast on environment issues**: precheck Python deps used by compare tooling (`numpy`, `scipy`)
+9. **Use explicit retry limits**: on timeout, narrow scope and retry once; avoid repeated full-suite attempts
+10. **Preflight perf counters**: run a tiny counter-enabled benchmark first; if counters unavailable, skip counter workflow

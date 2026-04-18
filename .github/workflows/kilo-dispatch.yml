@@ -21,7 +21,7 @@ on:
       timeout_minutes:
         description: Timeout in minutes for job and Kilo run
         required: false
-        default: "30"
+        default: "120"
         type: string
       model:
         description: Gateway model ID for kilocode provider
@@ -57,6 +57,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch remote branches for baseline resolution
+        run: git fetch --no-tags origin +refs/heads/*:refs/remotes/origin/*
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -65,6 +70,21 @@ jobs:
 
       - name: Install Kilo CLI
         run: npm install -g @kilocode/cli
+
+      - name: Install performance dependencies
+        if: ${{ inputs.command == 'perf-review' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config \
+            python3 python3-pip \
+            python3-numpy python3-scipy \
+            libpfm4 libpfm4-dev
+          cmake --version
+          python3 --version
+          python3 -c "import numpy, scipy; print(f'numpy {numpy.__version__}'); print(f'scipy {scipy.__version__}')"
+          dpkg-query -W -f='${Package} ${Version}\n' libpfm4 libpfm4-dev
+          test -f /usr/include/perfmon/pfmlib.h
 
       - name: Verify KILO_API_TOKEN secret
         run: |
@@ -89,6 +109,85 @@ jobs:
           private-key: ${{ secrets.NIKOLAY_REVIEWER_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
+
+      - name: Post start status as GitHub App comment
+        if: ${{ always() && inputs.pr_number != '' && steps.app-token.outputs.token != '' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const prNumber = Number(${{ toJSON(inputs.pr_number) }});
+            const command = ${{ toJSON(inputs.command) }};
+            const commandArgs = ${{ toJSON(inputs.command_args) }};
+            const prompt = ${{ toJSON(inputs.prompt) }};
+            const parentCommentIdRaw = ((${{ toJSON(inputs.parent_comment_id) }} || ${{ toJSON(inputs.review_comment_id) }} || '') + '').trim();
+            const parentCommentId = parentCommentIdRaw ? Number(parentCommentIdRaw) : null;
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+
+            let requestSummary = '';
+            if ((command || '').trim()) {
+              requestSummary = `/${command}${(commandArgs || '').trim() ? ` ${commandArgs}` : ''}`;
+            } else {
+              requestSummary = (prompt || '').trim();
+            }
+
+            requestSummary = requestSummary.replace(/\s+/g, ' ').trim();
+            if (!requestSummary) {
+              requestSummary = '(no request text provided)';
+            }
+            if (requestSummary.length > 180) {
+              requestSummary = `${requestSummary.slice(0, 177)}...`;
+            }
+
+            const body = `Started Kilo run: ${requestSummary}\nRun: ${runUrl}`;
+
+            if (parentCommentId) {
+              try {
+                await github.rest.pulls.createReplyForReviewComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber,
+                  comment_id: parentCommentId,
+                  body
+                });
+                return;
+              } catch (error) {
+                const status = error?.status;
+                if (status !== 404 && status !== 422) {
+                  throw error;
+                }
+
+                let prefix = '';
+                try {
+                  const parent = await github.rest.issues.getComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: parentCommentId
+                  });
+                  const login = parent?.data?.user?.login;
+                  if (login) {
+                    prefix = `@${login} `;
+                  }
+                } catch {
+                  // Fallback to plain issue comment if parent lookup fails.
+                }
+
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  body: `${prefix}${body}`
+                });
+                return;
+              }
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body
+            });
 
       - name: Run Kilo CLI
         env:
@@ -129,13 +228,23 @@ jobs:
             "${kilo_args[@]}" 2>&1 | tee -a kilo-events.log | tee -a kilo-run.log
           fi
 
-          node -e "const fs=require('fs');const strip=(s)=>s.replace(/\x1B\[[0-9;]*[A-Za-z]/g,'');const lines=fs.readFileSync('kilo-events.log','utf8').split(/\r?\n/);const texts=[];for(const line of lines){if(!line.trim())continue;try{const evt=JSON.parse(line);if(evt&&evt.type==='text'&&evt.part&&typeof evt.part.text==='string'){const t=evt.part.text.trim();if(t)texts.push(t);}}catch{}}let out='';if(texts.length){out=texts[texts.length-1];}else{const fallback=strip(fs.readFileSync('kilo-events.log','utf8')).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);out=fallback.length?fallback[fallback.length-1]:'';}fs.writeFileSync('kilo-output.log',out+(out.endsWith('\n')?'':'\n'));"
+          node --experimental-strip-types scripts/kilo-postprocess.ts kilo-events.log kilo-output.log kilo-readable.log
+
+      - name: Create GitHub App token for final comment
+        if: ${{ always() && inputs.pr_number != '' }}
+        id: app-token-final
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.NIKOLAY_REVIEWER_APP_ID }}
+          private-key: ${{ secrets.NIKOLAY_REVIEWER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
 
       - name: Post result as GitHub App comment
-        if: ${{ always() && inputs.pr_number != '' }}
+        if: ${{ always() && inputs.pr_number != '' && steps.app-token-final.outputs.token != '' }}
         uses: actions/github-script@v7
         with:
-          github-token: ${{ steps.app-token.outputs.token }}
+          github-token: ${{ steps.app-token-final.outputs.token }}
           script: |
             const fs = require('fs');
             const prNumber = Number('${{ inputs.pr_number }}');
@@ -203,4 +312,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: kilo-run-log
-          path: kilo-run.log
+          path: |
+            kilo-run.log
+            kilo-readable.log

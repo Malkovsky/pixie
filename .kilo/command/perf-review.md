@@ -19,7 +19,10 @@ Non-negotiable requirements:
 If arguments are omitted:
 - Default target branch to PR base branch from `gh pr view --json baseRefName` when available.
 - Fall back target branch to `main`.
-- Default filter to empty (run full selected benchmark suites).
+- Default filter must be **targeted**, not full-suite:
+  - Derive from changed files and changed symbols.
+  - If `include/pixie/bitvector.h` changed in select path, default to `BM_Select` and add `BM_RankNonInterleaved` as control.
+  - Run full selected suites only as last resort when mapping fails.
 
 ## Step 1 - Resolve Branches and Revisions
 
@@ -43,7 +46,7 @@ Map file paths to benchmark binaries:
 
 | Changed path pattern | Benchmark binary | Coverage |
 |---|---|---|
-| `include/bit_vector*`, `include/interleaved*` | `benchmarks` | BitVector rank/select |
+| `include/pixie/bitvector*`, `include/*bit_vector*`, `include/interleaved*` | `benchmarks` | BitVector rank/select |
 | `include/rmm*` | `bench_rmm` | RmM tree operations |
 | `include/louds*` | `louds_tree_benchmarks` | LOUDS traversal |
 | `include/simd*`, `include/aligned*` | `alignment_comparison` | SIMD and alignment |
@@ -57,9 +60,14 @@ Available benchmark binaries:
 - `louds_tree_benchmarks`
 - `alignment_comparison`
 
-If the mapping is ambiguous, run all benchmark binaries.
+If the mapping is ambiguous, run all benchmark binaries but still apply a focused filter first.
 If `--filter` is provided, pass it through as `--benchmark_filter`.
 Print selected binaries and why they were selected.
+
+Execution guardrails:
+- Do not use background jobs (`nohup`, `&`) for benchmark runs in CI.
+- Do not interleave multiple benchmark runs into one shell command stream.
+- Run one benchmark command at a time and wait for completion.
 
 ## Step 3 - Build Both Revisions (Timing and Profiling Builds)
 
@@ -98,19 +106,38 @@ If a required binary is missing, report failure and stop with a blocked verdict.
 
 ## Step 5 - Run Timing Comparison (Primary Judgment)
 
-Locate compare script from baseline timing build:
+Use a deterministic JSON-first workflow. Do not rely on long-running `compare.py` binary-vs-binary mode.
 
-`build/benchmarks-all_bench_<baseline_hash>/_deps/googlebenchmark-src/tools/compare.py`
+1. Verify Python benchmark tooling once before runs:
+   - `python3 -c "import numpy, scipy"`
+2. For each selected benchmark binary, run baseline then contender sequentially, each with explicit JSON out:
+   - `--benchmark_filter="<filter>"`
+   - `--benchmark_format=json`
+   - `--benchmark_out=<file>.json`
+   - `--benchmark_report_aggregates_only=true`
+   - `--benchmark_display_aggregates_only=true`
+3. Suppress benchmark stdout/stderr noise when generating JSON artifacts so files stay valid:
+   - `> <file>.log 2>&1`
+4. Validate both JSON files before comparison:
+   - `python3 -m json.tool <file>.json > /dev/null`
+5. Compare using one of:
+   - `python3 <compare.py> -a benchmarks <baseline.json> <contender.json>`
+   - or a deterministic local Python diff script over aggregate means.
+6. Keep raw JSON files and comparison output for auditability.
 
-For each selected benchmark binary, run:
-
-`python3 <compare.py> benchmarks <baseline_binary> <contender_binary> [--benchmark_filter="<filter>"]`
-
-Capture full output for each binary and keep it for report details.
+Timeout and retry policy:
+- Use command timeouts that match benchmark scope.
+- If a run times out once, narrow filter immediately and retry once.
+- Maximum retry count per benchmark group: 1.
+- If still timing out, produce a blocked/partial verdict with explicit scope limitations.
 
 ## Step 6 - Collect Hardware Counter Profiles (Linux Only)
 
-If Linux profiling build is available, run both baseline and contender diagnostic binaries with counter output:
+Run a preflight first to avoid wasted attempts:
+1. Execute one tiny benchmark with perf counters (e.g. one benchmark case) and inspect output for counter availability.
+2. If output includes warnings like `Failed to get a file descriptor for performance counter`, mark counters unavailable and skip counter collection.
+
+If preflight passes and Linux profiling build is available, run both baseline and contender diagnostic binaries with counter output:
 
 - `--benchmark_counters_tabular=true`
 - `--benchmark_format=json`
@@ -128,7 +155,7 @@ Compute derived metrics when denominators are non-zero:
 - Cache miss rate = cache-misses / cache-references
 - Branch mispredict rate = branch-misses / branches
 
-If profiling is unavailable (non-Linux or libpfm not available), continue with timing-only review and explicitly mark profiling as unavailable in the report.
+If profiling is unavailable (non-Linux, libpfm missing, or perf permissions blocked), continue with timing-only review and explicitly mark profiling as unavailable in the report.
 
 ## Step 7 - Analyze Timing and Counter Data
 
@@ -149,6 +176,10 @@ Counter correlation:
 Judgment priority:
 - Base verdict primarily on benchmark timing comparison.
 - Use counter data as explanatory evidence and confidence signal.
+
+Noise-control expectations:
+- Include at least one control benchmark family expected to be unaffected by the code change.
+- Treat isolated swings without pattern as noise unless reproduced across related sizes/fill ratios.
 
 ## Step 8 - Produce Final Markdown Report
 
@@ -197,3 +228,4 @@ Verdict rules:
 
 - If required builds fail or timing comparison cannot run, output a blocked review with exact failure points and no misleading verdict.
 - If only profiling fails, continue with timing-based verdict and explicitly list profiling limitation.
+- If JSON output is invalid/truncated, discard it and rerun that benchmark command once with tighter filter and explicit output redirection.
