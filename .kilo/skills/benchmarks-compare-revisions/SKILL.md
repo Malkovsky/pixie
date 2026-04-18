@@ -5,7 +5,12 @@ description: Compare benchmark performance between two git revisions by building
 
 # Benchmarks Compare Revisions Skill
 
-Use this skill to compare performance between two git revisions. It focuses on the compare workflow and relies on the existing benchmarks skill for build/run details (see .kilo/skills/benchmarks/SKILL.md).
+Use this skill to compare performance between two git revisions.
+
+This workflow now depends on:
+
+1. `.kilo/skills/benchmarks-affected/SKILL.md` to determine affected benchmark targets/functions and produce a benchmark filter.
+2. `.kilo/skills/benchmarks/SKILL.md` for build/run operational details.
 
 ## Goal
 
@@ -21,7 +26,27 @@ BASELINE=abc1234
 CONTENDER=def5678
 ```
 
-## Step 1 — Build both revisions (Release only)
+## Step 1 — Compute affected benchmark scope first
+
+Run `benchmarks-affected` from the contender checkout to derive the compare scope.
+
+Do not duplicate `benchmarks-affected` internals here (compile database selection, AST analysis, or fallback heuristics). Follow that skill directly and consume only its outputs.
+
+Inputs to pass through:
+
+- `--baseline ${BASELINE}`
+- optional compile-commands path if auto-detection is not desired
+- optional output format (`json` recommended for parsing)
+
+Consume these outputs from `benchmarks-affected`:
+
+- `suggested_filter_regex` -> set `FILTER`
+- `affected_benchmark_targets` -> optionally constrain which benchmark binary/binaries to run
+- `affected_benchmarks` -> function-level scope for validation/reporting
+
+If `FILTER` is empty, fall back to full benchmark binary compare (conservative mode).
+
+## Step 2 — Build both revisions (Release only)
 
 Use the existing benchmarks skill build steps, but set the build suffix to include the short hash for each revision:
 
@@ -37,7 +62,7 @@ git checkout ${CONTENDER}
 # Follow .kilo/skills/benchmarks/SKILL.md build instructions with this suffix
 ```
 
-## Step 2 — Compare using compare.py
+## Step 3 — Compare using compare.py
 
 Use Google Benchmark compare tooling with a JSON-first flow to avoid long-running binary-vs-binary retries.
 
@@ -80,13 +105,16 @@ Run the comparison:
 python3 ${COMPARE_PY} -a benchmarks ${BASE_JSON} ${CONT_JSON}
 ```
 
-### Optional: filter to reduce noise and runtime
-
-Pass filter when generating JSON files:
+Use the affected filter from Step 1 when generating JSON files:
 ```bash
-FILTER="BM_Rank"
-build/benchmarks-all_bench_${BASELINE}/benchmarks --benchmark_filter="${FILTER}" --benchmark_report_aggregates_only=true --benchmark_display_aggregates_only=true ...
-build/benchmarks-all_bench_${CONTENDER}/benchmarks --benchmark_filter="${FILTER}" --benchmark_report_aggregates_only=true --benchmark_display_aggregates_only=true ...
+if [ -n "${FILTER}" ]; then
+  FILTER_ARG="--benchmark_filter=${FILTER}"
+else
+  FILTER_ARG=""
+fi
+
+build/benchmarks-all_bench_${BASELINE}/benchmarks ${FILTER_ARG} --benchmark_report_aggregates_only=true --benchmark_display_aggregates_only=true ...
+build/benchmarks-all_bench_${CONTENDER}/benchmarks ${FILTER_ARG} --benchmark_report_aggregates_only=true --benchmark_display_aggregates_only=true ...
 ```
 
 ## Retry and Timeout Policy
@@ -96,7 +124,7 @@ build/benchmarks-all_bench_${CONTENDER}/benchmarks --benchmark_filter="${FILTER}
 3. Maximum retries per benchmark group: 1.
 4. If still failing, emit blocked/partial findings instead of repeated attempts.
 
-## Step 3 — Record findings
+## Step 4 — Record findings
 
 Capture the compare.py output (terminal transcript or redirected file) and note any statistically significant regressions or wins.
 
@@ -105,5 +133,5 @@ Capture the compare.py output (terminal transcript or redirected file) and note 
 1. **Release only**: never compare Debug binaries.
 2. **Short hash suffixes**: keep build dirs isolated per revision (example: `bench_<short-hash>`).
 3. **Same host, same conditions**: do not compare across different machines or power profiles.
-4. **Filter for focus**: narrow `--benchmark_filter` to the changed area.
+4. **Filter from analysis**: use `benchmarks-affected` output instead of hand-crafted filters whenever possible.
 5. **Pin frequency**: for stable numbers, follow benchmark skill guidance on CPU governor.
