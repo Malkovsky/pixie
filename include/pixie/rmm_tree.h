@@ -2195,7 +2195,23 @@ class RmMTree {
     }
     build(leaf_block_bits, max_overhead);
   }
+public:
+  /**
+ * @brief Export internal bitvector into a 0/1 string.
+ */
+  std::string to_string() const {
+    std::string result;
+    result.resize(num_bits);
 
+    for (size_t i = 0; i < num_bits; ++i) {
+      uint64_t word = bits[i >> 6];
+      bool bit = (word >> (i & 63)) & 1ULL;
+      result[i] = bit ? '1' : '0';
+    }
+
+    return result;
+  }
+private:
   /**
    * @brief Build internal structures from 64-bit words.
    * @param words Words with LSB-first bits.
