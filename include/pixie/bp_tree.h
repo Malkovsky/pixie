@@ -3,7 +3,6 @@
 #include <pixie/rmm_tree.h>
 
 #include <cstdint>
-#include <span>
 
 namespace pixie {
 /**
@@ -36,7 +35,7 @@ class BpTree {
   /**
    * @brief Returns the root node
    */
-  BpNode root() const { return BpNode(0, 0); }
+  static BpNode root() { return BpNode(0, 0); }
 
   /**
    * @brief Returns the size of the tree
@@ -49,6 +48,11 @@ class BpTree {
   bool is_leaf(const BpNode& node) const {
     return (node.pos + 1 == num_bits_) or rmm.bit(node.pos + 1) == 0;
   }
+
+  /**
+   * @brief Indicates if @p node is a root
+   */
+  static bool is_root(const BpNode& node) { return node.number == 0; }
 
   /**
    * @brief Returns the number of children of a @p node
@@ -74,7 +78,7 @@ class BpTree {
   /**
    * @brief Returns first child of a @p node
    */
-  BpNode first_child(const BpNode& node) const {
+  static BpNode first_child(const BpNode& node) {
     size_t pos = node.pos + 1;
     size_t num = node.number + 1;
     return BpNode(num, pos);
@@ -103,8 +107,8 @@ class BpTree {
     if (node.number == 0) {
       return root();
     }
-    size_t pos = rmm.enclose(node.pos);
-    size_t num = rmm.rank1(pos);
+    size_t pos = rmm.enclose(node.pos + 1);
+    size_t num = rmm.rank1(pos) - 1;
     return BpNode(num, pos);
   }
 
@@ -112,7 +116,7 @@ class BpTree {
    * @brief Indicates if @p node is last child
    */
   bool is_last_child(const BpNode& node) const {
-    size_t end = rmm.close(node.pos);
+    size_t end = rmm.close(node.pos + 1);
     if (end + 1 >= num_bits_) {
       return true;
     }
@@ -123,8 +127,8 @@ class BpTree {
    * @brief Returns next sibling of a @p node
    */
   BpNode next_sibling(const BpNode& node) const {
-    size_t pos = rmm.close(node.pos) + 1;
-    size_t num = rmm.rank1(pos);
+    size_t pos = rmm.close(node.pos + 1) + 1;
+    size_t num = rmm.rank1(pos + 1) - 1;
     return BpNode(num, pos);
   }
 };
