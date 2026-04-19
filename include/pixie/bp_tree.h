@@ -40,7 +40,7 @@ class BpTree {
   /**
    * @brief Returns the size of the tree
    */
-  size_t size() const { return num_bits_; }
+  size_t size() const { return num_bits_ / 2; }
 
   /**
    * @brief Indicates if @p node is a leaf
@@ -65,7 +65,7 @@ class BpTree {
       return 0;
     }
     BpNode child = first_child(node);
-    int child_count = 1;
+    size_t child_count = 1;
     while (true) {
       if (is_last_child(child)) {
         return child_count;

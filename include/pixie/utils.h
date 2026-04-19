@@ -33,7 +33,7 @@ std::vector<std::vector<size_t>> bfs_order(
   std::queue<std::pair<size_t, size_t>> q;
   bfs_adj[0].push_back(0);
   q.push({0, 0});
-  int cnt = 1;
+  size_t cnt = 1;
   while (!q.empty()) {
     size_t old_v = q.front().first;
     size_t cur_v = q.front().second;
@@ -92,9 +92,9 @@ std::vector<uint64_t> adj_to_bp(size_t tree_size,
                                 const std::vector<std::vector<size_t>>& adj) {
   size_t bp_size = tree_size * 2;
   std::vector<uint64_t> bp((bp_size + 63) / 64, 0);
-  std::vector<std::pair<int, int>> stack;
+  std::vector<std::pair<size_t, size_t>> stack;
   stack.push_back(std::make_pair(0, 0));
-  int pos = 0;
+  size_t pos = 0;
   bp[pos >> 6] = bp[pos >> 6] | (1ULL << (pos & 63));
   while (!stack.empty()) {
     auto& [v, p] = stack.back();
