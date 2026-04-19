@@ -175,6 +175,15 @@ if(PIXIE_TESTS)
         gtest_main
         ${PIXIE_DIAGNOSTICS_LIBS})
 
+    add_executable(bp_tree_tests
+            src/tests/bp_tree_tests.cpp)
+    target_include_directories(bp_tree_tests
+            PUBLIC include)
+    target_link_libraries(bp_tree_tests
+            gtest
+            gtest_main
+            ${PIXIE_DIAGNOSTICS_LIBS})
+
     add_executable(dfuds_tree_tests
             src/tests/dfuds_tree_tests.cpp)
     target_include_directories(dfuds_tree_tests
