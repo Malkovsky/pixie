@@ -10,6 +10,7 @@ cmake --build --preset coverage
 "${BUILD_DIR}/unittests"
 "${BUILD_DIR}/louds_tree_tests"
 "${BUILD_DIR}/test_rmm"
+"${BUILD_DIR}/wavelet_tree_tests"
 
 cd "${BUILD_DIR}"
 find . -name "*.gcda" > gcov_files.txt
