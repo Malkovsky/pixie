@@ -148,6 +148,15 @@ if(PIXIE_TESTS)
         gtest
         gtest_main
         ${PIXIE_DIAGNOSTICS_LIBS})
+
+    add_executable(wavelet_tree_tests
+            src/tests/wavelet_tree_tests.cpp)
+    target_include_directories(wavelet_tree_tests
+            PUBLIC include)
+    target_link_libraries(wavelet_tree_tests
+            gtest
+            gtest_main
+            ${PIXIE_DIAGNOSTICS_LIBS})
 endif()
 
 # ---------------------------------------------------------------------------

@@ -59,6 +59,17 @@ std::vector<uint64_t> adj_to_louds(
   return louds;
 }
 
+std::vector<uint64_t> generate_random_data(size_t data_size,
+                                           size_t alphabet_size,
+                                           std::mt19937_64& rng) {
+  std::vector<uint64_t> data(data_size);
+  std::uniform_int_distribution<uint64_t> alphabet(0, alphabet_size - 1);
+  for (size_t i = 0; i < data_size; i++) {
+    data[i] = alphabet(rng);
+  }
+  return data;
+}
+
 struct AdjListNode {
   size_t number;
 };

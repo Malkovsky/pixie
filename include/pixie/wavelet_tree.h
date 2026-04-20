@@ -8,7 +8,7 @@ namespace pixie {
 class WaveletTree {
   using node_index_t = size_t;
   struct WaveletNode {
-    static const node_index_t kNil = std::numeric_limits<node_index_t>::max();
+    static constexpr node_index_t kNil = std::numeric_limits<node_index_t>::max();
     node_index_t parent = kNil, left_child = kNil, right_child = kNil;
     uint64_t middle;
     std::vector<uint64_t> bit_vector_;
