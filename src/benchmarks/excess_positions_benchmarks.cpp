@@ -82,3 +82,36 @@ BENCHMARK(BM_ExcessPositions512_Scalar)
     ->Args({0})
     ->Args({8})
     ->Args({64});
+
+static void BM_ExcessPositions512_LUT(benchmark::State& state) {
+  const int target_x = state.range(0);
+  const size_t num_blocks = 4096;
+
+  std::mt19937_64 rng(42);
+  std::vector<std::array<uint64_t, 8>> blocks(num_blocks);
+  for (auto& b : blocks) {
+    for (auto& w : b) {
+      w = rng();
+    }
+  }
+
+  alignas(64) uint64_t out[8];
+  size_t idx = 0;
+
+  for (auto _ : state) {
+    const auto& s = blocks[idx % num_blocks];
+    excess_positions_512_lut(s.data(), target_x, out);
+    benchmark::DoNotOptimize(out);
+    ++idx;
+  }
+
+  state.SetItemsProcessed(state.iterations());
+}
+
+BENCHMARK(BM_ExcessPositions512_LUT)
+    ->ArgNames({"X"})
+    ->Args({-64})
+    ->Args({-8})
+    ->Args({0})
+    ->Args({8})
+    ->Args({64});
