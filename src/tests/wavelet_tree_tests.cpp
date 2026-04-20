@@ -57,7 +57,7 @@ TEST(WaveletTreeTest, BasicSegment) {
     for (size_t end = begin; end <= data_size; end++) {
       auto segment = wavelet_tree.getSegment(begin, end);
       EXPECT_EQ(segment.size(), end - begin);
-      for(size_t i = 0; i < end - begin; i++){
+      for (size_t i = 0; i < end - begin; i++) {
         EXPECT_EQ(segment[i], data[begin + i]);
       }
     }
@@ -77,13 +77,16 @@ TEST(WaveletTreeTest, SmokeSelect) {
       rank[data[i]].push_back(i);
     }
 
-    WaveletTree wavelet_tree(alphabet_size, data);
+    for (auto build_type : {pixie::WaveletTreeBuildType::Standard,
+                            pixie::WaveletTreeBuildType::Huffman}) {
+      WaveletTree wavelet_tree(alphabet_size, data, build_type);
 
-    for (uint64_t symb = 0; symb < alphabet_size; symb++) {
-      for (size_t i = 0; i <= rank[symb].size(); i++) {
-        uint64_t exp = i == rank[symb].size() ? data_size : rank[symb][i];
-        uint64_t act = wavelet_tree.select(symb, i + 1);
-        EXPECT_EQ(act, exp);
+      for (uint64_t symb = 0; symb < alphabet_size; symb++) {
+        for (size_t i = 0; i <= rank[symb].size(); i++) {
+          uint64_t exp = i == rank[symb].size() ? data_size : rank[symb][i];
+          uint64_t act = wavelet_tree.select(symb, i + 1);
+          EXPECT_EQ(act, exp);
+        }
       }
     }
   }
@@ -99,24 +102,25 @@ TEST(WaveletTreeTest, SmokeRank) {
     std::vector<uint64_t> query =
         generate_random_data(data_size + 1, alphabet_size, rng);
 
-     count.assign(alphabet_size, 0);
+    for (auto build_type : {pixie::WaveletTreeBuildType::Standard,
+                            pixie::WaveletTreeBuildType::Huffman}) {
+      count.assign(alphabet_size, 0);
+      WaveletTree wavelet_tree(alphabet_size, data, build_type);
 
-    WaveletTree wavelet_tree(alphabet_size, data);
+      for (size_t i = 0; i <= data_size; i++) {
+        uint64_t symb = query[i];
+        uint64_t exp = count[symb];
+        uint64_t act = wavelet_tree.rank(symb, i);
+        EXPECT_EQ(act, exp);
 
-    for (size_t i = 0; i <= data_size; i++) {
-      uint64_t symb = query[i];
-      uint64_t exp = count[symb];
-      uint64_t act = wavelet_tree.rank(symb, i);
-      EXPECT_EQ(act, exp);
-
-      if (i == data_size) {
-        break;
+        if (i == data_size) {
+          break;
+        }
+        count[data[i]]++;
       }
-      count[data[i]]++;
     }
   }
 }
-
 
 TEST(WaveletTreeTest, SmokeSegment) {
   size_t data_size = 256, alphabet_size = 100;
@@ -125,14 +129,17 @@ TEST(WaveletTreeTest, SmokeSegment) {
   std::vector<uint64_t> data =
       generate_random_data(data_size, alphabet_size, rng);
 
-  WaveletTree wavelet_tree(alphabet_size, data);
+  for (auto build_type : {pixie::WaveletTreeBuildType::Standard,
+                          pixie::WaveletTreeBuildType::Huffman}) {
+    WaveletTree wavelet_tree(alphabet_size, data, build_type);
 
-  for (size_t begin = 0; begin <= data_size; begin++) {
-    for (size_t end = begin; end <= data_size; end++) {
-      auto segment = wavelet_tree.getSegment(begin, end);
-      EXPECT_EQ(segment.size(), end - begin);
-      for(size_t i = 0; i < end - begin; i++){
-        EXPECT_EQ(segment[i], data[begin + i]);
+    for (size_t begin = 0; begin <= data_size; begin++) {
+      for (size_t end = begin; end <= data_size; end++) {
+        auto segment = wavelet_tree.getSegment(begin, end);
+        EXPECT_EQ(segment.size(), end - begin);
+        for (size_t i = 0; i < end - begin; i++) {
+          EXPECT_EQ(segment[i], data[begin + i]);
+        }
       }
     }
   }
