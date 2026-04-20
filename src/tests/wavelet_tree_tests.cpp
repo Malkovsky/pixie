@@ -47,6 +47,23 @@ TEST(WaveletTreeTest, BasicRank) {
   }
 }
 
+TEST(WaveletTreeTest, BasicSegment) {
+  const std::vector<uint64_t> data = {3, 2, 0, 3, 1, 1, 2};
+  size_t data_size = 7, alphabet_size = 4;
+
+  WaveletTree wavelet_tree(alphabet_size, data);
+
+  for (size_t begin = 0; begin <= data_size; begin++) {
+    for (size_t end = begin; end <= data_size; end++) {
+      auto segment = wavelet_tree.getSegment(begin, end);
+      EXPECT_EQ(segment.size(), end - begin);
+      for(size_t i = 0; i < end - begin; i++){
+        EXPECT_EQ(segment[i], data[begin + i]);
+      }
+    }
+  }
+}
+
 TEST(WaveletTreeTest, SmokeSelect) {
   std::vector<std::vector<size_t>> rank;
   for (size_t data_size = 8; data_size < (1 << 22); data_size <<= 1) {
@@ -96,6 +113,27 @@ TEST(WaveletTreeTest, SmokeRank) {
         break;
       }
       count[data[i]]++;
+    }
+  }
+}
+
+
+TEST(WaveletTreeTest, SmokeSegment) {
+  size_t data_size = 256, alphabet_size = 100;
+
+  std::mt19937_64 rng(239);
+  std::vector<uint64_t> data =
+      generate_random_data(data_size, alphabet_size, rng);
+
+  WaveletTree wavelet_tree(alphabet_size, data);
+
+  for (size_t begin = 0; begin <= data_size; begin++) {
+    for (size_t end = begin; end <= data_size; end++) {
+      auto segment = wavelet_tree.getSegment(begin, end);
+      EXPECT_EQ(segment.size(), end - begin);
+      for(size_t i = 0; i < end - begin; i++){
+        EXPECT_EQ(segment[i], data[begin + i]);
+      }
     }
   }
 }

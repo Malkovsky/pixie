@@ -1,6 +1,7 @@
 #pragma once
 
 #include <pixie/bitvector.h>
+
 #include <limits>
 
 namespace pixie {
@@ -8,7 +9,8 @@ namespace pixie {
 class WaveletTree {
   using node_index_t = size_t;
   struct WaveletNode {
-    static constexpr node_index_t kNil = std::numeric_limits<node_index_t>::max();
+    static constexpr node_index_t kNil =
+        std::numeric_limits<node_index_t>::max();
     node_index_t parent = kNil, left_child = kNil, right_child = kNil;
     uint64_t middle;
     std::vector<uint64_t> bit_vector_;
@@ -34,8 +36,8 @@ class WaveletTree {
       leaves_[begin] = parent;
       return WaveletNode::kNil;
     }
-    if(data.empty()){
-      for(size_t symb = begin; symb < end; symb++){
+    if (data.empty()) {
+      for (size_t symb = begin; symb < end; symb++) {
         leaves_[symb] = parent;
       }
       return WaveletNode::kNil;
@@ -61,6 +63,44 @@ class WaveletTree {
         BuildNode(middle, end, std::span{cut, data.end()}, result);
 
     return result;
+  }
+
+  void copySegmentContent(node_index_t node,
+                          size_t begin,
+                          size_t end,
+                          std::span<uint64_t> dst,
+                          std::span<uint64_t> tmp) const {
+    if (begin == end) {
+      return;
+    }
+    size_t rank = nodes_[node].data.rank(begin), rank0 = begin - rank;
+    size_t right = nodes_[node].data.rank(end) - rank,
+           left = (end - begin) - right;
+
+    if (nodes_[node].left_child == WaveletNode::kNil) {
+      std::fill(tmp.begin(), tmp.begin() + static_cast<long long>(left),
+                nodes_[node].middle - 1);
+    } else {
+      copySegmentContent(nodes_[node].left_child, rank0, rank0 + left,
+                         tmp.subspan(0, left), dst.subspan(0, left));
+    }
+    if (nodes_[node].right_child == WaveletNode::kNil) {
+      std::fill(tmp.begin() + static_cast<long long>(left), tmp.end(),
+                nodes_[node].middle);
+    } else {
+      copySegmentContent(nodes_[node].right_child, rank, rank + right,
+                         tmp.subspan(left, right), dst.subspan(left, right));
+    }
+
+    size_t j = 0, k = left;
+    const auto& bit_vector = nodes_[node].bit_vector_;
+    for (size_t i = begin; i < end; i++) {
+      if ((bit_vector[i / 64] >> (i % 64)) & 1) {
+        dst[i - begin] = tmp[k++];
+      } else {
+        dst[i - begin] = tmp[j++];
+      }
+    }
   }
 
  public:
@@ -95,7 +135,7 @@ class WaveletTree {
   }
 
   size_t select(uint64_t symbol, size_t rank) const {
-    if (symbol >= alphabet_size_) [[unlikely]] {
+    if (symbol >= alphabet_size_ || data_size_ == 0) [[unlikely]] {
       return data_size_;
     }
     node_index_t current = leaves_[symbol];
@@ -108,6 +148,16 @@ class WaveletTree {
       }
     }
     return rank - 1;
+  }
+
+  std::vector<uint64_t> getSegment(size_t begin, size_t end) const {
+    auto length = static_cast<long long>(end - begin);
+    std::vector<uint64_t> result(2 * length);
+    copySegmentContent(root_, begin, end,
+                       std::span{result.begin(), result.begin() + length},
+                       std::span{result.begin() + length, result.end()});
+    result.resize(length);
+    return result;
   }
 };
 
