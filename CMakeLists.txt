@@ -148,6 +148,15 @@ if(PIXIE_TESTS)
         gtest
         gtest_main
         ${PIXIE_DIAGNOSTICS_LIBS})
+
+    add_executable(excess_positions_tests
+        src/tests/excess_positions_tests.cpp)
+    target_include_directories(excess_positions_tests
+        PUBLIC include)
+    target_link_libraries(excess_positions_tests
+        gtest
+        gtest_main
+        ${PIXIE_DIAGNOSTICS_LIBS})
 endif()
 
 # ---------------------------------------------------------------------------
@@ -197,6 +206,15 @@ if(PIXIE_BENCHMARKS)
     target_include_directories(alignment_comparison
         PUBLIC include)
     target_link_libraries(alignment_comparison
+        benchmark
+        benchmark_main
+        ${PIXIE_DIAGNOSTICS_LIBS})
+
+    add_executable(excess_positions_benchmarks
+        src/benchmarks/excess_positions_benchmarks.cpp)
+    target_include_directories(excess_positions_benchmarks
+        PUBLIC include)
+    target_link_libraries(excess_positions_benchmarks
         benchmark
         benchmark_main
         ${PIXIE_DIAGNOSTICS_LIBS})
