@@ -331,3 +331,29 @@ TEST(ExcessPositions512LUT, MatchesExpand) {
     }
   }
 }
+
+TEST(ExcessPositions512LUT, OverflowBoundary) {
+  alignas(64) uint64_t s[8];
+  alignas(64) uint64_t out_expand[8];
+  alignas(64) uint64_t out_lut[8];
+
+  for (int x = -64; x <= 64; ++x) {
+    for (uint64_t hi_pattern = 0; hi_pattern < 256; ++hi_pattern) {
+      for (int fill = 0; fill <= 7; ++fill) {
+        for (int w = 0; w < 8; ++w) {
+          s[w] = (w < fill) ? UINT64_MAX : 0;
+        }
+        s[fill] = hi_pattern;
+
+        excess_positions_512(s, x, out_expand);
+        excess_positions_512_lut(s, x, out_lut);
+
+        for (int w = 0; w < 8; ++w) {
+          ASSERT_EQ(out_expand[w], out_lut[w])
+              << "x=" << x << " fill=" << fill << " hi=" << hi_pattern
+              << " word=" << w;
+        }
+      }
+    }
+  }
+}

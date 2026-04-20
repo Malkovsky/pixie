@@ -7,10 +7,8 @@
 #include <random>
 #include <vector>
 
-static void BM_ExcessPositions512(benchmark::State& state) {
-  const int target_x = state.range(0);
-  const size_t num_blocks = 4096;
-
+static std::vector<std::array<uint64_t, 8>> make_blocks(
+    size_t num_blocks = 4096) {
   std::mt19937_64 rng(42);
   std::vector<std::array<uint64_t, 8>> blocks(num_blocks);
   for (auto& b : blocks) {
@@ -18,6 +16,13 @@ static void BM_ExcessPositions512(benchmark::State& state) {
       w = rng();
     }
   }
+  return blocks;
+}
+
+static void BM_ExcessPositions512(benchmark::State& state) {
+  const int target_x = state.range(0);
+  const auto blocks = make_blocks();
+  const size_t num_blocks = blocks.size();
 
   alignas(64) uint64_t out[8];
   size_t idx = 0;
@@ -42,15 +47,8 @@ BENCHMARK(BM_ExcessPositions512)
 
 static void BM_ExcessPositions512_Scalar(benchmark::State& state) {
   const int target_x = state.range(0);
-  const size_t num_blocks = 4096;
-
-  std::mt19937_64 rng(42);
-  std::vector<std::array<uint64_t, 8>> blocks(num_blocks);
-  for (auto& b : blocks) {
-    for (auto& w : b) {
-      w = rng();
-    }
-  }
+  const auto blocks = make_blocks();
+  const size_t num_blocks = blocks.size();
 
   alignas(64) uint64_t out[8];
   size_t idx = 0;
@@ -85,15 +83,8 @@ BENCHMARK(BM_ExcessPositions512_Scalar)
 
 static void BM_ExcessPositions512_LUT(benchmark::State& state) {
   const int target_x = state.range(0);
-  const size_t num_blocks = 4096;
-
-  std::mt19937_64 rng(42);
-  std::vector<std::array<uint64_t, 8>> blocks(num_blocks);
-  for (auto& b : blocks) {
-    for (auto& w : b) {
-      w = rng();
-    }
-  }
+  const auto blocks = make_blocks();
+  const size_t num_blocks = blocks.size();
 
   alignas(64) uint64_t out[8];
   size_t idx = 0;
