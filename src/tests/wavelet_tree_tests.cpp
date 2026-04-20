@@ -2,10 +2,7 @@
 #include <pixie/utils.h>
 #include <pixie/wavelet_tree.h>
 
-#include <iostream>
-#include <numeric>
 #include <random>
-#include <stack>
 
 using pixie::WaveletTree;
 
@@ -53,7 +50,7 @@ TEST(WaveletTreeTest, BasicRank) {
 TEST(WaveletTreeTest, SmokeSelect) {
   std::vector<std::vector<size_t>> rank;
   for (size_t data_size = 8; data_size < (1 << 22); data_size <<= 1) {
-    size_t alphabet_size = std::min(1024ull, data_size);
+    size_t alphabet_size = 1024;
     std::mt19937_64 rng(239);
     std::vector<uint64_t> data =
         generate_random_data(data_size, alphabet_size, rng);
@@ -78,7 +75,7 @@ TEST(WaveletTreeTest, SmokeSelect) {
 TEST(WaveletTreeTest, SmokeRank) {
   std::vector<size_t> count;
   for (size_t data_size = 8; data_size < (1 << 22); data_size <<= 1) {
-    size_t alphabet_size = std::min(1024ull, data_size);
+    size_t alphabet_size = 1024;
     std::mt19937_64 rng(239);
     std::vector<uint64_t> data =
         generate_random_data(data_size, alphabet_size, rng);
@@ -88,6 +85,7 @@ TEST(WaveletTreeTest, SmokeRank) {
      count.assign(alphabet_size, 0);
 
     WaveletTree wavelet_tree(alphabet_size, data);
+
     for (size_t i = 0; i <= data_size; i++) {
       uint64_t symb = query[i];
       uint64_t exp = count[symb];

@@ -201,6 +201,15 @@ if(PIXIE_BENCHMARKS)
         benchmark_main
         ${PIXIE_DIAGNOSTICS_LIBS})
 
+    add_executable(wavelet_tree_benchmarks
+            src/benchmarks/wavelet_tree_benchmarks.cpp)
+    target_include_directories(wavelet_tree_benchmarks
+            PUBLIC include)
+    target_link_libraries(wavelet_tree_benchmarks
+            benchmark
+            benchmark_main
+            ${PIXIE_DIAGNOSTICS_LIBS})
+
     add_executable(alignment_comparison
         src/benchmarks/alignment_comparison.cpp)
     target_include_directories(alignment_comparison

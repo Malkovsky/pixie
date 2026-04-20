@@ -34,6 +34,12 @@ class WaveletTree {
       leaves_[begin] = parent;
       return WaveletNode::kNil;
     }
+    if(data.empty()){
+      for(size_t symb = begin; symb < end; symb++){
+        leaves_[symb] = parent;
+      }
+      return WaveletNode::kNil;
+    }
 
     size_t middle = begin + (end - begin) / 2;
     std::vector<uint64_t> bit_vector;
@@ -88,7 +94,7 @@ class WaveletTree {
     return pos;
   }
 
-  size_t select(uint64_t symbol, size_t rank) {
+  size_t select(uint64_t symbol, size_t rank) const {
     if (symbol >= alphabet_size_) [[unlikely]] {
       return data_size_;
     }
