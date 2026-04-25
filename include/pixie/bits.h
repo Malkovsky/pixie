@@ -814,11 +814,12 @@ static inline void excess_positions_512_lut(const uint64_t* s,
     __m128i excl = _mm_slli_si128(ps, 1);
 
     __m128i vtarget_local = _mm_set1_epi8(static_cast<int8_t>(target_local));
-    // Overflow safety: excl[i] ∈ [0, 60], target_local ∈ [-64, 64].
+    // Overflow safety: excl[i] ∈ [-60, 60] (exclusive prefix sum of up to
+    // 15 deltas each in [-4, +4]), target_local ∈ [-64, 64].
     // base = excl - target_local ∈ [-124, 124], fits in int8.
-    // base + pos_j ∈ [-128, 128]. The boundary value 128 wraps to -128 in
-    // int8, but -128 ≠ 0 so cmpeq_epi8 produces no false positive.
-    // The value -128 is exactly representable and also ≠ 0.
+    // base + pos_j ∈ [-128, 128]. The boundary value -128 is exactly
+    // representable in int8 and ≠ 0. The value +128 wraps to -128 in
+    // int8, which is also ≠ 0, so cmpeq_epi8 produces no false positive.
     __m128i base = _mm_sub_epi8(excl, vtarget_local);
 
     __m128i cmp0 = _mm_cmpeq_epi8(
