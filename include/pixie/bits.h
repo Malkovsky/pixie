@@ -14,6 +14,15 @@
 #define PIXIE_AVX512_SUPPORT
 #endif
 
+#if defined(__AVX512VBMI__) && defined(PIXIE_AVX512_SUPPORT)
+#define PIXIE_AVX512VBMI_SUPPORT
+#endif
+
+#if defined(__GFNI__) && defined(PIXIE_AVX512_SUPPORT) && \
+    defined(PIXIE_AVX512GFNI_INTERLEAVE)
+#define PIXIE_AVX512GFNI_SUPPORT
+#endif
+
 #ifdef __AVX2__
 #define PIXIE_AVX2_SUPPORT
 // Lookup table for 4-bit popcount
@@ -632,6 +641,55 @@ void popcount_32x8(const uint8_t* x, uint8_t* result) {
  * @param
  * result Pointer to store the resulting 32 8-bit integers
  */
+#ifdef PIXIE_AVX512_SUPPORT
+static inline __m512i excess_bit_masks_32x() noexcept {
+  return _mm512_set_epi16(
+      (int16_t)0x8000, 0x4000, 0x2000, 0x1000, 0x0800, 0x0400, 0x0200, 0x0100,
+      0x0080, 0x0040, 0x0020, 0x0010, 0x0008, 0x0004, 0x0002, 0x0001,
+      (int16_t)0x8000, 0x4000, 0x2000, 0x1000, 0x0800, 0x0400, 0x0200, 0x0100,
+      0x0080, 0x0040, 0x0020, 0x0010, 0x0008, 0x0004, 0x0002, 0x0001);
+}
+
+static inline __m512i excess_prefix_sum_32x_i16(__m512i v) noexcept {
+  __m512i x = v;
+  x = _mm512_add_epi16(x,
+                       _mm512_alignr_epi8(x, _mm512_setzero_si512(), 16 - 2));
+  x = _mm512_add_epi16(x,
+                       _mm512_alignr_epi8(x, _mm512_setzero_si512(), 16 - 4));
+  x = _mm512_add_epi16(x,
+                       _mm512_alignr_epi8(x, _mm512_setzero_si512(), 16 - 8));
+
+  __m128i lane0 = _mm512_extracti32x4_epi32(x, 0);
+  __m128i lane1 = _mm512_extracti32x4_epi32(x, 1);
+  __m128i lane2 = _mm512_extracti32x4_epi32(x, 2);
+
+  int16_t c01 = (int16_t)_mm_extract_epi16(lane0, 7);
+  int16_t c12 = (int16_t)_mm_extract_epi16(lane1, 7);
+  int16_t c23 = (int16_t)_mm_extract_epi16(lane2, 7);
+
+  __m512i carries = _mm512_set1_epi16(0);
+  __m512i c01_vec = _mm512_set1_epi16(c01);
+  __m512i c0112_vec = _mm512_set1_epi16(static_cast<int16_t>(c01 + c12));
+  __m512i c011223_vec =
+      _mm512_set1_epi16(static_cast<int16_t>(c01 + c12 + c23));
+
+  __mmask32 k01 = 0xFFFFFF00u;
+  __mmask32 k0112 = 0xFFFF0000u;
+  __mmask32 k011223 = 0xFF000000u;
+  carries = _mm512_mask_blend_epi16(k01, carries, c01_vec);
+  carries = _mm512_mask_blend_epi16(k0112, carries, c0112_vec);
+  carries = _mm512_mask_blend_epi16(k011223, carries, c011223_vec);
+
+  x = _mm512_add_epi16(x, carries);
+  return x;
+}
+
+static inline int16_t excess_last_prefix_32x_i16(__m512i pref) noexcept {
+  __m128i lane3 = _mm512_extracti32x4_epi32(pref, 3);
+  return (int16_t)_mm_extract_epi16(lane3, 7);
+}
+#endif
+
 #ifdef PIXIE_AVX2_SUPPORT
 static inline __m256i excess_bit_masks_16x() noexcept {
   return _mm256_setr_epi16(0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020,
@@ -742,6 +800,108 @@ static inline void excess_positions_512(const uint64_t* s,
 #endif
 }
 
+#ifdef PIXIE_AVX512_SUPPORT
+static inline __m512i excess_nibble_delta_lut_512() noexcept {
+  alignas(64) static const int8_t lut[64] = {
+      -4, -2, -2, 0, -2, 0, 0, 2, -2, 0, 0, 2, 0, 2, 2, 4,
+      -4, -2, -2, 0, -2, 0, 0, 2, -2, 0, 0, 2, 0, 2, 2, 4,
+      -4, -2, -2, 0, -2, 0, 0, 2, -2, 0, 0, 2, 0, 2, 2, 4,
+      -4, -2, -2, 0, -2, 0, 0, 2, -2, 0, 0, 2, 0, 2, 2, 4};
+  return _mm512_load_si512((const __m512i*)lut);
+}
+
+static inline __m512i excess_nibble_pos0_lut_512() noexcept {
+  alignas(64) static const int8_t lut[64] = {
+      -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1,
+      -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1,
+      -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1,
+      -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1};
+  return _mm512_load_si512((const __m512i*)lut);
+}
+
+static inline __m512i excess_nibble_pos1_lut_512() noexcept {
+  alignas(64) static const int8_t lut[64] = {
+      -2, 0, 0, 2, -2, 0, 0, 2, -2, 0, 0, 2, -2, 0, 0, 2,
+      -2, 0, 0, 2, -2, 0, 0, 2, -2, 0, 0, 2, -2, 0, 0, 2,
+      -2, 0, 0, 2, -2, 0, 0, 2, -2, 0, 0, 2, -2, 0, 0, 2,
+      -2, 0, 0, 2, -2, 0, 0, 2, -2, 0, 0, 2, -2, 0, 0, 2};
+  return _mm512_load_si512((const __m512i*)lut);
+}
+
+static inline __m512i excess_nibble_pos2_lut_512() noexcept {
+  alignas(64) static const int8_t lut[64] = {
+      -3, -1, -1, 1, -1, 1, 1, 3, -3, -1, -1, 1, -1, 1, 1, 3,
+      -3, -1, -1, 1, -1, 1, 1, 3, -3, -1, -1, 1, -1, 1, 1, 3,
+      -3, -1, -1, 1, -1, 1, 1, 3, -3, -1, -1, 1, -1, 1, 1, 3,
+      -3, -1, -1, 1, -1, 1, 1, 3, -3, -1, -1, 1, -1, 1, 1, 3};
+  return _mm512_load_si512((const __m512i*)lut);
+}
+
+static inline __m512i excess_lane_prefix_sum_epi8(__m512i deltas) noexcept {
+  const __m512i Z = _mm512_setzero_si512();
+  __m512i ps = deltas;
+  ps = _mm512_add_epi8(ps, _mm512_alignr_epi8(ps, Z, 16 - 1));
+  ps = _mm512_add_epi8(ps, _mm512_alignr_epi8(ps, Z, 16 - 2));
+  ps = _mm512_add_epi8(ps, _mm512_alignr_epi8(ps, Z, 16 - 4));
+  ps = _mm512_add_epi8(ps, _mm512_alignr_epi8(ps, Z, 16 - 8));
+  return ps;
+}
+
+#ifdef PIXIE_AVX512VBMI_SUPPORT
+static inline __m512i excess_multishift_nibble_ctrl() noexcept {
+  alignas(64) static const uint8_t ctrl[64] = {
+      0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60,
+      0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60,
+      0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60,
+      0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60};
+  return _mm512_load_si512((const __m512i*)ctrl);
+}
+#endif
+
+#ifdef PIXIE_AVX512GFNI_SUPPORT
+static inline void excess_interleave_masks_gfni(__mmask64 m0,
+                                                __mmask64 m1,
+                                                __mmask64 m2,
+                                                __mmask64 m3,
+                                                uint64_t* out4) noexcept {
+  const __m512i Z = _mm512_setzero_si512();
+  __m512i b0 = _mm512_movm_epi8(m0);
+  __m512i b1 = _mm512_movm_epi8(m1);
+  __m512i b2 = _mm512_movm_epi8(m2);
+  __m512i b3 = _mm512_movm_epi8(m3);
+  b0 = _mm512_and_si512(b0, _mm512_set1_epi8(0x01));
+  b1 = _mm512_and_si512(b1, _mm512_set1_epi8(0x02));
+  b2 = _mm512_and_si512(b2, _mm512_set1_epi8(0x04));
+  b3 = _mm512_and_si512(b3, _mm512_set1_epi8(0x08));
+  __m512i combined =
+      _mm512_or_si512(_mm512_or_si512(b0, b1), _mm512_or_si512(b2, b3));
+  alignas(64) static const uint8_t A_pack[64] = {
+      0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01,
+      0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10,
+      0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01,
+      0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10,
+      0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01,
+      0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10};
+  __m512i A = _mm512_load_si512((const __m512i*)A_pack);
+  __m512i packed = _mm512_gf2p8affine_epi64_epi8(combined, A, 0);
+  alignas(64) static const uint8_t perm[64] = {
+      0,  2,  4,  6,  8,  10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30,
+      32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62,
+      1,  3,  5,  7,  9,  11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31,
+      33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63};
+  __m512i idx = _mm512_load_si512((const __m512i*)perm);
+  __m512i ordered = _mm512_permutexvar_epi8(idx, packed);
+  alignas(64) uint8_t tmp[64];
+  _mm512_store_si512((__m512i*)tmp, ordered);
+  out4[0] = *reinterpret_cast<const uint64_t*>(tmp);
+  out4[1] = *reinterpret_cast<const uint64_t*>(tmp + 8);
+  out4[2] = *reinterpret_cast<const uint64_t*>(tmp + 16);
+  out4[3] = *reinterpret_cast<const uint64_t*>(tmp + 24);
+}
+#endif
+
+#endif
+
 #ifdef PIXIE_AVX2_SUPPORT
 static inline __m128i excess_nibble_delta_lut() noexcept {
   alignas(16) static const int8_t lut[16] = {-4, -2, -2, 0, -2, 0, 0, 2,
@@ -778,7 +938,161 @@ static inline void excess_positions_512_lut(const uint64_t* s,
     return;
   }
 
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef PIXIE_AVX512_SUPPORT
+  const __m512i vdelta = excess_nibble_delta_lut_512();
+  const __m512i vpos0 = excess_nibble_pos0_lut_512();
+  const __m512i vpos1 = excess_nibble_pos1_lut_512();
+  const __m512i vpos2 = excess_nibble_pos2_lut_512();
+  const __m512i vnibble_mask = _mm512_set1_epi8(0x0F);
+  const __m512i Z = _mm512_setzero_si512();
+
+  __m512i words = _mm512_loadu_si512((const __m512i*)s);
+  __m512i pops = _mm512_popcnt_epi64(words);
+  __m512i delt =
+      _mm512_sub_epi64(_mm512_slli_epi64(pops, 1), _mm512_set1_epi64(64));
+  alignas(64) int64_t d[8];
+  _mm512_store_si512((__m512i*)d, delt);
+  int cur_start[8];
+  {
+    int c = 0;
+    for (int w = 0; w < 8; ++w) {
+      cur_start[w] = c;
+      c += static_cast<int>(d[w]);
+    }
+  }
+
+  for (int half = 0; half < 2; ++half) {
+    const int base_word = half * 4;
+
+    __m256i w4_256 = _mm256_loadu_si256((const __m256i*)(s + base_word));
+    __m128i w0 = _mm256_extracti128_si256(w4_256, 0);
+    __m128i w1 = _mm256_extracti128_si256(w4_256, 1);
+    __m128i z128 = _mm_setzero_si128();
+    __m512i w4_lanes = _mm512_setzero_si512();
+    w4_lanes = _mm512_inserti32x4(w4_lanes, _mm_unpacklo_epi64(w0, z128), 0);
+    w4_lanes = _mm512_inserti32x4(w4_lanes, _mm_unpackhi_epi64(w0, z128), 1);
+    w4_lanes = _mm512_inserti32x4(w4_lanes, _mm_unpacklo_epi64(w1, z128), 2);
+    w4_lanes = _mm512_inserti32x4(w4_lanes, _mm_unpackhi_epi64(w1, z128), 3);
+
+#ifdef PIXIE_AVX512VBMI_SUPPORT
+    __m512i w4_dup =
+        _mm512_permutexvar_epi64(_mm512_setr_epi64(0, 0, 1, 1, 2, 2, 3, 3),
+                                 _mm512_castsi256_si512(w4_256));
+    __m512i nibs = _mm512_and_si512(
+        _mm512_multishift_epi64_epi8(excess_multishift_nibble_ctrl(), w4_dup),
+        vnibble_mask);
+#else
+    __m512i lo = _mm512_and_si512(w4_lanes, vnibble_mask);
+    __m512i hi = _mm512_and_si512(_mm512_srli_epi16(w4_lanes, 4), vnibble_mask);
+    __m512i nibs = _mm512_unpacklo_epi8(lo, hi);
+#endif
+
+    __m512i deltas = _mm512_shuffle_epi8(vdelta, nibs);
+    __m512i ps = excess_lane_prefix_sum_epi8(deltas);
+    __m512i excl = _mm512_alignr_epi8(ps, Z, 15);
+
+    int t[4];
+    for (int k = 0; k < 4; ++k) {
+      t[k] = target_x - cur_start[base_word + k];
+    }
+
+    bool all_oor = true;
+    for (int k = 0; k < 4; ++k) {
+      if (t[k] >= -64 && t[k] <= 64) {
+        all_oor = false;
+        break;
+      }
+    }
+    if (all_oor) {
+      for (int k = 0; k < 4; ++k) {
+        out[base_word + k] = 0;
+      }
+      continue;
+    }
+
+    __m512i tl_v =
+        _mm512_set_epi8(static_cast<int8_t>(t[3]), static_cast<int8_t>(t[3]),
+                        static_cast<int8_t>(t[3]), static_cast<int8_t>(t[3]),
+                        static_cast<int8_t>(t[3]), static_cast<int8_t>(t[3]),
+                        static_cast<int8_t>(t[3]), static_cast<int8_t>(t[3]),
+                        static_cast<int8_t>(t[3]), static_cast<int8_t>(t[3]),
+                        static_cast<int8_t>(t[3]), static_cast<int8_t>(t[3]),
+                        static_cast<int8_t>(t[3]), static_cast<int8_t>(t[3]),
+                        static_cast<int8_t>(t[3]), static_cast<int8_t>(t[3]),
+                        static_cast<int8_t>(t[2]), static_cast<int8_t>(t[2]),
+                        static_cast<int8_t>(t[2]), static_cast<int8_t>(t[2]),
+                        static_cast<int8_t>(t[2]), static_cast<int8_t>(t[2]),
+                        static_cast<int8_t>(t[2]), static_cast<int8_t>(t[2]),
+                        static_cast<int8_t>(t[2]), static_cast<int8_t>(t[2]),
+                        static_cast<int8_t>(t[2]), static_cast<int8_t>(t[2]),
+                        static_cast<int8_t>(t[2]), static_cast<int8_t>(t[2]),
+                        static_cast<int8_t>(t[2]), static_cast<int8_t>(t[2]),
+                        static_cast<int8_t>(t[1]), static_cast<int8_t>(t[1]),
+                        static_cast<int8_t>(t[1]), static_cast<int8_t>(t[1]),
+                        static_cast<int8_t>(t[1]), static_cast<int8_t>(t[1]),
+                        static_cast<int8_t>(t[1]), static_cast<int8_t>(t[1]),
+                        static_cast<int8_t>(t[1]), static_cast<int8_t>(t[1]),
+                        static_cast<int8_t>(t[1]), static_cast<int8_t>(t[1]),
+                        static_cast<int8_t>(t[1]), static_cast<int8_t>(t[1]),
+                        static_cast<int8_t>(t[1]), static_cast<int8_t>(t[1]),
+                        static_cast<int8_t>(t[0]), static_cast<int8_t>(t[0]),
+                        static_cast<int8_t>(t[0]), static_cast<int8_t>(t[0]),
+                        static_cast<int8_t>(t[0]), static_cast<int8_t>(t[0]),
+                        static_cast<int8_t>(t[0]), static_cast<int8_t>(t[0]),
+                        static_cast<int8_t>(t[0]), static_cast<int8_t>(t[0]),
+                        static_cast<int8_t>(t[0]), static_cast<int8_t>(t[0]),
+                        static_cast<int8_t>(t[0]), static_cast<int8_t>(t[0]),
+                        static_cast<int8_t>(t[0]), static_cast<int8_t>(t[0]));
+    __m512i base = _mm512_sub_epi8(excl, tl_v);
+
+    __mmask64 m0 = _mm512_cmpeq_epi8_mask(
+        _mm512_add_epi8(base, _mm512_shuffle_epi8(vpos0, nibs)), Z);
+    __mmask64 m1 = _mm512_cmpeq_epi8_mask(
+        _mm512_add_epi8(base, _mm512_shuffle_epi8(vpos1, nibs)), Z);
+    __mmask64 m2 = _mm512_cmpeq_epi8_mask(
+        _mm512_add_epi8(base, _mm512_shuffle_epi8(vpos2, nibs)), Z);
+    __mmask64 m3 = _mm512_cmpeq_epi8_mask(
+        _mm512_add_epi8(base, _mm512_shuffle_epi8(vdelta, nibs)), Z);
+
+#ifdef PIXIE_AVX512GFNI_SUPPORT
+    {
+      alignas(64) uint64_t tmp4[4];
+      excess_interleave_masks_gfni(m0, m1, m2, m3, tmp4);
+      for (int k = 0; k < 4; ++k) {
+        int w = base_word + k;
+        if (t[k] < -64 || t[k] > 64) {
+          out[w] = 0;
+        } else {
+          out[w] = tmp4[k];
+        }
+      }
+    }
+#else
+    {
+      uint64_t u0 = static_cast<uint64_t>(m0);
+      uint64_t u1 = static_cast<uint64_t>(m1);
+      uint64_t u2 = static_cast<uint64_t>(m2);
+      uint64_t u3 = static_cast<uint64_t>(m3);
+      for (int k = 0; k < 4; ++k) {
+        int w = base_word + k;
+        if (t[k] < -64 || t[k] > 64) {
+          out[w] = 0;
+          continue;
+        }
+        uint16_t b0 = static_cast<uint16_t>(u0 >> (16 * k));
+        uint16_t b1 = static_cast<uint16_t>(u1 >> (16 * k));
+        uint16_t b2 = static_cast<uint16_t>(u2 >> (16 * k));
+        uint16_t b3 = static_cast<uint16_t>(u3 >> (16 * k));
+        out[w] = _pdep_u64(b0, 0x1111111111111111ULL) |
+                 _pdep_u64(b1, 0x2222222222222222ULL) |
+                 _pdep_u64(b2, 0x4444444444444444ULL) |
+                 _pdep_u64(b3, 0x8888888888888888ULL);
+      }
+    }
+#endif
+  }
+
+#elif defined(PIXIE_AVX2_SUPPORT)
   const __m128i vdelta = excess_nibble_delta_lut();
   const __m128i vpos0 = excess_nibble_pos0_lut();
   const __m128i vpos1 = excess_nibble_pos1_lut();
