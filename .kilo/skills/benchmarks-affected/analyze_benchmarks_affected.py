@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
+import os
 import re
 import shlex
 import shutil
@@ -13,6 +15,18 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+def is_project_source(source: Path, repo_root: Path) -> bool:
+    """Exclude third-party deps and generated build files."""
+    try:
+        rel = source.relative_to(repo_root)
+    except ValueError:
+        return False
+    rel_text = rel.as_posix()
+    if rel_text.startswith("build/") or "_deps/" in rel_text:
+        return False
+    return True
 
 
 KNOWN_BENCHMARK_TARGETS = {
@@ -65,6 +79,7 @@ def run_command(
     args: list[str],
     cwd: Path,
     check: bool = True,
+    timeout: float | None = 60.0,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
@@ -72,6 +87,7 @@ def run_command(
         text=True,
         capture_output=True,
         check=check,
+        timeout=timeout,
     )
 
 
@@ -157,7 +173,10 @@ def resolve_compile_commands(repo_root: Path, explicit_path: str | None) -> Path
     return candidates[0].resolve()
 
 
-def load_compile_commands(compile_commands_path: Path) -> list[CompileCommandEntry]:
+def load_compile_commands(
+    compile_commands_path: Path,
+    repo_root: Path,
+) -> list[CompileCommandEntry]:
     entries: list[CompileCommandEntry] = []
     data = json.loads(compile_commands_path.read_text(encoding="utf-8"))
     for raw_entry in data:
@@ -168,6 +187,9 @@ def load_compile_commands(compile_commands_path: Path) -> list[CompileCommandEnt
             source = raw_source.resolve()
         else:
             source = (directory / raw_source).resolve()
+
+        if not is_project_source(source, repo_root):
+            continue
 
         if "arguments" in raw_entry:
             arguments = [str(arg) for arg in raw_entry["arguments"]]
@@ -775,7 +797,7 @@ def main() -> int:
         compile_commands_path = resolve_compile_commands(
             repo_root, cli.compile_commands
         )
-        entries = load_compile_commands(compile_commands_path)
+        entries = load_compile_commands(compile_commands_path, repo_root)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -792,8 +814,10 @@ def main() -> int:
         if entry.target:
             target_to_entries[entry.target].append(entry)
 
-    for entry in entries:
-        compute_tu_dependencies(entry)
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(8, (os.cpu_count() or 4))
+    ) as pool:
+        pool.map(compute_tu_dependencies, entries)
 
     affected_targets: set[str] = set()
     for entry in entries:
@@ -829,6 +853,19 @@ def main() -> int:
     benchmark_target_to_affected: dict[str, set[str]] = defaultdict(set)
     warnings: list[str] = []
 
+    def process_ast_entry(
+        entry: CompileCommandEntry,
+    ) -> tuple[str, Path, AstImpactResult, bool]:
+        """Helper to analyze a single entry in a worker thread."""
+        target_name = entry.target or "<unknown-target>"
+        ast_result = ast_analyze_entry(
+            entry,
+            changed_files,
+            changed_symbol_names,
+            clangxx,
+        )
+        return target_name, entry.source, ast_result, entry.source in changed_files
+
     if impacted_benchmark_entries:
         try:
             clangxx = discover_clangxx(cli.clangxx)
@@ -836,46 +873,59 @@ def main() -> int:
             clangxx = ""
             warnings.append(str(exc))
 
-        for entry in impacted_benchmark_entries:
-            target_name = entry.target or "<unknown-target>"
-
-            if not clangxx:
+        if not clangxx:
+            for entry in impacted_benchmark_entries:
+                target_name = entry.target or "<unknown-target>"
                 fallback_names = benchmark_names_from_source(entry.source)
                 benchmark_target_to_names[target_name].update(fallback_names)
                 if changed_symbol_names:
                     benchmark_target_to_affected[target_name].update(fallback_names)
-                continue
+        else:
+            max_ast_workers = min(2, (os.cpu_count() or 2))
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max_ast_workers
+            ) as pool:
+                futures = {
+                    pool.submit(process_ast_entry, entry): entry
+                    for entry in impacted_benchmark_entries
+                }
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        target_name, source_path, ast_result, source_is_changed = (
+                            future.result(timeout=120)
+                        )
+                    except Exception as exc:
+                        entry = futures[future]
+                        target_name = entry.target or "<unknown-target>"
+                        source_path = entry.source
+                        ast_result = AstImpactResult(
+                            ast_error=f"AST worker failed: {exc}"
+                        )
+                        source_is_changed = False
 
-            ast_result = ast_analyze_entry(
-                entry,
-                changed_files,
-                changed_symbol_names,
-                clangxx,
-            )
-            if ast_result.ast_error:
-                ast_errors[relpath_or_abs(entry.source, repo_root)] = (
-                    ast_result.ast_error
-                )
+                    if ast_result.ast_error:
+                        ast_errors[relpath_or_abs(source_path, repo_root)] = (
+                            ast_result.ast_error
+                        )
 
-            if ast_result.benchmark_names:
-                benchmark_target_to_names[target_name].update(
-                    ast_result.benchmark_names
-                )
-            else:
-                benchmark_target_to_names[target_name].update(
-                    benchmark_names_from_source(entry.source)
-                )
+                    if ast_result.benchmark_names:
+                        benchmark_target_to_names[target_name].update(
+                            ast_result.benchmark_names
+                        )
+                    else:
+                        benchmark_target_to_names[target_name].update(
+                            benchmark_names_from_source(source_path)
+                        )
 
-            if ast_result.affected_names:
-                benchmark_target_to_affected[target_name].update(
-                    ast_result.affected_names
-                )
-            else:
-                source_is_changed = entry.source in changed_files
-                if source_is_changed:
-                    benchmark_target_to_affected[target_name].update(
-                        benchmark_target_to_names[target_name]
-                    )
+                    if ast_result.affected_names:
+                        benchmark_target_to_affected[target_name].update(
+                            ast_result.affected_names
+                        )
+                    else:
+                        if source_is_changed:
+                            benchmark_target_to_affected[target_name].update(
+                                benchmark_target_to_names[target_name]
+                            )
 
     if infra_change and affected_benchmark_targets:
         for target_name in affected_benchmark_targets:
