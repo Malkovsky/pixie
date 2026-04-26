@@ -37,6 +37,16 @@ KNOWN_BENCHMARK_TARGETS = {
     "alignment_comparison",
 }
 
+HEADER_EXTENSIONS = {
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".inc",
+    ".ipp",
+    ".tcc",
+}
+
 BUILD_INFRA_FILES = {
     "CMakeLists.txt",
     "CMakePresets.json",
@@ -522,6 +532,7 @@ def identify_benchmark_targets(
     entries: list[CompileCommandEntry], repo_root: Path
 ) -> set[str]:
     benchmark_targets: set[str] = set()
+    targets_present = {entry.target for entry in entries if entry.target}
     for entry in entries:
         if entry.target is None:
             continue
@@ -534,8 +545,30 @@ def identify_benchmark_targets(
         if rel_text.startswith("src/benchmarks/"):
             benchmark_targets.add(entry.target)
 
-    benchmark_targets.update(KNOWN_BENCHMARK_TARGETS)
+    benchmark_targets.update(targets_present.intersection(KNOWN_BENCHMARK_TARGETS))
     return benchmark_targets
+
+
+def is_benchmark_source(source: Path, repo_root: Path) -> bool:
+    try:
+        rel_text = source.relative_to(repo_root).as_posix()
+    except ValueError:
+        return False
+    return rel_text.startswith("src/benchmarks/")
+
+
+def dedupe_entries_by_target_source(
+    entries: list[CompileCommandEntry],
+) -> list[CompileCommandEntry]:
+    deduped: list[CompileCommandEntry] = []
+    seen: set[tuple[str | None, Path]] = set()
+    for entry in entries:
+        key = (entry.target, entry.source)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(entry)
+    return deduped
 
 
 def discover_clangxx(explicit: str | None) -> str:
@@ -835,61 +868,79 @@ def main() -> int:
         return 2
 
     target_to_entries: dict[str, list[CompileCommandEntry]] = defaultdict(list)
+    source_to_entries: dict[Path, list[CompileCommandEntry]] = defaultdict(list)
     for entry in entries:
+        source_to_entries[entry.source].append(entry)
         if entry.target:
             target_to_entries[entry.target].append(entry)
 
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=min(8, (os.cpu_count() or 4))
-    ) as pool:
-        pool.map(compute_tu_dependencies, entries)
-
-    affected_targets: set[str] = set()
-    for entry in entries:
-        has_changed_dependency = any(dep in changed_files for dep in entry.dependencies)
-        if has_changed_dependency:
-            if entry.target:
-                affected_targets.add(entry.target)
-
     benchmark_targets = identify_benchmark_targets(entries, repo_root)
     all_targets = {entry.target for entry in entries if entry.target}
+    benchmark_entries = dedupe_entries_by_target_source(
+        [entry for entry in entries if entry.target in benchmark_targets]
+    )
 
     infra_change = is_build_infra_change(repo_root, changed_files)
+    relevant_changed_files = {
+        path
+        for path in changed_files
+        if is_project_source(path, repo_root)
+        or path.name in BUILD_INFRA_FILES
+        or relpath_or_abs(path, repo_root).startswith("cmake/")
+    }
+    has_header_changes = any(
+        path.suffix.lower() in HEADER_EXTENSIONS for path in relevant_changed_files
+    )
+    benchmark_source_extensions = {".c", ".cc", ".cpp", ".cxx"}
+    only_benchmark_source_changes = bool(relevant_changed_files) and all(
+        is_benchmark_source(path, repo_root)
+        and path.suffix.lower() in benchmark_source_extensions
+        for path in relevant_changed_files
+    )
+
+    directly_affected_targets: set[str] = set()
+    for changed_path in changed_files:
+        for entry in source_to_entries.get(changed_path, []):
+            if entry.target:
+                directly_affected_targets.add(entry.target)
+
+    dependency_scan_entries: list[CompileCommandEntry] = []
+    if not infra_change and not only_benchmark_source_changes:
+        if has_header_changes:
+            dependency_scan_entries = dedupe_entries_by_target_source(entries)
+        else:
+            dependency_scan_entries = benchmark_entries
+
+    if dependency_scan_entries:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(8, (os.cpu_count() or 4))
+        ) as pool:
+            list(pool.map(compute_tu_dependencies, dependency_scan_entries))
+
+    affected_targets: set[str] = set(directly_affected_targets)
+    for entry in dependency_scan_entries:
+        has_changed_dependency = any(dep in changed_files for dep in entry.dependencies)
+        if has_changed_dependency and entry.target:
+            affected_targets.add(entry.target)
+
     if infra_change:
         affected_targets.update(all_targets)
 
-    affected_benchmark_targets = sorted(
-        affected_targets.intersection(benchmark_targets)
+    dependency_impacted_benchmark_targets = affected_targets.intersection(
+        benchmark_targets
     )
-
-    benchmark_entries: list[CompileCommandEntry] = []
-    for entry in entries:
-        if entry.target in benchmark_targets:
-            benchmark_entries.append(entry)
-
-    impacted_benchmark_entries: list[CompileCommandEntry] = []
-    for entry in benchmark_entries:
-        has_changed_dependency = any(dep in changed_files for dep in entry.dependencies)
-        if has_changed_dependency or entry.target in affected_benchmark_targets:
-            impacted_benchmark_entries.append(entry)
+    impacted_benchmark_entries = [
+        entry
+        for entry in benchmark_entries
+        if entry.target in dependency_impacted_benchmark_targets
+    ]
 
     ast_errors: dict[str, str] = {}
     benchmark_target_to_names: dict[str, set[str]] = defaultdict(set)
     benchmark_target_to_affected: dict[str, set[str]] = defaultdict(set)
     warnings: list[str] = []
-
-    def process_ast_entry(
-        entry: CompileCommandEntry,
-    ) -> tuple[str, Path, AstImpactResult, bool]:
-        """Helper to analyze a single entry in a worker thread."""
-        target_name = entry.target or "<unknown-target>"
-        ast_result = ast_analyze_entry(
-            entry,
-            changed_files,
-            changed_symbol_names,
-            clangxx,
-        )
-        return target_name, entry.source, ast_result, entry.source in changed_files
+    ast_fallback_used = False
+    ast_entries_scanned = 0
 
     if impacted_benchmark_entries:
         try:
@@ -899,68 +950,75 @@ def main() -> int:
             warnings.append(str(exc))
 
         if not clangxx:
+            ast_fallback_used = True
             for entry in impacted_benchmark_entries:
                 target_name = entry.target or "<unknown-target>"
                 fallback_names = benchmark_names_from_source(entry.source)
                 benchmark_target_to_names[target_name].update(fallback_names)
-                if changed_symbol_names:
-                    benchmark_target_to_affected[target_name].update(fallback_names)
+                benchmark_target_to_affected[target_name].update(fallback_names)
         else:
             max_ast_workers = min(2, (os.cpu_count() or 2))
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=max_ast_workers
             ) as pool:
                 futures = {
-                    pool.submit(process_ast_entry, entry): entry
+                    pool.submit(
+                        ast_analyze_entry,
+                        entry,
+                        changed_files,
+                        changed_symbol_names,
+                        clangxx,
+                    ): entry
                     for entry in impacted_benchmark_entries
                 }
+                ast_entries_scanned = len(futures)
                 for future in concurrent.futures.as_completed(futures):
+                    entry = futures[future]
+                    target_name = entry.target or "<unknown-target>"
+                    source_path = entry.source
+                    source_is_changed = source_path in changed_files
+
                     try:
-                        target_name, source_path, ast_result, source_is_changed = (
-                            future.result(timeout=120)
-                        )
+                        ast_result = future.result(timeout=120)
                     except Exception as exc:
-                        entry = futures[future]
-                        target_name = entry.target or "<unknown-target>"
-                        source_path = entry.source
                         ast_result = AstImpactResult(
                             ast_error=f"AST worker failed: {exc}"
                         )
-                        source_is_changed = False
 
                     if ast_result.ast_error:
                         ast_errors[relpath_or_abs(source_path, repo_root)] = (
                             ast_result.ast_error
                         )
 
-                    if ast_result.benchmark_names:
-                        benchmark_target_to_names[target_name].update(
-                            ast_result.benchmark_names
-                        )
-                    else:
-                        benchmark_target_to_names[target_name].update(
-                            benchmark_names_from_source(source_path)
-                        )
+                    benchmark_names = ast_result.benchmark_names
+                    if not benchmark_names:
+                        benchmark_names = benchmark_names_from_source(source_path)
+                    benchmark_target_to_names[target_name].update(benchmark_names)
 
                     if ast_result.affected_names:
                         benchmark_target_to_affected[target_name].update(
                             ast_result.affected_names
                         )
-                    else:
-                        if source_is_changed:
-                            benchmark_target_to_affected[target_name].update(
-                                benchmark_target_to_names[target_name]
-                            )
+                    elif source_is_changed or ast_result.ast_error:
+                        benchmark_target_to_affected[target_name].update(
+                            benchmark_names
+                        )
+                        if benchmark_names:
+                            ast_fallback_used = True
 
-    if infra_change and affected_benchmark_targets:
-        for target_name in affected_benchmark_targets:
+    if infra_change and benchmark_targets:
+        for target_name in sorted(benchmark_targets):
             for entry in target_to_entries.get(target_name, []):
-                benchmark_target_to_names[target_name].update(
-                    benchmark_names_from_source(entry.source)
-                )
-                benchmark_target_to_affected[target_name].update(
-                    benchmark_names_from_source(entry.source)
-                )
+                names = benchmark_names_from_source(entry.source)
+                benchmark_target_to_names[target_name].update(names)
+                benchmark_target_to_affected[target_name].update(names)
+
+    if infra_change:
+        affected_benchmark_targets = sorted(benchmark_targets)
+    else:
+        affected_benchmark_targets = sorted(
+            target for target, names in benchmark_target_to_affected.items() if names
+        )
 
     all_affected_benchmarks: set[str] = set()
     for names in benchmark_target_to_affected.values():
@@ -968,9 +1026,15 @@ def main() -> int:
 
     dep_scan_failures = {
         relpath_or_abs(entry.source, repo_root): entry.dep_error
-        for entry in entries
+        for entry in dependency_scan_entries
         if entry.dep_error
     }
+
+    scope_mode = "normal"
+    if infra_change:
+        scope_mode = "infra_fallback"
+    elif ast_fallback_used:
+        scope_mode = "ast_fallback"
 
     report: dict[str, Any] = {
         "baseline": cli.baseline,
@@ -989,6 +1053,10 @@ def main() -> int:
             if names
         },
         "suggested_filter_regex": regex_for_benchmarks(all_affected_benchmarks),
+        "dependency_entries_scanned": len(dependency_scan_entries),
+        "benchmark_entries_scanned": len(benchmark_entries),
+        "ast_entries_scanned": ast_entries_scanned,
+        "scope_mode": scope_mode,
         "dependency_scan_failures": dep_scan_failures,
         "ast_failures": ast_errors,
         "warnings": warnings,
@@ -1002,6 +1070,13 @@ def main() -> int:
     print(f"Baseline: {cli.baseline}")
     print(f"Head: {cli.head}")
     print(f"Compile commands: {report['compile_commands']}")
+    print(f"Scope mode: {report['scope_mode']}")
+    print(
+        "Scan counts: "
+        f"dependency={report['dependency_entries_scanned']}, "
+        f"benchmark={report['benchmark_entries_scanned']}, "
+        f"ast={report['ast_entries_scanned']}"
+    )
     print("")
 
     print(f"Changed files ({len(report['changed_files'])}):")

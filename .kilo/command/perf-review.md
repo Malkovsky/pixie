@@ -37,8 +37,6 @@ Filter handling:
 
 Use `benchmarks-compare-revisions` as the single source of truth for revision builds, benchmark scope, compare.py flow, retry policy, and guardrails.
 
-Do not duplicate or override its internal build/run steps in this command.
-
 Pass-through inputs:
 - Baseline ref/hash from Step 1.
 - Contender ref/hash from Step 1.
