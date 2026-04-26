@@ -708,58 +708,83 @@ def ast_analyze_entry(
         result.ast_error = f"Invalid AST JSON: {exc}"
         return result
 
+    function_callees: dict[str, set[str]] = defaultdict(set)
+    direct_impacted_functions: set[str] = set()
+    dynamic_benchmarks_by_function: dict[str, set[str]] = defaultdict(set)
+
     for node in iter_ast_nodes(ast_root):
         if not isinstance(node, dict):
             continue
 
-        kind = node.get("kind")
-        if kind in {"FunctionDecl", "CXXMethodDecl"}:
-            name = node.get("name")
-            if isinstance(name, str) and name.startswith("BM_"):
-                result.benchmark_names.add(name)
-                function_loc = file_from_loc(node.get("loc"), entry.directory)
-                if function_loc in changed_files:
-                    result.affected_names.add(name)
-                    continue
+        if node.get("kind") not in {"FunctionDecl", "CXXMethodDecl"}:
+            continue
 
-                if node_references_changed_symbol(node, changed_symbol_names):
-                    result.affected_names.add(name)
-                    continue
+        function_name = node.get("name")
+        if not isinstance(function_name, str) or not function_name:
+            continue
 
-                for subnode in iter_ast_nodes(node):
-                    if not isinstance(subnode, dict):
-                        continue
-                    ref_file = referenced_decl_file(subnode, entry.directory)
-                    if ref_file in changed_files:
-                        result.affected_names.add(name)
-                        break
+        if function_name.startswith("BM_"):
+            result.benchmark_names.add(function_name)
 
-        if kind == "CallExpr":
-            callee = call_expr_callee_name(node)
-            if callee != "register_op":
-                continue
-            literal_values = string_literals_in_node(node)
-            if not literal_values:
-                continue
-            benchmark_name = literal_values[0]
-            result.benchmark_names.add(benchmark_name)
+        function_callees.setdefault(function_name, set())
 
-            call_loc = file_from_loc(node.get("loc"), entry.directory)
-            if call_loc in changed_files:
-                result.affected_names.add(benchmark_name)
+        function_loc = file_from_loc(node.get("loc"), entry.directory)
+        is_directly_impacted = function_loc in changed_files
+        if not is_directly_impacted:
+            is_directly_impacted = node_references_changed_symbol(
+                node, changed_symbol_names
+            )
+
+        for subnode in iter_ast_nodes(node):
+            if not isinstance(subnode, dict):
                 continue
 
-            if node_references_changed_symbol(node, changed_symbol_names):
-                result.affected_names.add(benchmark_name)
-                continue
+            sub_kind = subnode.get("kind")
+            if sub_kind in {"CallExpr", "CXXMemberCallExpr", "CXXOperatorCallExpr"}:
+                callee = call_expr_callee_name(subnode)
+                if callee:
+                    function_callees[function_name].add(callee)
 
-            for subnode in iter_ast_nodes(node):
-                if not isinstance(subnode, dict):
-                    continue
+                if callee == "register_op":
+                    literal_values = string_literals_in_node(subnode)
+                    if literal_values:
+                        dynamic_benchmarks_by_function[function_name].add(
+                            literal_values[0]
+                        )
+
+            if not is_directly_impacted:
                 ref_file = referenced_decl_file(subnode, entry.directory)
                 if ref_file in changed_files:
-                    result.affected_names.add(benchmark_name)
-                    break
+                    is_directly_impacted = True
+
+        if is_directly_impacted:
+            direct_impacted_functions.add(function_name)
+
+    # Reverse call-graph propagation: if a function is directly impacted,
+    # every caller in this TU is impacted as well (fixed-point DFS/BFS).
+    callers_of: dict[str, set[str]] = defaultdict(set)
+    for caller, callees in function_callees.items():
+        for callee in callees:
+            callers_of[callee].add(caller)
+
+    impacted_functions = set(direct_impacted_functions)
+    stack = list(direct_impacted_functions)
+    while stack:
+        callee_name = stack.pop()
+        for caller_name in callers_of.get(callee_name, set()):
+            if caller_name in impacted_functions:
+                continue
+            impacted_functions.add(caller_name)
+            stack.append(caller_name)
+
+    for function_name in impacted_functions:
+        if function_name.startswith("BM_"):
+            result.affected_names.add(function_name)
+
+    for function_name, names in dynamic_benchmarks_by_function.items():
+        result.benchmark_names.update(names)
+        if function_name in impacted_functions:
+            result.affected_names.update(names)
 
     return result
 
