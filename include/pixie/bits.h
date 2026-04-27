@@ -18,11 +18,6 @@
 #define PIXIE_AVX512VBMI_SUPPORT
 #endif
 
-#if defined(__GFNI__) && defined(PIXIE_AVX512_SUPPORT) && \
-    defined(PIXIE_AVX512GFNI_INTERLEAVE)
-#define PIXIE_AVX512GFNI_SUPPORT
-#endif
-
 #ifdef __AVX2__
 #define PIXIE_AVX2_SUPPORT
 // Lookup table for 4-bit popcount
@@ -847,6 +842,35 @@ static inline __m512i excess_lane_prefix_sum_epi8(__m512i deltas) noexcept {
   return ps;
 }
 
+static inline __m512i excess_target_local_4x16(int t0,
+                                               int t1,
+                                               int t2,
+                                               int t3) noexcept {
+#ifdef PIXIE_AVX512VBMI_SUPPORT
+  const uint32_t packed =
+      static_cast<uint8_t>(t0) |
+      (static_cast<uint32_t>(static_cast<uint8_t>(t1)) << 8) |
+      (static_cast<uint32_t>(static_cast<uint8_t>(t2)) << 16) |
+      (static_cast<uint32_t>(static_cast<uint8_t>(t3)) << 24);
+  __m128i tl_xmm = _mm_cvtsi32_si128(static_cast<int>(packed));
+  alignas(64) static const uint8_t idx_pack[64] = {
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1,
+      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+      2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3};
+  __m512i idx = _mm512_load_si512((const __m512i*)idx_pack);
+  return _mm512_permutexvar_epi8(idx, _mm512_castsi128_si512(tl_xmm));
+#else
+  __m512i v = _mm512_set1_epi8(static_cast<int8_t>(t0));
+  v = _mm512_mask_blend_epi8(0x00000000FFFF0000ULL, v,
+                             _mm512_set1_epi8(static_cast<int8_t>(t1)));
+  v = _mm512_mask_blend_epi8(0x0000FFFF00000000ULL, v,
+                             _mm512_set1_epi8(static_cast<int8_t>(t2)));
+  v = _mm512_mask_blend_epi8(0xFFFF000000000000ULL, v,
+                             _mm512_set1_epi8(static_cast<int8_t>(t3)));
+  return v;
+#endif
+}
+
 #ifdef PIXIE_AVX512VBMI_SUPPORT
 static inline __m512i excess_multishift_nibble_ctrl() noexcept {
   alignas(64) static const uint8_t ctrl[64] = {
@@ -855,48 +879,6 @@ static inline __m512i excess_multishift_nibble_ctrl() noexcept {
       0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60,
       0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60};
   return _mm512_load_si512((const __m512i*)ctrl);
-}
-#endif
-
-#ifdef PIXIE_AVX512GFNI_SUPPORT
-static inline void excess_interleave_masks_gfni(__mmask64 m0,
-                                                __mmask64 m1,
-                                                __mmask64 m2,
-                                                __mmask64 m3,
-                                                uint64_t* out4) noexcept {
-  const __m512i Z = _mm512_setzero_si512();
-  __m512i b0 = _mm512_movm_epi8(m0);
-  __m512i b1 = _mm512_movm_epi8(m1);
-  __m512i b2 = _mm512_movm_epi8(m2);
-  __m512i b3 = _mm512_movm_epi8(m3);
-  b0 = _mm512_and_si512(b0, _mm512_set1_epi8(0x01));
-  b1 = _mm512_and_si512(b1, _mm512_set1_epi8(0x02));
-  b2 = _mm512_and_si512(b2, _mm512_set1_epi8(0x04));
-  b3 = _mm512_and_si512(b3, _mm512_set1_epi8(0x08));
-  __m512i combined =
-      _mm512_or_si512(_mm512_or_si512(b0, b1), _mm512_or_si512(b2, b3));
-  alignas(64) static const uint8_t A_pack[64] = {
-      0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01,
-      0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10,
-      0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01,
-      0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10,
-      0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01,
-      0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10, 0x01, 0x10};
-  __m512i A = _mm512_load_si512((const __m512i*)A_pack);
-  __m512i packed = _mm512_gf2p8affine_epi64_epi8(combined, A, 0);
-  alignas(64) static const uint8_t perm[64] = {
-      0,  2,  4,  6,  8,  10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30,
-      32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62,
-      1,  3,  5,  7,  9,  11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31,
-      33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63};
-  __m512i idx = _mm512_load_si512((const __m512i*)perm);
-  __m512i ordered = _mm512_permutexvar_epi8(idx, packed);
-  alignas(64) uint8_t tmp[64];
-  _mm512_store_si512((__m512i*)tmp, ordered);
-  out4[0] = *reinterpret_cast<const uint64_t*>(tmp);
-  out4[1] = *reinterpret_cast<const uint64_t*>(tmp + 8);
-  out4[2] = *reinterpret_cast<const uint64_t*>(tmp + 16);
-  out4[3] = *reinterpret_cast<const uint64_t*>(tmp + 24);
 }
 #endif
 
@@ -926,6 +908,60 @@ static inline __m128i excess_nibble_pos2_lut() noexcept {
                                              -3, -1, -1, 1, -1, 1, 1, 3};
   return _mm_load_si128((const __m128i*)lut);
 }
+
+static inline uint64_t excess_word_positions_lut_avx2(uint64_t word,
+                                                      int target_local,
+                                                      __m128i vdelta,
+                                                      __m128i vpos0,
+                                                      __m128i vpos1,
+                                                      __m128i vpos2,
+                                                      __m128i vnibble_mask,
+                                                      __m128i vzero) noexcept {
+  __m128i bytes = _mm_cvtsi64_si128(static_cast<long long>(word));
+  __m128i lo = _mm_and_si128(bytes, vnibble_mask);
+  __m128i hi = _mm_and_si128(_mm_srli_epi16(bytes, 4), vnibble_mask);
+  __m128i nibbles = _mm_unpacklo_epi8(lo, hi);
+
+  __m128i deltas = _mm_shuffle_epi8(vdelta, nibbles);
+
+  __m128i ps = deltas;
+  ps = _mm_add_epi8(ps, _mm_slli_si128(ps, 1));
+  ps = _mm_add_epi8(ps, _mm_slli_si128(ps, 2));
+  ps = _mm_add_epi8(ps, _mm_slli_si128(ps, 4));
+  ps = _mm_add_epi8(ps, _mm_slli_si128(ps, 8));
+
+  __m128i excl = _mm_slli_si128(ps, 1);
+
+  __m128i vtarget_local = _mm_set1_epi8(static_cast<int8_t>(target_local));
+  // Overflow safety: excl[i] ∈ [-60, 60] (exclusive prefix sum of up to
+  // 15 deltas each in [-4, +4]), target_local ∈ [-64, 64].
+  // base = excl - target_local ∈ [-124, 124], fits in int8.
+  // base + pos_j ∈ [-128, 128]. The boundary value -128 is exactly
+  // representable in int8 and ≠ 0. The value +128 wraps to -128 in
+  // int8, which is also ≠ 0, so cmpeq_epi8 produces no false positive.
+  __m128i base = _mm_sub_epi8(excl, vtarget_local);
+
+  __m128i cmp0 = _mm_cmpeq_epi8(
+      _mm_add_epi8(base, _mm_shuffle_epi8(vpos0, nibbles)), vzero);
+  uint16_t bits0 = static_cast<uint16_t>(_mm_movemask_epi8(cmp0));
+
+  __m128i cmp1 = _mm_cmpeq_epi8(
+      _mm_add_epi8(base, _mm_shuffle_epi8(vpos1, nibbles)), vzero);
+  uint16_t bits1 = static_cast<uint16_t>(_mm_movemask_epi8(cmp1));
+
+  __m128i cmp2 = _mm_cmpeq_epi8(
+      _mm_add_epi8(base, _mm_shuffle_epi8(vpos2, nibbles)), vzero);
+  uint16_t bits2 = static_cast<uint16_t>(_mm_movemask_epi8(cmp2));
+
+  __m128i cmp3 = _mm_cmpeq_epi8(
+      _mm_add_epi8(base, _mm_shuffle_epi8(vdelta, nibbles)), vzero);
+  uint16_t bits3 = static_cast<uint16_t>(_mm_movemask_epi8(cmp3));
+
+  return _pdep_u64(bits0, 0x1111111111111111ULL) |
+         _pdep_u64(bits1, 0x2222222222222222ULL) |
+         _pdep_u64(bits2, 0x4444444444444444ULL) |
+         _pdep_u64(bits3, 0x8888888888888888ULL);
+}
 #endif
 
 static inline void excess_positions_512_lut(const uint64_t* s,
@@ -946,33 +982,61 @@ static inline void excess_positions_512_lut(const uint64_t* s,
   const __m512i vnibble_mask = _mm512_set1_epi8(0x0F);
   const __m512i Z = _mm512_setzero_si512();
 
-  __m512i words = _mm512_loadu_si512((const __m512i*)s);
-  __m512i pops = _mm512_popcnt_epi64(words);
-  __m512i delt =
-      _mm512_sub_epi64(_mm512_slli_epi64(pops, 1), _mm512_set1_epi64(64));
-  alignas(64) int64_t d[8];
-  _mm512_store_si512((__m512i*)d, delt);
+#ifdef PIXIE_AVX2_SUPPORT
+  const __m128i vdelta128 = excess_nibble_delta_lut();
+  const __m128i vpos0_128 = excess_nibble_pos0_lut();
+  const __m128i vpos1_128 = excess_nibble_pos1_lut();
+  const __m128i vpos2_128 = excess_nibble_pos2_lut();
+  const __m128i vnibble_mask_128 = _mm_set1_epi8(0x0F);
+  const __m128i vzero_128 = _mm_setzero_si128();
+#endif
+
   int cur_start[8];
   {
     int c = 0;
     for (int w = 0; w < 8; ++w) {
       cur_start[w] = c;
-      c += static_cast<int>(d[w]);
+      c += 2 * static_cast<int>(std::popcount(s[w])) - 64;
     }
   }
 
   for (int half = 0; half < 2; ++half) {
     const int base_word = half * 4;
+    const int t0 = target_x - cur_start[base_word + 0];
+    const int t1 = target_x - cur_start[base_word + 1];
+    const int t2 = target_x - cur_start[base_word + 2];
+    const int t3 = target_x - cur_start[base_word + 3];
+    const int t[4] = {t0, t1, t2, t3};
+
+    int oor_mask = 0;
+    oor_mask |= (t0 < -64 || t0 > 64) ? (1 << 0) : 0;
+    oor_mask |= (t1 < -64 || t1 > 64) ? (1 << 1) : 0;
+    oor_mask |= (t2 < -64 || t2 > 64) ? (1 << 2) : 0;
+    oor_mask |= (t3 < -64 || t3 > 64) ? (1 << 3) : 0;
+
+    if (oor_mask == 0xF) {
+      for (int k = 0; k < 4; ++k) {
+        out[base_word + k] = 0;
+      }
+      continue;
+    }
+
+#ifdef PIXIE_AVX2_SUPPORT
+    if (std::popcount(static_cast<unsigned>(oor_mask)) >= 2) {
+      for (int k = 0; k < 4; ++k) {
+        if (t[k] < -64 || t[k] > 64) {
+          out[base_word + k] = 0;
+        } else {
+          out[base_word + k] = excess_word_positions_lut_avx2(
+              s[base_word + k], t[k], vdelta128, vpos0_128, vpos1_128,
+              vpos2_128, vnibble_mask_128, vzero_128);
+        }
+      }
+      continue;
+    }
+#endif
 
     __m256i w4_256 = _mm256_loadu_si256((const __m256i*)(s + base_word));
-    __m128i w0 = _mm256_extracti128_si256(w4_256, 0);
-    __m128i w1 = _mm256_extracti128_si256(w4_256, 1);
-    __m128i z128 = _mm_setzero_si128();
-    __m512i w4_lanes = _mm512_setzero_si512();
-    w4_lanes = _mm512_inserti32x4(w4_lanes, _mm_unpacklo_epi64(w0, z128), 0);
-    w4_lanes = _mm512_inserti32x4(w4_lanes, _mm_unpackhi_epi64(w0, z128), 1);
-    w4_lanes = _mm512_inserti32x4(w4_lanes, _mm_unpacklo_epi64(w1, z128), 2);
-    w4_lanes = _mm512_inserti32x4(w4_lanes, _mm_unpackhi_epi64(w1, z128), 3);
 
 #ifdef PIXIE_AVX512VBMI_SUPPORT
     __m512i w4_dup =
@@ -982,6 +1046,9 @@ static inline void excess_positions_512_lut(const uint64_t* s,
         _mm512_multishift_epi64_epi8(excess_multishift_nibble_ctrl(), w4_dup),
         vnibble_mask);
 #else
+    __m512i src = _mm512_zextsi256_si512(w4_256);
+    __m512i w4_lanes = _mm512_permutexvar_epi64(
+        _mm512_setr_epi64(0, 4, 1, 4, 2, 4, 3, 4), src);
     __m512i lo = _mm512_and_si512(w4_lanes, vnibble_mask);
     __m512i hi = _mm512_and_si512(_mm512_srli_epi16(w4_lanes, 4), vnibble_mask);
     __m512i nibs = _mm512_unpacklo_epi8(lo, hi);
@@ -991,58 +1058,7 @@ static inline void excess_positions_512_lut(const uint64_t* s,
     __m512i ps = excess_lane_prefix_sum_epi8(deltas);
     __m512i excl = _mm512_alignr_epi8(ps, Z, 15);
 
-    int t[4];
-    for (int k = 0; k < 4; ++k) {
-      t[k] = target_x - cur_start[base_word + k];
-    }
-
-    bool all_oor = true;
-    for (int k = 0; k < 4; ++k) {
-      if (t[k] >= -64 && t[k] <= 64) {
-        all_oor = false;
-        break;
-      }
-    }
-    if (all_oor) {
-      for (int k = 0; k < 4; ++k) {
-        out[base_word + k] = 0;
-      }
-      continue;
-    }
-
-    __m512i tl_v =
-        _mm512_set_epi8(static_cast<int8_t>(t[3]), static_cast<int8_t>(t[3]),
-                        static_cast<int8_t>(t[3]), static_cast<int8_t>(t[3]),
-                        static_cast<int8_t>(t[3]), static_cast<int8_t>(t[3]),
-                        static_cast<int8_t>(t[3]), static_cast<int8_t>(t[3]),
-                        static_cast<int8_t>(t[3]), static_cast<int8_t>(t[3]),
-                        static_cast<int8_t>(t[3]), static_cast<int8_t>(t[3]),
-                        static_cast<int8_t>(t[3]), static_cast<int8_t>(t[3]),
-                        static_cast<int8_t>(t[3]), static_cast<int8_t>(t[3]),
-                        static_cast<int8_t>(t[2]), static_cast<int8_t>(t[2]),
-                        static_cast<int8_t>(t[2]), static_cast<int8_t>(t[2]),
-                        static_cast<int8_t>(t[2]), static_cast<int8_t>(t[2]),
-                        static_cast<int8_t>(t[2]), static_cast<int8_t>(t[2]),
-                        static_cast<int8_t>(t[2]), static_cast<int8_t>(t[2]),
-                        static_cast<int8_t>(t[2]), static_cast<int8_t>(t[2]),
-                        static_cast<int8_t>(t[2]), static_cast<int8_t>(t[2]),
-                        static_cast<int8_t>(t[2]), static_cast<int8_t>(t[2]),
-                        static_cast<int8_t>(t[1]), static_cast<int8_t>(t[1]),
-                        static_cast<int8_t>(t[1]), static_cast<int8_t>(t[1]),
-                        static_cast<int8_t>(t[1]), static_cast<int8_t>(t[1]),
-                        static_cast<int8_t>(t[1]), static_cast<int8_t>(t[1]),
-                        static_cast<int8_t>(t[1]), static_cast<int8_t>(t[1]),
-                        static_cast<int8_t>(t[1]), static_cast<int8_t>(t[1]),
-                        static_cast<int8_t>(t[1]), static_cast<int8_t>(t[1]),
-                        static_cast<int8_t>(t[1]), static_cast<int8_t>(t[1]),
-                        static_cast<int8_t>(t[0]), static_cast<int8_t>(t[0]),
-                        static_cast<int8_t>(t[0]), static_cast<int8_t>(t[0]),
-                        static_cast<int8_t>(t[0]), static_cast<int8_t>(t[0]),
-                        static_cast<int8_t>(t[0]), static_cast<int8_t>(t[0]),
-                        static_cast<int8_t>(t[0]), static_cast<int8_t>(t[0]),
-                        static_cast<int8_t>(t[0]), static_cast<int8_t>(t[0]),
-                        static_cast<int8_t>(t[0]), static_cast<int8_t>(t[0]),
-                        static_cast<int8_t>(t[0]), static_cast<int8_t>(t[0]));
+    __m512i tl_v = excess_target_local_4x16(t0, t1, t2, t3);
     __m512i base = _mm512_sub_epi8(excl, tl_v);
 
     __mmask64 m0 = _mm512_cmpeq_epi8_mask(
@@ -1054,42 +1070,63 @@ static inline void excess_positions_512_lut(const uint64_t* s,
     __mmask64 m3 = _mm512_cmpeq_epi8_mask(
         _mm512_add_epi8(base, _mm512_shuffle_epi8(vdelta, nibs)), Z);
 
-#ifdef PIXIE_AVX512GFNI_SUPPORT
-    {
-      alignas(64) uint64_t tmp4[4];
-      excess_interleave_masks_gfni(m0, m1, m2, m3, tmp4);
-      for (int k = 0; k < 4; ++k) {
-        int w = base_word + k;
-        if (t[k] < -64 || t[k] > 64) {
-          out[w] = 0;
-        } else {
-          out[w] = tmp4[k];
-        }
-      }
-    }
-#else
     {
       uint64_t u0 = static_cast<uint64_t>(m0);
       uint64_t u1 = static_cast<uint64_t>(m1);
       uint64_t u2 = static_cast<uint64_t>(m2);
       uint64_t u3 = static_cast<uint64_t>(m3);
-      for (int k = 0; k < 4; ++k) {
-        int w = base_word + k;
-        if (t[k] < -64 || t[k] > 64) {
-          out[w] = 0;
-          continue;
-        }
-        uint16_t b0 = static_cast<uint16_t>(u0 >> (16 * k));
-        uint16_t b1 = static_cast<uint16_t>(u1 >> (16 * k));
-        uint16_t b2 = static_cast<uint16_t>(u2 >> (16 * k));
-        uint16_t b3 = static_cast<uint16_t>(u3 >> (16 * k));
-        out[w] = _pdep_u64(b0, 0x1111111111111111ULL) |
-                 _pdep_u64(b1, 0x2222222222222222ULL) |
-                 _pdep_u64(b2, 0x4444444444444444ULL) |
-                 _pdep_u64(b3, 0x8888888888888888ULL);
+      if (t0 < -64 || t0 > 64) {
+        out[base_word + 0] = 0;
+      } else {
+        uint16_t b0 = static_cast<uint16_t>(u0);
+        uint16_t b1 = static_cast<uint16_t>(u1);
+        uint16_t b2 = static_cast<uint16_t>(u2);
+        uint16_t b3 = static_cast<uint16_t>(u3);
+        out[base_word + 0] = _pdep_u64(b0, 0x1111111111111111ULL) |
+                             _pdep_u64(b1, 0x2222222222222222ULL) |
+                             _pdep_u64(b2, 0x4444444444444444ULL) |
+                             _pdep_u64(b3, 0x8888888888888888ULL);
+      }
+
+      if (t1 < -64 || t1 > 64) {
+        out[base_word + 1] = 0;
+      } else {
+        uint16_t b0 = static_cast<uint16_t>(u0 >> 16);
+        uint16_t b1 = static_cast<uint16_t>(u1 >> 16);
+        uint16_t b2 = static_cast<uint16_t>(u2 >> 16);
+        uint16_t b3 = static_cast<uint16_t>(u3 >> 16);
+        out[base_word + 1] = _pdep_u64(b0, 0x1111111111111111ULL) |
+                             _pdep_u64(b1, 0x2222222222222222ULL) |
+                             _pdep_u64(b2, 0x4444444444444444ULL) |
+                             _pdep_u64(b3, 0x8888888888888888ULL);
+      }
+
+      if (t2 < -64 || t2 > 64) {
+        out[base_word + 2] = 0;
+      } else {
+        uint16_t b0 = static_cast<uint16_t>(u0 >> 32);
+        uint16_t b1 = static_cast<uint16_t>(u1 >> 32);
+        uint16_t b2 = static_cast<uint16_t>(u2 >> 32);
+        uint16_t b3 = static_cast<uint16_t>(u3 >> 32);
+        out[base_word + 2] = _pdep_u64(b0, 0x1111111111111111ULL) |
+                             _pdep_u64(b1, 0x2222222222222222ULL) |
+                             _pdep_u64(b2, 0x4444444444444444ULL) |
+                             _pdep_u64(b3, 0x8888888888888888ULL);
+      }
+
+      if (t3 < -64 || t3 > 64) {
+        out[base_word + 3] = 0;
+      } else {
+        uint16_t b0 = static_cast<uint16_t>(u0 >> 48);
+        uint16_t b1 = static_cast<uint16_t>(u1 >> 48);
+        uint16_t b2 = static_cast<uint16_t>(u2 >> 48);
+        uint16_t b3 = static_cast<uint16_t>(u3 >> 48);
+        out[base_word + 3] = _pdep_u64(b0, 0x1111111111111111ULL) |
+                             _pdep_u64(b1, 0x2222222222222222ULL) |
+                             _pdep_u64(b2, 0x4444444444444444ULL) |
+                             _pdep_u64(b3, 0x8888888888888888ULL);
       }
     }
-#endif
   }
 
 #elif defined(PIXIE_AVX2_SUPPORT)
@@ -1111,51 +1148,8 @@ static inline void excess_positions_512_lut(const uint64_t* s,
       cur += word_delta;
       continue;
     }
-
-    __m128i bytes = _mm_cvtsi64_si128(static_cast<long long>(word));
-    __m128i lo = _mm_and_si128(bytes, vnibble_mask);
-    __m128i hi = _mm_and_si128(_mm_srli_epi16(bytes, 4), vnibble_mask);
-    __m128i nibbles = _mm_unpacklo_epi8(lo, hi);
-
-    __m128i deltas = _mm_shuffle_epi8(vdelta, nibbles);
-
-    __m128i ps = deltas;
-    ps = _mm_add_epi8(ps, _mm_slli_si128(ps, 1));
-    ps = _mm_add_epi8(ps, _mm_slli_si128(ps, 2));
-    ps = _mm_add_epi8(ps, _mm_slli_si128(ps, 4));
-    ps = _mm_add_epi8(ps, _mm_slli_si128(ps, 8));
-
-    __m128i excl = _mm_slli_si128(ps, 1);
-
-    __m128i vtarget_local = _mm_set1_epi8(static_cast<int8_t>(target_local));
-    // Overflow safety: excl[i] ∈ [-60, 60] (exclusive prefix sum of up to
-    // 15 deltas each in [-4, +4]), target_local ∈ [-64, 64].
-    // base = excl - target_local ∈ [-124, 124], fits in int8.
-    // base + pos_j ∈ [-128, 128]. The boundary value -128 is exactly
-    // representable in int8 and ≠ 0. The value +128 wraps to -128 in
-    // int8, which is also ≠ 0, so cmpeq_epi8 produces no false positive.
-    __m128i base = _mm_sub_epi8(excl, vtarget_local);
-
-    __m128i cmp0 = _mm_cmpeq_epi8(
-        _mm_add_epi8(base, _mm_shuffle_epi8(vpos0, nibbles)), vzero);
-    uint16_t bits0 = static_cast<uint16_t>(_mm_movemask_epi8(cmp0));
-
-    __m128i cmp1 = _mm_cmpeq_epi8(
-        _mm_add_epi8(base, _mm_shuffle_epi8(vpos1, nibbles)), vzero);
-    uint16_t bits1 = static_cast<uint16_t>(_mm_movemask_epi8(cmp1));
-
-    __m128i cmp2 = _mm_cmpeq_epi8(
-        _mm_add_epi8(base, _mm_shuffle_epi8(vpos2, nibbles)), vzero);
-    uint16_t bits2 = static_cast<uint16_t>(_mm_movemask_epi8(cmp2));
-
-    __m128i cmp3 = _mm_cmpeq_epi8(
-        _mm_add_epi8(base, _mm_shuffle_epi8(vdelta, nibbles)), vzero);
-    uint16_t bits3 = static_cast<uint16_t>(_mm_movemask_epi8(cmp3));
-
-    out[w] = _pdep_u64(bits0, 0x1111111111111111ULL) |
-             _pdep_u64(bits1, 0x2222222222222222ULL) |
-             _pdep_u64(bits2, 0x4444444444444444ULL) |
-             _pdep_u64(bits3, 0x8888888888888888ULL);
+    out[w] = excess_word_positions_lut_avx2(word, target_local, vdelta, vpos0,
+                                            vpos1, vpos2, vnibble_mask, vzero);
 
     cur += word_delta;
   }
