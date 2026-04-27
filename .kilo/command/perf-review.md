@@ -15,6 +15,7 @@ Non-negotiable requirements:
 
 - Optional argument `--target <branch>`: target branch override.
 - Optional argument `--filter <regex>`: benchmark filter regex.
+- Optional argument `--no-counters`: disable hardware-counter collection.
 
 If arguments are omitted:
 - Default target branch to PR base branch from `gh pr view --json baseRefName` when available.
@@ -32,22 +33,25 @@ Filter handling:
 3. Resolve baseline short hash.
 4. Print branch/hash mapping before benchmark execution.
 
-## Step 2 - Run timing comparison via skill (single source of truth)
+## Step 2 - Run timing and hardware-counter comparison via skill (single source of truth)
 
 Use `benchmarks-compare-revisions` as the single source of truth for revision builds, benchmark scope, compare.py flow, retry policy, and guardrails.
-
-Do not duplicate or override its internal build/run steps in this command.
 
 Pass-through inputs:
 - Baseline ref/hash from Step 1.
 - Contender ref/hash from Step 1.
 - Optional `--filter` override.
+- Counter mode: default on (`COLLECT_COUNTERS=1`) on Linux, disabled when `--no-counters` is provided.
 
 Consume outputs from `benchmarks-compare-revisions`:
 - Baseline and contender benchmark JSON artifacts.
 - compare.py output per binary.
 - Effective filter used.
 - Scope metadata from `benchmarks-affected` (`affected_benchmark_targets`, `affected_benchmarks`) when available.
+- `counters_available` status and, when unavailable, explicit reason.
+- Baseline and contender counter JSON artifacts (when available).
+- Derived counter metrics per benchmark (IPC, cache miss rate, branch mispredict rate).
+- Counter anomaly list and ready-to-embed counter summary table.
 
 Execution guardrails:
 - Run benchmarks sequentially.
@@ -55,31 +59,21 @@ Execution guardrails:
 - Use Release timing builds only.
 - If timing comparison fails, return blocked verdict with exact failure points.
 
-## Step 3 - Collect hardware counter profiles (Linux only, optional)
+## Step 3 - Consume delegated hardware-counter outputs
 
-Run a preflight first to avoid wasted attempts:
-1. Execute one tiny benchmark with perf counters (e.g. one benchmark case) and inspect output for counter availability.
-2. If output includes warnings like `Failed to get a file descriptor for performance counter`, mark counters unavailable and skip counter collection.
+Hardware-counter collection is delegated to `benchmarks-compare-revisions`.
 
-If preflight passes and Linux profiling build is available, run both baseline and contender diagnostic binaries with counter output:
+Pass-through inputs:
+- `COLLECT_COUNTERS=1` by default on Linux (unless `--no-counters` is provided).
+- Same baseline/contender refs and effective filter used in Step 2.
 
-- `--benchmark_counters_tabular=true`
-- `--benchmark_format=json`
-- `--benchmark_out=<output.json>`
-- Include `--benchmark_filter` when provided.
+Consume outputs:
+- Counter preflight result.
+- Counter JSON artifacts for both revisions.
+- Derived metrics (IPC, cache miss rate, branch mispredict rate).
+- Anomaly list and counter summary table for report embedding.
 
-Collect and compare at least these counter families when present:
-- `instructions`, `cycles` (for IPC)
-- `cache-misses`, `cache-references` (cache miss rate)
-- `branch-misses`, `branches` (branch mispredict rate)
-- `L1-dcache-load-misses` (L1 data cache pressure)
-
-Compute derived metrics when denominators are non-zero:
-- IPC = instructions / cycles
-- Cache miss rate = cache-misses / cache-references
-- Branch mispredict rate = branch-misses / branches
-
-If profiling is unavailable (non-Linux, libpfm missing, or perf permissions blocked), continue with timing-only review and explicitly mark profiling as unavailable in the report.
+If counters are unavailable (`counters_available=false`), continue with timing-only review and explicitly mark profiling as unavailable in the report.
 
 ## Step 4 - Analyze timing and counter data
 
@@ -94,8 +88,8 @@ Aggregate per binary:
 - Largest regression and largest improvement
 
 Counter correlation:
-- Use hardware counters to explain major timing changes.
-- Flag anomalies (timing improves while key counters degrade, or opposite).
+- Use skill-provided hardware counter summary and anomaly list to explain major timing changes.
+- Do not recompute derived counter metrics in this command.
 
 Judgment priority:
 - Base verdict primarily on benchmark timing comparison.
@@ -151,5 +145,5 @@ Verdict rules:
 ## Failure Handling
 
 - If required builds fail or timing comparison cannot run, output a blocked review with exact failure points and no misleading verdict.
-- If only profiling fails, continue with timing-based verdict and explicitly list profiling limitation.
+- If only profiling fails (`counters_available=false` from delegated skill output), continue with timing-based verdict and explicitly list profiling limitation.
 - If JSON output is invalid/truncated, discard it and rerun that benchmark command once with tighter filter and explicit output redirection.

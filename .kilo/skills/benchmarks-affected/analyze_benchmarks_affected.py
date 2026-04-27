@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
+import os
 import re
 import shlex
 import shutil
@@ -15,12 +17,34 @@ from pathlib import Path
 from typing import Any
 
 
+def is_project_source(source: Path, repo_root: Path) -> bool:
+    """Exclude third-party deps and generated build files."""
+    try:
+        rel = source.relative_to(repo_root)
+    except ValueError:
+        return False
+    rel_text = rel.as_posix()
+    if rel_text.startswith("build/") or "_deps/" in rel_text:
+        return False
+    return True
+
+
 KNOWN_BENCHMARK_TARGETS = {
     "benchmarks",
     "bench_rmm",
     "bench_rmm_sdsl",
     "louds_tree_benchmarks",
     "alignment_comparison",
+}
+
+HEADER_EXTENSIONS = {
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".inc",
+    ".ipp",
+    ".tcc",
 }
 
 BUILD_INFRA_FILES = {
@@ -65,6 +89,7 @@ def run_command(
     args: list[str],
     cwd: Path,
     check: bool = True,
+    timeout: float | None = 60.0,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
@@ -72,6 +97,7 @@ def run_command(
         text=True,
         capture_output=True,
         check=check,
+        timeout=timeout,
     )
 
 
@@ -157,7 +183,10 @@ def resolve_compile_commands(repo_root: Path, explicit_path: str | None) -> Path
     return candidates[0].resolve()
 
 
-def load_compile_commands(compile_commands_path: Path) -> list[CompileCommandEntry]:
+def load_compile_commands(
+    compile_commands_path: Path,
+    repo_root: Path,
+) -> list[CompileCommandEntry]:
     entries: list[CompileCommandEntry] = []
     data = json.loads(compile_commands_path.read_text(encoding="utf-8"))
     for raw_entry in data:
@@ -168,6 +197,9 @@ def load_compile_commands(compile_commands_path: Path) -> list[CompileCommandEnt
             source = raw_source.resolve()
         else:
             source = (directory / raw_source).resolve()
+
+        if not is_project_source(source, repo_root):
+            continue
 
         if "arguments" in raw_entry:
             arguments = [str(arg) for arg in raw_entry["arguments"]]
@@ -500,6 +532,7 @@ def identify_benchmark_targets(
     entries: list[CompileCommandEntry], repo_root: Path
 ) -> set[str]:
     benchmark_targets: set[str] = set()
+    targets_present = {entry.target for entry in entries if entry.target}
     for entry in entries:
         if entry.target is None:
             continue
@@ -512,8 +545,30 @@ def identify_benchmark_targets(
         if rel_text.startswith("src/benchmarks/"):
             benchmark_targets.add(entry.target)
 
-    benchmark_targets.update(KNOWN_BENCHMARK_TARGETS)
+    benchmark_targets.update(targets_present.intersection(KNOWN_BENCHMARK_TARGETS))
     return benchmark_targets
+
+
+def is_benchmark_source(source: Path, repo_root: Path) -> bool:
+    try:
+        rel_text = source.relative_to(repo_root).as_posix()
+    except ValueError:
+        return False
+    return rel_text.startswith("src/benchmarks/")
+
+
+def dedupe_entries_by_target_source(
+    entries: list[CompileCommandEntry],
+) -> list[CompileCommandEntry]:
+    deduped: list[CompileCommandEntry] = []
+    seen: set[tuple[str | None, Path]] = set()
+    for entry in entries:
+        key = (entry.target, entry.source)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(entry)
+    return deduped
 
 
 def discover_clangxx(explicit: str | None) -> str:
@@ -686,58 +741,83 @@ def ast_analyze_entry(
         result.ast_error = f"Invalid AST JSON: {exc}"
         return result
 
+    function_callees: dict[str, set[str]] = defaultdict(set)
+    direct_impacted_functions: set[str] = set()
+    dynamic_benchmarks_by_function: dict[str, set[str]] = defaultdict(set)
+
     for node in iter_ast_nodes(ast_root):
         if not isinstance(node, dict):
             continue
 
-        kind = node.get("kind")
-        if kind in {"FunctionDecl", "CXXMethodDecl"}:
-            name = node.get("name")
-            if isinstance(name, str) and name.startswith("BM_"):
-                result.benchmark_names.add(name)
-                function_loc = file_from_loc(node.get("loc"), entry.directory)
-                if function_loc in changed_files:
-                    result.affected_names.add(name)
-                    continue
+        if node.get("kind") not in {"FunctionDecl", "CXXMethodDecl"}:
+            continue
 
-                if node_references_changed_symbol(node, changed_symbol_names):
-                    result.affected_names.add(name)
-                    continue
+        function_name = node.get("name")
+        if not isinstance(function_name, str) or not function_name:
+            continue
 
-                for subnode in iter_ast_nodes(node):
-                    if not isinstance(subnode, dict):
-                        continue
-                    ref_file = referenced_decl_file(subnode, entry.directory)
-                    if ref_file in changed_files:
-                        result.affected_names.add(name)
-                        break
+        if function_name.startswith("BM_"):
+            result.benchmark_names.add(function_name)
 
-        if kind == "CallExpr":
-            callee = call_expr_callee_name(node)
-            if callee != "register_op":
-                continue
-            literal_values = string_literals_in_node(node)
-            if not literal_values:
-                continue
-            benchmark_name = literal_values[0]
-            result.benchmark_names.add(benchmark_name)
+        function_callees.setdefault(function_name, set())
 
-            call_loc = file_from_loc(node.get("loc"), entry.directory)
-            if call_loc in changed_files:
-                result.affected_names.add(benchmark_name)
+        function_loc = file_from_loc(node.get("loc"), entry.directory)
+        is_directly_impacted = function_loc in changed_files
+        if not is_directly_impacted:
+            is_directly_impacted = node_references_changed_symbol(
+                node, changed_symbol_names
+            )
+
+        for subnode in iter_ast_nodes(node):
+            if not isinstance(subnode, dict):
                 continue
 
-            if node_references_changed_symbol(node, changed_symbol_names):
-                result.affected_names.add(benchmark_name)
-                continue
+            sub_kind = subnode.get("kind")
+            if sub_kind in {"CallExpr", "CXXMemberCallExpr", "CXXOperatorCallExpr"}:
+                callee = call_expr_callee_name(subnode)
+                if callee:
+                    function_callees[function_name].add(callee)
 
-            for subnode in iter_ast_nodes(node):
-                if not isinstance(subnode, dict):
-                    continue
+                if callee == "register_op":
+                    literal_values = string_literals_in_node(subnode)
+                    if literal_values:
+                        dynamic_benchmarks_by_function[function_name].add(
+                            literal_values[0]
+                        )
+
+            if not is_directly_impacted:
                 ref_file = referenced_decl_file(subnode, entry.directory)
                 if ref_file in changed_files:
-                    result.affected_names.add(benchmark_name)
-                    break
+                    is_directly_impacted = True
+
+        if is_directly_impacted:
+            direct_impacted_functions.add(function_name)
+
+    # Reverse call-graph propagation: if a function is directly impacted,
+    # every caller in this TU is impacted as well (fixed-point DFS/BFS).
+    callers_of: dict[str, set[str]] = defaultdict(set)
+    for caller, callees in function_callees.items():
+        for callee in callees:
+            callers_of[callee].add(caller)
+
+    impacted_functions = set(direct_impacted_functions)
+    stack = list(direct_impacted_functions)
+    while stack:
+        callee_name = stack.pop()
+        for caller_name in callers_of.get(callee_name, set()):
+            if caller_name in impacted_functions:
+                continue
+            impacted_functions.add(caller_name)
+            stack.append(caller_name)
+
+    for function_name in impacted_functions:
+        if function_name.startswith("BM_"):
+            result.affected_names.add(function_name)
+
+    for function_name, names in dynamic_benchmarks_by_function.items():
+        result.benchmark_names.update(names)
+        if function_name in impacted_functions:
+            result.affected_names.update(names)
 
     return result
 
@@ -775,7 +855,7 @@ def main() -> int:
         compile_commands_path = resolve_compile_commands(
             repo_root, cli.compile_commands
         )
-        entries = load_compile_commands(compile_commands_path)
+        entries = load_compile_commands(compile_commands_path, repo_root)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -788,46 +868,79 @@ def main() -> int:
         return 2
 
     target_to_entries: dict[str, list[CompileCommandEntry]] = defaultdict(list)
+    source_to_entries: dict[Path, list[CompileCommandEntry]] = defaultdict(list)
     for entry in entries:
+        source_to_entries[entry.source].append(entry)
         if entry.target:
             target_to_entries[entry.target].append(entry)
 
-    for entry in entries:
-        compute_tu_dependencies(entry)
-
-    affected_targets: set[str] = set()
-    for entry in entries:
-        has_changed_dependency = any(dep in changed_files for dep in entry.dependencies)
-        if has_changed_dependency:
-            if entry.target:
-                affected_targets.add(entry.target)
-
     benchmark_targets = identify_benchmark_targets(entries, repo_root)
     all_targets = {entry.target for entry in entries if entry.target}
+    benchmark_entries = dedupe_entries_by_target_source(
+        [entry for entry in entries if entry.target in benchmark_targets]
+    )
 
     infra_change = is_build_infra_change(repo_root, changed_files)
+    relevant_changed_files = {
+        path
+        for path in changed_files
+        if is_project_source(path, repo_root)
+        or path.name in BUILD_INFRA_FILES
+        or relpath_or_abs(path, repo_root).startswith("cmake/")
+    }
+    has_header_changes = any(
+        path.suffix.lower() in HEADER_EXTENSIONS for path in relevant_changed_files
+    )
+    benchmark_source_extensions = {".c", ".cc", ".cpp", ".cxx"}
+    only_benchmark_source_changes = bool(relevant_changed_files) and all(
+        is_benchmark_source(path, repo_root)
+        and path.suffix.lower() in benchmark_source_extensions
+        for path in relevant_changed_files
+    )
+
+    directly_affected_targets: set[str] = set()
+    for changed_path in changed_files:
+        for entry in source_to_entries.get(changed_path, []):
+            if entry.target:
+                directly_affected_targets.add(entry.target)
+
+    dependency_scan_entries: list[CompileCommandEntry] = []
+    if not infra_change and not only_benchmark_source_changes:
+        if has_header_changes:
+            dependency_scan_entries = dedupe_entries_by_target_source(entries)
+        else:
+            dependency_scan_entries = benchmark_entries
+
+    if dependency_scan_entries:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(8, (os.cpu_count() or 4))
+        ) as pool:
+            list(pool.map(compute_tu_dependencies, dependency_scan_entries))
+
+    affected_targets: set[str] = set(directly_affected_targets)
+    for entry in dependency_scan_entries:
+        has_changed_dependency = any(dep in changed_files for dep in entry.dependencies)
+        if has_changed_dependency and entry.target:
+            affected_targets.add(entry.target)
+
     if infra_change:
         affected_targets.update(all_targets)
 
-    affected_benchmark_targets = sorted(
-        affected_targets.intersection(benchmark_targets)
+    dependency_impacted_benchmark_targets = affected_targets.intersection(
+        benchmark_targets
     )
-
-    benchmark_entries: list[CompileCommandEntry] = []
-    for entry in entries:
-        if entry.target in benchmark_targets:
-            benchmark_entries.append(entry)
-
-    impacted_benchmark_entries: list[CompileCommandEntry] = []
-    for entry in benchmark_entries:
-        has_changed_dependency = any(dep in changed_files for dep in entry.dependencies)
-        if has_changed_dependency or entry.target in affected_benchmark_targets:
-            impacted_benchmark_entries.append(entry)
+    impacted_benchmark_entries = [
+        entry
+        for entry in benchmark_entries
+        if entry.target in dependency_impacted_benchmark_targets
+    ]
 
     ast_errors: dict[str, str] = {}
     benchmark_target_to_names: dict[str, set[str]] = defaultdict(set)
     benchmark_target_to_affected: dict[str, set[str]] = defaultdict(set)
     warnings: list[str] = []
+    ast_fallback_used = False
+    ast_entries_scanned = 0
 
     if impacted_benchmark_entries:
         try:
@@ -836,56 +949,76 @@ def main() -> int:
             clangxx = ""
             warnings.append(str(exc))
 
-        for entry in impacted_benchmark_entries:
-            target_name = entry.target or "<unknown-target>"
-
-            if not clangxx:
+        if not clangxx:
+            ast_fallback_used = True
+            for entry in impacted_benchmark_entries:
+                target_name = entry.target or "<unknown-target>"
                 fallback_names = benchmark_names_from_source(entry.source)
                 benchmark_target_to_names[target_name].update(fallback_names)
-                if changed_symbol_names:
-                    benchmark_target_to_affected[target_name].update(fallback_names)
-                continue
+                benchmark_target_to_affected[target_name].update(fallback_names)
+        else:
+            max_ast_workers = min(2, (os.cpu_count() or 2))
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max_ast_workers
+            ) as pool:
+                futures = {
+                    pool.submit(
+                        ast_analyze_entry,
+                        entry,
+                        changed_files,
+                        changed_symbol_names,
+                        clangxx,
+                    ): entry
+                    for entry in impacted_benchmark_entries
+                }
+                ast_entries_scanned = len(futures)
+                for future in concurrent.futures.as_completed(futures):
+                    entry = futures[future]
+                    target_name = entry.target or "<unknown-target>"
+                    source_path = entry.source
+                    source_is_changed = source_path in changed_files
 
-            ast_result = ast_analyze_entry(
-                entry,
-                changed_files,
-                changed_symbol_names,
-                clangxx,
-            )
-            if ast_result.ast_error:
-                ast_errors[relpath_or_abs(entry.source, repo_root)] = (
-                    ast_result.ast_error
-                )
+                    try:
+                        ast_result = future.result(timeout=120)
+                    except Exception as exc:
+                        ast_result = AstImpactResult(
+                            ast_error=f"AST worker failed: {exc}"
+                        )
 
-            if ast_result.benchmark_names:
-                benchmark_target_to_names[target_name].update(
-                    ast_result.benchmark_names
-                )
-            else:
-                benchmark_target_to_names[target_name].update(
-                    benchmark_names_from_source(entry.source)
-                )
+                    if ast_result.ast_error:
+                        ast_errors[relpath_or_abs(source_path, repo_root)] = (
+                            ast_result.ast_error
+                        )
 
-            if ast_result.affected_names:
-                benchmark_target_to_affected[target_name].update(
-                    ast_result.affected_names
-                )
-            else:
-                source_is_changed = entry.source in changed_files
-                if source_is_changed:
-                    benchmark_target_to_affected[target_name].update(
-                        benchmark_target_to_names[target_name]
-                    )
+                    benchmark_names = ast_result.benchmark_names
+                    if not benchmark_names:
+                        benchmark_names = benchmark_names_from_source(source_path)
+                    benchmark_target_to_names[target_name].update(benchmark_names)
 
-    if infra_change and affected_benchmark_targets:
-        for target_name in affected_benchmark_targets:
+                    if ast_result.affected_names:
+                        benchmark_target_to_affected[target_name].update(
+                            ast_result.affected_names
+                        )
+                    elif source_is_changed or ast_result.ast_error:
+                        benchmark_target_to_affected[target_name].update(
+                            benchmark_names
+                        )
+                        if benchmark_names:
+                            ast_fallback_used = True
+
+    if infra_change and benchmark_targets:
+        for target_name in sorted(benchmark_targets):
             for entry in target_to_entries.get(target_name, []):
-                benchmark_target_to_names[target_name].update(
-                    benchmark_names_from_source(entry.source)
-                )
-                benchmark_target_to_affected[target_name].update(
-                    benchmark_names_from_source(entry.source)
-                )
+                names = benchmark_names_from_source(entry.source)
+                benchmark_target_to_names[target_name].update(names)
+                benchmark_target_to_affected[target_name].update(names)
+
+    if infra_change:
+        affected_benchmark_targets = sorted(benchmark_targets)
+    else:
+        affected_benchmark_targets = sorted(
+            target for target, names in benchmark_target_to_affected.items() if names
+        )
 
     all_affected_benchmarks: set[str] = set()
     for names in benchmark_target_to_affected.values():
@@ -893,9 +1026,15 @@ def main() -> int:
 
     dep_scan_failures = {
         relpath_or_abs(entry.source, repo_root): entry.dep_error
-        for entry in entries
+        for entry in dependency_scan_entries
         if entry.dep_error
     }
+
+    scope_mode = "normal"
+    if infra_change:
+        scope_mode = "infra_fallback"
+    elif ast_fallback_used:
+        scope_mode = "ast_fallback"
 
     report: dict[str, Any] = {
         "baseline": cli.baseline,
@@ -914,6 +1053,10 @@ def main() -> int:
             if names
         },
         "suggested_filter_regex": regex_for_benchmarks(all_affected_benchmarks),
+        "dependency_entries_scanned": len(dependency_scan_entries),
+        "benchmark_entries_scanned": len(benchmark_entries),
+        "ast_entries_scanned": ast_entries_scanned,
+        "scope_mode": scope_mode,
         "dependency_scan_failures": dep_scan_failures,
         "ast_failures": ast_errors,
         "warnings": warnings,
@@ -927,6 +1070,13 @@ def main() -> int:
     print(f"Baseline: {cli.baseline}")
     print(f"Head: {cli.head}")
     print(f"Compile commands: {report['compile_commands']}")
+    print(f"Scope mode: {report['scope_mode']}")
+    print(
+        "Scan counts: "
+        f"dependency={report['dependency_entries_scanned']}, "
+        f"benchmark={report['benchmark_entries_scanned']}, "
+        f"ast={report['ast_entries_scanned']}"
+    )
     print("")
 
     print(f"Changed files ({len(report['changed_files'])}):")
