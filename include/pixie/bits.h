@@ -2,7 +2,6 @@
 
 #include <immintrin.h>
 
-#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -766,6 +765,7 @@ static inline __m128i excess_nibble_pos2_lut() noexcept {
                                              -3, -1, -1, 1, -1, 1, 1, 3};
   return _mm_load_si128((const __m128i*)lut);
 }
+
 #endif
 
 static inline void excess_positions_512_lut(const uint64_t* s,
@@ -789,11 +789,10 @@ static inline void excess_positions_512_lut(const uint64_t* s,
   int cur = 0;
   for (int w = 0; w < 8; ++w) {
     const uint64_t word = s[w];
-    const int word_delta = 2 * (int)std::popcount(word) - 64;
+    const int word_delta = 2 * static_cast<int>(std::popcount(word)) - 64;
     const int target_local = target_x - cur;
 
     if (target_local < -64 || target_local > 64) {
-      out[w] = 0;
       cur += word_delta;
       continue;
     }
@@ -834,8 +833,10 @@ static inline void excess_positions_512_lut(const uint64_t* s,
         _mm_add_epi8(base, _mm_shuffle_epi8(vpos2, nibbles)), vzero);
     uint16_t bits2 = static_cast<uint16_t>(_mm_movemask_epi8(cmp2));
 
-    __m128i cmp3 = _mm_cmpeq_epi8(
-        _mm_add_epi8(base, _mm_shuffle_epi8(vdelta, nibbles)), vzero);
+    // cmp3 checks base + delta == 0, i.e. excl - target_local + delta == 0.
+    // Since excl + delta == ps (the inclusive prefix sum), this is simply
+    // ps == target_local.  Saves one add and one shuffle.
+    __m128i cmp3 = _mm_cmpeq_epi8(ps, vtarget_local);
     uint16_t bits3 = static_cast<uint16_t>(_mm_movemask_epi8(cmp3));
 
     out[w] = _pdep_u64(bits0, 0x1111111111111111ULL) |
