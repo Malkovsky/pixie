@@ -9,10 +9,23 @@ You now have expertise in building and configuring CMake projects. Follow these 
 
 ## Build Directory Convention
 
-Always use a suffix to keep build directories isolated per machine/user:
+Use a short commit hash suffix for committed revisions:
 
 ```bash
-BUILD_SUFFIX=local   # change per machine, e.g. "ci", "john", "avx2"
+BUILD_SUFFIX=$(git rev-parse --short HEAD)
+```
+
+If the worktree has uncommitted changes, append a descriptive suffix so generated
+artifacts cannot be confused with a clean HEAD build:
+
+```bash
+BUILD_SUFFIX=$(git rev-parse --short HEAD)-dirty
+```
+
+If not a git repository, use
+
+```bash
+BUILD_SUFFIX=agent
 ```
 
 Build directories follow the pattern `build/<preset_name>_<suffix>`.
@@ -55,10 +68,10 @@ cmake -B build/coverage_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Debug -DPIXIE_BENCHMA
 cmake --build build/coverage_${BUILD_SUFFIX} -j
 ```
 
-All benchmarks (mirrors `benchmarks-all` preset):
+Benchmarks (mirrors `benchmarks` preset):
 ```bash
-cmake -B build/benchmarks-all_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Release -DPIXIE_BENCHMARKS=ON
-cmake --build build/benchmarks-all_${BUILD_SUFFIX} -j
+cmake -B build/benchmarks_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Release -DPIXIE_BENCHMARKS=ON
+cmake --build build/benchmarks_${BUILD_SUFFIX} -j
 ```
 
 ## Additional Feature Options
