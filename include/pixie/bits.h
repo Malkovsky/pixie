@@ -791,7 +791,8 @@ static inline void excess_positions_512_lut(const uint64_t* s,
     const int word_delta = 2 * static_cast<int>(std::popcount(word)) - 64;
     const int target_local = target_x - cur;
 
-    if (target_local < -64 || target_local > 64) {
+    const int d = 2 * target_local - word_delta;
+    if (d < -64 || d > 64) {
       cur += word_delta;
       continue;
     }
