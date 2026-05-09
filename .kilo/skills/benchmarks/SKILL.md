@@ -9,10 +9,23 @@ You now have expertise in running and interpreting Pixie benchmarks. Follow thes
 
 ## Build Directory Convention
 
-Uses the same suffix convention as the cmake skill:
+Use a short commit hash suffix for committed revisions:
 
 ```bash
-BUILD_SUFFIX=local
+BUILD_SUFFIX=$(git rev-parse --short HEAD)
+```
+
+If the worktree has uncommitted changes, append a descriptive suffix so results
+cannot be confused with a clean HEAD build:
+
+```bash
+BUILD_SUFFIX=$(git rev-parse --short HEAD)-dirty
+```
+
+If not a git repository, use
+
+```bash
+BUILD_SUFFIX=agent
 ```
 
 ## CRITICAL: Never Run Benchmarks from a Debug Build
@@ -27,10 +40,10 @@ BUILD_SUFFIX=local
 
 If benchmarks affected by the changes are easily tractable build only related targets.
 
-**Pure timing (benchmarks-all, Release):**
+**Pure timing (benchmarks, Release):**
 ```bash
-cmake -B build/benchmarks-all_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Release -DPIXIE_BENCHMARKS=ON
-cmake --build build/benchmarks-all_${BUILD_SUFFIX} --config Release -j
+cmake -B build/benchmarks_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Release -DPIXIE_BENCHMARKS=ON
+cmake --build build/benchmarks_${BUILD_SUFFIX} --config Release -j
 ```
 
 **Hardware counters / verbose report (benchmarks-diagnostic, RelWithDebInfo, Linux only):**
@@ -69,10 +82,10 @@ Binary paths vary by generator type:
 
 ```bash
 # Multi-config (MSVC/Xcode)
-build/benchmarks-all_${BUILD_SUFFIX}/Release/benchmarks
+build/benchmarks_${BUILD_SUFFIX}/Release/benchmarks
 
 # Single-config (Ninja/Make)
-build/benchmarks-all_${BUILD_SUFFIX}/benchmarks
+build/benchmarks_${BUILD_SUFFIX}/benchmarks
 ```
 
 ### Filter benchmarks with a regex (FILTER parameter)
@@ -81,10 +94,10 @@ build/benchmarks-all_${BUILD_SUFFIX}/benchmarks
 FILTER="BM_Rank"   # change to match benchmark names, e.g. "BM_Select", "BM_Louds", ""
 
 # Multi-config
-build/benchmarks-all_${BUILD_SUFFIX}/Release/benchmarks --benchmark_filter="${FILTER}"
+build/benchmarks_${BUILD_SUFFIX}/Release/benchmarks --benchmark_filter="${FILTER}"
 
 # Single-config
-build/benchmarks-all_${BUILD_SUFFIX}/benchmarks --benchmark_filter="${FILTER}"
+build/benchmarks_${BUILD_SUFFIX}/benchmarks --benchmark_filter="${FILTER}"
 ```
 
 Examples:
@@ -110,7 +123,7 @@ build/benchmarks-diagnostic_${BUILD_SUFFIX}/RelWithDebInfo/benchmarks \
 ### Save results to file
 
 ```bash
-build/benchmarks-all_${BUILD_SUFFIX}/Release/benchmarks \
+build/benchmarks_${BUILD_SUFFIX}/Release/benchmarks \
   --benchmark_filter="${FILTER}" \
   --benchmark_report_aggregates_only=true \
   --benchmark_display_aggregates_only=true \
@@ -167,7 +180,7 @@ perf script -F +pid > perf.data.txt
 ## Best Practices
 
 1. **Never run from a Debug binary**: always use `--config Release` at build time; check path contains `Release/`
-2. **Use benchmarks-all for clean timing**: Release optimizations, no debug info, no libpfm overhead
+2. **Use benchmarks for clean timing**: Release optimizations, no debug info, no libpfm overhead
 3. **Use benchmarks-diagnostic for hardware counters**: RelWithDebInfo + libpfm; Linux only
 4. **Use perf for deep profiling**: when counters point to a hotspot but don't explain it
 5. **Pin CPU frequency** before timing runs: `sudo cpupower frequency-set -g performance`
