@@ -55,6 +55,8 @@ cd papers/<new-paper>/
 ln -s ../../_extensions _extensions
 ```
 
+**Important**: After installing the extension or creating symlinks, explicitly `git add` both `academic/_extensions/` and any paper-level `_extensions` symlinks. They can exist on disk without being git-tracked (the PR review bot will flag missing symlinks).
+
 ## Rendering
 
 ### Papers (ACM format)

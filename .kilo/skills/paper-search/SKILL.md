@@ -99,3 +99,8 @@ For papers NOT in Zotero, BibTeX can be constructed from the search results' JSO
 - When using `--source all`, results may contain duplicates (same paper from different sources). Deduplicate by DOI or title similarity.
 - Citation counts are approximate and may differ across sources.
 - arXiv results return the arXiv ID (e.g., `2301.12345`) which can be used with `zotero_add_by_url` via `https://arxiv.org/abs/2301.12345`.
+
+## API Quirks
+
+- **arXiv `atom:id` is NOT a DOI** — it contains an arXiv URL like `http://arxiv.org/abs/2301.12345`. Store the extracted ID in `arxiv_id` only; set `doi` to `None` for arXiv results. Writing the arXiv URL into `doi` produces invalid DOI metadata downstream (e.g., Zotero import).
+- **CrossRef `select` must include `link`** — the `link` field is needed for `pdf_url` extraction. If omitted from `select`, the API won't return link metadata and `pdf_url` will silently be empty for all CrossRef results.
