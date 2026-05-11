@@ -126,7 +126,7 @@ def search_arxiv(query: str, limit: int = 10) -> list[dict[str, Any]]:
             "authors": authors,
             "year": year,
             "abstract": abstract,
-            "doi": entry.findtext("atom:id", "", ns).replace("http://arxiv.org/abs/", ""),
+            "doi": None,
             "arxiv_id": arxiv_id,
             "venue": "arXiv",
             "citation_count": None,
@@ -141,7 +141,7 @@ def search_crossref(query: str, limit: int = 10) -> list[dict[str, Any]]:
     params = urllib.parse.urlencode({
         "query": query,
         "rows": limit,
-        "select": "DOI,title,author,published-print,abstract,container-title,is-referenced-by-count,URL,type",
+        "select": "DOI,title,author,published-print,abstract,container-title,is-referenced-by-count,URL,type,link",
     })
     url = f"https://api.crossref.org/works?{params}"
     data = _get(url, headers={"Accept": "application/json"})
