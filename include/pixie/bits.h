@@ -794,12 +794,17 @@ static inline void excess_positions_512(const uint64_t* s,
   const __m256i vpos1 = excess_lut_pos1;
   const __m256i vpos2 = excess_lut_pos2;
   const __m256i vmult = _mm256_set1_epi16(0x1001);
+  const __m256i vbit0 = _mm256_set1_epi8(1);
+  const __m256i vbit1 = _mm256_set1_epi8(2);
+  const __m256i vbit2 = _mm256_set1_epi8(4);
+  const __m256i vbit3 = _mm256_set1_epi8(8);
+  const __m128i vnibble_mask = _mm_set1_epi8(0x0F);
 
   for (int k = 0; k < 4; ++k) {
     __m128i word_vec = _mm_loadu_si128((const __m128i*)&s[2 * k]);
-    __m128i lo_nibbles = _mm_and_si128(word_vec, _mm_set1_epi8(0x0F));
+    __m128i lo_nibbles = _mm_and_si128(word_vec, vnibble_mask);
     __m128i hi_nibbles =
-        _mm_and_si128(_mm_srli_epi16(word_vec, 4), _mm_set1_epi8(0x0F));
+        _mm_and_si128(_mm_srli_epi16(word_vec, 4), vnibble_mask);
 
     __m128i unpack_lo = _mm_unpacklo_epi8(lo_nibbles, hi_nibbles);
     __m128i unpack_hi = _mm_unpackhi_epi8(lo_nibbles, hi_nibbles);
@@ -832,15 +837,6 @@ static inline void excess_positions_512(const uint64_t* s,
       continue;
     }
 
-    if (target_rel == 128 && block_delta == 128) {
-      out[2 * k + 1] |= (1ULL << 63);
-      cur += block_delta;
-      continue;
-    } else if (target_rel == -128 && block_delta == -128) {
-      out[2 * k + 1] |= (1ULL << 63);
-      cur += block_delta;
-      continue;
-    }
 
     __m256i vtgt = _mm256_set1_epi8((int8_t)target_rel);
     __m256i t = _mm256_sub_epi8(vtgt, excl_ps);
@@ -850,10 +846,10 @@ static inline void excess_positions_512(const uint64_t* s,
     __m256i cmp2 = _mm256_cmpeq_epi8(_mm256_shuffle_epi8(vpos2, nibbles), t);
     __m256i cmp3 = _mm256_cmpeq_epi8(ps, vtgt);
 
-    __m256i bit0 = _mm256_and_si256(cmp0, _mm256_set1_epi8(1));
-    __m256i bit1 = _mm256_and_si256(cmp1, _mm256_set1_epi8(2));
-    __m256i bit2 = _mm256_and_si256(cmp2, _mm256_set1_epi8(4));
-    __m256i bit3 = _mm256_and_si256(cmp3, _mm256_set1_epi8(8));
+    __m256i bit0 = _mm256_and_si256(cmp0, vbit0);
+    __m256i bit1 = _mm256_and_si256(cmp1, vbit1);
+    __m256i bit2 = _mm256_and_si256(cmp2, vbit2);
+    __m256i bit3 = _mm256_and_si256(cmp3, vbit3);
 
     __m256i total_match = _mm256_or_si256(_mm256_or_si256(bit0, bit1),
                                           _mm256_or_si256(bit2, bit3));
