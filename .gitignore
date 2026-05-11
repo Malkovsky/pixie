@@ -6,3 +6,16 @@ venv/
 docs/*
 src/docs/presentations/*
 CMakeUserPresets.json
+
+# Quarto
+.quarto/
+*_files/
+academic/**/*.html
+academic/**/*.pdf
+academic/**/*.tex
+academic/**/*.aux
+academic/**/*.bbl
+academic/**/*.blg
+academic/**/*.log
+academic/**/*.out
+academic/**/*.run.xml

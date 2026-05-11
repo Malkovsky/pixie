@@ -19,6 +19,7 @@ Current implementations include BitVector, RmM Tree, and LOUDS Tree. Planned add
 - **`src/*_tests.cpp`**: Unit tests (Google Test)
 - **`src/*_benchmarks.cpp`**: Performance benchmarks (Google Benchmark)
 - **`src/docs/`**: Doxygen configuration
+- **`academic/`**: Academic materials — papers, presentations, reports, bibliography, notes
 
 ### Key Design Decisions
 
