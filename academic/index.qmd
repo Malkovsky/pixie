@@ -1,0 +1,30 @@
+---
+title: "Pixie: Academic Materials"
+---
+
+This is the academic materials repository for the **Pixie** succinct data structures library.
+
+## Contents
+
+- **[Papers](papers/index.qmd)** -- Published and draft research papers
+- **[Reports](reports/index.qmd)** -- Technical reports and design documents
+- **[Presentations](presentations/index.qmd)** -- Conference talks and seminar slides
+- **[Notes](notes/index.qmd)** -- Research notes and literature reviews
+
+## Building
+
+This project uses [Quarto](https://quarto.org). To render all materials:
+
+```bash
+quarto render
+```
+
+To render a specific section:
+
+```bash
+quarto render papers/
+```
+
+## Bibliography
+
+The master bibliography lives in `bibliography/references.bib`. Cite with `@AuthorYear` syntax in any `.qmd` file.
