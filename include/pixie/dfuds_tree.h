@@ -18,7 +18,6 @@ class DFUDSTree {
   RmMTree rmm_;
 
  public:
-
   struct Node {
     size_t number;
 
