@@ -5,16 +5,6 @@
 #include <cstdint>
 
 namespace pixie {
-/**
- * @brief A node class of BP tree
- */
-struct BpNode {
-  size_t number;
-  size_t pos;
-
-  BpNode(size_t node_number, size_t bp_pos)
-      : number(node_number), pos(bp_pos) {}
-};
 
 /**
  * @brief A tree class based on the balances parentheses (BP)
@@ -26,6 +16,18 @@ class BpTree {
   RmMTree rmm;
 
  public:
+
+  /**
+  * @brief A node class of BP tree
+  */
+  struct Node {
+    size_t number;
+    size_t pos;
+
+    Node(size_t node_number, size_t bp_pos)
+        : number(node_number), pos(bp_pos) {}
+  };
+
   /**
    * @brief Constructor from an external array of uint64_t
    */
@@ -35,7 +37,7 @@ class BpTree {
   /**
    * @brief Returns the root node
    */
-  static BpNode root() { return BpNode(0, 0); }
+  Node root() const { return Node(0, 0); }
 
   /**
    * @brief Returns the size of the tree
@@ -45,14 +47,14 @@ class BpTree {
   /**
    * @brief Indicates if @p node is a leaf
    */
-  bool is_leaf(const BpNode& node) const {
+  bool is_leaf(const Node& node) const {
     return (node.pos + 1 == num_bits_) or rmm.bit(node.pos + 1) == 0;
   }
 
   /**
    * @brief Indicates if @p node is a root
    */
-  static bool is_root(const BpNode& node) { return node.number == 0; }
+  bool is_root(const Node& node) { return node.number == 0; }
 
   /**
    * @brief Returns the number of children of a @p node
@@ -60,11 +62,11 @@ class BpTree {
    *
    *    TODO try make this faster
    */
-  size_t degree(const BpNode& node) const {
+  size_t degree(const Node& node) const {
     if (is_leaf(node)) {
       return 0;
     }
-    BpNode child = first_child(node);
+    Node child = first_child(node);
     size_t child_count = 1;
     while (true) {
       if (is_last_child(child)) {
@@ -78,10 +80,10 @@ class BpTree {
   /**
    * @brief Returns first child of a @p node
    */
-  static BpNode first_child(const BpNode& node) {
+  Node first_child(const Node& node) const{
     size_t pos = node.pos + 1;
     size_t num = node.number + 1;
-    return BpNode(num, pos);
+    return Node(num, pos);
   }
 
   /**
@@ -91,8 +93,8 @@ class BpTree {
    *
    *    TODO try make this faster
    */
-  BpNode child(const BpNode& node, size_t i) const {
-    BpNode child = first_child(node);
+  Node child(const Node& node, size_t i) const {
+    Node child = first_child(node);
     while (i--) {
       child = next_sibling(child);
     }
@@ -103,19 +105,19 @@ class BpTree {
    * @brief Returns the parent of a @p node if @p node is not root,
    * else returns root
    */
-  BpNode parent(const BpNode& node) const {
+  Node parent(const Node& node) const {
     if (node.number == 0) {
       return root();
     }
     size_t pos = rmm.enclose(node.pos + 1);
     size_t num = rmm.rank1(pos) - 1;
-    return BpNode(num, pos);
+    return Node(num, pos);
   }
 
   /**
    * @brief Indicates if @p node is last child
    */
-  bool is_last_child(const BpNode& node) const {
+  bool is_last_child(const Node& node) const {
     size_t end = rmm.close(node.pos + 1);
     if (end + 1 >= num_bits_) {
       return true;
@@ -126,10 +128,10 @@ class BpTree {
   /**
    * @brief Returns next sibling of a @p node
    */
-  BpNode next_sibling(const BpNode& node) const {
+  Node next_sibling(const Node& node) const {
     size_t pos = rmm.close(node.pos + 1) + 1;
     size_t num = rmm.rank1(pos + 1) - 1;
-    return BpNode(num, pos);
+    return Node(num, pos);
   }
 };
 }  // namespace pixie

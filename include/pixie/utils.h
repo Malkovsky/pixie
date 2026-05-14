@@ -8,7 +8,7 @@
 
 #include "bp_tree.h"
 
-using pixie::BpNode;
+using Node = pixie::BpTree::Node;
 using pixie::LoudsNode;
 
 std::vector<std::vector<size_t>> generate_random_tree(size_t tree_size,
@@ -123,11 +123,11 @@ bool operator==(const LoudsNode& b, const AdjListNode& a) {
   return a.number == b.number;
 }
 
-bool operator==(const AdjListNode& a, const BpNode& b) {
+bool operator==(const AdjListNode& a, const Node& b) {
   return a.number == b.number;
 }
 
-bool operator==(const BpNode& b, const AdjListNode& a) {
+bool operator==(const Node& b, const AdjListNode& a) {
   return a.number == b.number;
 }
 
