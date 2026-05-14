@@ -32,6 +32,10 @@ jobs:
       working-directory: ./build
       run: ./louds_tree_tests
 
+    - name: Run DFUDS Tree Tests
+      working-directory: ./build
+      run: ./dfuds_tree_tests
+
     - name: Run Benchmark Tests
       working-directory: ./build
       run: ./benchmark_tests
@@ -87,6 +91,18 @@ jobs:
           ./louds_tree_tests --gtest_output=xml:louds_results.xml
         rc=$?
         if [ $rc -eq 124 ] && grep -q 'failures="0"' louds_results.xml 2>/dev/null; then
+          echo "SDE timed out during process teardown (known SDE/ASan issue) - all tests passed, treating as success"
+          exit 0
+        fi
+        exit $rc
+
+    - name: Run DFUDS Tree Tests
+      working-directory: ./build
+      run: |
+        timeout 1800 sde-external-9.58.0-2025-06-16-lin/sde64 -icl -emu-xinuse 0 -- \
+          ./dfuds_tree_tests --gtest_output=xml:dfuds_results.xml
+        rc=$?
+        if [ $rc -eq 124 ] && grep -q 'failures="0"' dfuds_results.xml 2>/dev/null; then
           echo "SDE timed out during process teardown (known SDE/ASan issue) - all tests passed, treating as success"
           exit 0
         fi
