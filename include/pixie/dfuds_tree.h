@@ -16,15 +16,14 @@ class DFUDSTree {
   RmMTree rmm_;
 
  public:
-
   struct Node {
     size_t number;
 
     size_t pos;
 
     /**
-   * @brief A node class of DFUDS tree
-   */
+     * @brief A node class of DFUDS tree
+     */
     Node(size_t node_number, size_t dfuds_pos)
         : number(node_number), pos(dfuds_pos) {}
   };
@@ -42,7 +41,7 @@ class DFUDSTree {
   /**
    * @brief Returns the size of the tree
    */
-  size_t size() const { return num_bits_ / 2; }
+  size_t size() const { return (num_bits_ + 1) / 2; }
 
   /**
    * @brief Indicates if @p node is a leaf
