@@ -1,5 +1,6 @@
 #pragma once
 
+#include <pixie/dfuds_tree.h>
 #include <pixie/louds_tree.h>
 
 #include <queue>
@@ -7,6 +8,8 @@
 #include <vector>
 
 using pixie::LoudsNode;
+
+using Node = pixie::DFUDSTree::Node;
 
 std::vector<std::vector<size_t>> generate_random_tree(size_t tree_size,
                                                       std::mt19937_64& rng) {
@@ -46,6 +49,32 @@ std::vector<std::vector<size_t>> bfs_order(
   return bfs_adj;
 }
 
+std::vector<std::vector<size_t>> dfs_order(
+    size_t tree_size,
+    const std::vector<std::vector<size_t>>& adj) {
+  std::vector<std::vector<size_t>> dfs_adj(tree_size);
+  std::vector<std::pair<size_t, size_t>> stack;
+  dfs_adj[0].push_back(0);
+  stack.push_back({0, 0});
+  std::vector<size_t> renumbering(tree_size, 0);
+  size_t next_number = 1;
+  while (!stack.empty()) {
+    auto& [v, i] = stack.back();
+    i++;
+    if (i == adj[v].size()) {
+      stack.pop_back();
+      continue;
+    }
+    size_t u = adj[v][i];
+    renumbering[u] = next_number++;
+    dfs_adj[renumbering[v]].push_back(renumbering[u]);
+    dfs_adj[renumbering[u]].push_back(renumbering[v]);
+
+    stack.push_back(std::pair{u, 0});
+  }
+  return dfs_adj;
+}
+
 std::vector<uint64_t> adj_to_louds(
     size_t tree_size,
     const std::vector<std::vector<size_t>>& adj) {
@@ -59,6 +88,28 @@ std::vector<uint64_t> adj_to_louds(
   return louds;
 }
 
+std::vector<uint64_t> adj_to_dfuds(
+    size_t tree_size,
+    const std::vector<std::vector<size_t>>& adj) {
+  size_t dfuds_size = tree_size * 2 - 1;
+  std::vector<uint64_t> dfuds((dfuds_size + 63) / 64, 0);
+  std::vector<size_t> stack;
+  stack.push_back(0);
+  size_t pos = 0;
+  while (!stack.empty()) {
+    auto v = stack.back();
+    stack.pop_back();
+    size_t edge_count = adj[v].size();
+    for (size_t i = 0; i < edge_count - 1; ++i) {  // edge 0 goes to parent
+      dfuds[pos >> 6] = dfuds[pos >> 6] | (1ULL << (pos & 63));
+      pos++;
+      stack.push_back(adj[v][edge_count - 1 - i]);
+    }
+    pos++;
+  }
+  return dfuds;
+}
+
 struct AdjListNode {
   size_t number;
 };
@@ -68,6 +119,14 @@ bool operator==(const AdjListNode& a, const LoudsNode& b) {
 }
 
 bool operator==(const LoudsNode& b, const AdjListNode& a) {
+  return a.number == b.number;
+}
+
+bool operator==(const AdjListNode& a, const Node& b) {
+  return a.number == b.number;
+}
+
+bool operator==(const Node& b, const AdjListNode& a) {
   return a.number == b.number;
 }
 
