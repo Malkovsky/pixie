@@ -6,7 +6,7 @@
 #include <random>
 #include <stack>
 
-using pixie::BpNode;
+using Node = pixie::BpTree::Node;
 using pixie::BpTree;
 
 TEST(BpTreeTest, Basic) {
@@ -18,7 +18,7 @@ TEST(BpTreeTest, Basic) {
   BpTree bp_tree(bp, 5);
   AdjListTree debug_tree(adj);
 
-  BpNode cur = bp_tree.root();
+  Node cur = bp_tree.root();
   AdjListNode debug = debug_tree.root();
   for (size_t i = 0; i < tree_size - 1; i++) {
     EXPECT_EQ(cur, debug);
@@ -37,7 +37,7 @@ TEST(BpTreeTest, RandomTreeDFS) {
     BpTree bp_tree(bp, tree_size);
     AdjListTree debug_tree(adj);
 
-    std::stack<std::pair<BpNode, AdjListNode>> st;
+    std::stack<std::pair<Node, AdjListNode>> st;
 
     st.push({bp_tree.root(), debug_tree.root()});
 
@@ -78,7 +78,7 @@ TEST(BpTreeTest, RandomTreeBFS) {
     BpTree bp_tree(bp, tree_size);
     AdjListTree debug_tree(adj);
 
-    std::queue<std::pair<BpNode, AdjListNode>> st;
+    std::queue<std::pair<Node, AdjListNode>> st;
 
     st.push({bp_tree.root(), debug_tree.root()});
 
