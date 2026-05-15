@@ -49,7 +49,8 @@ TEST(DfudsTreeTest, RandomTreeDFS) {
       EXPECT_EQ(dfuds_tree.parent(cur), debug_tree.parent(debug));
 
       if (cur.number > 0) {
-        EXPECT_EQ(dfuds_tree.is_last_child(cur), debug_tree.is_last_child(debug));
+        EXPECT_EQ(dfuds_tree.is_last_child(cur),
+                  debug_tree.is_last_child(debug));
       }
       size_t deg = dfuds_tree.degree(cur);
       EXPECT_EQ(deg, debug_tree.degree(debug));
@@ -67,7 +68,6 @@ TEST(DfudsTreeTest, RandomTreeDFS) {
     }
   }
 }
-
 
 TEST(DfudsTreeTest, RandomTreeBFS) {
   for (size_t tree_size = 8; tree_size < (1 << 22); tree_size <<= 1) {
@@ -89,7 +89,8 @@ TEST(DfudsTreeTest, RandomTreeBFS) {
       EXPECT_EQ(dfuds_tree.parent(cur), debug_tree.parent(debug));
 
       if (cur.number > 0) {
-        EXPECT_EQ(dfuds_tree.is_last_child(cur), debug_tree.is_last_child(debug));
+        EXPECT_EQ(dfuds_tree.is_last_child(cur),
+                  debug_tree.is_last_child(debug));
       }
       size_t deg = dfuds_tree.degree(cur);
       EXPECT_EQ(deg, debug_tree.degree(debug));
