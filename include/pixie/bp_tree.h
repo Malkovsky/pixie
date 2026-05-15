@@ -16,10 +16,9 @@ class BpTree {
   RmMTree rmm;
 
  public:
-
   /**
-  * @brief A node class of BP tree
-  */
+   * @brief A node class of BP tree
+   */
   struct Node {
     size_t number;
     size_t pos;
@@ -80,7 +79,7 @@ class BpTree {
   /**
    * @brief Returns first child of a @p node
    */
-  Node first_child(const Node& node) const{
+  Node first_child(const Node& node) const {
     size_t pos = node.pos + 1;
     size_t num = node.number + 1;
     return Node(num, pos);

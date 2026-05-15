@@ -967,8 +967,8 @@ class RmMTree {
   }
 
   /**
-  * @brief Read bit at position @p position (LSB-first across words).
-  */
+   * @brief Read bit at position @p position (LSB-first across words).
+   */
   inline int bit(const size_t& position) const noexcept {
     return (bits[position >> 6] >> (position & 63)) & 1u;
   }
@@ -2202,10 +2202,11 @@ class RmMTree {
     }
     build(leaf_block_bits, max_overhead);
   }
-public:
+
+ public:
   /**
- * @brief Export internal bitvector into a 0/1 string.
- */
+   * @brief Export internal bitvector into a 0/1 string.
+   */
   std::string to_string() const {
     std::string result;
     result.resize(num_bits);
@@ -2218,7 +2219,8 @@ public:
 
     return result;
   }
-private:
+
+ private:
   /**
    * @brief Build internal structures from 64-bit words.
    * @param words Words with LSB-first bits.
