@@ -68,7 +68,6 @@ TEST(BpTreeTest, RandomTreeDFS) {
   }
 }
 
-
 TEST(BpTreeTest, RandomTreeBFS) {
   for (size_t tree_size = 8; tree_size < (1 << 22); tree_size <<= 1) {
     std::mt19937_64 rng(42);
@@ -107,4 +106,3 @@ TEST(BpTreeTest, RandomTreeBFS) {
     }
   }
 }
-
