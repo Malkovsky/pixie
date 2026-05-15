@@ -10,6 +10,7 @@ cmake --build --preset coverage
 "${BUILD_DIR}/unittests"
 "${BUILD_DIR}/excess_positions_tests"
 "${BUILD_DIR}/louds_tree_tests"
+"${BUILD_DIR}/bp_tree_tests"
 "${BUILD_DIR}/test_rmm"
 
 cd "${BUILD_DIR}"
