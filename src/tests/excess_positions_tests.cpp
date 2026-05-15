@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <pixie/bits.h>
+#include <pixie/experimental/excess.h>
 
 #include <array>
 #include <cstddef>
@@ -7,6 +8,10 @@
 #include <cstdlib>
 #include <numeric>
 #include <random>
+
+using pixie::experimental::excess_positions_512_expand;
+using pixie::experimental::excess_positions_512_expand8;
+using pixie::experimental::excess_positions_512_expand_avx512;
 
 static void naive_excess_positions_512(const uint64_t* s,
                                        int target_x,
@@ -71,6 +76,13 @@ TEST(ExcessPositions512, AllZeros) {
   for (int w = 0; w < 8; ++w) {
     EXPECT_EQ(out[w], 0u);
   }
+
+  for (int x = -8; x <= 1; ++x) {
+    check_matches_naive(excess_positions_512_expand, "expand", s, x);
+    check_matches_naive(excess_positions_512_expand8, "expand8", s, x);
+    check_matches_naive(excess_positions_512_expand_avx512, "expand_avx512", s,
+                        x);
+  }
 }
 
 TEST(ExcessPositions512, AllOnes) {
@@ -91,6 +103,13 @@ TEST(ExcessPositions512, AllOnes) {
   for (int w = 0; w < 8; ++w) {
     EXPECT_EQ(out[w], 0u);
   }
+
+  for (int x = -1; x <= 8; ++x) {
+    check_matches_naive(excess_positions_512_expand, "expand", s, x);
+    check_matches_naive(excess_positions_512_expand8, "expand8", s, x);
+    check_matches_naive(excess_positions_512_expand_avx512, "expand_avx512", s,
+                        x);
+  }
 }
 
 TEST(ExcessPositions512, Alternating) {
@@ -107,6 +126,10 @@ TEST(ExcessPositions512, Alternating) {
     for (int w = 0; w < 8; ++w) {
       EXPECT_EQ(out[w], ref[w]) << "x=" << x << " word=" << w;
     }
+    check_matches_naive(excess_positions_512_expand, "expand", s, x);
+    check_matches_naive(excess_positions_512_expand8, "expand8", s, x);
+    check_matches_naive(excess_positions_512_expand_avx512, "expand_avx512", s,
+                        x);
   }
 }
 
@@ -137,6 +160,12 @@ TEST(ExcessPositions512, ExhaustiveSmall16) {
     for (int x = -20; x <= 20; ++x) {
       excess_positions_512(s, x, out);
       naive_excess_positions_512(s, x, ref);
+      check_matches_naive(excess_positions_512_expand, "expand", s, x,
+                          static_cast<int>(pattern));
+      check_matches_naive(excess_positions_512_expand8, "expand8", s, x,
+                          static_cast<int>(pattern));
+      check_matches_naive(excess_positions_512_expand_avx512, "expand_avx512",
+                          s, x, static_cast<int>(pattern));
       for (int w = 0; w < 8; ++w) {
         ASSERT_EQ(out[w], ref[w])
             << "pattern=" << pattern << " x=" << x << " word=" << w;
@@ -170,6 +199,10 @@ TEST(ExcessPositions512, Random) {
 
     excess_positions_512(s, x, out);
     naive_excess_positions_512(s, x, ref);
+    check_matches_naive(excess_positions_512_expand, "expand", s, x, t);
+    check_matches_naive(excess_positions_512_expand8, "expand8", s, x, t);
+    check_matches_naive(excess_positions_512_expand_avx512, "expand_avx512", s,
+                        x, t);
 
     for (int w = 0; w < 8; ++w) {
       ASSERT_EQ(out[w], ref[w]) << "case=" << t << " x=" << x << " word=" << w;
@@ -194,9 +227,12 @@ TEST(ExcessPositions512, TargetZero) {
     }
     excess_positions_512(s, 0, out);
     naive_excess_positions_512(s, 0, ref);
+    check_matches_naive(excess_positions_512_expand, "expand", s, 0, t);
+    check_matches_naive(excess_positions_512_expand8, "expand8", s, 0, t);
+    check_matches_naive(excess_positions_512_expand_avx512, "expand_avx512", s,
+                        0, t);
     for (int w = 0; w < 8; ++w) {
       ASSERT_EQ(out[w], ref[w]) << "case=" << t << " word=" << w;
     }
   }
 }
-
