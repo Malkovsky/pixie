@@ -412,7 +412,7 @@ static inline uint16_t lower_bound_delta_8x64(const uint64_t* x,
  * @brief Compare 32 16-bit numbers of @p x with @p y and
  * return the count of numbers where @p x is less then @p y
  */
-uint16_t lower_bound_32x16(const uint16_t* x, uint16_t y) {
+static inline uint16_t lower_bound_32x16(const uint16_t* x, uint16_t y) {
 #ifdef PIXIE_AVX512_SUPPORT
 
   auto y_32 = _mm512_set1_epi16(y);
@@ -467,10 +467,10 @@ uint16_t lower_bound_32x16(const uint16_t* x, uint16_t y) {
  * offsets.
  * @param delta_scalar Shared delta offset.
  */
-uint16_t lower_bound_delta_32x16(const uint16_t* x,
-                                 uint16_t y,
-                                 const uint16_t* delta_array,
-                                 uint16_t delta_scalar) {
+static inline uint16_t lower_bound_delta_32x16(const uint16_t* x,
+                                               uint16_t y,
+                                               const uint16_t* delta_array,
+                                               uint16_t delta_scalar) {
 #ifdef PIXIE_AVX512_SUPPORT
 
   const __m512i dlt_512 = _mm512_loadu_epi64(delta_array);
@@ -539,7 +539,7 @@ uint16_t lower_bound_delta_32x16(const uint16_t* x,
  * @param result Pointer to store the 64 resulting 4-bit popcount values (packed
  * in 32 bytes)
  */
-void popcount_64x4(const uint8_t* x, uint8_t* result) {
+static inline void popcount_64x4(const uint8_t* x, uint8_t* result) {
 #ifdef PIXIE_AVX512_SUPPORT
   __m256i data = _mm256_loadu_si256((__m256i const*)x);
 
@@ -586,7 +586,7 @@ void popcount_64x4(const uint8_t* x, uint8_t* result) {
  * @param result Pointer to store the 64 resulting 4-bit popcount values
  * (packed in 32 bytes)
  */
-void popcount_32x8(const uint8_t* x, uint8_t* result) {
+static inline void popcount_32x8(const uint8_t* x, uint8_t* result) {
 #ifdef PIXIE_AVX512_SUPPORT
   // Load 64 4-bit integers (256 bits total)
   __m256i data = _mm256_loadu_si256((__m256i const*)x);
@@ -620,47 +620,50 @@ void popcount_32x8(const uint8_t* x, uint8_t* result) {
 #endif
 }
 
-/**
- * @brief Calculates 32 bit ranks of every 8th bit, result is stored as 32
-
- * * 8-bit integers.
- * @details Prefix sums are computed modulo 256 (uint8_t
- * wraparound).
- *
- * @param x Pointer to 32 input 8-bit integers
- * @param
- * result Pointer to store the resulting 32 8-bit integers
- */
 #ifdef PIXIE_AVX2_SUPPORT
-static inline __m256i excess_bit_masks_16x() noexcept {
-  return _mm256_setr_epi16(0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020,
-                           0x0040, 0x0080, 0x0100, 0x0200, 0x0400, 0x0800,
-                           0x1000, 0x2000, 0x4000, (int16_t)0x8000);
-}
+// clang-format off
+// LUT for total excess change across a 4-bit nibble
+static inline const __m256i excess_lut_delta = _mm256_setr_epi8(
+    -4, -2, -2,  0,
+    -2,  0,  0,  2,
+    -2,  0,  0,  2,
+     0,  2,  2,  4,
+    -4, -2, -2,  0,
+    -2,  0,  0,  2,
+    -2,  0,  0,  2,
+     0,  2,  2,  4);
 
-static inline __m256i excess_prefix_sum_16x_i16(__m256i v) noexcept {
-  __m256i x = v;
-  __m256i t = _mm256_slli_si256(x, 2);
-  x = _mm256_add_epi16(x, t);
-  t = _mm256_slli_si256(x, 4);
-  x = _mm256_add_epi16(x, t);
-  t = _mm256_slli_si256(x, 8);
-  x = _mm256_add_epi16(x, t);
+// LUTs for target relative excess positions
+static inline const __m256i excess_lut_pos0 = _mm256_setr_epi8(
+    -1,  1, -1,  1,
+    -1,  1, -1,  1,
+    -1,  1, -1,  1,
+    -1,  1, -1,  1,
+    -1,  1, -1,  1,
+    -1,  1, -1,  1,
+    -1,  1, -1,  1,
+    -1,  1, -1,  1);
 
-  __m128i lo = _mm256_extracti128_si256(x, 0);
-  __m128i hi = _mm256_extracti128_si256(x, 1);
-  const int16_t carry = (int16_t)_mm_extract_epi16(lo, 7);
-  hi = _mm_add_epi16(hi, _mm_set1_epi16(carry));
+static inline const __m256i excess_lut_pos1 = _mm256_setr_epi8(
+    -2,  0,  0,  2,
+    -2,  0,  0,  2,
+    -2,  0,  0,  2,
+    -2,  0,  0,  2,
+    -2,  0,  0,  2,
+    -2,  0,  0,  2,
+    -2,  0,  0,  2,
+    -2,  0,  0,  2);
 
-  __m256i out = _mm256_castsi128_si256(lo);
-  out = _mm256_inserti128_si256(out, hi, 1);
-  return out;
-}
-
-static inline int16_t excess_last_prefix_16x_i16(__m256i pref) noexcept {
-  __m128i hi = _mm256_extracti128_si256(pref, 1);
-  return (int16_t)_mm_extract_epi16(hi, 7);
-}
+static inline const __m256i excess_lut_pos2 = _mm256_setr_epi8(
+    -3, -1, -1,  1,
+    -1,  1,  1,  3,
+    -3, -1, -1,  1,
+    -1,  1,  1,  3,
+    -3, -1, -1,  1,
+    -1,  1,  1,  3,
+    -3, -1, -1,  1,
+    -1,  1,  1,  3);
+// clang-format on
 #endif
 
 /**
@@ -686,164 +689,77 @@ static inline void excess_positions_512(const uint64_t* s,
   }
 
 #ifdef PIXIE_AVX2_SUPPORT
-  static const __m256i masks = excess_bit_masks_16x();
-  static const __m256i vzero = _mm256_setzero_si256();
-  static const __m256i vallones = _mm256_cmpeq_epi16(vzero, vzero);
-  static const __m256i vminus1 = _mm256_set1_epi16(-1);
-  static const __m256i vtwo = _mm256_set1_epi16(2);
-  const __m256i vtarget = _mm256_set1_epi16((int16_t)target_x);
-
   int cur = 0;
-  for (int k = 0; k < 32; ++k) {
-    const size_t bit_off = size_t(k) * 16;
-    const size_t word_idx = bit_off >> 6;
-    const size_t shift = bit_off & 63;
-
-    uint16_t bits16 = (uint16_t)((s[word_idx] >> shift) & 0xFFFFull);
-    if (shift > 48 && word_idx + 1 < 8) {
-      bits16 |= (uint16_t)(s[word_idx + 1] << (64 - shift));
-    }
-
-    const __m256i vb = _mm256_set1_epi16((int16_t)bits16);
-    const __m256i m = _mm256_and_si256(vb, masks);
-    const __m256i is_zero = _mm256_cmpeq_epi16(m, vzero);
-    const __m256i is_set = _mm256_andnot_si256(is_zero, vallones);
-    const __m256i steps =
-        _mm256_add_epi16(vminus1, _mm256_and_si256(is_set, vtwo));
-
-    const __m256i pref_rel = excess_prefix_sum_16x_i16(steps);
-    const __m256i base = _mm256_set1_epi16((int16_t)cur);
-    const __m256i pref_abs = _mm256_add_epi16(pref_rel, base);
-    const __m256i cmp = _mm256_cmpeq_epi16(pref_abs, vtarget);
-
-    const uint32_t m32 = (uint32_t)_mm256_movemask_epi8(cmp);
-    const uint16_t m16 = (uint16_t)_pext_u32(m32, 0xAAAAAAAAu);
-
-    const size_t out_word = bit_off >> 6;
-    const size_t out_shift = bit_off & 63;
-    out[out_word] |= uint64_t(m16) << out_shift;
-    if (out_shift > 48 && out_word + 1 < 8) {
-      out[out_word + 1] |= uint64_t(m16) >> (64 - out_shift);
-    }
-
-    cur += (int)excess_last_prefix_16x_i16(pref_rel);
-  }
-#else
-  int cur = 0;
-  for (size_t i = 0; i < 512; ++i) {
-    const uint64_t w = s[i >> 6];
-    const int bit = int((w >> (i & 63)) & 1ull);
-    cur += bit ? +1 : -1;
-    if (cur == target_x) {
-      out[i >> 6] |= (uint64_t{1} << (i & 63));
-    }
-  }
-#endif
-}
-
-#ifdef PIXIE_AVX2_SUPPORT
-static inline __m128i excess_nibble_delta_lut() noexcept {
-  alignas(16) static const int8_t lut[16] = {-4, -2, -2, 0, -2, 0, 0, 2,
-                                             -2, 0,  0,  2, 0,  2, 2, 4};
-  return _mm_load_si128((const __m128i*)lut);
-}
-
-static inline __m128i excess_nibble_pos0_lut() noexcept {
-  alignas(16) static const int8_t lut[16] = {-1, 1, -1, 1, -1, 1, -1, 1,
-                                             -1, 1, -1, 1, -1, 1, -1, 1};
-  return _mm_load_si128((const __m128i*)lut);
-}
-
-static inline __m128i excess_nibble_pos1_lut() noexcept {
-  alignas(16) static const int8_t lut[16] = {-2, 0, 0, 2, -2, 0, 0, 2,
-                                             -2, 0, 0, 2, -2, 0, 0, 2};
-  return _mm_load_si128((const __m128i*)lut);
-}
-
-static inline __m128i excess_nibble_pos2_lut() noexcept {
-  alignas(16) static const int8_t lut[16] = {-3, -1, -1, 1, -1, 1, 1, 3,
-                                             -3, -1, -1, 1, -1, 1, 1, 3};
-  return _mm_load_si128((const __m128i*)lut);
-}
-
-#endif
-
-static inline void excess_positions_512_lut(const uint64_t* s,
-                                            int target_x,
-                                            uint64_t* out) noexcept {
-  out[0] = out[1] = out[2] = out[3] = 0;
-  out[4] = out[5] = out[6] = out[7] = 0;
-
-  if (target_x < -512 || target_x > 512) {
-    return;
-  }
-
-#ifdef PIXIE_AVX2_SUPPORT
-  const __m128i vdelta = excess_nibble_delta_lut();
-  const __m128i vpos0 = excess_nibble_pos0_lut();
-  const __m128i vpos1 = excess_nibble_pos1_lut();
-  const __m128i vpos2 = excess_nibble_pos2_lut();
+  const __m256i vdelta = excess_lut_delta;
+  const __m256i vpos0 = excess_lut_pos0;
+  const __m256i vpos1 = excess_lut_pos1;
+  const __m256i vpos2 = excess_lut_pos2;
+  const __m256i vmult = _mm256_set1_epi16(0x1001);
+  const __m256i vbit0 = _mm256_set1_epi8(1);
+  const __m256i vbit1 = _mm256_set1_epi8(2);
+  const __m256i vbit2 = _mm256_set1_epi8(4);
+  const __m256i vbit3 = _mm256_set1_epi8(8);
   const __m128i vnibble_mask = _mm_set1_epi8(0x0F);
 
-  int cur = 0;
-  for (int w = 0; w < 8; ++w) {
-    const uint64_t word = s[w];
-    const int word_delta = 2 * static_cast<int>(std::popcount(word)) - 64;
-    const int target_local = target_x - cur;
+  for (int k = 0; k < 4; ++k) {
+    int block_delta =
+        2 * (std::popcount(s[2 * k]) + std::popcount(s[2 * k + 1])) - 128;
 
-    const int d = 2 * target_local - word_delta;
-    if (d < -64 || d > 64) {
-      cur += word_delta;
+    const int d = 2 * target_x - block_delta;
+    if (d < -128 || d > 128) {
+      target_x -= block_delta;
       continue;
     }
+    __m128i word_vec = _mm_loadu_si128((const __m128i*)&s[2 * k]);
+    __m128i lo_nibbles = _mm_and_si128(word_vec, vnibble_mask);
+    __m128i hi_nibbles =
+        _mm_and_si128(_mm_srli_epi16(word_vec, 4), vnibble_mask);
 
-    __m128i bytes = _mm_cvtsi64_si128(static_cast<long long>(word));
-    __m128i lo = _mm_and_si128(bytes, vnibble_mask);
-    __m128i hi = _mm_and_si128(_mm_srli_epi16(bytes, 4), vnibble_mask);
-    __m128i nibbles = _mm_unpacklo_epi8(lo, hi);
+    __m128i unpack_lo = _mm_unpacklo_epi8(lo_nibbles, hi_nibbles);
+    __m128i unpack_hi = _mm_unpackhi_epi8(lo_nibbles, hi_nibbles);
 
-    __m128i deltas = _mm_shuffle_epi8(vdelta, nibbles);
+    __m256i nibbles = _mm256_inserti128_si256(_mm256_castsi128_si256(unpack_lo),
+                                              unpack_hi, 1);
 
-    __m128i ps = deltas;
-    ps = _mm_add_epi8(ps, _mm_slli_si128(ps, 1));
-    ps = _mm_add_epi8(ps, _mm_slli_si128(ps, 2));
-    ps = _mm_add_epi8(ps, _mm_slli_si128(ps, 4));
-    ps = _mm_add_epi8(ps, _mm_slli_si128(ps, 8));
+    __m256i ps = _mm256_shuffle_epi8(vdelta, nibbles);
+    ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 1));
+    ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 2));
+    ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 4));
+    ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 8));
 
-    __m128i excl = _mm_slli_si128(ps, 1);
+    __m128i ps_lo = _mm256_castsi256_si128(ps);
+    __m128i ps_hi = _mm256_extracti128_si256(ps, 1);
+    __m128i carry = _mm_set1_epi8((int8_t)_mm_extract_epi8(ps_lo, 15));
+    ps_hi = _mm_add_epi8(ps_hi, carry);
+    ps = _mm256_inserti128_si256(_mm256_castsi128_si256(ps_lo), ps_hi, 1);
 
-    __m128i vtarget_local = _mm_set1_epi8(static_cast<int8_t>(target_local));
-    // Overflow safety: excl[i] ∈ [-60, 60] (exclusive prefix sum of up to
-    // 15 deltas each in [-4, +4]), target_local ∈ [-64, 64].
-    // t = target_local - excl ∈ [-124, 124], fits perfectly in int8.
-    __m128i t = _mm_sub_epi8(vtarget_local, excl);
+    __m256i b = _mm256_permute2x128_si256(ps, ps, 0x08);
+    __m256i excl_ps = _mm256_alignr_epi8(ps, b, 15);
 
-    __m128i cmp0 = _mm_cmpeq_epi8(_mm_shuffle_epi8(vpos0, nibbles), t);
-    uint16_t bits0 = static_cast<uint16_t>(_mm_movemask_epi8(cmp0));
+    __m256i vtgt = _mm256_set1_epi8((int8_t)target_x);
+    __m256i t = _mm256_sub_epi8(vtgt, excl_ps);
 
-    __m128i cmp1 = _mm_cmpeq_epi8(_mm_shuffle_epi8(vpos1, nibbles), t);
-    uint16_t bits1 = static_cast<uint16_t>(_mm_movemask_epi8(cmp1));
+    __m256i cmp0 = _mm256_cmpeq_epi8(_mm256_shuffle_epi8(vpos0, nibbles), t);
+    __m256i cmp1 = _mm256_cmpeq_epi8(_mm256_shuffle_epi8(vpos1, nibbles), t);
+    __m256i cmp2 = _mm256_cmpeq_epi8(_mm256_shuffle_epi8(vpos2, nibbles), t);
+    __m256i cmp3 = _mm256_cmpeq_epi8(ps, vtgt);
 
-    __m128i cmp2 = _mm_cmpeq_epi8(_mm_shuffle_epi8(vpos2, nibbles), t);
-    uint16_t bits2 = static_cast<uint16_t>(_mm_movemask_epi8(cmp2));
+    __m256i bit0 = _mm256_and_si256(cmp0, vbit0);
+    __m256i bit1 = _mm256_and_si256(cmp1, vbit1);
+    __m256i bit2 = _mm256_and_si256(cmp2, vbit2);
+    __m256i bit3 = _mm256_and_si256(cmp3, vbit3);
 
-    // cmp3 conceptually checks delta == t, i.e. delta == target_local - excl.
-    // Since excl + delta == ps (the inclusive prefix sum), this is simply
-    // ps == target_local.  Saves one add and one shuffle.
-    __m128i cmp3 = _mm_cmpeq_epi8(ps, vtarget_local);
-    uint16_t bits3 = static_cast<uint16_t>(_mm_movemask_epi8(cmp3));
+    __m256i total_match = _mm256_or_si256(_mm256_or_si256(bit0, bit1),
+                                          _mm256_or_si256(bit2, bit3));
 
-    // Note: We use movemask + pdep to interleave bits instead of pure AVX2
-    // (e.g. maddubs + packus). While pdep is microcoded/slow on older AMD CPUs
-    // (Zen 2), it is hardware-accelerated and ~15% faster on modern
-    // architectures (Zen 3+, Intel) due to fewer vector operations and a
-    // shorter dependency chain.
-    out[w] = _pdep_u64(bits0, 0x1111111111111111ULL) |
-             _pdep_u64(bits1, 0x2222222222222222ULL) |
-             _pdep_u64(bits2, 0x4444444444444444ULL) |
-             _pdep_u64(bits3, 0x8888888888888888ULL);
+    __m256i res = _mm256_maddubs_epi16(total_match, vmult);
+    __m128i res_lo = _mm256_castsi256_si128(res);
+    __m128i res_hi = _mm256_extracti128_si256(res, 1);
+    __m128i packed = _mm_packus_epi16(res_lo, res_hi);
 
-    cur += word_delta;
+    _mm_storeu_si128((__m128i*)&out[2 * k], packed);
+
+    target_x -= block_delta;
   }
 #else
   int cur = 0;
@@ -858,7 +774,18 @@ static inline void excess_positions_512_lut(const uint64_t* s,
 #endif
 }
 
-void rank_32x8(const uint8_t* x, uint8_t* result) {
+/**
+ * @brief Calculates 32 bit ranks of every 8th bit, result is stored as 32
+
+ * * 8-bit integers.
+ * @details Prefix sums are computed modulo 256 (uint8_t
+ * wraparound).
+ *
+ * @param x Pointer to 32 input 8-bit integers
+ * @param
+ * result Pointer to store the resulting 32 8-bit integers
+ */
+static inline void rank_32x8(const uint8_t* x, uint8_t* result) {
 #ifdef PIXIE_AVX512_SUPPORT
   // Step 1: Calculate popcount of each byte
   popcount_32x8(x, result);

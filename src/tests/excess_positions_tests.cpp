@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <pixie/bits.h>
+#include <pixie/experimental/excess.h>
 
 #include <array>
 #include <cstddef>
@@ -7,6 +8,12 @@
 #include <cstdlib>
 #include <numeric>
 #include <random>
+
+using pixie::experimental::excess_positions_512_branching_lut;
+using pixie::experimental::excess_positions_512_expand;
+using pixie::experimental::excess_positions_512_expand8;
+using pixie::experimental::excess_positions_512_expand_avx512;
+using pixie::experimental::excess_positions_512_lut_avx512;
 
 static void naive_excess_positions_512(const uint64_t* s,
                                        int target_x,
@@ -71,6 +78,16 @@ TEST(ExcessPositions512, AllZeros) {
   for (int w = 0; w < 8; ++w) {
     EXPECT_EQ(out[w], 0u);
   }
+
+  for (int x = -8; x <= 1; ++x) {
+    check_matches_naive(excess_positions_512_expand, "expand", s, x);
+    check_matches_naive(excess_positions_512_expand8, "expand8", s, x);
+    check_matches_naive(excess_positions_512_expand_avx512, "expand_avx512", s,
+                        x);
+    check_matches_naive(excess_positions_512_branching_lut, "branching_lut", s,
+                        x);
+    check_matches_naive(excess_positions_512_lut_avx512, "lut_avx512", s, x);
+  }
 }
 
 TEST(ExcessPositions512, AllOnes) {
@@ -91,6 +108,16 @@ TEST(ExcessPositions512, AllOnes) {
   for (int w = 0; w < 8; ++w) {
     EXPECT_EQ(out[w], 0u);
   }
+
+  for (int x = -1; x <= 8; ++x) {
+    check_matches_naive(excess_positions_512_expand, "expand", s, x);
+    check_matches_naive(excess_positions_512_expand8, "expand8", s, x);
+    check_matches_naive(excess_positions_512_expand_avx512, "expand_avx512", s,
+                        x);
+    check_matches_naive(excess_positions_512_branching_lut, "branching_lut", s,
+                        x);
+    check_matches_naive(excess_positions_512_lut_avx512, "lut_avx512", s, x);
+  }
 }
 
 TEST(ExcessPositions512, Alternating) {
@@ -107,6 +134,13 @@ TEST(ExcessPositions512, Alternating) {
     for (int w = 0; w < 8; ++w) {
       EXPECT_EQ(out[w], ref[w]) << "x=" << x << " word=" << w;
     }
+    check_matches_naive(excess_positions_512_expand, "expand", s, x);
+    check_matches_naive(excess_positions_512_expand8, "expand8", s, x);
+    check_matches_naive(excess_positions_512_expand_avx512, "expand_avx512", s,
+                        x);
+    check_matches_naive(excess_positions_512_branching_lut, "branching_lut", s,
+                        x);
+    check_matches_naive(excess_positions_512_lut_avx512, "lut_avx512", s, x);
   }
 }
 
@@ -137,6 +171,16 @@ TEST(ExcessPositions512, ExhaustiveSmall16) {
     for (int x = -20; x <= 20; ++x) {
       excess_positions_512(s, x, out);
       naive_excess_positions_512(s, x, ref);
+      check_matches_naive(excess_positions_512_expand, "expand", s, x,
+                          static_cast<int>(pattern));
+      check_matches_naive(excess_positions_512_expand8, "expand8", s, x,
+                          static_cast<int>(pattern));
+      check_matches_naive(excess_positions_512_expand_avx512, "expand_avx512",
+                          s, x, static_cast<int>(pattern));
+      check_matches_naive(excess_positions_512_branching_lut, "branching_lut",
+                          s, x, static_cast<int>(pattern));
+      check_matches_naive(excess_positions_512_lut_avx512, "lut_avx512", s, x,
+                          static_cast<int>(pattern));
       for (int w = 0; w < 8; ++w) {
         ASSERT_EQ(out[w], ref[w])
             << "pattern=" << pattern << " x=" << x << " word=" << w;
@@ -170,6 +214,13 @@ TEST(ExcessPositions512, Random) {
 
     excess_positions_512(s, x, out);
     naive_excess_positions_512(s, x, ref);
+    check_matches_naive(excess_positions_512_expand, "expand", s, x, t);
+    check_matches_naive(excess_positions_512_expand8, "expand8", s, x, t);
+    check_matches_naive(excess_positions_512_expand_avx512, "expand_avx512", s,
+                        x, t);
+    check_matches_naive(excess_positions_512_branching_lut, "branching_lut", s,
+                        x, t);
+    check_matches_naive(excess_positions_512_lut_avx512, "lut_avx512", s, x, t);
 
     for (int w = 0; w < 8; ++w) {
       ASSERT_EQ(out[w], ref[w]) << "case=" << t << " x=" << x << " word=" << w;
@@ -194,166 +245,15 @@ TEST(ExcessPositions512, TargetZero) {
     }
     excess_positions_512(s, 0, out);
     naive_excess_positions_512(s, 0, ref);
+    check_matches_naive(excess_positions_512_expand, "expand", s, 0, t);
+    check_matches_naive(excess_positions_512_expand8, "expand8", s, 0, t);
+    check_matches_naive(excess_positions_512_expand_avx512, "expand_avx512", s,
+                        0, t);
+    check_matches_naive(excess_positions_512_branching_lut, "branching_lut", s,
+                        0, t);
+    check_matches_naive(excess_positions_512_lut_avx512, "lut_avx512", s, 0, t);
     for (int w = 0; w < 8; ++w) {
       ASSERT_EQ(out[w], ref[w]) << "case=" << t << " word=" << w;
-    }
-  }
-}
-
-TEST(ExcessPositions512LUT, AllZeros) {
-  alignas(64) uint64_t s[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-
-  for (int x = -8; x <= 0; ++x) {
-    check_matches_naive(excess_positions_512_lut, "lut", s, x);
-  }
-
-  alignas(64) uint64_t out[8];
-  excess_positions_512_lut(s, 1, out);
-  for (int w = 0; w < 8; ++w) {
-    EXPECT_EQ(out[w], 0u);
-  }
-}
-
-TEST(ExcessPositions512LUT, AllOnes) {
-  alignas(64) uint64_t s[8] = {UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX,
-                               UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
-
-  for (int x = 0; x <= 8; ++x) {
-    check_matches_naive(excess_positions_512_lut, "lut", s, x);
-  }
-
-  alignas(64) uint64_t out[8];
-  excess_positions_512_lut(s, -1, out);
-  for (int w = 0; w < 8; ++w) {
-    EXPECT_EQ(out[w], 0u);
-  }
-}
-
-TEST(ExcessPositions512LUT, Alternating) {
-  alignas(64) uint64_t s[8];
-  for (int w = 0; w < 8; ++w) {
-    s[w] = 0xAAAAAAAAAAAAAAAAull;
-  }
-
-  for (int x = -2; x <= 2; ++x) {
-    check_matches_naive(excess_positions_512_lut, "lut", s, x);
-  }
-}
-
-TEST(ExcessPositions512LUT, OutOfRange) {
-  alignas(64) uint64_t s[8] = {UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX,
-                               UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
-  alignas(64) uint64_t out[8];
-  excess_positions_512_lut(s, 513, out);
-  for (int w = 0; w < 8; ++w) {
-    EXPECT_EQ(out[w], 0u);
-  }
-  excess_positions_512_lut(s, -513, out);
-  for (int w = 0; w < 8; ++w) {
-    EXPECT_EQ(out[w], 0u);
-  }
-}
-
-TEST(ExcessPositions512LUT, ExhaustiveSmall16) {
-  alignas(64) uint64_t s[8];
-
-  for (uint64_t pattern = 0; pattern < (1ull << 16); ++pattern) {
-    s[0] = pattern;
-    for (int w = 1; w < 8; ++w) {
-      s[w] = 0;
-    }
-    for (int x = -20; x <= 20; ++x) {
-      check_matches_naive(excess_positions_512_lut, "lut", s, x,
-                          static_cast<int>(pattern));
-    }
-  }
-}
-
-TEST(ExcessPositions512LUT, Random) {
-  const int cases = [] {
-    const char* env = std::getenv("EXCESS_POS_CASES");
-    return env ? std::atoi(env) : 1000;
-  }();
-  const uint64_t seed = [] {
-    const char* env = std::getenv("EXCESS_POS_SEED");
-    return env ? std::stoull(env) : 42ull;
-  }();
-
-  std::mt19937_64 rng(static_cast<uint64_t>(seed));
-  std::uniform_int_distribution<int> x_dist(-512, 512);
-
-  alignas(64) uint64_t s[8];
-
-  for (int t = 0; t < cases; ++t) {
-    for (int w = 0; w < 8; ++w) {
-      s[w] = rng();
-    }
-    const int x = x_dist(rng);
-    check_matches_naive(excess_positions_512_lut, "lut", s, x, t);
-  }
-}
-
-TEST(ExcessPositions512LUT, TargetZero) {
-  const uint64_t seed = 12345;
-  std::mt19937_64 rng(seed);
-
-  alignas(64) uint64_t s[8];
-
-  for (int t = 0; t < 500; ++t) {
-    for (int w = 0; w < 8; ++w) {
-      s[w] = rng();
-    }
-    check_matches_naive(excess_positions_512_lut, "lut", s, 0, t);
-  }
-}
-
-TEST(ExcessPositions512LUT, MatchesExpand) {
-  const int cases = 500;
-  std::mt19937_64 rng(99999);
-  std::uniform_int_distribution<int> x_dist(-512, 512);
-
-  alignas(64) uint64_t s[8];
-  alignas(64) uint64_t out_expand[8];
-  alignas(64) uint64_t out_lut[8];
-
-  for (int t = 0; t < cases; ++t) {
-    for (int w = 0; w < 8; ++w) {
-      s[w] = rng();
-    }
-    const int x = x_dist(rng);
-
-    excess_positions_512(s, x, out_expand);
-    excess_positions_512_lut(s, x, out_lut);
-
-    for (int w = 0; w < 8; ++w) {
-      ASSERT_EQ(out_expand[w], out_lut[w])
-          << "case=" << t << " x=" << x << " word=" << w;
-    }
-  }
-}
-
-TEST(ExcessPositions512LUT, OverflowBoundary) {
-  alignas(64) uint64_t s[8];
-  alignas(64) uint64_t out_expand[8];
-  alignas(64) uint64_t out_lut[8];
-
-  for (int x = -64; x <= 64; ++x) {
-    for (uint64_t hi_pattern = 0; hi_pattern < 256; ++hi_pattern) {
-      for (int fill = 0; fill <= 7; ++fill) {
-        for (int w = 0; w < 8; ++w) {
-          s[w] = (w < fill) ? UINT64_MAX : 0;
-        }
-        s[fill] = hi_pattern;
-
-        excess_positions_512(s, x, out_expand);
-        excess_positions_512_lut(s, x, out_lut);
-
-        for (int w = 0; w < 8; ++w) {
-          ASSERT_EQ(out_expand[w], out_lut[w])
-              << "x=" << x << " fill=" << fill << " hi=" << hi_pattern
-              << " word=" << w;
-        }
-      }
     }
   }
 }
