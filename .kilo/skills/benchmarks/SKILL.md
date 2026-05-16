@@ -114,9 +114,12 @@ Examples:
 
 ### Run with hardware counters (benchmarks-diagnostic build, Linux only)
 
+The `--benchmark_perf_counters` flag requests hardware counter collection via libpfm. Counter names are platform-specific but common ones include `CYCLES`, `INSTRUCTIONS`, `CACHE-MISSES`, `CACHE-REFERENCES`, `BRANCH-MISSES`, `BRANCH-INSTRUCTIONS`.
+
 ```bash
 build/benchmarks-diagnostic_${BUILD_SUFFIX}/RelWithDebInfo/benchmarks \
   --benchmark_filter="${FILTER}" \
+  --benchmark_perf_counters=CYCLES,INSTRUCTIONS,CACHE-MISSES \
   --benchmark_counters_tabular=true
 ```
 
@@ -174,7 +177,8 @@ perf script -F +pid > perf.data.txt
 | `--benchmark_min_time=<Ns\|Xs>` | Minimum run time per benchmark |
 | `--benchmark_format=json` | Machine-readable output |
 | `--benchmark_out=<file>` | Save output to file |
-| `--benchmark_counters_tabular=true` | Align hardware counter columns |
+| `--benchmark_perf_counters=CYCLES,INSTRUCTIONS,...` | Collect hardware perf counters (requires libpfm build) |
+| `--benchmark_counters_tabular=true` | Align user/perf counter columns into a table |
 | `--benchmark_time_unit=ms` | Change display unit (ns/us/ms/s) |
 
 ## Best Practices
