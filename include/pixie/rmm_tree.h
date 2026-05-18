@@ -1,6 +1,7 @@
 #pragma once
 #include <immintrin.h>
 #include <pixie/bits.h>
+#include <pixie/rmm_base.h>
 
 #include <algorithm>
 #include <array>
@@ -9,7 +10,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <string>
+#include <span>
+#include <stdexcept>
 #include <vector>
 
 namespace pixie {
@@ -31,10 +33,10 @@ namespace pixie {
  *
  *  The bitvector is LSB-first inside each 64-bit word.
  */
-class RmMTree {
+class RmMTree : public RmMBase<RmMTree> {
   // ------------ bitvector ------------
-  std::vector<std::uint64_t> bits;  // LSB-first
-  size_t num_bits = 0;              // number of bits
+  std::span<const std::uint64_t> bits;  // LSB-first, externally owned
+  size_t num_bits = 0;                  // number of bits
 
   // ------------ blocking ------------
   size_t block_bits = 64;  // block size (bits), leaf covers <= block_bits bits
@@ -93,35 +95,89 @@ class RmMTree {
   RmMTree() = default;
 
   /**
-   * @brief Build from a '0'/'1' string.
-   * @param bit_string Bitstring (characters '0' and '1').
-   * @param leaf_block_bits Desired leaf size (power of two, 0 = auto).
-   * @param max_overhead Max allowed overhead fraction (<0 to disable
-   * constraint).
-   * @details Block size priority: (1) respect @p max_overhead, (2) explicit @p
-   * leaf_block_bits, (3) set to ceil_pow2(log2(num_bits)).
-   */
-  explicit RmMTree(const std::string& bit_string,
-                   const size_t& leaf_block_bits /*0=auto*/ = 0,
-                   const float& max_overhead /*<0=off*/ = -1.0) {
-    build_from_string(bit_string, leaf_block_bits, max_overhead);
-  }
-
-  /**
    * @brief Build from 64-bit words (LSB-first).
-   * @param words Array of words holding bits LSB-first.
+   * @param words Non-owning view of words holding bits LSB-first.
    * @param bit_count Number of valid bits.
    * @param leaf_block_bits Desired leaf size (power of two, 0 = auto).
    * @param max_overhead Max allowed overhead fraction (<0 to disable
    * constraint).
    * @details Block size priority: (1) respect @p max_overhead, (2) explicit @p
    * leaf_block_bits, (3) set to ceil_pow2(log2(num_bits)).
+   *
+   * The caller must keep @p words alive and immutable for the lifetime of this
+   * tree.
    */
-  explicit RmMTree(const std::vector<std::uint64_t>& words,
+  explicit RmMTree(std::span<const std::uint64_t> words,
                    size_t bit_count,
                    const size_t& leaf_block_bits /*0=auto*/ = 0,
                    const float& max_overhead /*<0=off*/ = -1.0) {
     build_from_words(words, bit_count, leaf_block_bits, max_overhead);
+  }
+
+  explicit RmMTree(const std::vector<std::uint64_t>& words,
+                   size_t bit_count,
+                   const size_t& leaf_block_bits /*0=auto*/ = 0,
+                   const float& max_overhead /*<0=off*/ = -1.0)
+      : RmMTree(std::span<const std::uint64_t>(words),
+                bit_count,
+                leaf_block_bits,
+                max_overhead) {}
+
+  size_t size_impl() const { return num_bits; }
+
+  size_t rank1_impl(std::size_t end_position) const {
+    return rank1(end_position);
+  }
+  size_t rank0_impl(std::size_t end_position) const {
+    return rank0(end_position);
+  }
+  size_t select1_impl(std::size_t rank) const { return select1(rank); }
+  size_t select0_impl(std::size_t rank) const { return select0(rank); }
+  size_t rank10_impl(std::size_t end_position) const {
+    return rank10(end_position);
+  }
+  size_t select10_impl(std::size_t rank) const { return select10(rank); }
+  int excess_impl(std::size_t end_position) const {
+    return excess(end_position);
+  }
+  size_t fwdsearch_impl(std::size_t start_position, int delta) const {
+    return fwdsearch(start_position, delta);
+  }
+  size_t bwdsearch_impl(std::size_t start_position, int delta) const {
+    return bwdsearch(start_position, delta);
+  }
+  size_t range_min_query_pos_impl(std::size_t range_begin,
+                                  std::size_t range_end) const {
+    return range_min_query_pos(range_begin, range_end);
+  }
+  int range_min_query_val_impl(std::size_t range_begin,
+                               std::size_t range_end) const {
+    return range_min_query_val(range_begin, range_end);
+  }
+  size_t range_max_query_pos_impl(std::size_t range_begin,
+                                  std::size_t range_end) const {
+    return range_max_query_pos(range_begin, range_end);
+  }
+  int range_max_query_val_impl(std::size_t range_begin,
+                               std::size_t range_end) const {
+    return range_max_query_val(range_begin, range_end);
+  }
+  size_t mincount_impl(std::size_t range_begin, std::size_t range_end) const {
+    return mincount(range_begin, range_end);
+  }
+  size_t minselect_impl(std::size_t range_begin,
+                        std::size_t range_end,
+                        std::size_t rank) const {
+    return minselect(range_begin, range_end, rank);
+  }
+  size_t close_impl(std::size_t open_position) const {
+    return close(open_position);
+  }
+  size_t open_impl(std::size_t close_position) const {
+    return open(close_position);
+  }
+  size_t enclose_impl(std::size_t open_position) const {
+    return enclose(open_position);
   }
 
   // --------- queries: rank/select/excess ----------
@@ -2179,38 +2235,21 @@ class RmMTree {
   }
 
   /**
-   * @brief Build internal structures from a 0/1 string.
-   * @param leaf_block_bits Desired leaf size (0 = auto).
-   * @param max_overhead Overhead cap (<0 = no cap).
-   */
-  void build_from_string(const std::string& bit_string_input,
-                         const size_t& leaf_block_bits = 0,
-                         const float& max_overhead = -1.0) {
-    num_bits = bit_string_input.size();
-    bits.assign((num_bits + 63) / 64, 0);
-    for (size_t i = 0; i < num_bits; ++i) {
-      if (bit_string_input[i] == '1') {
-        set1(i);
-      }
-    }
-    build(leaf_block_bits, max_overhead);
-  }
-
-  /**
    * @brief Build internal structures from 64-bit words.
    * @param words Words with LSB-first bits.
    * @param bit_count Number of valid bits.
    * @param leaf_block_bits Desired leaf size (0 = auto).
    * @param max_overhead Overhead cap (<0 = no cap).
    */
-  void build_from_words(const std::vector<std::uint64_t>& words,
+  void build_from_words(std::span<const std::uint64_t> words,
                         const size_t& bit_count,
                         const size_t& leaf_block_bits = 0,
                         const float& max_overhead = -1.0) {
     bits = words;
     num_bits = bit_count;
     if (bits.size() * 64 < num_bits) {
-      bits.resize((num_bits + 63) / 64);
+      throw std::invalid_argument(
+          "RmMTree bit_count exceeds the provided word span");
     }
     build(leaf_block_bits, max_overhead);
   }
@@ -2220,13 +2259,6 @@ class RmMTree {
    */
   inline int bit(const size_t& position) const noexcept {
     return (bits[position >> 6] >> (position & 63)) & 1u;
-  }
-
-  /**
-   * @brief Set bit at position @p position to 1.
-   */
-  inline void set1(const size_t& position) noexcept {
-    bits[position >> 6] |= (std::uint64_t(1) << (position & 63));
   }
 
   /**

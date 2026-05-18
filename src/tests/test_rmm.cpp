@@ -10,7 +10,9 @@
 #include <iostream>
 #include <limits>
 #include <random>
+#include <span>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -139,12 +141,12 @@ static void run_case_and_compare(const std::string& bits,
   const bool use_words = std::uniform_int_distribution<int>(0, 1)(rng);
   pixie::RmMTree rm;
   NaiveRmM nv;
+  auto words = pack_words_lsb_first(bits);
   if (use_words) {
-    auto words = pack_words_lsb_first(bits);
     rm = pixie::RmMTree(words, bits.size());
     nv = NaiveRmM(words, bits.size());
   } else {
-    rm = pixie::RmMTree(bits);
+    rm = pixie::RmMTree(std::span<const std::uint64_t>(words), bits.size());
     nv = NaiveRmM(bits);
   }
 
@@ -391,10 +393,11 @@ TEST_F(RmMRandomTest, ShortInputs) {
   }
 }
 
-static void run_case_string_vs_words(const std::string& bits,
-                                     std::mt19937_64& rng) {
+static void run_case_span_vs_vector(const std::string& bits,
+                                    std::mt19937_64& rng) {
   const size_t N = bits.size();
-  pixie::RmMTree rm_s(bits);
+  auto span_words = pack_words_lsb_first(bits);
+  pixie::RmMTree rm_s(std::span<const std::uint64_t>(span_words), N);
   auto words = pack_words_lsb_first(bits);
   pixie::RmMTree rm_w(words, N);
 
@@ -488,17 +491,18 @@ static void run_case_string_vs_words(const std::string& bits,
   }
 }
 
-TEST_F(RmMRandomTest, WordsVsString) {
+TEST_F(RmMRandomTest, SpanVsVectorConstructor) {
   std::uniform_int_distribution<int> len_u(0, (int)L.MAX_N);
   for (size_t t = 0; t < L.CASES; ++t) {
     const size_t n = (size_t)len_u(rng);
     const std::string bits = random_bits(rng, n);
-    run_case_string_vs_words(bits, rng);
+    run_case_span_vs_vector(bits, rng);
   }
 }
 
 TEST(RmMEdgeCases, EmptyInput) {
-  pixie::RmMTree rm(std::string{});
+  std::vector<std::uint64_t> words;
+  pixie::RmMTree rm(std::span<const std::uint64_t>(words), 0);
   NaiveRmM nv(std::string{});
   EXPECT_EQ(rm.rank1(0), nv.rank1(0));
   EXPECT_EQ(rm.rank0(0), nv.rank0(0));
@@ -577,7 +581,8 @@ TEST(RmMEdgeCases, MultiwordPattern10AcrossWordBoundaries) {
     bits[boundary + 1] = '0';
   }
 
-  pixie::RmMTree rm(bits, /*leaf_block_bits=*/256);
+  auto words = pack_words_lsb_first(bits);
+  pixie::RmMTree rm(words, bits.size(), /*leaf_block_bits=*/256);
   NaiveRmM nv(bits);
 
   expect_rank_select_equal(rm, nv, n);
@@ -591,7 +596,9 @@ TEST(RmMEdgeCases, PartialLastLeafSelects) {
   for (size_t i = 576; i < n; ++i) {
     mostly_zero[i] = '1';
   }
-  pixie::RmMTree rm_select1(mostly_zero, /*leaf_block_bits=*/256);
+  auto mostly_zero_words = pack_words_lsb_first(mostly_zero);
+  pixie::RmMTree rm_select1(mostly_zero_words, mostly_zero.size(),
+                            /*leaf_block_bits=*/256);
   NaiveRmM nv_select1(mostly_zero);
   expect_rank_select_equal(rm_select1, nv_select1, n);
 
@@ -599,7 +606,9 @@ TEST(RmMEdgeCases, PartialLastLeafSelects) {
   for (size_t i = 576; i < n; ++i) {
     mostly_one[i] = '0';
   }
-  pixie::RmMTree rm_select0(mostly_one, /*leaf_block_bits=*/256);
+  auto mostly_one_words = pack_words_lsb_first(mostly_one);
+  pixie::RmMTree rm_select0(mostly_one_words, mostly_one.size(),
+                            /*leaf_block_bits=*/256);
   NaiveRmM nv_select0(mostly_one);
   expect_rank_select_equal(rm_select0, nv_select0, n);
 }
@@ -615,7 +624,8 @@ TEST(RmMEdgeCases, Select10OnIncompleteInternalNode) {
     bits[i + 1] = '0';
   }
 
-  pixie::RmMTree rm(bits, leaf_block_bits);
+  auto words = pack_words_lsb_first(bits);
+  pixie::RmMTree rm(words, bits.size(), leaf_block_bits);
   NaiveRmM nv(bits);
 
   const size_t pairs10 = nv.rank10(n);
@@ -636,7 +646,8 @@ TEST(RmMEdgeCases, InvalidArgumentsGuards) {
     bits[i] = '0';
   }
 
-  pixie::RmMTree rm(bits, /*leaf_block_bits=*/256);
+  auto words = pack_words_lsb_first(bits);
+  pixie::RmMTree rm(words, bits.size(), /*leaf_block_bits=*/256);
 
   EXPECT_EQ(rm.select1(0), pixie::RmMTree::npos);
   EXPECT_EQ(rm.select0(0), pixie::RmMTree::npos);
@@ -665,18 +676,13 @@ TEST(RmMEdgeCases, InvalidArgumentsGuards) {
 
 /**
  * bit_count is larger than the provided words buffer.
- * Verifies that words beyond the provided buffer are treated as zeros after
- * resize.
+ * Verifies that non-owning construction rejects spans that are too short.
  */
-TEST(RmMEdgeCases, WordsConstructorResizesInputStorage) {
+TEST(RmMEdgeCases, WordsConstructorRejectsShortInputStorage) {
   std::vector<std::uint64_t> words = {0xAAAAAAAAAAAAAAAAull};
   const size_t bit_count = 300;
 
-  pixie::RmMTree rm(words, bit_count);
-  NaiveRmM nv(words, bit_count);
-
-  expect_rank_select_equal(rm, nv, bit_count);
-  expect_range_ops_equal(rm, nv, bit_count);
+  EXPECT_THROW((void)pixie::RmMTree(words, bit_count), std::invalid_argument);
 }
 
 /**
@@ -690,10 +696,11 @@ TEST(RmMEdgeCases, ExplicitBuildParametersAndOverheadCap) {
   const std::string bits = random_bits(rng, n);
   NaiveRmM nv(bits);
 
-  pixie::RmMTree rm_auto(bits, /*leaf_block_bits=*/0, /*max_overhead=*/1.f);
-  pixie::RmMTree rm_explicit(bits, /*leaf_block_bits=*/512,
-                             /*max_overhead=*/2.f);
   auto words = pack_words_lsb_first(bits);
+  pixie::RmMTree rm_auto(words, n, /*leaf_block_bits=*/0,
+                         /*max_overhead=*/1.f);
+  pixie::RmMTree rm_explicit(words, n, /*leaf_block_bits=*/512,
+                             /*max_overhead=*/2.f);
   pixie::RmMTree rm_words(words, n, /*leaf_block_bits=*/256,
                           /*max_overhead=*/1.f);
 

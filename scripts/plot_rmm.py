@@ -17,7 +17,17 @@ Examples:
 import argparse
 import json
 import os
-import pandas as pd
+import tempfile
+from collections import defaultdict
+from statistics import median
+
+os.environ.setdefault(
+    "MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "pixie-matplotlib")
+)
+
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 OPS_ORDER = [
@@ -42,20 +52,59 @@ OPS_ORDER = [
 ]
 
 
-def load_bench_json(path: str) -> pd.DataFrame:
+def clean_name(name: str) -> str:
+    for suffix in ("_mean", "_median", "_stddev", "_cv"):
+        name = name.removesuffix(suffix)
+    return name
+
+
+def load_bench_json(path: str) -> list[dict]:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     if isinstance(data, dict) and "benchmarks" in data:
         data = data["benchmarks"]
-    df = pd.DataFrame(data)
-    required = {"name", "cpu_time", "N"}
-    if not required.issubset(df.columns):
-        missing = ", ".join(sorted(required - set(df.columns)))
-        raise ValueError(
-            f"{path!r}: missing required columns in benchmark JSON: {missing}"
-        )
-    df = df.dropna(subset=["cpu_time", "N"])
-    return df
+    rows = []
+    for bench in data:
+        if not {"name", "cpu_time", "N"}.issubset(bench):
+            continue
+        if bench.get("run_type") == "aggregate" and bench.get("aggregate_name") != "mean":
+            continue
+        try:
+            n = int(float(bench["N"]))
+            cpu_time = float(bench["cpu_time"])
+        except (TypeError, ValueError):
+            continue
+        if n <= 0 or cpu_time <= 0:
+            continue
+        rows.append({"name": clean_name(str(bench["name"])), "N": n, "cpu_time": cpu_time})
+    if not rows:
+        raise ValueError(f"{path!r}: no usable benchmark rows found")
+    return rows
+
+
+def ops_in(rows: list[dict]) -> set[str]:
+    return {row["name"] for row in rows}
+
+
+def op_points(rows: list[dict], op: str) -> list[tuple[int, float]]:
+    grouped = defaultdict(list)
+    for row in rows:
+        if row["name"] == op:
+            grouped[row["N"]].append(row["cpu_time"])
+    return sorted((n, median(values)) for n, values in grouped.items())
+
+
+def smooth(points: list[tuple[int, float]], window: int) -> list[float]:
+    if window <= 1:
+        return [time for _, time in points]
+    values = [time for _, time in points]
+    radius = window // 2
+    smoothed = []
+    for index in range(len(values)):
+        lo = max(0, index - radius)
+        hi = min(len(values), index + radius + 1)
+        smoothed.append(median(values[lo:hi]))
+    return smoothed
 
 
 def main():
@@ -129,9 +178,9 @@ def main():
     if args.sdsl_json is not None:
         df_sdsl = load_bench_json(args.sdsl_json)
 
-    rmm_ops = set(df_rmm["name"].dropna().astype(str).unique())
+    rmm_ops = ops_in(df_rmm)
     if df_sdsl is not None:
-        sdsl_ops = set(df_sdsl["name"].dropna().astype(str).unique())
+        sdsl_ops = ops_in(df_sdsl)
         common_ops = rmm_ops & sdsl_ops
         ops_to_plot = [op for op in OPS_ORDER if op in common_ops]
         extra = sorted(common_ops - set(OPS_ORDER))
@@ -140,66 +189,52 @@ def main():
         ops_to_plot = OPS_ORDER
 
     for op in ops_to_plot:
-        d_rmm = df_rmm[df_rmm["name"] == op].copy()
-        d_sdsl = None
+        d_rmm = op_points(df_rmm, op)
+        d_sdsl = []
         if df_sdsl is not None:
-            d_sdsl = df_sdsl[df_sdsl["name"] == op].copy()
-        if d_rmm.empty or (df_sdsl is not None and (d_sdsl is None or d_sdsl.empty)):
+            d_sdsl = op_points(df_sdsl, op)
+        if not d_rmm or (df_sdsl is not None and not d_sdsl):
             continue
         plt.figure()
 
-        if not d_rmm.empty:
-            d_rmm = (
-                d_rmm.groupby("N", as_index=False)["cpu_time"].median().sort_values("N")
-            )
-            y_rmm = d_rmm["cpu_time"]
-            if args.smooth and args.smooth > 1:
-                d_rmm["ns_smooth"] = (
-                    d_rmm["cpu_time"]
-                    .rolling(window=args.smooth, center=True, min_periods=1)
-                    .median()
-                )
-                y_rmm = d_rmm["ns_smooth"]
+        if d_rmm:
+            x_rmm = [n for n, _ in d_rmm]
+            raw_rmm = [time for _, time in d_rmm]
+            y_rmm = smooth(d_rmm, args.smooth)
             plt.scatter(
-                d_rmm["N"],
-                d_rmm["cpu_time"],
-                s=8,
-                alpha=0.3,
+                x_rmm,
+                raw_rmm,
+                s=18,
+                alpha=0.7,
                 linewidths=0,
             )
             plt.plot(
-                d_rmm["N"],
+                x_rmm,
                 y_rmm,
-                linewidth=1.5,
-                label="RmMTree",
+                marker="o",
+                markersize=3,
+                linewidth=0.85,
+                label="Pixie RmMTree",
             )
 
-        if d_sdsl is not None and not d_sdsl.empty:
-            d_sdsl = (
-                d_sdsl.groupby("N", as_index=False)["cpu_time"]
-                .median()
-                .sort_values("N")
-            )
-            y_sdsl = d_sdsl["cpu_time"]
-            if args.smooth and args.smooth > 1:
-                d_sdsl["ns_smooth"] = (
-                    d_sdsl["cpu_time"]
-                    .rolling(window=args.smooth, center=True, min_periods=1)
-                    .median()
-                )
-                y_sdsl = d_sdsl["ns_smooth"]
+        if d_sdsl:
+            x_sdsl = [n for n, _ in d_sdsl]
+            raw_sdsl = [time for _, time in d_sdsl]
+            y_sdsl = smooth(d_sdsl, args.smooth)
             plt.scatter(
-                d_sdsl["N"],
-                d_sdsl["cpu_time"],
-                s=8,
-                alpha=0.3,
-                linewidths=0.9,
+                x_sdsl,
+                raw_sdsl,
+                s=18,
+                alpha=0.7,
+                linewidths=0.85,
                 marker="x",
             )
             plt.plot(
-                d_sdsl["N"],
+                x_sdsl,
                 y_sdsl,
-                linewidth=1.5,
+                marker="x",
+                markersize=3,
+                linewidth=0.85,
                 linestyle="--",
                 label="sdsl-lite",
             )
@@ -208,14 +243,14 @@ def main():
             plt.xscale("log", base=2)
         plt.xlabel("Sequence size N (bits)")
         plt.ylabel("Time per operation, ns")
-        if d_sdsl is not None and not d_sdsl.empty:
-            plt.title(f"RmMTree vs sdsl-lite: {op}")
+        if d_sdsl:
+            plt.title(f"RmMTree comparison: {op}")
         else:
             plt.title(f"RmMTree: {op}")
         plt.grid(True, which="both", linestyle="--", alpha=0.4)
         plt.legend(loc="best")
         out = os.path.join(args.save_dir, f"{op}.png")
-        plt.savefig(out, bbox_inches="tight", dpi=160)
+        plt.savefig(out, bbox_inches="tight", dpi=180)
         if not args.show:
             plt.close()
         print(f"[saved] {out}")
