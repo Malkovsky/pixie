@@ -128,7 +128,8 @@ python3 scripts/plot_size_benchmarks.py bitvector_bench.json -o graphs/bitvector
 python3 scripts/excess_benchmark_table.py excess_positions.json -o src/docs/excess_positions_benchmark_results.md
 ```
 
-Generated benchmark documentation is available in `src/docs/benchmark_results.md`.
+Generated benchmark documentation can be written to `src/docs/benchmark_results.md`;
+the documentation pipeline does not run benchmarks.
 
 ### RmM Tree
 

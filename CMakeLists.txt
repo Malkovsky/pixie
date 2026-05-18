@@ -252,6 +252,16 @@ if(PIXIE_DOCS)
 
     FetchContent_GetProperties(doxygen-awesome-css SOURCE_DIR AWESOME_CSS_DIR)
 
+    set(PIXIE_DOC_INPUT
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmark_results.md")
+        list(APPEND PIXIE_DOC_INPUT
+             "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmark_results.md")
+    endif()
+    string(REPLACE ";" " \\\n                         " PIXIE_DOC_INPUT
+                   "${PIXIE_DOC_INPUT}")
+
     set(DOXYFILE_IN ${CMAKE_CURRENT_SOURCE_DIR}/src/docs/Doxyfile.in)
     set(DOXYFILE_OUT ${CMAKE_CURRENT_BINARY_DIR}/docs/Doxyfile)
     configure_file(${DOXYFILE_IN} ${DOXYFILE_OUT} @ONLY)
