@@ -184,8 +184,10 @@ int main() {
 
 ```cpp
 #include <pixie/rmm_tree.h>
-#include <string>
+#include <cstdint>
 #include <iostream>
+#include <string>
+#include <vector>
 
 using namespace pixie;
 
@@ -198,7 +200,15 @@ int main() {
     // └─ C
     //    └─ c1
     std::string bits = "11101001011000";
-    RmMTree t(bits);
+    std::vector<std::uint64_t> words((bits.size() + 63) / 64);
+    for (std::size_t i = 0; i < bits.size(); ++i) {
+        if (bits[i] == '1') {
+            words[i / 64] |= std::uint64_t{1} << (i % 64);
+        }
+    }
+
+    // RmMTree is non-owning: keep words alive and immutable while using t.
+    RmMTree t(words, bits.size());
 
     std::cout << "close(1): " << t.close(1) << "\n";     // expected 6 (A)
     std::cout << "open(3): " << t.open(3) << "\n";       // expected 2 (a1)

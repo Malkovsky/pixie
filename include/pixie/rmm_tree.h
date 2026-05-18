@@ -31,7 +31,9 @@ namespace pixie {
  *  - mincount / minselect (count/selection of minima)
  *  - close / open / enclose (BP navigation)
  *
- *  The bitvector is LSB-first inside each 64-bit word.
+ *  The bitvector is LSB-first inside each 64-bit word. RmMTree stores a
+ *  non-owning view of those words; callers must keep the backing storage alive
+ *  and immutable for the lifetime of the tree.
  */
 class RmMTree : public RmMBase<RmMTree> {
   // ------------ bitvector ------------
@@ -95,7 +97,7 @@ class RmMTree : public RmMBase<RmMTree> {
   RmMTree() = default;
 
   /**
-   * @brief Build from 64-bit words (LSB-first).
+   * @brief Build from a non-owning view of 64-bit words (LSB-first).
    * @param words Non-owning view of words holding bits LSB-first.
    * @param bit_count Number of valid bits.
    * @param leaf_block_bits Desired leaf size (power of two, 0 = auto).
@@ -114,6 +116,17 @@ class RmMTree : public RmMBase<RmMTree> {
     build_from_words(words, bit_count, leaf_block_bits, max_overhead);
   }
 
+  /**
+   * @brief Build from a vector of 64-bit words (LSB-first).
+   * @param words Vector holding bits LSB-first.
+   * @param bit_count Number of valid bits.
+   * @param leaf_block_bits Desired leaf size (power of two, 0 = auto).
+   * @param max_overhead Max allowed overhead fraction (<0 to disable
+   * constraint).
+   * @details This overload is also non-owning: the tree stores a span over
+   * @p words. The caller must keep @p words alive and immutable for the
+   * lifetime of this tree.
+   */
   explicit RmMTree(const std::vector<std::uint64_t>& words,
                    size_t bit_count,
                    const size_t& leaf_block_bits /*0=auto*/ = 0,
