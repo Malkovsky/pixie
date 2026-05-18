@@ -28,7 +28,7 @@ struct RmMBenchmarkArgs {
   double p1 = 0.5;
   std::uint64_t seed = 42;
   std::size_t block_bits = 64;
-  int per_octave = 10;
+  int per_octave = 0;
   std::vector<std::size_t> explicit_sizes;
   std::set<std::string> ops;
   std::string benchmark_filter;
@@ -617,26 +617,155 @@ class RmMBenchmark {
     for (std::size_t size : sizes) {
       auto data = BuildDataset(size);
       keepalive_.push_back(data);
-      for (const auto& op : AllRmMOps()) {
-        RegisterOp(op, data);
-      }
+
+      RegisterOp("rank1", data,
+                 [](const Dataset& dataset, std::size_t sample_index) {
+                   const auto& pool = dataset.pool;
+                   return dataset.tree.rank1(
+                       pool.inds_any[sample_index % pool.inds_any.size()]);
+                 });
+      RegisterOp("rank0", data,
+                 [](const Dataset& dataset, std::size_t sample_index) {
+                   const auto& pool = dataset.pool;
+                   return dataset.tree.rank0(
+                       pool.inds_any[sample_index % pool.inds_any.size()]);
+                 });
+      RegisterOp("select1", data,
+                 [](const Dataset& dataset, std::size_t sample_index) {
+                   const auto& pool = dataset.pool;
+                   return dataset.tree.select1(
+                       pool.ks1[sample_index % pool.ks1.size()]);
+                 });
+      RegisterOp("select0", data,
+                 [](const Dataset& dataset, std::size_t sample_index) {
+                   const auto& pool = dataset.pool;
+                   return dataset.tree.select0(
+                       pool.ks0[sample_index % pool.ks0.size()]);
+                 });
+      RegisterOp(
+          "rank10", data, [](const Dataset& dataset, std::size_t sample_index) {
+            const auto& pool = dataset.pool;
+            return dataset.tree.rank10(
+                pool.rank10_end_positions[sample_index %
+                                          pool.rank10_end_positions.size()]);
+          });
+      RegisterOp("select10", data,
+                 [](const Dataset& dataset, std::size_t sample_index) {
+                   const auto& pool = dataset.pool;
+                   return dataset.tree.select10(
+                       pool.ks10[sample_index % pool.ks10.size()]);
+                 });
+      RegisterOp("excess", data,
+                 [](const Dataset& dataset, std::size_t sample_index) {
+                   const auto& pool = dataset.pool;
+                   return dataset.tree.excess(
+                       pool.inds_any[sample_index % pool.inds_any.size()]);
+                 });
+      RegisterOp("fwdsearch", data,
+                 [](const Dataset& dataset, std::size_t sample_index) {
+                   const auto& pool = dataset.pool;
+                   return dataset.tree.fwdsearch(
+                       pool.inds[sample_index % pool.inds.size()],
+                       pool.deltas[sample_index % pool.deltas.size()]);
+                 });
+      RegisterOp("bwdsearch", data,
+                 [](const Dataset& dataset, std::size_t sample_index) {
+                   const auto& pool = dataset.pool;
+                   return dataset.tree.bwdsearch(
+                       pool.inds_1N[sample_index % pool.inds_1N.size()],
+                       pool.deltas[sample_index % pool.deltas.size()]);
+                 });
+      RegisterOp("range_min_query_pos", data,
+                 [](const Dataset& dataset, std::size_t sample_index) {
+                   const auto& pool = dataset.pool;
+                   const auto [left, right] =
+                       pool.segs[sample_index % pool.segs.size()];
+                   return dataset.tree.range_min_query_pos(left, right);
+                 });
+      RegisterOp("range_min_query_val", data,
+                 [](const Dataset& dataset, std::size_t sample_index) {
+                   const auto& pool = dataset.pool;
+                   const auto [left, right] =
+                       pool.segs[sample_index % pool.segs.size()];
+                   return dataset.tree.range_min_query_val(left, right);
+                 });
+      RegisterOp("range_max_query_pos", data,
+                 [](const Dataset& dataset, std::size_t sample_index) {
+                   const auto& pool = dataset.pool;
+                   const auto [left, right] =
+                       pool.segs[sample_index % pool.segs.size()];
+                   return dataset.tree.range_max_query_pos(left, right);
+                 });
+      RegisterOp("range_max_query_val", data,
+                 [](const Dataset& dataset, std::size_t sample_index) {
+                   const auto& pool = dataset.pool;
+                   const auto [left, right] =
+                       pool.segs[sample_index % pool.segs.size()];
+                   return dataset.tree.range_max_query_val(left, right);
+                 });
+      RegisterOp("mincount", data,
+                 [](const Dataset& dataset, std::size_t sample_index) {
+                   const auto& pool = dataset.pool;
+                   const auto [left, right] =
+                       pool.segs[sample_index % pool.segs.size()];
+                   return dataset.tree.mincount(left, right);
+                 });
+      RegisterOp("minselect", data,
+                 [](const Dataset& dataset, std::size_t sample_index) {
+                   const auto& pool = dataset.pool;
+                   const std::size_t index = sample_index % pool.segs.size();
+                   const auto [left, right] = pool.segs[index];
+                   return dataset.tree.minselect(left, right,
+                                                 pool.minselect_q[index]);
+                 });
+      RegisterOp(
+          "close", data, [](const Dataset& dataset, std::size_t sample_index) {
+            if (dataset.N == 0) {
+              return std::size_t{0};
+            }
+            const auto& pool = dataset.pool;
+            const std::size_t open_position =
+                pool.open_positions_zero_based
+                    [sample_index % pool.open_positions_zero_based.size()];
+            return dataset.tree.close(open_position);
+          });
+      RegisterOp(
+          "open", data, [](const Dataset& dataset, std::size_t sample_index) {
+            const auto& pool = dataset.pool;
+            const std::size_t close_position_one_based =
+                pool.close_positions_one_based
+                    [sample_index % pool.close_positions_one_based.size()];
+            return dataset.tree.open(close_position_one_based);
+          });
+      RegisterOp(
+          "enclose", data,
+          [](const Dataset& dataset, std::size_t sample_index) {
+            const auto& pool = dataset.pool;
+            const std::size_t open_position_one_based =
+                pool.open_positions_one_based
+                    [sample_index % pool.open_positions_one_based.size()];
+            return dataset.tree.enclose(open_position_one_based);
+          });
     }
   }
 
-  void RegisterOp(const std::string& op, std::shared_ptr<Dataset> data) {
+  template <class Fn>
+  void RegisterOp(const std::string& op,
+                  std::shared_ptr<Dataset> data,
+                  Fn&& body) {
     if (!ActiveOp(op)) {
       return;
     }
 
     auto idx_ptr = std::make_shared<std::size_t>(0);
-    auto op_name = std::make_shared<std::string>(op);
 
     auto* benchmark = benchmark::RegisterBenchmark(
-        op.c_str(), [this, data, idx_ptr, op_name](benchmark::State& state) {
+        op.c_str(), [this, data, idx_ptr,
+                     body = std::forward<Fn>(body)](benchmark::State& state) {
           const Dataset& dataset = *data;
           for (auto _ : state) {
             const std::size_t sample_index = (*idx_ptr)++;
-            auto result = RunOperation(*op_name, dataset, sample_index);
+            auto result = body(dataset, sample_index);
             benchmark::DoNotOptimize(result);
           }
           state.counters["N"] = static_cast<double>(dataset.N);
@@ -645,94 +774,6 @@ class RmMBenchmark {
         });
 
     benchmark->Unit(benchmark::kNanosecond);
-  }
-
-  std::int64_t RunOperation(const std::string& op,
-                            const Dataset& dataset,
-                            std::size_t sample_index) const {
-    const auto& pool = dataset.pool;
-    const auto& tree = dataset.tree;
-    if (op == "rank1") {
-      return tree.rank1(pool.inds_any[sample_index % pool.inds_any.size()]);
-    }
-    if (op == "rank0") {
-      return tree.rank0(pool.inds_any[sample_index % pool.inds_any.size()]);
-    }
-    if (op == "select1") {
-      return tree.select1(pool.ks1[sample_index % pool.ks1.size()]);
-    }
-    if (op == "select0") {
-      return tree.select0(pool.ks0[sample_index % pool.ks0.size()]);
-    }
-    if (op == "rank10") {
-      return tree.rank10(
-          pool.rank10_end_positions[sample_index %
-                                    pool.rank10_end_positions.size()]);
-    }
-    if (op == "select10") {
-      return tree.select10(pool.ks10[sample_index % pool.ks10.size()]);
-    }
-    if (op == "excess") {
-      return tree.excess(pool.inds_any[sample_index % pool.inds_any.size()]);
-    }
-    if (op == "fwdsearch") {
-      return static_cast<std::int64_t>(
-          tree.fwdsearch(pool.inds[sample_index % pool.inds.size()],
-                         pool.deltas[sample_index % pool.deltas.size()]));
-    }
-    if (op == "bwdsearch") {
-      return static_cast<std::int64_t>(
-          tree.bwdsearch(pool.inds_1N[sample_index % pool.inds_1N.size()],
-                         pool.deltas[sample_index % pool.deltas.size()]));
-    }
-    if (op == "range_min_query_pos") {
-      const auto [left, right] = pool.segs[sample_index % pool.segs.size()];
-      return static_cast<std::int64_t>(tree.range_min_query_pos(left, right));
-    }
-    if (op == "range_min_query_val") {
-      const auto [left, right] = pool.segs[sample_index % pool.segs.size()];
-      return tree.range_min_query_val(left, right);
-    }
-    if (op == "range_max_query_pos") {
-      const auto [left, right] = pool.segs[sample_index % pool.segs.size()];
-      return static_cast<std::int64_t>(tree.range_max_query_pos(left, right));
-    }
-    if (op == "range_max_query_val") {
-      const auto [left, right] = pool.segs[sample_index % pool.segs.size()];
-      return tree.range_max_query_val(left, right);
-    }
-    if (op == "mincount") {
-      const auto [left, right] = pool.segs[sample_index % pool.segs.size()];
-      return static_cast<std::int64_t>(tree.mincount(left, right));
-    }
-    if (op == "minselect") {
-      const std::size_t index = sample_index % pool.segs.size();
-      const auto [left, right] = pool.segs[index];
-      return static_cast<std::int64_t>(
-          tree.minselect(left, right, pool.minselect_q[index]));
-    }
-    if (op == "close") {
-      if (dataset.N == 0) {
-        return 0;
-      }
-      const std::size_t open_position =
-          pool.open_positions_zero_based[sample_index %
-                                         pool.open_positions_zero_based.size()];
-      return static_cast<std::int64_t>(tree.close(open_position));
-    }
-    if (op == "open") {
-      const std::size_t close_position_one_based =
-          pool.close_positions_one_based[sample_index %
-                                         pool.close_positions_one_based.size()];
-      return static_cast<std::int64_t>(tree.open(close_position_one_based));
-    }
-    if (op == "enclose") {
-      const std::size_t open_position_one_based =
-          pool.open_positions_one_based[sample_index %
-                                        pool.open_positions_one_based.size()];
-      return static_cast<std::int64_t>(tree.enclose(open_position_one_based));
-    }
-    return static_cast<std::int64_t>(Tree::npos);
   }
 
   RmMBenchmarkArgs args_;

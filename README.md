@@ -51,7 +51,7 @@ cmake -B build/release -DCMAKE_BUILD_TYPE=Release
 cmake --build build/release -j
 ```
 
-Tests are enabled by default (`PIXIE_TESTS=ON`). Benchmarks are opt-in; enable with `-DPIXIE_BENCHMARKS=ON` or configure with the `benchmarks-all` preset, you can use `benchmark-diagnostic` preset for performance diagnostics (Release with debug info + performance counters support). 
+Tests are enabled by default (`PIXIE_TESTS=ON`). Benchmarks are opt-in; enable with `-DPIXIE_BENCHMARKS=ON` or configure with the `benchmarks-all` preset. Use `benchmarks-third-party` for comparison backends such as sdsl-lite, and `benchmarks-diagnostic` for performance diagnostics (Release with debug info + performance counters support).
 
 ---
 
@@ -142,17 +142,21 @@ For focused runs, `bench_rmm` accepts `--ops` with a comma-separated operation l
 ./build/release/bench_rmm --ops=rank1,select1 --benchmark_out=rmm_rank_select.json --benchmark_out_format=json
 ```
 
+By default, RmM benchmarks step through sizes by powers of two. Use `--per_octave=<n>` for finer sampling between adjacent powers of two, or `--explicit_sizes=<csv>` for an exact size list.
+
 Google Benchmark filters are also used to limit RmM setup when `--ops` is not provided:
 
 ```sh
 ./build/release/bench_rmm --benchmark_filter='^rank1$' --benchmark_out=rmm_rank1.json --benchmark_out_format=json
 ```
 
-For comparison with range min-max tree implementation from [sdsl-lite](https://github.com/simongog/sdsl-lite) (Release build required; use the release preset or `-DCMAKE_BUILD_TYPE=Release`):
+For comparison with range min-max tree implementation from [sdsl-lite](https://github.com/simongog/sdsl-lite), use the third-party benchmark preset. This defines `SDSL_SUPPORT` and builds `bench_rmm_sdsl`:
 
 ```bash
+cmake --preset benchmarks-third-party
+cmake --build --preset benchmarks-third-party
 sudo cpupower frequency-set --governor performance
-./build/release/bench_rmm_sdsl --benchmark_out=rmm_bench_sdsl.json
+./build/release-third-party/bench_rmm_sdsl --benchmark_out=rmm_bench_sdsl.json
 ```
 
 For visualization, write the JSON output to a file using `--benchmark_out=<file>` (e.g. `./build/release/bench_rmm --benchmark_out=rmm_bench.json`) and plot it with `scripts/plot_rmm.py` (add `--sdsl-json rmm_bench_sdsl.json` for per-operation sdsl-lite comparison plots). For size-scaled tree plots, use:

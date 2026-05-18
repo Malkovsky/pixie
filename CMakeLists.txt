@@ -34,9 +34,14 @@ endif()
 # Build options
 # ---------------------------------------------------------------------------
 option(PIXIE_TESTS "Build unit tests" ON)
-option(PIXIE_BENCHMARKS "Build benchmarks (includes comparison benchmarks against third-party libraries)" OFF)
+option(PIXIE_BENCHMARKS "Build benchmarks" OFF)
+option(PIXIE_THIRD_PARTY_BACKENDS "Build optional third-party backend integrations" OFF)
 option(PIXIE_DIAGNOSTICS "Include diagnostic logs" OFF)
 option(PIXIE_DOCS "Build Doxygen documentation" OFF)
+
+if(PIXIE_THIRD_PARTY_BACKENDS)
+    add_compile_definitions(SDSL_SUPPORT)
+endif()
 
 if(PIXIE_DIAGNOSTICS)
     add_compile_definitions(PIXIE_DIAGNOSTICS)
@@ -67,10 +72,16 @@ if(PIXIE_BENCHMARKS)
         GIT_REPOSITORY https://github.com/google/benchmark.git
         GIT_TAG v1.9.4
     )
-    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "Disable Google Benchmark tests")
+    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "Disable Google Benchmark tests" FORCE)
+    set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "Disable Google Benchmark tests" FORCE)
+    set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "Disable Google Benchmark install targets" FORCE)
+    set(BENCHMARK_INSTALL_DOCS OFF CACHE BOOL "Disable Google Benchmark install docs" FORCE)
     FetchContent_MakeAvailable(googlebenchmark)
+endif()
 
-    # Third-party libraries for comparison benchmarks
+if(PIXIE_THIRD_PARTY_BACKENDS)
+    set(PASTA_BIT_VECTOR_BUILD_TESTS OFF CACHE BOOL "Disable pasta::bit_vector tests" FORCE)
+    set(PASTA_BIT_VECTOR_BUILD_BENCHMARKS OFF CACHE BOOL "Disable pasta::bit_vector benchmarks" FORCE)
     FetchContent_Declare(
         pasta_bit_vector
         GIT_REPOSITORY https://github.com/pasta-toolbox/bit_vector.git
@@ -96,6 +107,8 @@ endif()
 
 if(PIXIE_TESTS)
     if(NOT TARGET gtest_main)
+        set(BUILD_GMOCK OFF CACHE BOOL "Disable GoogleMock" FORCE)
+        set(INSTALL_GTEST OFF CACHE BOOL "Disable GoogleTest install targets" FORCE)
         FetchContent_Declare(
             googletest
             GIT_REPOSITORY https://github.com/google/googletest.git
@@ -170,9 +183,11 @@ if(PIXIE_BENCHMARKS)
     target_link_libraries(benchmarks
         benchmark
         benchmark_main
-        pasta_bit_vector
         ${PIXIE_DIAGNOSTICS_LIBS})
-    target_compile_definitions(benchmarks PRIVATE PIXIE_THIRD_PARTY_BENCHMARKS)
+    if(PIXIE_THIRD_PARTY_BACKENDS)
+        target_link_libraries(benchmarks pasta_bit_vector)
+        target_compile_definitions(benchmarks PRIVATE PIXIE_THIRD_PARTY_BENCHMARKS)
+    endif()
 
     add_executable(bench_rmm
         src/benchmarks/bench_rmm.cpp)
@@ -182,15 +197,18 @@ if(PIXIE_BENCHMARKS)
         benchmark
         ${PIXIE_DIAGNOSTICS_LIBS})
 
-    add_executable(bench_rmm_sdsl
-        src/benchmarks/bench_rmm_sdsl.cpp)
-    target_include_directories(bench_rmm_sdsl
-        PUBLIC include
-        PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
-    target_link_libraries(bench_rmm_sdsl
-        PRIVATE
-            benchmark
-            ${PIXIE_DIAGNOSTICS_LIBS})
+    if(PIXIE_THIRD_PARTY_BACKENDS)
+        add_executable(bench_rmm_sdsl
+            src/benchmarks/bench_rmm_sdsl.cpp)
+        target_include_directories(bench_rmm_sdsl
+            PUBLIC include
+            PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
+        target_link_libraries(bench_rmm_sdsl
+            PRIVATE
+                benchmark
+                ${PIXIE_DIAGNOSTICS_LIBS})
+        target_compile_definitions(bench_rmm_sdsl PRIVATE SDSL_SUPPORT)
+    endif()
 
     add_executable(louds_tree_benchmarks
         src/benchmarks/louds_tree_benchmarks.cpp)
