@@ -2,7 +2,6 @@
 
 #include <pixie/rmm_tree.h>
 
-#include <cassert>
 #include <cstdint>
 
 #include "utils.h"
