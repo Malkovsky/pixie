@@ -239,6 +239,15 @@ if(PIXIE_BENCHMARKS)
         benchmark_main
         ${PIXIE_DIAGNOSTICS_LIBS})
 
+    add_executable(dfuds_tree_benchmarks
+            src/benchmarks/dfuds_tree_benchmarks.cpp)
+    target_include_directories(dfuds_tree_benchmarks
+            PUBLIC include)
+    target_link_libraries(dfuds_tree_benchmarks
+            benchmark
+            benchmark_main
+            ${PIXIE_DIAGNOSTICS_LIBS})
+
     add_executable(alignment_comparison
         src/benchmarks/alignment_comparison.cpp)
     target_include_directories(alignment_comparison

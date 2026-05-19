@@ -2,7 +2,10 @@
 
 #include <pixie/rmm_tree.h>
 
+#include <cassert>
 #include <cstdint>
+
+#include "utils.h"
 
 namespace pixie {
 
@@ -27,11 +30,15 @@ class DFUDSTree {
     Node(size_t node_number, size_t dfuds_pos)
         : number(node_number), pos(dfuds_pos) {}
   };
+
   /**
    * @brief Constructor from an external array of uint64_t
+   *
+   * @param dfuds_sequence parenthesis sequence in dfuds representation
    */
-  explicit DFUDSTree(const std::vector<std::uint64_t>& words, size_t tree_size)
-      : num_bits_(2 * tree_size - 1), rmm_(words, 2 * tree_size - 1) {}
+  explicit DFUDSTree(const std::vector<std::uint64_t>& dfuds_sequence,
+                     size_t tree_size)
+      : num_bits_(2 * tree_size - 1), rmm_(dfuds_sequence, 2 * tree_size - 1) {}
 
   /**
    * @brief Returns the root node
@@ -99,11 +106,16 @@ class DFUDSTree {
     if (node.number == 0) {
       return root();
     }
-    size_t open = rmm_.open(node.pos);
+    size_t open = rmm_.open(
+        node.pos);  // node.pos in 0-based and rmm_.open uses 1-based argument.
+                    // Thus, we use node.pos meaning the parenthesis before
+                    // first parenthesis of the current node
     size_t rank = rmm_.rank0(open);
-    size_t pos = rmm_.select0(rank) + 1;  // some overflow-related magic here
-    size_t num = rmm_.rank0(pos);
-    return Node(num, pos);
+    size_t pos =
+        rmm_.select0(rank) +
+        1;  // In here we use that rmm_select(0) equals size_t max value so
+            // rmm_.select(rank) can still be interpreted as pos-1
+    return Node(rank, pos);
   }
 
   /**
@@ -117,4 +129,35 @@ class DFUDSTree {
     return pos == num_bits_ || op != op2 + 1;
   }
 };
+
+std::vector<uint64_t> adj_to_dfuds(
+    size_t tree_size,
+    const std::vector<std::vector<size_t>>& adj) {
+  size_t dfuds_size = tree_size * 2 - 1;
+  std::vector<uint64_t> dfuds((dfuds_size + 63) / 64, 0);
+  std::vector<size_t> stack;
+  stack.push_back(0);
+  size_t pos = 0;
+  while (!stack.empty()) {
+    auto v = stack.back();
+    stack.pop_back();
+    size_t edge_count = adj[v].size();
+    for (size_t i = 0; i < edge_count - 1; ++i) {  // edge 0 goes to parent
+      dfuds[pos >> 6] = dfuds[pos >> 6] | (1ULL << (pos & 63));
+      pos++;
+      stack.push_back(adj[v][edge_count - 1 - i]);
+    }
+    pos++;
+  }
+  return dfuds;
+}
+
+bool operator==(const AdjListNode& a, const DFUDSTree::Node& b) {
+  return a.number == b.number;
+}
+
+bool operator==(const DFUDSTree::Node& b, const AdjListNode& a) {
+  return a.number == b.number;
+}
+
 }  // namespace pixie
