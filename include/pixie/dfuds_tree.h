@@ -2,6 +2,7 @@
 
 #include <pixie/rmm_tree.h>
 
+#include <cassert>
 #include <cstdint>
 
 #include "utils.h"
@@ -106,10 +107,9 @@ class DFUDSTree {
       return root();
     }
     size_t open = rmm_.open(
-        node.pos -
-        1);  // node.pos in 0-based and rmm_.open uses 1-based argument.
-             // Thus, we use node.pos meaning the parenthesis before
-             // first parenthesis of the current node
+        node.pos);  // node.pos in 0-based and rmm_.open uses 1-based argument.
+                    // Thus, we use node.pos meaning the parenthesis before
+                    // first parenthesis of the current node
     size_t rank = rmm_.rank0(open);
     size_t pos =
         rmm_.select0(rank) +
@@ -124,8 +124,8 @@ class DFUDSTree {
   bool is_last_child(const Node& node) const {
     size_t end = rmm_.fwdsearch(node.pos, -1);
     size_t pos = end + 1;
-    size_t op = rmm_.open(node.pos - 1);
-    size_t op2 = rmm_.open(pos - 1);
+    size_t op = rmm_.open(node.pos);
+    size_t op2 = rmm_.open(pos);
     return pos == num_bits_ || op != op2 + 1;
   }
 };
