@@ -8,6 +8,8 @@ namespace pixie_bench {
 
 template <>
 struct RmMBenchmarkTraits<pixie::SdslRmMTree> {
+  static constexpr std::size_t DefaultBlockBits = 64;
+
   static bool SupportsOp(std::string_view op) {
     return op == "rank1" || op == "rank0" || op == "select1" ||
            op == "excess" || op == "range_min_query_pos" ||

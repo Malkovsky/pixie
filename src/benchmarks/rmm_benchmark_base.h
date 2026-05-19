@@ -28,6 +28,7 @@ struct RmMBenchmarkArgs {
   double p1 = 0.5;
   std::uint64_t seed = 42;
   std::size_t block_bits = 64;
+  bool block_bits_specified = false;
   int per_octave = 0;
   std::vector<std::size_t> explicit_sizes;
   std::set<std::string> ops;
@@ -168,6 +169,8 @@ inline std::vector<std::uint64_t> PackWordsLsbFirst(const std::string& bits) {
 
 template <class Tree>
 struct RmMBenchmarkTraits {
+  static constexpr std::size_t DefaultBlockBits = 64;
+
   static bool SupportsOp(std::string_view) { return true; }
 };
 
@@ -295,6 +298,7 @@ class RmMBenchmark {
     }
     if (auto argument_value = get_value("block_bits")) {
       args_.block_bits = std::stoull(*argument_value);
+      args_.block_bits_specified = true;
       strip("block_bits");
     }
     if (auto argument_value = get_value("per_octave")) {
@@ -412,8 +416,11 @@ class RmMBenchmark {
     N = data->N;
 
     data->words = PackWordsLsbFirst(data->bits);
+    const std::size_t block_bits =
+        args_.block_bits_specified ? args_.block_bits
+                                   : RmMBenchmarkTraits<Tree>::DefaultBlockBits;
     data->tree =
-        Tree(std::span<const std::uint64_t>(data->words), N, args_.block_bits);
+        Tree(std::span<const std::uint64_t>(data->words), N, block_bits);
     FillPools(*data, rng);
     return data;
   }
@@ -758,7 +765,11 @@ class RmMBenchmark {
           }
           state.counters["N"] = static_cast<double>(dataset.N);
           state.counters["seed"] = static_cast<double>(args_.seed);
-          state.counters["block_bits"] = static_cast<double>(args_.block_bits);
+          const std::size_t block_bits =
+              args_.block_bits_specified
+                  ? args_.block_bits
+                  : RmMBenchmarkTraits<Tree>::DefaultBlockBits;
+          state.counters["block_bits"] = static_cast<double>(block_bits);
         });
 
     benchmark->Unit(benchmark::kNanosecond);
