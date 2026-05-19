@@ -312,24 +312,12 @@ class RmMBenchmark {
     }
 
     if (auto argument_value = get_value("explicit_sizes")) {
-      std::string sizes_text = *argument_value;
       strip("explicit_sizes");
-      std::size_t position = 0;
-      while (position < sizes_text.size()) {
-        while (
-            position < sizes_text.size() &&
-            (sizes_text[position] == ',' ||
-             std::isspace(static_cast<unsigned char>(sizes_text[position])))) {
-          ++position;
-        }
-        const std::size_t start_index = position;
-        while (position < sizes_text.size() &&
-               std::isdigit(static_cast<unsigned char>(sizes_text[position]))) {
-          ++position;
-        }
-        if (start_index < position) {
-          args_.explicit_sizes.push_back(std::stoull(
-              sizes_text.substr(start_index, position - start_index)));
+      for (const auto& size_text : SplitCsv(*argument_value)) {
+        if (std::all_of(size_text.begin(), size_text.end(), [](char ch) {
+              return std::isdigit(static_cast<unsigned char>(ch));
+            })) {
+          args_.explicit_sizes.push_back(std::stoull(size_text));
         }
       }
       std::sort(args_.explicit_sizes.begin(), args_.explicit_sizes.end());
