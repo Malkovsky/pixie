@@ -207,7 +207,6 @@ if(PIXIE_BENCHMARKS)
             PRIVATE
                 benchmark
                 ${PIXIE_DIAGNOSTICS_LIBS})
-        target_compile_definitions(bench_rmm_sdsl PRIVATE SDSL_SUPPORT)
     endif()
 
     add_executable(louds_tree_benchmarks
@@ -259,8 +258,8 @@ if(PIXIE_DOCS)
         list(APPEND PIXIE_DOC_INPUT
              "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmark_results.md")
     endif()
-    string(REPLACE ";" " \\\n                         " PIXIE_DOC_INPUT
-                   "${PIXIE_DOC_INPUT}")
+    string(JOIN " \\\n                         " PIXIE_DOC_INPUT
+           ${PIXIE_DOC_INPUT})
 
     set(DOXYFILE_IN ${CMAKE_CURRENT_SOURCE_DIR}/src/docs/Doxyfile.in)
     set(DOXYFILE_OUT ${CMAKE_CURRENT_BINARY_DIR}/docs/Doxyfile)

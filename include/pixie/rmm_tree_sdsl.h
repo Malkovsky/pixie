@@ -49,7 +49,7 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
         ones_(other.ones_),
         zeros_(other.zeros_),
         bits_(other.bits_) {
-    tree_ = BpSupport(&bits_);
+    reset_support();
   }
 
   SdslRmMTree& operator=(const SdslRmMTree& other) {
@@ -60,7 +60,7 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
     ones_ = other.ones_;
     zeros_ = other.zeros_;
     bits_ = other.bits_;
-    tree_ = BpSupport(&bits_);
+    reset_support();
     return *this;
   }
 
@@ -69,7 +69,7 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
         ones_(other.ones_),
         zeros_(other.zeros_),
         bits_(std::move(other.bits_)) {
-    tree_ = BpSupport(&bits_);
+    reset_support();
   }
 
   SdslRmMTree& operator=(SdslRmMTree&& other) noexcept {
@@ -80,7 +80,7 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
     ones_ = other.ones_;
     zeros_ = other.zeros_;
     bits_ = std::move(other.bits_);
-    tree_ = BpSupport(&bits_);
+    reset_support();
     return *this;
   }
 
@@ -181,6 +181,8 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
   }
 
  private:
+  void reset_support() { tree_ = BpSupport(&bits_); }
+
   std::size_t size_{};
   std::size_t ones_{};
   std::size_t zeros_{};

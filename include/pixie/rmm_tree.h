@@ -116,26 +116,6 @@ class RmMTree : public RmMBase<RmMTree> {
     build_from_words(words, bit_count, leaf_block_bits, max_overhead);
   }
 
-  /**
-   * @brief Build from a vector of 64-bit words (LSB-first).
-   * @param words Vector holding bits LSB-first.
-   * @param bit_count Number of valid bits.
-   * @param leaf_block_bits Desired leaf size (power of two, 0 = auto).
-   * @param max_overhead Max allowed overhead fraction (<0 to disable
-   * constraint).
-   * @details This overload is also non-owning: the tree stores a span over
-   * @p words. The caller must keep @p words alive and immutable for the
-   * lifetime of this tree.
-   */
-  explicit RmMTree(const std::vector<std::uint64_t>& words,
-                   size_t bit_count,
-                   const size_t& leaf_block_bits /*0=auto*/ = 0,
-                   const float& max_overhead /*<0=off*/ = -1.0)
-      : RmMTree(std::span<const std::uint64_t>(words),
-                bit_count,
-                leaf_block_bits,
-                max_overhead) {}
-
   size_t size_impl() const { return num_bits; }
 
   size_t rank1_impl(std::size_t end_position) const {

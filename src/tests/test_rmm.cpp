@@ -4,10 +4,7 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cstdint>
-#include <cstdlib>
-#include <iostream>
 #include <limits>
 #include <random>
 #include <span>
@@ -103,36 +100,12 @@ static std::string random_dyck_bits(std::mt19937_64& rng, size_t m) {
   return s;
 }
 
-struct Limits {
-  size_t CASES = 20;
-  size_t OPS_PER_CASE = 600;
-  size_t MAX_N = 20000;
-};
-
-static Limits load_limits_from_env() {
-  Limits L;
-  if (const char* s = std::getenv("RMM_CASES")) {
-    L.CASES = std::max<size_t>(1, std::strtoull(s, nullptr, 10));
-  }
-  if (const char* s = std::getenv("RMM_OPS")) {
-    L.OPS_PER_CASE = std::max<size_t>(1, std::strtoull(s, nullptr, 10));
-  }
-  if (const char* s = std::getenv("RMM_MAX_N")) {
-    L.MAX_N = std::max<size_t>(1, std::strtoull(s, nullptr, 10));
-  }
-  return L;
-}
-
-static uint64_t choose_seed() {
-  if (const char* s = std::getenv("RMM_SEED")) {
-    return std::strtoull(s, nullptr, 10);
-  }
-  std::random_device rd;
-  return ((uint64_t)rd() << 32) ^ (uint64_t)rd() ^
-         (uint64_t)std::chrono::high_resolution_clock::now()
-             .time_since_epoch()
-             .count();
-}
+static constexpr uint64_t kSeed = 42;
+static constexpr size_t kRandomCases = 20;
+static constexpr size_t kOpsPerCase = 600;
+static constexpr size_t kMaxBits = 20000;
+static constexpr size_t kLongOpsPerCase = 2000;
+static constexpr size_t kLongMaxBits = 65536;
 
 static void run_case_and_compare(const std::string& bits,
                                  std::mt19937_64& rng,
@@ -143,7 +116,7 @@ static void run_case_and_compare(const std::string& bits,
   NaiveRmM nv;
   auto words = pack_words_lsb_first(bits);
   if (use_words) {
-    rm = pixie::RmMTree(words, bits.size());
+    rm = pixie::RmMTree(std::span<const std::uint64_t>(words), bits.size());
     nv = NaiveRmM(words, bits.size());
   } else {
     rm = pixie::RmMTree(std::span<const std::uint64_t>(words), bits.size());
@@ -335,36 +308,27 @@ static void run_case_and_compare(const std::string& bits,
 
 class RmMRandomTest : public ::testing::Test {
  protected:
-  uint64_t seed{};
-  std::mt19937_64 rng;
-  Limits L;
-  void SetUp() override {
-    L = load_limits_from_env();
-    seed = choose_seed();
-    rng.seed(seed);
-    std::cerr << "[ RmMRandomTest ] seed=" << seed << " CASES=" << L.CASES
-              << " OPS=" << L.OPS_PER_CASE << " MAX_N=" << L.MAX_N << "\n";
-  }
+  std::mt19937_64 rng{kSeed};
 };
 
 TEST_F(RmMRandomTest, RandomMixedBits) {
-  std::uniform_int_distribution<int> len_u(1, (int)L.MAX_N);
-  for (size_t t = 0; t < L.CASES; ++t) {
+  std::uniform_int_distribution<int> len_u(1, (int)kMaxBits);
+  for (size_t t = 0; t < kRandomCases; ++t) {
     const size_t n = (size_t)len_u(rng);
     const std::string bits = random_bits(rng, n);
-    run_case_and_compare(bits, rng, L.OPS_PER_CASE, seed);
+    run_case_and_compare(bits, rng, kOpsPerCase, kSeed);
   }
 }
 
 TEST_F(RmMRandomTest, RandomDyckBits) {
-  std::uniform_int_distribution<int> len_even(0, (int)(L.MAX_N / 2));
-  for (size_t t = 0; t < L.CASES; ++t) {
+  std::uniform_int_distribution<int> len_even(0, (int)(kMaxBits / 2));
+  for (size_t t = 0; t < kRandomCases; ++t) {
     size_t m = 1 + (size_t)len_even(rng);
     std::string bits = random_dyck_bits(rng, m);
     if (bits.empty()) {
       bits = "10";
     }
-    run_case_and_compare(bits, rng, L.OPS_PER_CASE, seed);
+    run_case_and_compare(bits, rng, kOpsPerCase, kSeed);
   }
 }
 
@@ -380,26 +344,24 @@ TEST_F(RmMRandomTest, ShortInputs) {
       {
         SCOPED_TRACE(::testing::Message()
                      << "short-inputs:string bits=" << bits);
-        run_case_and_compare(bits, rng, /*ops_per_case=*/200,
-                             /*seed=*/0xC0FFEEull);
+        run_case_and_compare(bits, rng, /*ops_per_case=*/200, kSeed);
       }
       {
         SCOPED_TRACE(::testing::Message()
                      << "short-inputs:words  bits=" << bits);
-        run_case_and_compare(bits, rng, /*ops_per_case=*/200,
-                             /*seed=*/0xC0FFEEull);
+        run_case_and_compare(bits, rng, /*ops_per_case=*/200, kSeed);
       }
     }
   }
 }
 
-static void run_case_span_vs_vector(const std::string& bits,
-                                    std::mt19937_64& rng) {
+static void run_case_repeated_span_construction(const std::string& bits,
+                                                std::mt19937_64& rng) {
   const size_t N = bits.size();
   auto span_words = pack_words_lsb_first(bits);
   pixie::RmMTree rm_s(std::span<const std::uint64_t>(span_words), N);
   auto words = pack_words_lsb_first(bits);
-  pixie::RmMTree rm_w(words, N);
+  pixie::RmMTree rm_w(std::span<const std::uint64_t>(words), N);
 
   std::uniform_int_distribution<size_t> pos_i(0, N);
   std::uniform_int_distribution<size_t> pos_i_nz(0, N ? N - 1 : 0);
@@ -491,12 +453,12 @@ static void run_case_span_vs_vector(const std::string& bits,
   }
 }
 
-TEST_F(RmMRandomTest, SpanVsVectorConstructor) {
-  std::uniform_int_distribution<int> len_u(0, (int)L.MAX_N);
-  for (size_t t = 0; t < L.CASES; ++t) {
+TEST_F(RmMRandomTest, RepeatedSpanConstruction) {
+  std::uniform_int_distribution<int> len_u(0, (int)kMaxBits);
+  for (size_t t = 0; t < kRandomCases; ++t) {
     const size_t n = (size_t)len_u(rng);
     const std::string bits = random_bits(rng, n);
-    run_case_span_vs_vector(bits, rng);
+    run_case_repeated_span_construction(bits, rng);
   }
 }
 
@@ -582,7 +544,8 @@ TEST(RmMEdgeCases, MultiwordPattern10AcrossWordBoundaries) {
   }
 
   auto words = pack_words_lsb_first(bits);
-  pixie::RmMTree rm(words, bits.size(), /*leaf_block_bits=*/256);
+  pixie::RmMTree rm(std::span<const std::uint64_t>(words), bits.size(),
+                    /*leaf_block_bits=*/256);
   NaiveRmM nv(bits);
 
   expect_rank_select_equal(rm, nv, n);
@@ -597,7 +560,8 @@ TEST(RmMEdgeCases, PartialLastLeafSelects) {
     mostly_zero[i] = '1';
   }
   auto mostly_zero_words = pack_words_lsb_first(mostly_zero);
-  pixie::RmMTree rm_select1(mostly_zero_words, mostly_zero.size(),
+  pixie::RmMTree rm_select1(std::span<const std::uint64_t>(mostly_zero_words),
+                            mostly_zero.size(),
                             /*leaf_block_bits=*/256);
   NaiveRmM nv_select1(mostly_zero);
   expect_rank_select_equal(rm_select1, nv_select1, n);
@@ -607,7 +571,8 @@ TEST(RmMEdgeCases, PartialLastLeafSelects) {
     mostly_one[i] = '0';
   }
   auto mostly_one_words = pack_words_lsb_first(mostly_one);
-  pixie::RmMTree rm_select0(mostly_one_words, mostly_one.size(),
+  pixie::RmMTree rm_select0(std::span<const std::uint64_t>(mostly_one_words),
+                            mostly_one.size(),
                             /*leaf_block_bits=*/256);
   NaiveRmM nv_select0(mostly_one);
   expect_rank_select_equal(rm_select0, nv_select0, n);
@@ -625,7 +590,8 @@ TEST(RmMEdgeCases, Select10OnIncompleteInternalNode) {
   }
 
   auto words = pack_words_lsb_first(bits);
-  pixie::RmMTree rm(words, bits.size(), leaf_block_bits);
+  pixie::RmMTree rm(std::span<const std::uint64_t>(words), bits.size(),
+                    leaf_block_bits);
   NaiveRmM nv(bits);
 
   const size_t pairs10 = nv.rank10(n);
@@ -647,7 +613,8 @@ TEST(RmMEdgeCases, InvalidArgumentsGuards) {
   }
 
   auto words = pack_words_lsb_first(bits);
-  pixie::RmMTree rm(words, bits.size(), /*leaf_block_bits=*/256);
+  pixie::RmMTree rm(std::span<const std::uint64_t>(words), bits.size(),
+                    /*leaf_block_bits=*/256);
 
   EXPECT_EQ(rm.select1(0), pixie::RmMTree::npos);
   EXPECT_EQ(rm.select0(0), pixie::RmMTree::npos);
@@ -678,16 +645,18 @@ TEST(RmMEdgeCases, InvalidArgumentsGuards) {
  * bit_count is larger than the provided words buffer.
  * Verifies that non-owning construction rejects spans that are too short.
  */
-TEST(RmMEdgeCases, WordsConstructorRejectsShortInputStorage) {
+TEST(RmMEdgeCases, SpanConstructorRejectsShortInputStorage) {
   std::vector<std::uint64_t> words = {0xAAAAAAAAAAAAAAAAull};
   const size_t bit_count = 300;
 
-  EXPECT_THROW((void)pixie::RmMTree(words, bit_count), std::invalid_argument);
+  EXPECT_THROW(
+      (void)pixie::RmMTree(std::span<const std::uint64_t>(words), bit_count),
+      std::invalid_argument);
 }
 
 /**
  * Same bitvector built through different configuration paths (auto vs explicit
- * leaf size, different overhead caps, and words-based constructor). Query
+ * leaf size and different overhead caps). Query
  * results must be identical.
  */
 TEST(RmMEdgeCases, ExplicitBuildParametersAndOverheadCap) {
@@ -697,57 +666,102 @@ TEST(RmMEdgeCases, ExplicitBuildParametersAndOverheadCap) {
   NaiveRmM nv(bits);
 
   auto words = pack_words_lsb_first(bits);
-  pixie::RmMTree rm_auto(words, n, /*leaf_block_bits=*/0,
-                         /*max_overhead=*/1.f);
-  pixie::RmMTree rm_explicit(words, n, /*leaf_block_bits=*/512,
-                             /*max_overhead=*/2.f);
-  pixie::RmMTree rm_words(words, n, /*leaf_block_bits=*/256,
-                          /*max_overhead=*/1.f);
+  const std::span<const std::uint64_t> word_span(words);
+  pixie::RmMTree rm_auto(word_span, n, 0, 1.f);
+  pixie::RmMTree rm_explicit(word_span, n, 512, 2.f);
+  pixie::RmMTree rm_span(word_span, n, 256, 1.f);
 
   expect_rank_select_equal(rm_auto, nv, n);
   expect_range_ops_equal(rm_auto, nv, n);
   expect_rank_select_equal(rm_explicit, nv, n);
   expect_range_ops_equal(rm_explicit, nv, n);
-  expect_rank_select_equal(rm_words, nv, n);
-  expect_range_ops_equal(rm_words, nv, n);
+  expect_rank_select_equal(rm_span, nv, n);
+  expect_range_ops_equal(rm_span, nv, n);
 }
 
-TEST(RmMTreeStress, LongRandom) {
-  Limits L;
-  L.OPS_PER_CASE = 2000;
-  L.MAX_N = 65536;
-
-  if (const char* s = std::getenv("RMM_CASES")) {
-    L.CASES = std::max<size_t>(1, std::strtoull(s, nullptr, 10));
+TEST(RmMEdgeCases, BoundaryHeavyQueries) {
+  constexpr size_t leaf_block_bits = 128;
+  const size_t n = 777;
+  std::string bits(n, '0');
+  for (size_t i = 0; i < n; ++i) {
+    bits[i] = (((i * 37 + i / 7) % 11) < 5) ? '1' : '0';
   }
-  if (const char* s = std::getenv("RMM_OPS")) {
-    L.OPS_PER_CASE = std::max<size_t>(1, std::strtoull(s, nullptr, 10));
-  }
-  if (const char* s = std::getenv("RMM_MAX_N")) {
-    L.MAX_N = std::max<size_t>(1, std::strtoull(s, nullptr, 10));
+  for (size_t position : {63u, 64u, 65u, 127u, 128u, 129u, 255u, 256u}) {
+    bits[position] = (position & 1u) ? '1' : '0';
   }
 
-  const uint64_t seed = choose_seed();
-  std::mt19937_64 rng(seed);
-  size_t LOG_EVERY = 5;
-  if (const char* s = std::getenv("RMM_LOG_EVERY")) {
-    size_t v = std::strtoull(s, nullptr, 10);
-    if (v) {
-      LOG_EVERY = v;
+  auto words = pack_words_lsb_first(bits);
+  pixie::RmMTree rm(std::span<const std::uint64_t>(words), n, leaf_block_bits);
+  NaiveRmM nv(bits);
+
+  for (size_t end_position : std::array<size_t, 12>{0, 1, 63, 64, 65, 127, 128,
+                                                    129, 255, 256, 512, n}) {
+    EXPECT_EQ(rm.rank1(end_position), nv.rank1(end_position));
+    EXPECT_EQ(rm.rank0(end_position), nv.rank0(end_position));
+    EXPECT_EQ(rm.rank10(end_position), nv.rank10(end_position));
+  }
+
+  const size_t ones = nv.rank1(n);
+  const size_t zeros = n - ones;
+  const size_t pairs10 = nv.rank10(n);
+  for (size_t rank : std::array<size_t, 7>{1, 2, 7, 31, 64, ones, ones + 1}) {
+    EXPECT_EQ(rm.select1(rank), nv.select1(rank)) << "select1 rank=" << rank;
+  }
+  for (size_t rank : std::array<size_t, 7>{1, 2, 7, 31, 64, zeros, zeros + 1}) {
+    EXPECT_EQ(rm.select0(rank), nv.select0(rank)) << "select0 rank=" << rank;
+  }
+  for (size_t rank :
+       std::array<size_t, 7>{1, 2, 7, 31, 64, pairs10, pairs10 + 1}) {
+    EXPECT_EQ(rm.select10(rank), nv.select10(rank)) << "select10 rank=" << rank;
+  }
+
+  for (auto [left, right] :
+       std::array<std::pair<size_t, size_t>, 10>{{{0, 0},
+                                                  {57, 75},
+                                                  {63, 130},
+                                                  {120, 260},
+                                                  {128, 511},
+                                                  {129, 511},
+                                                  {250, 520},
+                                                  {512, n - 1},
+                                                  {0, n - 1},
+                                                  {n - 9, n - 1}}}) {
+    EXPECT_EQ(rm.range_min_query_pos(left, right),
+              nv.range_min_query_pos(left, right));
+    EXPECT_EQ(rm.range_min_query_val(left, right),
+              nv.range_min_query_val(left, right));
+    EXPECT_EQ(rm.range_max_query_pos(left, right),
+              nv.range_max_query_pos(left, right));
+    EXPECT_EQ(rm.range_max_query_val(left, right),
+              nv.range_max_query_val(left, right));
+
+    const size_t count = nv.mincount(left, right);
+    EXPECT_EQ(rm.mincount(left, right), count);
+    EXPECT_EQ(rm.minselect(left, right, 1), nv.minselect(left, right, 1));
+    EXPECT_EQ(rm.minselect(left, right, count),
+              nv.minselect(left, right, count));
+    EXPECT_EQ(rm.minselect(left, right, count + 1),
+              nv.minselect(left, right, count + 1));
+  }
+
+  for (size_t position : std::array<size_t, 12>{0, 1, 63, 64, 65, 127, 128, 129,
+                                                255, 256, 512, n - 1}) {
+    for (int delta : {-40, -9, -8, -2, -1, 0, 1, 2, 8, 9, 40}) {
+      EXPECT_EQ(rm.fwdsearch(position, delta), nv.fwdsearch(position, delta))
+          << "fwdsearch position=" << position << " delta=" << delta;
+      EXPECT_EQ(rm.bwdsearch(position + 1, delta),
+                nv.bwdsearch(position + 1, delta))
+          << "bwdsearch position=" << (position + 1) << " delta=" << delta;
     }
   }
+}
 
-  std::cerr << "[ LongRandom ] seed=" << seed << " CASES=" << L.CASES
-            << " OPS=" << L.OPS_PER_CASE << " MAX_N=" << L.MAX_N
-            << " LOG_EVERY=" << LOG_EVERY << "\n";
-
+TEST_F(RmMRandomTest, LongRandom) {
   std::uniform_int_distribution<int> coin(0, 1);
-  std::uniform_int_distribution<int> len_u(1, (int)L.MAX_N);
-  std::uniform_int_distribution<int> len_even(0, (int)(L.MAX_N / 2));
+  std::uniform_int_distribution<int> len_u(1, (int)kLongMaxBits);
+  std::uniform_int_distribution<int> len_even(0, (int)(kLongMaxBits / 2));
 
-  size_t total_ops = 0;
-
-  for (size_t iter = 1; iter <= L.CASES; ++iter) {
+  for (size_t iter = 0; iter < kRandomCases; ++iter) {
     std::string bits;
     if (coin(rng) == 0) {
       bits = random_bits(rng, (size_t)len_u(rng));
@@ -759,19 +773,13 @@ TEST(RmMTreeStress, LongRandom) {
       }
     }
 
-    run_case_and_compare(bits, rng, L.OPS_PER_CASE, seed);
-    total_ops += L.OPS_PER_CASE;
-
-    if (iter % LOG_EVERY == 0) {
-      std::cerr << "[ LongRandom ] iter=" << iter << " total_ops=" << total_ops
-                << " last_N=" << bits.size() << " ok\n";
-    }
+    run_case_and_compare(bits, rng, kLongOpsPerCase, kSeed);
   }
 }
 
 TEST(RmMTest, RankBasic) {
   std::vector<std::uint64_t> bits = {0b10110};
-  pixie::RmMTree rm(bits, 5);
+  pixie::RmMTree rm(std::span<const std::uint64_t>(bits), 5);
 
   EXPECT_EQ(rm.rank1(0), 0);  // No bits
   EXPECT_EQ(rm.rank1(1), 0);  // 0
@@ -783,7 +791,7 @@ TEST(RmMTest, RankBasic) {
 
 TEST(RmMTest, RankWithZeros) {
   std::vector<std::uint64_t> bits = {0};
-  pixie::RmMTree rm(bits, 5);
+  pixie::RmMTree rm(std::span<const std::uint64_t>(bits), 5);
 
   for (size_t i = 0; i <= 5; i++) {
     EXPECT_EQ(rm.rank1(i), 0);
@@ -792,7 +800,7 @@ TEST(RmMTest, RankWithZeros) {
 
 TEST(RmMTest, SelectBasic) {
   std::vector<std::uint64_t> bits = {0b1100010110010110};
-  pixie::RmMTree rm(bits, 16);
+  pixie::RmMTree rm(std::span<const std::uint64_t>(bits), 16);
 
   EXPECT_EQ(rm.select1(1), 1);
   EXPECT_EQ(rm.select1(2), 2);
@@ -812,7 +820,7 @@ TEST(RmMTest, MainRankTest) {
   }
 
   size_t rm_size = 65536 * 32 * 64;
-  pixie::RmMTree rm(bits, rm_size);
+  pixie::RmMTree rm(std::span<const std::uint64_t>(bits), rm_size);
   size_t rank = 0;
   for (size_t i = 0; i < rm_size; ++i) {
     ASSERT_EQ(rank, rm.rank1(i));
@@ -828,7 +836,7 @@ TEST(RmMTest, MainSelectTest) {
   }
 
   size_t rm_size = 65536 * 32 * 64;
-  pixie::RmMTree rm(bits, rm_size);
+  pixie::RmMTree rm(std::span<const std::uint64_t>(bits), rm_size);
   size_t rank = 0;
 
   for (size_t i = 0; i < rm_size; ++i) {
