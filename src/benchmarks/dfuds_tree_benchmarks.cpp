@@ -5,9 +5,8 @@
 #include <random>
 
 using Node = pixie::DFUDSTree::Node;
-using pixie::DFUDSTree;
 using pixie::adj_to_dfuds;
-
+using pixie::DFUDSTree;
 
 /**
  * DFS with O(1) extra memory

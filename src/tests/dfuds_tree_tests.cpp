@@ -7,8 +7,8 @@
 #include <stack>
 
 using Node = pixie::DFUDSTree::Node;
-using pixie::DFUDSTree;
 using pixie::adj_to_dfuds;
+using pixie::DFUDSTree;
 
 TEST(DfudsTreeTest, Basic) {
   std::vector<std::vector<size_t>> adj = {{0, 1}, {0, 2}, {1, 3}, {2, 4}, {3}};
