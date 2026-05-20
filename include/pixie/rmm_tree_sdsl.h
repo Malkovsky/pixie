@@ -28,9 +28,10 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
               std::size_t bit_count,
               std::size_t) {
     size_ = bit_count;
-    for (std::size_t i = 0; i < words.size(); ++i) {
+    const std::size_t valid_words = (bit_count + 63) / 64;
+    for (std::size_t i = 0; i < valid_words; ++i) {
       std::uint64_t word = words[i];
-      if (i + 1 == words.size() && (bit_count & 63) != 0) {
+      if (i + 1 == valid_words && (bit_count & 63) != 0) {
         word &= (std::uint64_t{1} << (bit_count & 63)) - 1;
       }
       ones_ += std::popcount(word);
@@ -121,7 +122,21 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
     return tree_.excess(std::min(end_position, size_) - 1);
   }
 
-  std::size_t fwdsearch_impl(std::size_t, int) const { return npos; }
+  std::size_t fwdsearch_impl(std::size_t start_position, int delta) const {
+    if (start_position >= size_) {
+      return npos;
+    }
+    std::int64_t current = excess_impl(start_position);
+    const std::int64_t target = current + delta;
+    for (std::size_t position = start_position; position < size_; ++position) {
+      current += bits_[position] ? 1 : -1;
+      if (current == target) {
+        return position;
+      }
+    }
+    return npos;
+  }
+
   std::size_t bwdsearch_impl(std::size_t, int) const { return npos; }
 
   std::size_t range_min_query_pos_impl(std::size_t range_begin,
@@ -162,22 +177,18 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
     return tree_.find_close(open_position);
   }
 
-  std::size_t open_impl(std::size_t close_position_one_based) const {
+  std::size_t open_impl(std::size_t close_position) const {
     if (size_ == 0) {
       return 0;
     }
-    const std::size_t close_position_zero_based =
-        close_position_one_based > 0 ? close_position_one_based - 1 : 0;
-    return tree_.find_open(close_position_zero_based);
+    return tree_.find_open(close_position);
   }
 
-  std::size_t enclose_impl(std::size_t open_position_one_based) const {
+  std::size_t enclose_impl(std::size_t open_position) const {
     if (size_ == 0) {
       return 0;
     }
-    const std::size_t open_position_zero_based =
-        open_position_one_based > 0 ? open_position_one_based - 1 : 0;
-    return tree_.enclose(open_position_zero_based);
+    return tree_.enclose(open_position);
   }
 
  private:

@@ -928,6 +928,8 @@ class RmMTree : public RmMBase<RmMTree> {
   /**
    * @brief close_impl(@p open_position): matching ')' for '(' at @p
    * open_position.
+   * @todo This method still uses the older boundary-adjusted search convention;
+   * align it with SDSL-style zero-based parenthesis indexing.
    * @return Position of matching ')', or npos.
    */
   inline size_t close_impl(const size_t& open_position) const {
@@ -940,6 +942,8 @@ class RmMTree : public RmMBase<RmMTree> {
   /**
    * @brief open_impl(@p close_position): matching '(' for ')' at @p
    * close_position.
+   * @todo This method still uses the older boundary-adjusted search convention;
+   * align it with SDSL-style zero-based parenthesis indexing.
    * @return Position of matching '(', or npos.
    */
   inline size_t open_impl(const size_t& close_position) const {
@@ -954,6 +958,8 @@ class RmMTree : public RmMBase<RmMTree> {
   /**
    * @brief enclose_impl(@p position): opening '(' that strictly encloses @p
    * position.
+   * @todo This method still uses the older boundary-adjusted search convention;
+   * align it with SDSL-style zero-based parenthesis indexing.
    * @return Position of enclosing '(', or npos.
    */
   inline size_t enclose_impl(const size_t& position) const {

@@ -152,6 +152,10 @@ if(PIXIE_TESTS)
         gtest
         gtest_main
         ${PIXIE_DIAGNOSTICS_LIBS})
+    if(PIXIE_THIRD_PARTY_BACKENDS)
+        target_include_directories(test_rmm
+            PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
+    endif()
 
     add_executable(louds_tree_tests
         src/tests/louds_tree_tests.cpp)

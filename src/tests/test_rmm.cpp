@@ -100,6 +100,63 @@ static std::string random_dyck_bits(std::mt19937_64& rng, size_t m) {
   return s;
 }
 
+static size_t sdsl_style_close_ref(const std::string& bits, size_t position) {
+  if (position >= bits.size()) {
+    return NaiveRmM::npos;
+  }
+  if (bits[position] == '0') {
+    return position;
+  }
+  int balance = 1;
+  for (size_t i = position + 1; i < bits.size(); ++i) {
+    balance += bits[i] == '1' ? 1 : -1;
+    if (balance == 0) {
+      return i;
+    }
+  }
+  return NaiveRmM::npos;
+}
+
+static size_t sdsl_style_open_ref(const std::string& bits, size_t position) {
+  if (position >= bits.size()) {
+    return NaiveRmM::npos;
+  }
+  if (bits[position] == '1') {
+    return position;
+  }
+  int balance = 0;
+  for (size_t i = position + 1; i > 0;) {
+    --i;
+    balance += bits[i] == '0' ? 1 : -1;
+    if (balance == 0 && bits[i] == '1') {
+      return i;
+    }
+  }
+  return NaiveRmM::npos;
+}
+
+static size_t sdsl_style_enclose_ref(const std::string& bits, size_t position) {
+  if (position >= bits.size()) {
+    return NaiveRmM::npos;
+  }
+  if (bits[position] == '0') {
+    return sdsl_style_open_ref(bits, position);
+  }
+  std::vector<size_t> stack;
+  stack.reserve(position + 1);
+  for (size_t i = 0; i <= position; ++i) {
+    if (bits[i] == '1') {
+      if (i == position) {
+        return stack.empty() ? NaiveRmM::npos : stack.back();
+      }
+      stack.push_back(i);
+    } else if (!stack.empty()) {
+      stack.pop_back();
+    }
+  }
+  return NaiveRmM::npos;
+}
+
 static constexpr uint64_t kSeed = 42;
 static constexpr size_t kRandomCases = 20;
 static constexpr size_t kOpsPerCase = 600;
@@ -653,6 +710,23 @@ TEST(RmMEdgeCases, SpanConstructorRejectsShortInputStorage) {
       (void)pixie::RmMTree(std::span<const std::uint64_t>(words), bit_count),
       std::invalid_argument);
 }
+
+#ifdef SDSL_SUPPORT
+TEST(RmMSdslEdgeCases, IgnoresWordsBeyondBitCount) {
+  std::vector<std::uint64_t> words = {
+      0b101ull, std::numeric_limits<std::uint64_t>::max()};
+  pixie::SdslRmMTree rm(std::span<const std::uint64_t>(words),
+                        /*bit_count=*/3,
+                        /*unused=*/0);
+
+  EXPECT_EQ(rm.size(), 3u);
+  EXPECT_EQ(rm.rank1(3), 2u);
+  EXPECT_EQ(rm.rank0(3), 1u);
+  EXPECT_EQ(rm.select1(1), 0u);
+  EXPECT_EQ(rm.select1(2), 2u);
+  EXPECT_EQ(rm.select1(3), pixie::SdslRmMTree::npos);
+}
+#endif
 
 /**
  * Same bitvector built through different configuration paths (auto vs explicit

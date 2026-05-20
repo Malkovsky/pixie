@@ -40,6 +40,7 @@ struct RmMBenchmarkPools {
   std::vector<std::size_t> rank10_end_positions;
   std::vector<std::size_t> open_positions_zero_based;
   std::vector<std::size_t> open_positions_one_based;
+  std::vector<std::size_t> close_positions_zero_based;
   std::vector<std::size_t> close_positions_one_based;
   std::vector<std::size_t> inds;
   std::vector<std::size_t> inds_1N;
@@ -451,16 +452,19 @@ class RmMBenchmark {
 
     std::vector<std::size_t> open_positions_zero_based;
     std::vector<std::size_t> open_positions_one_based;
+    std::vector<std::size_t> close_positions_zero_based;
     std::vector<std::size_t> close_positions_one_based;
     if (need_open_positions || need_close_positions) {
       open_positions_zero_based.reserve(N >> 1);
       open_positions_one_based.reserve(N >> 1);
+      close_positions_zero_based.reserve(N >> 1);
       close_positions_one_based.reserve(N >> 1);
       for (std::size_t i = 0; i < N; ++i) {
         if (data.bits[i] == '1') {
           open_positions_zero_based.push_back(i);
           open_positions_one_based.push_back(i + 1);
         } else {
+          close_positions_zero_based.push_back(i);
           close_positions_one_based.push_back(i + 1);
         }
       }
@@ -557,8 +561,8 @@ class RmMBenchmark {
                            one_based_fallback);
     }
     if (ActiveOp("open")) {
-      fill_from_candidates(close_positions_one_based,
-                           data.pool.close_positions_one_based,
+      fill_from_candidates(close_positions_zero_based,
+                           data.pool.close_positions_zero_based,
                            one_based_fallback);
     }
 
@@ -727,19 +731,19 @@ class RmMBenchmark {
       RegisterOp(
           "open", data, [](const Dataset& dataset, std::size_t sample_index) {
             const auto& pool = dataset.pool;
-            const std::size_t close_position_one_based =
-                pool.close_positions_one_based
-                    [sample_index % pool.close_positions_one_based.size()];
-            return dataset.tree.open(close_position_one_based);
+            const std::size_t close_position =
+                pool.close_positions_zero_based
+                    [sample_index % pool.close_positions_zero_based.size()];
+            return dataset.tree.open(close_position);
           });
       RegisterOp(
           "enclose", data,
           [](const Dataset& dataset, std::size_t sample_index) {
             const auto& pool = dataset.pool;
-            const std::size_t open_position_one_based =
-                pool.open_positions_one_based
-                    [sample_index % pool.open_positions_one_based.size()];
-            return dataset.tree.enclose(open_position_one_based);
+            const std::size_t open_position =
+                pool.open_positions_zero_based
+                    [sample_index % pool.open_positions_zero_based.size()];
+            return dataset.tree.enclose(open_position);
           });
     }
   }
