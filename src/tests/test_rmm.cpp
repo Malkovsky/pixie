@@ -726,6 +726,21 @@ TEST(RmMSdslEdgeCases, IgnoresWordsBeyondBitCount) {
   EXPECT_EQ(rm.select1(2), 2u);
   EXPECT_EQ(rm.select1(3), pixie::SdslRmMTree::npos);
 }
+
+TEST(RmMSdslEdgeCases, ParenthesesNavigationMatchesSdslStyleRefs) {
+  const std::string bits = "11101001011000";
+  auto words = pack_words_lsb_first(bits);
+  pixie::SdslRmMTree rm(std::span<const std::uint64_t>(words), bits.size(),
+                        /*unused=*/0);
+
+  for (size_t position = 0; position < bits.size(); ++position) {
+    SCOPED_TRACE(::testing::Message()
+                 << "position=" << position << " bits=" << bits);
+    EXPECT_EQ(rm.close(position), sdsl_style_close_ref(bits, position));
+    EXPECT_EQ(rm.open(position), sdsl_style_open_ref(bits, position));
+    EXPECT_EQ(rm.enclose(position), sdsl_style_enclose_ref(bits, position));
+  }
+}
 #endif
 
 /**
