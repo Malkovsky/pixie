@@ -51,7 +51,7 @@ cmake -B build/release -DCMAKE_BUILD_TYPE=Release
 cmake --build build/release -j
 ```
 
-Tests are enabled by default (`PIXIE_TESTS=ON`). Benchmarks are opt-in; enable with `-DPIXIE_BENCHMARKS=ON` or configure with the `benchmarks-all` preset, you can use `benchmark-diagnostic` preset for performance diagnostics (Release with debug info + performance counters support). 
+Tests are enabled by default (`PIXIE_TESTS=ON`). Benchmarks are opt-in; enable with `-DPIXIE_BENCHMARKS=ON` or configure with the `benchmarks-all` preset. Use `benchmarks-third-party` for comparison backends such as sdsl-lite, and `benchmarks-diagnostic` for performance diagnostics (Release with debug info + performance counters support).
 
 ---
 
@@ -114,20 +114,57 @@ Benchmarks are random 50/50 0-1 bitvectors up to $2^{34}$ bits.
 ./build/release/benchmarks
 ```
 
+Write JSON and plot size-scaled benchmark curves with a log-scaled x-axis:
+
+```sh
+./build/release/benchmarks --benchmark_out=bitvector_bench.json --benchmark_out_format=json
+python3 scripts/plot_size_benchmarks.py bitvector_bench.json -o graphs/bitvector_size.png --size-key n
+```
+
+### Excess Positions
+
+```sh
+./build/release/excess_positions_benchmarks --benchmark_out=excess_positions.json --benchmark_out_format=json
+python3 scripts/excess_benchmark_table.py excess_positions.json -o src/docs/excess_positions_benchmark_results.md
+```
+
+Generated benchmark documentation can be written to `src/docs/benchmark_results.md`;
+the documentation pipeline does not run benchmarks.
+
 ### RmM Tree
 
 ```sh
 ./build/release/bench_rmm
 ```
 
-For comparison with range min-max tree implementation from [sdsl-lite](https://github.com/simongog/sdsl-lite) (Release build required; use the release preset or `-DCMAKE_BUILD_TYPE=Release`):
+For focused runs, `bench_rmm` accepts `--ops` with a comma-separated operation list. The benchmark harness only builds the query pools needed by the selected operations, so subset runs avoid much of the setup cost:
 
-```bash
-sudo cpupower frequency-set --governor performance
-./build/release/bench_rmm_sdsl --benchmark_out=rmm_bench_sdsl.json
+```sh
+./build/release/bench_rmm --ops=rank1,select1 --benchmark_out=rmm_rank_select.json --benchmark_out_format=json
 ```
 
-For visualization, write the JSON output to a file using `--benchmark_out=<file>` (e.g. `./build/release/bench_rmm --benchmark_out=rmm_bench.json`) and plot it with `scripts/plot_rmm.py` (add `--sdsl-json rmm_bench_sdsl.json` for comparison).
+By default, RmM benchmarks step through sizes by powers of two. Use `--per_octave=<n>` for finer sampling between adjacent powers of two, or `--explicit_sizes=<csv>` for an exact size list.
+
+Google Benchmark filters are also used to limit RmM setup when `--ops` is not provided:
+
+```sh
+./build/release/bench_rmm --benchmark_filter='^rank1$' --benchmark_out=rmm_rank1.json --benchmark_out_format=json
+```
+
+For comparison with range min-max tree implementation from [sdsl-lite](https://github.com/simongog/sdsl-lite), use the third-party benchmark preset. This defines `SDSL_SUPPORT` and builds `bench_rmm_sdsl`:
+
+```bash
+cmake --preset benchmarks-third-party
+cmake --build --preset benchmarks-third-party
+sudo cpupower frequency-set --governor performance
+./build/release-third-party/bench_rmm_sdsl --benchmark_out=rmm_bench_sdsl.json
+```
+
+For visualization, write the JSON output to a file using `--benchmark_out=<file>` (e.g. `./build/release/bench_rmm --benchmark_out=rmm_bench.json`) and plot it with `scripts/plot_rmm.py` (add `--sdsl-json rmm_bench_sdsl.json` for per-operation sdsl-lite comparison plots). For size-scaled tree plots, use:
+
+```sh
+python3 scripts/plot_size_benchmarks.py rmm_bench.json -o graphs/rmm_size.png --size-key N
+```
 
 ---
 
@@ -152,8 +189,10 @@ int main() {
 
 ```cpp
 #include <pixie/rmm_tree.h>
-#include <string>
+#include <cstdint>
 #include <iostream>
+#include <string>
+#include <vector>
 
 using namespace pixie;
 
@@ -166,7 +205,15 @@ int main() {
     // └─ C
     //    └─ c1
     std::string bits = "11101001011000";
-    RmMTree t(bits);
+    std::vector<std::uint64_t> words((bits.size() + 63) / 64);
+    for (std::size_t i = 0; i < bits.size(); ++i) {
+        if (bits[i] == '1') {
+            words[i / 64] |= std::uint64_t{1} << (i % 64);
+        }
+    }
+
+    // RmMTree is non-owning: keep words alive and immutable while using t.
+    RmMTree t(words, bits.size());
 
     std::cout << "close(1): " << t.close(1) << "\n";     // expected 6 (A)
     std::cout << "open(3): " << t.open(3) << "\n";       // expected 2 (a1)

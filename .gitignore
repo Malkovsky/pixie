@@ -19,3 +19,6 @@ academic/**/*.blg
 academic/**/*.log
 academic/**/*.out
 academic/**/*.run.xml
+
+# AI
+.kilo/plans/*
