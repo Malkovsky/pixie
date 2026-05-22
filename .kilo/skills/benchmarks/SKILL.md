@@ -56,6 +56,18 @@ cmake --build build/benchmarks-diagnostic_${BUILD_SUFFIX} --config RelWithDebInf
 
 Prefer running benchmarks with filtering passing the benchmarks that should be affected.
 
+Unless the user explicitly asks otherwise, pin benchmark execution to one CPU with
+`taskset` to reduce scheduler noise. Use CPU 0 by default, or override with
+`BENCH_CPU=<id>` when a better isolated/performance core is known:
+
+```bash
+BENCH_CPU=${BENCH_CPU:-0}
+BENCH_RUN="taskset -c ${BENCH_CPU}"
+```
+
+If `taskset` is unavailable or fails on the host, report that benchmark results
+are unpinned and more noisy.
+
 Execution guardrails:
 - Run benchmark commands sequentially in CI.
 - Avoid background jobs (`nohup`, `&`) for benchmark collection.
@@ -82,10 +94,10 @@ Binary paths vary by generator type:
 
 ```bash
 # Multi-config (MSVC/Xcode)
-build/benchmarks_${BUILD_SUFFIX}/Release/benchmarks
+${BENCH_RUN} build/benchmarks_${BUILD_SUFFIX}/Release/benchmarks
 
 # Single-config (Ninja/Make)
-build/benchmarks_${BUILD_SUFFIX}/benchmarks
+${BENCH_RUN} build/benchmarks_${BUILD_SUFFIX}/benchmarks
 ```
 
 ### Filter benchmarks with a regex (FILTER parameter)
@@ -94,10 +106,10 @@ build/benchmarks_${BUILD_SUFFIX}/benchmarks
 FILTER="BM_Rank"   # change to match benchmark names, e.g. "BM_Select", "BM_Louds", ""
 
 # Multi-config
-build/benchmarks_${BUILD_SUFFIX}/Release/benchmarks --benchmark_filter="${FILTER}"
+${BENCH_RUN} build/benchmarks_${BUILD_SUFFIX}/Release/benchmarks --benchmark_filter="${FILTER}"
 
 # Single-config
-build/benchmarks_${BUILD_SUFFIX}/benchmarks --benchmark_filter="${FILTER}"
+${BENCH_RUN} build/benchmarks_${BUILD_SUFFIX}/benchmarks --benchmark_filter="${FILTER}"
 ```
 
 Examples:
@@ -117,7 +129,7 @@ Examples:
 The `--benchmark_perf_counters` flag requests hardware counter collection via libpfm. Counter names are platform-specific but common ones include `CYCLES`, `INSTRUCTIONS`, `CACHE-MISSES`, `CACHE-REFERENCES`, `BRANCH-MISSES`, `BRANCH-INSTRUCTIONS`.
 
 ```bash
-build/benchmarks-diagnostic_${BUILD_SUFFIX}/RelWithDebInfo/benchmarks \
+${BENCH_RUN} build/benchmarks-diagnostic_${BUILD_SUFFIX}/RelWithDebInfo/benchmarks \
   --benchmark_filter="${FILTER}" \
   --benchmark_perf_counters=CYCLES,INSTRUCTIONS,CACHE-MISSES \
   --benchmark_counters_tabular=true
@@ -126,7 +138,7 @@ build/benchmarks-diagnostic_${BUILD_SUFFIX}/RelWithDebInfo/benchmarks \
 ### Save results to file
 
 ```bash
-build/benchmarks_${BUILD_SUFFIX}/Release/benchmarks \
+${BENCH_RUN} build/benchmarks_${BUILD_SUFFIX}/Release/benchmarks \
   --benchmark_filter="${FILTER}" \
   --benchmark_report_aggregates_only=true \
   --benchmark_display_aggregates_only=true \
@@ -146,7 +158,7 @@ Use when hardware counters alone are not enough and you need a full call-graph p
 **Record:**
 ```bash
 perf record -g -F 999 \
-  build/benchmarks-diagnostic_${BUILD_SUFFIX}/benchmarks \
+  -- ${BENCH_RUN} build/benchmarks-diagnostic_${BUILD_SUFFIX}/benchmarks \
   --benchmark_filter="${FILTER}" \
   --benchmark_min_time=5s
 ```
@@ -187,9 +199,10 @@ perf script -F +pid > perf.data.txt
 2. **Use benchmarks for clean timing**: Release optimizations, no debug info, no libpfm overhead
 3. **Use benchmarks-diagnostic for hardware counters**: RelWithDebInfo + libpfm; Linux only
 4. **Use perf for deep profiling**: when counters point to a hotspot but don't explain it
-5. **Pin CPU frequency** before timing runs: `sudo cpupower frequency-set -g performance`
-6. **Filter to reduce noise**: narrow the filter regex to the benchmark under investigation
-7. **Save JSON output** when comparing before/after changes: use `--benchmark_out` and diff the files
-8. **Fail fast on environment issues**: precheck Python deps used by compare tooling (`numpy`, `scipy`)
-9. **Use explicit retry limits**: on timeout, narrow scope and retry once; avoid repeated full-suite attempts
-10. **Preflight perf counters**: run a tiny counter-enabled benchmark first; if counters unavailable, skip counter workflow
+5. **Pin benchmark process** with `taskset -c ${BENCH_CPU:-0}` unless unavailable
+6. **Pin CPU frequency** before timing runs: `sudo cpupower frequency-set -g performance`
+7. **Filter to reduce noise**: narrow the filter regex to the benchmark under investigation
+8. **Save JSON output** when comparing before/after changes: use `--benchmark_out` and diff the files
+9. **Fail fast on environment issues**: precheck Python deps used by compare tooling (`numpy`, `scipy`)
+10. **Use explicit retry limits**: on timeout, narrow scope and retry once; avoid repeated full-suite attempts
+11. **Preflight perf counters**: run a tiny counter-enabled benchmark first; if counters unavailable, skip counter workflow

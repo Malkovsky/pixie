@@ -324,6 +324,35 @@ TEST(BitVectorTest, SelectZeroBasic) {
   EXPECT_EQ(bv.select0(8), 13);
 }
 
+TEST(BitVectorTest, ExactShortSpanRankSelect) {
+  std::vector<uint64_t> bits = {0b1100010110010110};
+  BitVector bv(bits, 16);
+
+  EXPECT_EQ(bv.rank(16), 8);
+  EXPECT_EQ(bv.rank0(16), 8);
+  EXPECT_EQ(bv.select(1), 1);
+  EXPECT_EQ(bv.select(8), 15);
+  EXPECT_EQ(bv.select(9), bv.size());
+  EXPECT_EQ(bv.select0(1), 0);
+  EXPECT_EQ(bv.select0(8), 13);
+  EXPECT_EQ(bv.select0(9), bv.size());
+}
+
+TEST(BitVectorTest, IgnoresDirtyPaddingAndTrailingWords) {
+  std::vector<uint64_t> bits = {~uint64_t{0}, ~uint64_t{0}};
+  BitVector bv(bits, 3);
+
+  EXPECT_EQ(bv.size(), 3);
+  EXPECT_EQ(bv.rank(3), 3);
+  EXPECT_EQ(bv.rank(128), 3);
+  EXPECT_EQ(bv.rank0(3), 0);
+  EXPECT_EQ(bv.rank0(128), 0);
+  EXPECT_EQ(bv.select(1), 0);
+  EXPECT_EQ(bv.select(3), 2);
+  EXPECT_EQ(bv.select(4), bv.size());
+  EXPECT_EQ(bv.select0(1), bv.size());
+}
+
 TEST(BitVectorTest, MainRankZeroTest) {
   std::mt19937_64 rng(42);
   std::vector<uint64_t> bits(65536 * 32);

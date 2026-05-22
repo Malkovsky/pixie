@@ -99,16 +99,18 @@ python3 -c "import numpy, scipy"
 
 Generate baseline/contender JSON sequentially with explicit file outputs:
 ```bash
+BENCH_CPU=${BENCH_CPU:-0}
+BENCH_RUN="taskset -c ${BENCH_CPU}"
 BASE_JSON=/tmp/bench_${BASELINE}.json
 CONT_JSON=/tmp/bench_${CONTENDER}.json
 
-build/benchmarks-all_bench_${BASELINE}/benchmarks \
+${BENCH_RUN} build/benchmarks-all_bench_${BASELINE}/benchmarks \
   --benchmark_report_aggregates_only=true \
   --benchmark_display_aggregates_only=true \
   --benchmark_format=json \
   --benchmark_out=${BASE_JSON} > /tmp/bench_${BASELINE}.log 2>&1
 
-build/benchmarks-all_bench_${CONTENDER}/benchmarks \
+${BENCH_RUN} build/benchmarks-all_bench_${CONTENDER}/benchmarks \
   --benchmark_report_aggregates_only=true \
   --benchmark_display_aggregates_only=true \
   --benchmark_format=json \
@@ -134,8 +136,8 @@ else
   FILTER_ARG=""
 fi
 
-build/benchmarks-all_bench_${BASELINE}/benchmarks ${FILTER_ARG} --benchmark_report_aggregates_only=true --benchmark_display_aggregates_only=true ...
-build/benchmarks-all_bench_${CONTENDER}/benchmarks ${FILTER_ARG} --benchmark_report_aggregates_only=true --benchmark_display_aggregates_only=true ...
+${BENCH_RUN} build/benchmarks-all_bench_${BASELINE}/benchmarks ${FILTER_ARG} --benchmark_report_aggregates_only=true --benchmark_display_aggregates_only=true ...
+${BENCH_RUN} build/benchmarks-all_bench_${CONTENDER}/benchmarks ${FILTER_ARG} --benchmark_report_aggregates_only=true --benchmark_display_aggregates_only=true ...
 ```
 
 ## Step 3b — Compare hardware counters (optional, Linux only)
@@ -149,13 +151,13 @@ Run this step only when `COLLECT_COUNTERS=1`.
 BASE_COUNTERS_JSON=/tmp/bench_counters_${BASELINE}.json
 CONT_COUNTERS_JSON=/tmp/bench_counters_${CONTENDER}.json
 
-build/benchmarks-diagnostic_bench_${BASELINE}/benchmarks \
+${BENCH_RUN} build/benchmarks-diagnostic_bench_${BASELINE}/benchmarks \
   ${FILTER_ARG} \
   --benchmark_counters_tabular=true \
   --benchmark_format=json \
   --benchmark_out=${BASE_COUNTERS_JSON} > /tmp/bench_counters_${BASELINE}.log 2>&1
 
-build/benchmarks-diagnostic_bench_${CONTENDER}/benchmarks \
+${BENCH_RUN} build/benchmarks-diagnostic_bench_${CONTENDER}/benchmarks \
   ${FILTER_ARG} \
   --benchmark_counters_tabular=true \
   --benchmark_format=json \
@@ -217,7 +219,7 @@ Capture and return:
 2. **Short hash suffixes**: keep build dirs isolated per revision (example: `bench_<short-hash>`).
 3. **Same host, same conditions**: do not compare across different machines or power profiles.
 4. **Filter from analysis**: use `benchmarks-affected` output instead of hand-crafted filters whenever possible.
-5. **Pin frequency**: for stable numbers, follow benchmark skill guidance on CPU governor.
+5. **Pin process and frequency**: use `taskset -c ${BENCH_CPU:-0}` for all benchmark executions and follow benchmark skill guidance on CPU governor.
 6. **Counter collection is optional and Linux-only**: when unavailable, return timing-only outputs with `counters_available=false`.
 7. **Always preflight counters**: do not run full counter collection if preflight fails.
 8. **Keep build types separated**: timing uses `benchmarks-all_*` Release builds; counters use `benchmarks-diagnostic_*` RelWithDebInfo builds; never Debug.

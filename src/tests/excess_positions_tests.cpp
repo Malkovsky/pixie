@@ -35,6 +35,78 @@ static void naive_excess_positions_512(const uint64_t* s,
   }
 }
 
+static int naive_excess_positions_128(const uint64_t* s,
+                                      int target_x,
+                                      uint64_t* out) {
+  out[0] = out[1] = 0;
+  const int block_excess =
+      2 * (std::popcount(s[0]) + std::popcount(s[1])) - 128;
+  if (target_x < -128 || target_x > 128) {
+    return block_excess;
+  }
+  int cur = 0;
+  for (size_t i = 0; i < 128; ++i) {
+    const uint64_t w = s[i >> 6];
+    const int bit = int((w >> (i & 63)) & 1ull);
+    cur += bit ? +1 : -1;
+    if (cur == target_x) {
+      out[i >> 6] |= (uint64_t{1} << (i & 63));
+    }
+  }
+  return block_excess;
+}
+
+static int naive_prefix_excess_128(const uint64_t* s, size_t end_offset) {
+  end_offset = std::min<size_t>(end_offset, 128);
+  int cur = 0;
+  for (size_t i = 0; i < end_offset; ++i) {
+    const uint64_t w = s[i >> 6];
+    const int bit = int((w >> (i & 63)) & 1ull);
+    cur += bit ? +1 : -1;
+  }
+  return cur;
+}
+
+static size_t naive_forward_search_128(const uint64_t* s,
+                                       int target_x,
+                                       size_t start_offset) {
+  if (start_offset >= 128) {
+    return 128;
+  }
+  int cur = 0;
+  for (size_t i = 0; i < 128; ++i) {
+    const uint64_t w = s[i >> 6];
+    const int bit = int((w >> (i & 63)) & 1ull);
+    cur += bit ? +1 : -1;
+    if (i >= start_offset && cur == target_x) {
+      return i;
+    }
+  }
+  return 128;
+}
+
+static size_t naive_backward_search_128(const uint64_t* s,
+                                        int target_x,
+                                        size_t end_offset) {
+  if (end_offset == 0) {
+    return 128;
+  }
+  const size_t max_prefix_length = end_offset - 1;
+  for (size_t prefix_length = max_prefix_length; prefix_length > 0;
+       --prefix_length) {
+    int cur = 0;
+    for (size_t i = 0; i < prefix_length; ++i) {
+      const uint64_t w = s[i >> 6];
+      const int bit = int((w >> (i & 63)) & 1ull);
+      cur += bit ? +1 : -1;
+    }
+    if (cur == target_x) {
+      return prefix_length;
+    }
+  }
+  return target_x == 0 ? 0 : 128;
+}
+
 static size_t count_matches(const uint64_t* out) {
   size_t cnt = 0;
   for (int w = 0; w < 8; ++w) {
@@ -59,6 +131,66 @@ static void check_matches_naive(Fn fn,
   }
   ASSERT_EQ(count_matches(out), count_matches(ref))
       << fn_name << " case=" << case_id << " x=" << target_x;
+}
+
+TEST(ExcessPositions128, MatchesNaiveMasksAndDelta) {
+  const std::array<std::array<uint64_t, 2>, 4> cases = {{
+      {0, 0},
+      {UINT64_MAX, UINT64_MAX},
+      {0xAAAAAAAAAAAAAAAAull, 0x5555555555555555ull},
+      {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull},
+  }};
+
+  for (const auto& s : cases) {
+    for (int x = -130; x <= 130; ++x) {
+      uint64_t out[2];
+      uint64_t ref[2];
+      const int delta = excess_positions_128(s.data(), x, out);
+      const int ref_delta = naive_excess_positions_128(s.data(), x, ref);
+      EXPECT_EQ(delta, ref_delta) << "x=" << x;
+      EXPECT_EQ(out[0], ref[0]) << "x=" << x;
+      EXPECT_EQ(out[1], ref[1]) << "x=" << x;
+    }
+  }
+}
+
+TEST(ExcessPositions128, PrefixExcessMatchesNaive) {
+  std::mt19937_64 rng(42);
+  const std::array<size_t, 13> offsets = {0,  1,  2,  31,  32,  63, 64,
+                                          65, 95, 96, 127, 128, 129};
+
+  for (int t = 0; t < 1000; ++t) {
+    const std::array<uint64_t, 2> s = {rng(), rng()};
+    for (size_t offset : offsets) {
+      EXPECT_EQ(prefix_excess_128(s.data(), offset),
+                naive_prefix_excess_128(s.data(), offset))
+          << "case=" << t << " offset=" << offset;
+    }
+  }
+}
+
+TEST(ExcessPositions128, ForwardAndBackwardSearchMatchNaive) {
+  std::mt19937_64 rng(42);
+  const std::array<size_t, 8> offsets = {0, 1, 63, 64, 65, 126, 127, 128};
+
+  for (int t = 0; t < 1000; ++t) {
+    const std::array<uint64_t, 2> s = {rng(), rng()};
+    for (int x = -128; x <= 128; x += 7) {
+      for (size_t offset : offsets) {
+        int block_excess = 0;
+        EXPECT_EQ(forward_search_128(s.data(), x, offset, &block_excess),
+                  naive_forward_search_128(s.data(), x, offset))
+            << "case=" << t << " x=" << x << " offset=" << offset;
+        EXPECT_EQ(block_excess,
+                  2 * (std::popcount(s[0]) + std::popcount(s[1])) - 128)
+            << "case=" << t;
+
+        EXPECT_EQ(backward_search_128(s.data(), x, offset),
+                  naive_backward_search_128(s.data(), x, offset))
+            << "case=" << t << " x=" << x << " offset=" << offset;
+      }
+    }
+  }
 }
 
 TEST(ExcessPositions512, AllZeros) {

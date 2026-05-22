@@ -64,7 +64,8 @@ The analyzer reports:
 
 ```bash
 FILTER='^(BM_RankNonInterleaved|BM_SelectNonInterleaved)(/|$)'
-build/benchmarks-all_local/benchmarks --benchmark_filter="${FILTER}"
+BENCH_CPU=${BENCH_CPU:-0}
+taskset -c "${BENCH_CPU}" build/benchmarks-all_local/benchmarks --benchmark_filter="${FILTER}"
 ```
 
 3. If impact mapping is broad/uncertain, run full binary for selected benchmark target(s).
