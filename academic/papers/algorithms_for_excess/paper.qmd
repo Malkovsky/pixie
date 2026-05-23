@@ -7,9 +7,9 @@ author:
     email: malkovskynv@gmail.com
     orcid: "0000-0001-8571-6857"
     affiliation:
-      name: University Name
-      city: City
-      country: Country
+      # name: University Name
+      city: Saint-Petersburg
+      country: Russia
 
 acm-metadata:
   final: true
@@ -19,18 +19,16 @@ acm-metadata:
   copyright: acmcopyright
   doi: XXXXXXX.XXXXXXX
   conference-acronym: "Conference '26"
-  conference-name: Conference Name
-  conference-date: June 03--05, 2026
-  conference-location: City, Country
-  price: "0.00"
-  isbn: 978-X-XXXX-XXXX-X/XX/XX
+  # conference-name: Conference Name
+  # conference-date: June 03--05, 2026
+  # conference-location: City, Country
+  # price: "0.00"
+  # isbn: 978-X-XXXX-XXXX-X/XX/XX
   keywords:
     - succinct data structures
-    - wavelet trees
-    - rank/select
+    - excess queries
   abstract: |
-    This is a template paper for the Pixie succinct data structures library.
-    Replace this abstract with your actual abstract.
+    Several SIMD algorithms for excess queries are presented, i.e. given a bit string, find all positions where number 1's minus number 0's is equal to a given value. These algorithms are supposed to be used on a short strings filling few cache lines. The prime usage of these algortihms is to perform fast forward/backward search in range min max tree.
 
 date: today
 bibliography: references.bib
@@ -38,64 +36,51 @@ format:
   acm-pdf:
     keep-tex: true
     biblio-style: ACM-Reference-Format
+    include-in-header:
+      text: |
+        \usepackage[ruled,linesnumbered]{algorithm2e}
 ---
 
 # Introduction
 
-Introduce the problem and motivate the need for compact data structures.
-Cite foundational work such as @jacobson1989 and @navarro2016.
+Suppose we have a bit string $B:[0..n-1]\rightarrow \{0,1\}$ and a function $\varphi:\{0, 1\}\rightarrow \{-1, 0, 1\}$. Let $E$ be the prefix sum like function
+$$
+E[k] = \sum_{j=0}^{k-1} \varphi(B[j]),
+$$
+we are either interested in computing $E[k]$ or its inverse: $E^{-1}[v] = \{k~|~E[k]=v\}$. Constant $\varphi$ is trivial, if $\varphi(0)=0$ or $\varphi(1)=0$ $E$ becomes *rank* query and $E^{-1}$ becomes *select* query, fast implementation for rank is usage of population count instruction, fast implementation for select is described in @pandey2017 via pdep instruction. For $\varphi(0)=-1$ and $\varphi(1)=1$ $E$ becomes *excess* query which is the main focus of this paper. All of these operations form basic building blocks of succinct data structures: rank and select queries were introduced by @jacobson1989 for fast navigation over LOUDS tree representation, later @sadakane2010; @navarro2014 introduced the *range min max tree* as a way to support BP @sadakane2010 or DFUDS @benoit2005 representations, its main operations are forward and backward search, which are essentially queries for inverse excess. Both DFUDS and BP are balanced parenthesis representations and essentially forward/backward search is used to either match a bracket (to find subtree range) or find enclosing bracket pair (to find parent), sometimes we need a first excess match (first child) and sometimes we need specific/all matches (find $i$-th child). While rank and select queries are well and are can be computed very fast via popcount and parallel deposit instructions, excess queries aren't so studied. In this paper we present several algorithms for inverse excess queries that found all the positions and can optionally terminate earlier if first/last position is needed. The rest of the paper is organized as follows:
+...    
 
 # Preliminaries
 
-Define notation and background concepts.
+We first start give some basic well-known parallel algorithms, we first start with prefix sum algorithm, \autoref{alg:prefix-sum}. Note that the inner loop is processed in decreasing order and can be performed via shift followed by parallel addition. It is quite easy to see that after $i$-th iteration of the outer loop element of $A[j]$ contains the sum of $2^{i+1}$ original elements up to position $j$. Note that in this algorithm we assume that each element in $A$ can hold any possible value of the sum of $2^k$ elements.
 
-## Rank and Select
 
-Given a bitvector $B[1..n]$ with $m$ ones:
-
-- $\text{rank}_1(B, i)$ returns the number of ones in $B[1..i]$
-- $\text{select}_1(B, j)$ returns the position of the $j$-th one
-
-Both operations can be supported in $O(1)$ time with $o(n)$ bits of
-extra space [@clark1996].
-
-## Wavelet Trees
-
-The wavelet tree [@grossi2003] is a compact data structure that supports
-rank, select, and access on sequences over arbitrary alphabets in
-$O(\log \sigma)$ time, where $\sigma$ is the alphabet size.
-
-# Method
-
-Describe your approach here.
-
-## Construction Algorithm
-
-```cpp
-// Example: include a code snippet
-void build(const std::span<const uint64_t>& data) {
-    // Implementation details
+\begin{algorithm}
+\caption{Parallel Prefix Sum}\label{alg:prefix-sum}
+\KwIn{Sequence $A[0 \ldots 2^k-1]$}
+\KwOut{Inplace transformation of $A$ to prefix sum}
+\For{$i = 0, \ldots k-1$}{
+  \For{$j=2^k-1, \ldots, 2^i$}{
+    $A[j] \gets A[j] + A[j-2^i]$\;
+  }
 }
-```
+\end{algorithm}
 
-## Space Analysis
+Classical algorithms for finding rank and select are similar to \autoref{prefix-sum}, computing rank is straightforward from the prefix sum, for select one can do a binary search over the prefix sum array, the only problem to properly manipulate bit length of each element so that we don't get overflow. 
 
-The total space usage is $n + o(n)$ bits, where $n$ is the input size.
+Next, the following algorithm might look simple but it is an important block in a lot of SIMD algorithms.
 
-# Experiments
+\begin{algorithm}
+\caption{Parallel Table Lookup}\label{alg:pshufb}
+\KwIn{Sequence $A[0 \ldots k-1]$ of elements from domain $0 \ldots 2^w-1$, table $T[0 \ldots 2^w-1]$}
+\KwOut{Sequence $B[0 \ldots k-1]$}
+\For{$i = 0, \ldots k-1$}{
+    $R[j] \gets T[A[j]]$\;
+}
+\Return $R$\;
+\end{algorithm}
 
-## Setup
+Here, we need to give some numbers for the reference. For $w=4$ the table $T$ has $16$ entries of $4$ bits and can be fitted into a single $64$-bit word, modern CPUs support instructions that allow to perform parallel lookup in such tables. In fact, the algorithm is so important and universal that you can find it in Galois arithetics for RAID6 @plank2013; @anvin2009, JSON processing @langdale2019, integer compression @lemire2013, cryptography @hamburg2009, algorithms for popcount that are faster than dedicated popcnt instruction @mula2017.
 
-Describe experimental methodology.
-
-## Results
-
-# Conclusion
-
-Summarize contributions and future work.
-
-# Acknowledgments
-
-Acknowledgments go here.
 
 # References

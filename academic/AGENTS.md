@@ -12,13 +12,13 @@ Materials are authored in [Quarto](https://quarto.org) for rich rendering (math,
 academic/
 ├── _quarto.yml              # Book project (reports, presentations, notes)
 ├── index.qmd                # Project landing page
-├── _extensions/             # Shared Quarto extensions (ACM journal format)
-│   └── quarto-journals/acm/ # ACM acm-pdf extension
+├── scripts/
+│   └── init.sh              # Scaffolds new papers (supports acm/ieee styles)
 ├── papers/                  # Research papers (standalone Quarto projects)
 │   └── <paper-name>/        # Each paper in its own directory
 │       ├── _quarto.yml      # Paper's own Quarto project (type: default)
-│       ├── _extensions -> ../../_extensions  # Symlink to shared extensions
-│       ├── paper.qmd        # Paper source (ACM acm-pdf format)
+│       ├── _extensions/     # Quarto extensions (not in git, installed by init.sh)
+│       ├── paper.qmd        # Paper source (acm-pdf or ieee-pdf format)
 │       └── references.bib   # Paper-specific bibliography
 ├── presentations/           # Conference talks, seminar slides
 ├── reports/                 # Technical reports, design documents
@@ -37,29 +37,38 @@ The `academic/` directory contains **two kinds** of Quarto projects:
 1. **Book project** (`academic/_quarto.yml`, `type: book`): Covers reports, presentations, and notes. Rendered from the `academic/` root.
 2. **Standalone paper projects** (`papers/<name>/_quarto.yml`, `type: default`): Each paper is its own Quarto project. Rendered from the paper's directory.
 
-Papers are standalone because Quarto book projects cannot resolve journal extensions (like `quarto-journals/acm`). Each paper directory has its own `_quarto.yml` and symlinks `_extensions/` to the shared extensions at `academic/_extensions/`.
+Papers are standalone because Quarto book projects cannot resolve journal extensions (like `quarto-journals/acm`). Each paper directory has its own `_quarto.yml` and `_extensions/` (installed locally, not tracked in git).
 
-### ACM Extension
+### Journal Extensions
 
-The `acm-pdf` format is NOT built-in to Quarto. It requires the `quarto-journals/acm` extension, installed at `academic/_extensions/quarto-journals/acm/`.
+Journal formatting (ACM, IEEE, etc.) is NOT built-in to Quarto. It requires per-paper extensions, installed in `_extensions/`.
 
-**Installation** (one-time, already done):
+Extensions are **not tracked in git** (they are in `.gitignore`). Use the init script to scaffold a new paper with the extension pre-installed:
+
 ```bash
 cd academic/
-quarto add quarto-journals/acm
+./scripts/init.sh <paper-name>                      # ACM (default)
+./scripts/init.sh --style ieee <paper-name>         # IEEE
 ```
 
-To install for a new paper directory:
+The script copies `papers/sample-paper/` for shared files (_quarto.yml, references.bib, .gitignore), then replaces paper.qmd with the style-specific template from `scripts/templates/` and installs the matching extension.
+
+Supported styles and their extensions:
+| Style | Extension | Format |
+|-------|-----------|--------|
+| `acm` | `quarto-journals/acm` | `acm-pdf` |
+| `ieee` | `dfolio/quarto-ieee` | `ieee-pdf` |
+
+To manually install an extension into an existing paper directory:
 ```bash
-cd papers/<new-paper>/
-ln -s ../../_extensions _extensions
+cd papers/<paper-name>/
+quarto add quarto-journals/acm --no-prompt
+quarto add dfolio/quarto-ieee --no-prompt
 ```
-
-**Important**: After installing the extension or creating symlinks, explicitly `git add` both `academic/_extensions/` and any paper-level `_extensions` symlinks. They can exist on disk without being git-tracked (the PR review bot will flag missing symlinks).
 
 ## Rendering
 
-### Papers (ACM format)
+### Papers
 
 Each paper is rendered from its own directory:
 
@@ -79,23 +88,18 @@ quarto preview               # Live preview
 
 ## Conventions
 
-### Paper Template (ACM Format)
+### Paper Templates
 
 Each paper lives in its own subdirectory under `papers/` with:
 
 - `_quarto.yml` -- `project: type: default` (standalone, not book)
-- `_extensions/` -- Symlink to `../../_extensions`
-- `paper.qmd` -- Main source file using ACM `acm-pdf` format
+- `_extensions/` -- Quarto extensions (installed by init script, not in git)
+- `paper.qmd` -- Main source file (format depends on style: `acm-pdf` or `ieee-pdf`)
 - `references.bib` -- Paper-specific BibTeX
 
-The paper's `paper.qmd` must include:
+Style templates live in `scripts/templates/<style>.qmd`. To add a new journal style, create a new template file there and add the extension mapping to `init.sh`.
 
-1. `author:` (not `authors:`) with nested `affiliation:` objects
-2. `acm-metadata:` block with: `final`, `acmart-options`, `copyright-year`, `acm-year`, `copyright`, `doi`, `conference-*`, `price`, `isbn`, `ccs`, `keywords`, `abstract`
-3. `format: acm-pdf:` with `keep-tex: true` and `biblio-style: ACM-Reference-Format`
-4. `bibliography: references.bib`
-
-To create a new paper: copy `papers/sample-paper/` directory and modify. Ensure the `_extensions` symlink is preserved.
+To create a new paper: run `./scripts/init.sh [--style <style>] <paper-name>` from the `academic/` directory.
 
 ### File Naming
 
@@ -125,8 +129,8 @@ The following works are foundational to Pixie's design:
 - Do not modify compiled PDFs or binary files directly
 - When adding new papers or references, update `bibliography/references.bib` accordingly
 - Preserve existing citation keys and BibTeX formatting
-- New papers should copy `papers/sample-paper/` as a template
-- Each paper gets its own directory with `_quarto.yml`, `_extensions` symlink, `paper.qmd`, and `references.bib`
+- New papers should be created with `./scripts/init.sh [--style <style>] <paper-name>` (from `academic/`)
+- Each paper gets its own directory with `_quarto.yml`, `_extensions/`, `paper.qmd`, and `references.bib`
 - Use `@AuthorYear` citation syntax in `.qmd` files
 - LaTeX code blocks should use `{cpp}` or `{latex}` language tags
 - Do not commit large binary files (>10MB) without explicit approval; consider using Git LFS
