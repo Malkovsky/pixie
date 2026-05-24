@@ -324,6 +324,25 @@ TEST(BitVectorTest, SelectZeroBasic) {
   EXPECT_EQ(bv.select0(8), 13);
 }
 
+TEST(BitVectorTest, EmptyAndZeroRankGuards) {
+  std::vector<uint64_t> empty;
+  BitVector bv(std::span<const uint64_t>(empty), 0);
+
+  EXPECT_EQ(bv.size(), 0u);
+  EXPECT_EQ(bv.rank(0), 0u);
+  EXPECT_EQ(bv.rank0(0), 0u);
+  EXPECT_EQ(bv.select(0), 0u);
+  EXPECT_EQ(bv.select(1), 0u);
+  EXPECT_EQ(bv.select0(0), 0u);
+  EXPECT_EQ(bv.select0(1), 0u);
+  EXPECT_EQ(bv.to_string(), "");
+
+  std::vector<uint64_t> bits(1, 0b10110);
+  BitVector non_empty(std::span<const uint64_t>(bits), 5);
+  EXPECT_EQ(non_empty.select(0), 0u);
+  EXPECT_EQ(non_empty.select0(0), 0u);
+}
+
 TEST(BitVectorTest, ExactShortSpanRankSelect) {
   std::vector<uint64_t> bits = {0b1100010110010110};
   BitVector bv(bits, 16);

@@ -1031,6 +1031,34 @@ TEST(RmMBTreeExperimental, SdslStyleParenthesesIndexing) {
   EXPECT_EQ(rm.enclose(0), pixie::experimental::RmMBTree<>::npos);
 }
 
+TEST(RmMBTreeExperimental, EmptyInput) {
+  std::vector<std::uint64_t> words;
+  pixie::experimental::RmMBTree<> rm(std::span<const std::uint64_t>(words),
+                                     /*bit_count=*/0);
+
+  EXPECT_EQ(rm.size(), 0u);
+  EXPECT_EQ(rm.rank1(0), 0u);
+  EXPECT_EQ(rm.rank0(0), 0u);
+  EXPECT_EQ(rm.select1(1), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.select0(1), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.rank10(0), 0u);
+  EXPECT_EQ(rm.select10(1), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.excess(0), 0);
+  EXPECT_EQ(rm.fwdsearch(0, 0), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.bwdsearch(0, 0), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.range_min_query_pos(0, 0),
+            pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.range_min_query_val(0, 0), 0);
+  EXPECT_EQ(rm.range_max_query_pos(0, 0),
+            pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.range_max_query_val(0, 0), 0);
+  EXPECT_EQ(rm.mincount(0, 0), 0u);
+  EXPECT_EQ(rm.minselect(0, 0, 1), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.close(0), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.open(0), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.enclose(0), pixie::experimental::RmMBTree<>::npos);
+}
+
 TEST(RmMBTreeExperimental, RankSelectIgnoresDirtyTrailingStorage) {
   std::vector<std::uint64_t> words = {
       0b101ull, std::numeric_limits<std::uint64_t>::max()};
@@ -1046,6 +1074,47 @@ TEST(RmMBTreeExperimental, RankSelectIgnoresDirtyTrailingStorage) {
   EXPECT_EQ(rm.select1(3), pixie::experimental::RmMBTree<>::npos);
   EXPECT_EQ(rm.select0(1), 1u);
   EXPECT_EQ(rm.select0(2), pixie::experimental::RmMBTree<>::npos);
+}
+
+TEST(RmMBTreeExperimental, InvalidArgumentsGuards) {
+  const std::string bits = "101100";
+  auto words = pack_words_lsb_first(bits);
+  pixie::experimental::RmMBTree<> rm(std::span<const std::uint64_t>(words),
+                                     bits.size());
+
+  EXPECT_EQ(rm.select1(0), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.select1(4), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.select0(0), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.select0(4), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.select10(0), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.select10(3), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.fwdsearch(bits.size(), 0),
+            pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.bwdsearch(0, 0), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.bwdsearch(bits.size() + 1, 0),
+            pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.range_min_query_pos(3, 2),
+            pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.range_min_query_pos(0, bits.size()),
+            pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.range_min_query_val(3, 2), 0);
+  EXPECT_EQ(rm.range_min_query_val(0, bits.size()), 0);
+  EXPECT_EQ(rm.range_max_query_pos(3, 2),
+            pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.range_max_query_pos(0, bits.size()),
+            pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.range_max_query_val(3, 2), 0);
+  EXPECT_EQ(rm.range_max_query_val(0, bits.size()), 0);
+  EXPECT_EQ(rm.mincount(3, 2), 0u);
+  EXPECT_EQ(rm.mincount(0, bits.size()), 0u);
+  EXPECT_EQ(rm.minselect(0, bits.size() - 1, 0),
+            pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.minselect(3, 2, 1), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.minselect(0, bits.size(), 1),
+            pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.close(bits.size()), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.open(bits.size()), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.enclose(bits.size()), pixie::experimental::RmMBTree<>::npos);
 }
 
 TEST(RmMBTreeExperimental, FwdBwdSearchAcrossHighLevels) {
