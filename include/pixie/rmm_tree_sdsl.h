@@ -167,7 +167,7 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
       return npos;
     }
     const int target = prefix_excess_[start_position] + delta;
-    if (target < 0 || target > max_excess_) {
+    if (target > max_excess_) {
       return npos;
     }
 
@@ -201,7 +201,7 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
 
     const std::size_t anchor = start_position - 1;
     const int target = prefix_excess_[start_position] + delta;
-    if (target < 0 || target > max_excess_) {
+    if (target > max_excess_) {
       return npos;
     }
     if (prefix_excess_[anchor] == target) {

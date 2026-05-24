@@ -43,6 +43,7 @@ static inline const __m256i mask_first_half = _mm256_setr_epi8(
 );
 
 // clang-format on
+#endif
 
 /**
  * @brief Test 16 int16 RmM btree child ranges for a node-local target.
@@ -63,6 +64,7 @@ static inline uint32_t rmm_btree_match_mask_i16x16(const int16_t* prefix_before,
                                                    const int16_t* max_excess,
                                                    int16_t target,
                                                    bool include_zero_boundary) {
+#ifdef PIXIE_AVX2_SUPPORT
   const __m256i vtarget = _mm256_set1_epi16(target);
   const __m256i vprefix =
       _mm256_loadu_si256(reinterpret_cast<const __m256i*>(prefix_before));
@@ -92,6 +94,19 @@ static inline uint32_t rmm_btree_match_mask_i16x16(const int16_t* prefix_before,
     }
   }
   return result;
+#else
+  uint32_t result = 0;
+  for (size_t lane = 0; lane < 16; ++lane) {
+    const int lower = prefix_before[lane] + min_excess[lane];
+    const int upper = prefix_before[lane] + max_excess[lane];
+    const bool found = (lower <= target && target <= upper) ||
+                       (include_zero_boundary && target == prefix_before[lane]);
+    if (found) {
+      result |= uint32_t{1} << lane;
+    }
+  }
+  return result;
+#endif
 }
 
 /**
@@ -113,6 +128,7 @@ static inline uint32_t rmm_btree_match_mask_i64x4(const int64_t* prefix_before,
                                                   const int64_t* max_excess,
                                                   int64_t target,
                                                   bool include_zero_boundary) {
+#ifdef PIXIE_AVX2_SUPPORT
   const __m256i vtarget = _mm256_set1_epi64x(target);
   const __m256i vprefix =
       _mm256_loadu_si256(reinterpret_cast<const __m256i*>(prefix_before));
@@ -141,8 +157,20 @@ static inline uint32_t rmm_btree_match_mask_i64x4(const int64_t* prefix_before,
     }
   }
   return result;
-}
+#else
+  uint32_t result = 0;
+  for (size_t lane = 0; lane < 4; ++lane) {
+    const int64_t relative = target - prefix_before[lane];
+    const bool found =
+        (min_excess[lane] <= relative && relative <= max_excess[lane]) ||
+        (include_zero_boundary && relative == 0);
+    if (found) {
+      result |= uint32_t{1} << lane;
+    }
+  }
+  return result;
 #endif
+}
 
 /**
  * @brief Return a mask with the lowest @p num bits set.

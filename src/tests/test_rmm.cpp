@@ -707,6 +707,19 @@ TEST(RmMSdslEdgeCases, ForwardBackwardSearchMatchesNaive) {
     }
   }
 }
+
+TEST(RmMSdslEdgeCases, ExcessSearchSupportsNegativeTargets) {
+  const std::string bits = "001011";
+  auto words = pack_words_lsb_first(bits);
+  pixie::SdslRmMTree rm(std::span<const std::uint64_t>(words), bits.size(),
+                        /*unused=*/0);
+  NaiveRmM nv(bits);
+
+  EXPECT_EQ(rm.fwdsearch(0, -1), nv.fwdsearch(0, -1));
+  EXPECT_EQ(rm.fwdsearch(0, -2), nv.fwdsearch(0, -2));
+  EXPECT_EQ(rm.bwdsearch(2, 0), nv.bwdsearch(2, 0));
+  EXPECT_EQ(rm.bwdsearch(3, 1), nv.bwdsearch(3, 1));
+}
 #endif
 
 /**
