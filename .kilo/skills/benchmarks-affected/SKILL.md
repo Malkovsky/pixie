@@ -23,18 +23,20 @@ Given `HEAD` and a baseline branch (default `main`), produce:
 
 ## Prerequisites
 
-1. Build tree with benchmarks enabled and compile database exported:
+1. Build tree with benchmarks enabled and compile database exported. Use the
+repository's normal benchmark-enabling CMake options:
 
 ```bash
 BUILD_SUFFIX=local
 cmake -B build/benchmarks-all_${BUILD_SUFFIX} \
   -DCMAKE_BUILD_TYPE=Release \
-  -DPIXIE_BENCHMARKS=ON \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cmake --build build/benchmarks-all_${BUILD_SUFFIX} --config Release -j
 ```
 
 2. `clang++` must be available on `PATH` (used for AST dump).
+
+For repository-specific invocations, see `EXAMPLES.md` next to this skill file.
 
 ## Run
 
@@ -63,7 +65,7 @@ The analyzer reports:
 2. Run benchmark binaries with the suggested filter:
 
 ```bash
-FILTER='^(BM_RankNonInterleaved|BM_SelectNonInterleaved)(/|$)'
+FILTER='^(BM_Foo|BM_Bar)(/|$)'
 BENCH_CPU=${BENCH_CPU:-0}
 taskset -c "${BENCH_CPU}" build/benchmarks-all_local/benchmarks --benchmark_filter="${FILTER}"
 ```

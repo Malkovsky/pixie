@@ -7,7 +7,8 @@ description: Scaffold a new C++20 repository with CMake, Google Test, Google Ben
 
 ## Overview
 
-This skill generates a complete C++20 project scaffold following the conventions of the Pixie succinct data structures library. The generated repository is header-only by default and includes:
+This skill generates a complete modern C++20 project scaffold. The generated
+repository is header-only by default and includes:
 
 - CMake build system with presets
 - Google Test for unit testing
@@ -23,7 +24,8 @@ Use this skill when:
 - The user wants to create a new C++ library or project from scratch
 - The user asks for a "C++ project template" or "C++ repo setup"
 - The user needs CMake + Google Test + benchmark scaffolding
-- The user wants to follow Pixie-style conventions (header-only, AVX-512 optional, Doxygen docs)
+- The user wants header-only library conventions with optional SIMD-oriented
+  build flags and Doxygen docs
 
 Do **not** use this skill when:
 - Working with an existing codebase (use the `cmake` skill instead)
@@ -50,11 +52,7 @@ python3 .kilo/skills/setup-cpp-repo/scripts/init_cpp_project.py \
     [--output-dir <directory>]
 ```
 
-Example:
-```bash
-python3 .kilo/skills/setup-cpp-repo/scripts/init_cpp_project.py \
-    --name succinct-lib --namespace succinct --output-dir .
-```
+For concrete examples, see `EXAMPLES.md` next to this skill file.
 
 ### Step 3: Verify the Scaffold
 

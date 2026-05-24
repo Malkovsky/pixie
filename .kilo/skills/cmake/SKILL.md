@@ -56,41 +56,33 @@ cmake -B build/debug_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Debug
 cmake --build build/debug_${BUILD_SUFFIX} -j
 ```
 
-AddressSanitizer (mirrors `asan` preset):
+AddressSanitizer:
 ```bash
-cmake -B build/asan_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Debug -DPIXIE_BENCHMARKS=OFF -DENABLE_ADDRESS_SANITIZER=ON
+cmake -B build/asan_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Debug -DENABLE_ADDRESS_SANITIZER=ON
 cmake --build build/asan_${BUILD_SUFFIX} -j
 ```
 
-Coverage (mirrors `coverage` preset):
+Coverage:
 ```bash
-cmake -B build/coverage_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Debug -DPIXIE_BENCHMARKS=OFF -DPIXIE_COVERAGE=ON
+cmake -B build/coverage_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Debug -DENABLE_COVERAGE=ON
 cmake --build build/coverage_${BUILD_SUFFIX} -j
 ```
 
-Benchmarks (mirrors `benchmarks` preset):
+Benchmarks:
 ```bash
-cmake -B build/benchmarks_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Release -DPIXIE_BENCHMARKS=ON
+cmake -B build/benchmarks_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Release -DBUILD_BENCHMARKS=ON
 cmake --build build/benchmarks_${BUILD_SUFFIX} -j
 ```
 
 ## Additional Feature Options
 
-**Disable AVX-512 (use AVX2 fallback):**
-```bash
-cmake -B build/release_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Release -DDISABLE_AVX512=ON
-cmake --build build/release_${BUILD_SUFFIX} -j
-```
+Feature flags are project-specific. Inspect `CMakeLists.txt`,
+`CMakePresets.json`, or `cmake -LAH <build-dir>` before toggling options. For
+repository-specific examples, see `EXAMPLES.md` next to this skill file.
 
-**Custom march flag:**
+**Example feature toggle:**
 ```bash
-cmake -B build/release_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Release -DMARCH=icelake-client
-cmake --build build/release_${BUILD_SUFFIX} -j
-```
-
-**Tests only (no benchmarks or third-party deps):**
-```bash
-cmake -B build/release_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Release -DPIXIE_BENCHMARKS=OFF
+cmake -B build/release_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Release -DENABLE_FEATURE=ON
 cmake --build build/release_${BUILD_SUFFIX} -j
 ```
 

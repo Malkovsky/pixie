@@ -1,11 +1,12 @@
 ---
 name: benchmarks
-description: Run Google Benchmark binaries for the Pixie project, including filtering, hardware counters, and perf profiling.
+description: Run Google Benchmark binaries, including filtering, hardware counters, and perf profiling.
 ---
 
 # Benchmarks Skill
 
-You now have expertise in running and interpreting Pixie benchmarks. Follow these workflows:
+You now have expertise in running and interpreting Google Benchmark suites.
+Follow these workflows:
 
 ## Build Directory Convention
 
@@ -42,15 +43,18 @@ If benchmarks affected by the changes are easily tractable build only related ta
 
 **Pure timing (benchmarks, Release):**
 ```bash
-cmake -B build/benchmarks_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Release -DPIXIE_BENCHMARKS=ON
+cmake -B build/benchmarks_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=Release
 cmake --build build/benchmarks_${BUILD_SUFFIX} --config Release -j
 ```
 
 **Hardware counters / verbose report (benchmarks-diagnostic, RelWithDebInfo, Linux only):**
 ```bash
-cmake -B build/benchmarks-diagnostic_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPIXIE_BENCHMARKS=ON -DBENCHMARK_ENABLE_LIBPFM=ON -DPIXIE_DIAGNOSTICS=ON
+cmake -B build/benchmarks-diagnostic_${BUILD_SUFFIX} -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBENCHMARK_ENABLE_LIBPFM=ON
 cmake --build build/benchmarks-diagnostic_${BUILD_SUFFIX} --config RelWithDebInfo -j
 ```
+
+For repository-specific benchmark examples, see `EXAMPLES.md` next to this
+skill file.
 
 ## Step 2 — Run
 
@@ -75,13 +79,10 @@ Execution guardrails:
 
 ### Available benchmark binaries
 
-| Binary | What it covers |
-|--------|---------------|
-| `benchmarks` | BitVector rank/select |
-| `bench_rmm` | RmM Tree operations |
-| `bench_rmm_sdsl` | RmM vs sdsl-lite comparison |
-| `louds_tree_benchmarks` | LOUDS Tree traversal |
-| `alignment_comparison` | Memory alignment effects |
+Discover benchmark binary names from the repository's build system. Common
+locations include `build/**/<binary>` for single-config generators and
+`build/**/Release/<binary>` for multi-config generators. Repository-specific
+binary lists belong in `EXAMPLES.md`.
 
 Binary paths vary by generator type:
 
@@ -103,7 +104,7 @@ ${BENCH_RUN} build/benchmarks_${BUILD_SUFFIX}/benchmarks
 ### Filter benchmarks with a regex (FILTER parameter)
 
 ```bash
-FILTER="BM_Rank"   # change to match benchmark names, e.g. "BM_Select", "BM_Louds", ""
+FILTER="BM_Foo"   # change to match benchmark names in the target binary
 
 # Multi-config
 ${BENCH_RUN} build/benchmarks_${BUILD_SUFFIX}/Release/benchmarks --benchmark_filter="${FILTER}"
@@ -114,11 +115,11 @@ ${BENCH_RUN} build/benchmarks_${BUILD_SUFFIX}/benchmarks --benchmark_filter="${F
 
 Examples:
 ```bash
-# Only rank benchmarks
-... --benchmark_filter="BM_Rank"
+# Only one benchmark family
+... --benchmark_filter="BM_Foo"
 
-# Only select on non-interleaved layouts
-... --benchmark_filter="BM_Select.*NonInterleaved"
+# Only one layout/parameter family
+... --benchmark_filter="BM_Foo.*Variant"
 
 # List all available benchmark names without running
 ... --benchmark_list_tests=true

@@ -19,6 +19,65 @@
 
 namespace pixie::experimental {
 
+/**
+ * @brief Cache-aligned btree implementation of the range min-max index.
+ * @details `RmMBTree` is a non-owning succinct index over a little-endian bit
+ * sequence. It provides the `RmMBase` operations by combining a rank/select
+ * helper with a hierarchy of min-max summaries over fixed 512-bit blocks. Each
+ * summary stores subtree size, number of ones, total excess, minimum/maximum
+ * relative excess, and minimum multiplicity, which lets searches skip whole
+ * subtrees when the requested excess cannot occur there.
+ *
+ * The internal layout has three layers:
+ * - the original bit words, referenced by `std::span<const uint64_t>`;
+ * - level 0 block summaries, reconstructed from parent nodes and scanned with
+ *   128-bit chunk primitives inside each 512-bit block;
+ * - higher btree levels stored as cache-line-aligned summary nodes. The first
+ *   level above blocks uses compact `int16_t` excess fields because one low
+ *   node covers at most `512 * LowFanout` bits. Higher levels use `int64_t`
+ *   excess and count fields.
+ *
+ * Low nodes are one-cache-line-aligned arrays of compact per-child summaries:
+ * @code
+ * LowNode<LowFanout = 32>
+ * +-----------------------+
+ * | cumulative excess     |  int16_t  prefix_excess[32], prefix through child
+ * +-----------------------+
+ * | child relative min    |  int16_t  min_excess[32]
+ * +-----------------------+
+ * | child relative max    |  int16_t  max_excess[32]
+ * +-----------------------+
+ * | count of minima       |  uint16_t min_count[32]
+ * +-----------------------+
+ * @endcode
+ *
+ * High nodes have the same logical fields, but use wider lanes and a fanout
+ * chosen from @p HighCacheLines:
+ * @code
+ * HighNode<kHighFanout>
+ * +-----------------------+
+ * | cumulative excess     |  int64_t  prefix_excess[kHighFanout], prefix
+ * |                       |  through child
+ * +-----------------------+
+ * | child relative min    |  int64_t  min_excess[kHighFanout]
+ * +-----------------------+
+ * | child relative max    |  int64_t  max_excess[kHighFanout]
+ * +-----------------------+
+ * | count of minima       |  uint64_t min_count[kHighFanout]
+ * +-----------------------+
+ * @endcode
+ *
+ * Forward and backward excess searches ascend from the starting block until a
+ * sibling summary can contain the target, then descend through matching child
+ * ranges. Node scans use SIMD helpers from `bits.h` when available: low nodes
+ * compare 16 `int16_t` lanes at a time, and high nodes compare four `int64_t`
+ * lanes at a time. Scalar fallbacks are kept for partial chunks and targets
+ * that cannot be represented in the low-node lane type.
+ *
+ * @tparam HighCacheLines Number of 64-byte cache lines assigned to one high
+ * summary node.
+ * @tparam LowFanout Number of child summaries stored in one low-level node.
+ */
 template <std::size_t HighCacheLines = 4, std::size_t LowFanout = 32>
 class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
  public:
@@ -261,7 +320,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     if (!bit(open_position)) {
       return open_position;
     }
-    return fwdsearch_impl(open_position, 0);
+    return fwd_excess_at(open_position, -1);
   }
 
   std::size_t open_impl(std::size_t close_position) const {
@@ -285,6 +344,27 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
   }
 
  private:
+  /**
+   * @brief Search forward using SDSL-style inclusive-position excess semantics.
+   * @details Public `fwdsearch_impl` starts from a prefix boundary. This helper
+   * starts at @p position as an included bit position, so the equivalent btree
+   * boundary search begins at `position + 1`. It is used by
+   * balanced-parentheses operations such as `close`, where SDSL's
+   * `fwd_excess(i, -1)` maps to this wrapper.
+   * @param position Included bit position used as the search origin.
+   * @param delta Desired excess delta from the prefix after @p position.
+   * @return Matching bit position, or `npos` when no forward match exists.
+   */
+  std::size_t fwd_excess_at(std::size_t position, int delta) const {
+    if (position >= bit_count_) {
+      return npos;
+    }
+    if (position + 1 >= bit_count_) {
+      return npos;
+    }
+    return fwdsearch_impl(position + 1, delta);
+  }
+
   struct Summary {
     std::uint64_t size_bits = 0;
     std::uint64_t ones = 0;
@@ -927,13 +1007,8 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     for (std::size_t slot = begin_slot; slot < end_slot;) {
       const std::size_t lane_count =
           std::min(vector_lane_count<Node>(), end_slot - slot);
-      alignas(32) std::int64_t relative[16]{};
-      for (std::size_t lane = 0; lane < lane_count; ++lane) {
-        relative[lane] =
-            target - child_start_excess(node, node_base_excess, slot + lane);
-      }
-      const std::uint32_t mask =
-          matching_chunk_mask(node, slot, lane_count, relative, false);
+      const std::uint32_t mask = matching_chunk_mask(
+          node, slot, lane_count, target - node_base_excess, false);
       if (mask != 0) {
         const std::size_t lane = std::countr_zero(mask);
         const std::size_t matched_slot = slot + lane;
@@ -974,18 +1049,14 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
       const std::size_t lane_count =
           std::min(vector_lane_count<Node>(), slot_end - begin_slot);
       const std::size_t slot = slot_end - lane_count;
-      alignas(32) std::int64_t relative[16]{};
-      for (std::size_t lane = 0; lane < lane_count; ++lane) {
-        relative[lane] =
-            target - child_start_excess(node, node_base_excess, slot + lane);
-      }
-      const std::uint32_t mask =
-          matching_chunk_mask(node, slot, lane_count, relative, true);
+      const std::uint32_t mask = matching_chunk_mask(
+          node, slot, lane_count, target - node_base_excess, true);
       if (mask != 0) {
         const std::size_t lane =
             static_cast<std::size_t>(std::bit_width(mask) - 1);
         const std::size_t matched_slot = slot + lane;
-        const std::int64_t relative_target = relative[lane];
+        const std::int64_t relative_target =
+            target - child_start_excess(node, node_base_excess, matched_slot);
         const bool interior_match =
             node.min_excess[matched_slot] <= relative_target &&
             relative_target <= node.max_excess[matched_slot];
@@ -1083,7 +1154,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
    * @param node Node whose child ranges are checked.
    * @param slot First child slot represented by lane 0.
    * @param lane_count Number of valid lanes to check.
-   * @param relative Per-lane target excess relative to each child start.
+   * @param target_in_node Target excess relative to the start of @p node.
    * @param include_zero_boundary Whether a relative target of zero is accepted
    * as a boundary-only match for backward search.
    * @return Bit mask with bit `i` set when lane `i` can match.
@@ -1092,25 +1163,36 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
   static std::uint32_t matching_chunk_mask(const Node& node,
                                            std::size_t slot,
                                            std::size_t lane_count,
-                                           const std::int64_t* relative,
+                                           std::int64_t target_in_node,
                                            bool include_zero_boundary) {
 #ifdef PIXIE_AVX2_SUPPORT
     if constexpr (std::is_same_v<typename Node::ExcessType, std::int16_t>) {
-      if (lane_count == 16) {
-        return matching_chunk_mask_i16(node, slot, relative,
-                                       include_zero_boundary);
+      if (lane_count == 16 &&
+          target_in_node >= std::numeric_limits<std::int16_t>::min() &&
+          target_in_node <= std::numeric_limits<std::int16_t>::max()) {
+        alignas(32) std::int16_t prefix_before[16]{};
+        fill_prefix_before(node, slot, prefix_before);
+        return rmm_btree_match_mask_i16x16(
+            prefix_before, node.min_excess.data() + slot,
+            node.max_excess.data() + slot,
+            static_cast<std::int16_t>(target_in_node), include_zero_boundary);
       }
     } else if constexpr (std::is_same_v<typename Node::ExcessType,
                                         std::int64_t>) {
       if (lane_count == 4) {
-        return matching_chunk_mask_i64(node, slot, relative,
-                                       include_zero_boundary);
+        alignas(32) std::int64_t prefix_before[4]{};
+        fill_prefix_before(node, slot, prefix_before);
+        return rmm_btree_match_mask_i64x4(
+            prefix_before, node.min_excess.data() + slot,
+            node.max_excess.data() + slot, target_in_node,
+            include_zero_boundary);
       }
     }
 #endif
     std::uint32_t result = 0;
     for (std::size_t lane = 0; lane < lane_count; ++lane) {
-      const std::int64_t rel = relative[lane];
+      const std::int64_t rel =
+          target_in_node - prefix_excess_at(node, slot + lane);
       const bool found = (include_zero_boundary && rel == 0) ||
                          (node.min_excess[slot + lane] <= rel &&
                           rel <= node.max_excess[slot + lane]);
@@ -1121,106 +1203,33 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     return result;
   }
 
-#ifdef PIXIE_AVX2_SUPPORT
   /**
-   * @brief AVX2 range test for 16 int16 child lanes.
-   * @details Converts the 64-bit per-lane relative targets to int16 when
-   * representable, compares against child min/max arrays, and masks out lanes
-   * whose relative target cannot fit in int16.
-   * @tparam Node LowNode-compatible node type.
-   * @param node Node whose child ranges are checked.
-   * @param slot First child slot represented by lane 0.
-   * @param relative Per-lane relative targets.
-   * @param include_zero_boundary Whether relative zero is a boundary-only
-   * match.
-   * @return Bit mask of matching lanes.
+   * @brief Fill SIMD lanes with child-start prefix excess values.
+   * @details Summary nodes store inclusive prefix excess through each child.
+   * This helper converts that representation into exclusive prefix-before-child
+   * values for the vector chunk beginning at @p slot. Lane zero is zero when
+   * the chunk starts at the first child; otherwise each lane reads the previous
+   * stored inclusive prefix.
+   * @tparam Node LowNode or HighNode.
+   * @param node Summary node containing inclusive child prefixes.
+   * @param slot First child slot represented by output lane zero.
+   * @param out Destination array with `vector_lane_count<Node>()` entries.
    */
   template <class Node>
-  static std::uint32_t matching_chunk_mask_i16(const Node& node,
-                                               std::size_t slot,
-                                               const std::int64_t* relative,
-                                               bool include_zero_boundary) {
-    alignas(32) std::int16_t rel[16]{};
-    std::uint32_t valid_mask = 0;
-    for (std::size_t lane = 0; lane < 16; ++lane) {
-      if (relative[lane] >= std::numeric_limits<std::int16_t>::min() &&
-          relative[lane] <= std::numeric_limits<std::int16_t>::max()) {
-        rel[lane] = static_cast<std::int16_t>(relative[lane]);
-        valid_mask |= std::uint32_t{1} << lane;
+  static void fill_prefix_before(const Node& node,
+                                 std::size_t slot,
+                                 typename Node::ExcessType* out) {
+    if (slot == 0) {
+      out[0] = 0;
+      for (std::size_t lane = 1; lane < vector_lane_count<Node>(); ++lane) {
+        out[lane] = node.prefix_excess[lane - 1];
       }
+      return;
     }
-
-    const __m256i zero = _mm256_setzero_si256();
-    const __m256i vrel =
-        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(rel));
-    const __m256i vmin = _mm256_loadu_si256(
-        reinterpret_cast<const __m256i*>(node.min_excess.data() + slot));
-    const __m256i vmax = _mm256_loadu_si256(
-        reinterpret_cast<const __m256i*>(node.max_excess.data() + slot));
-    const __m256i ge_min = _mm256_or_si256(_mm256_cmpgt_epi16(vrel, vmin),
-                                           _mm256_cmpeq_epi16(vrel, vmin));
-    const __m256i le_max = _mm256_or_si256(_mm256_cmpgt_epi16(vmax, vrel),
-                                           _mm256_cmpeq_epi16(vmax, vrel));
-    __m256i matched = _mm256_and_si256(ge_min, le_max);
-    if (include_zero_boundary) {
-      matched = _mm256_or_si256(matched, _mm256_cmpeq_epi16(vrel, zero));
+    for (std::size_t lane = 0; lane < vector_lane_count<Node>(); ++lane) {
+      out[lane] = node.prefix_excess[slot + lane - 1];
     }
-    const std::uint32_t byte_mask =
-        static_cast<std::uint32_t>(_mm256_movemask_epi8(matched));
-    std::uint32_t result = 0;
-    for (std::size_t lane = 0; lane < 16; ++lane) {
-      const std::uint32_t lane_mask = 0x3u << (lane * 2);
-      if ((byte_mask & lane_mask) == lane_mask) {
-        result |= std::uint32_t{1} << lane;
-      }
-    }
-    return result & valid_mask;
   }
-
-  /**
-   * @brief AVX2 range test for 4 int64 child lanes.
-   * @details Compares four relative targets against int64 child min/max arrays
-   * and returns the lane mask accepted by the range test.
-   * @tparam Node HighNode-compatible node type.
-   * @param node Node whose child ranges are checked.
-   * @param slot First child slot represented by lane 0.
-   * @param relative Per-lane relative targets.
-   * @param include_zero_boundary Whether relative zero is a boundary-only
-   * match.
-   * @return Bit mask of matching lanes.
-   */
-  template <class Node>
-  static std::uint32_t matching_chunk_mask_i64(const Node& node,
-                                               std::size_t slot,
-                                               const std::int64_t* relative,
-                                               bool include_zero_boundary) {
-    const __m256i zero = _mm256_setzero_si256();
-    const __m256i vrel =
-        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(relative));
-    const __m256i vmin = _mm256_loadu_si256(
-        reinterpret_cast<const __m256i*>(node.min_excess.data() + slot));
-    const __m256i vmax = _mm256_loadu_si256(
-        reinterpret_cast<const __m256i*>(node.max_excess.data() + slot));
-    const __m256i ge_min = _mm256_or_si256(_mm256_cmpgt_epi64(vrel, vmin),
-                                           _mm256_cmpeq_epi64(vrel, vmin));
-    const __m256i le_max = _mm256_or_si256(_mm256_cmpgt_epi64(vmax, vrel),
-                                           _mm256_cmpeq_epi64(vmax, vrel));
-    __m256i matched = _mm256_and_si256(ge_min, le_max);
-    if (include_zero_boundary) {
-      matched = _mm256_or_si256(matched, _mm256_cmpeq_epi64(vrel, zero));
-    }
-    const std::uint32_t byte_mask =
-        static_cast<std::uint32_t>(_mm256_movemask_epi8(matched));
-    std::uint32_t result = 0;
-    for (std::size_t lane = 0; lane < 4; ++lane) {
-      const std::uint32_t lane_mask = 0xffu << (lane * 8);
-      if ((byte_mask & lane_mask) == lane_mask) {
-        result |= std::uint32_t{1} << lane;
-      }
-    }
-    return result;
-  }
-#endif
 
   /**
    * @brief Whether a summary can contain a forward target.
