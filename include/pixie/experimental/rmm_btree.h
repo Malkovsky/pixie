@@ -397,9 +397,6 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     std::int8_t min_excess = 0;
     std::int8_t max_excess = 0;
     std::uint8_t min_count = 0;
-    std::uint8_t pattern10_count = 0;
-    std::uint8_t first_bit = 0;
-    std::uint8_t last_bit = 0;
     std::uint8_t pos_first_min = 0;
     std::uint8_t pos_first_max = 0;
   };
@@ -427,7 +424,6 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
         const auto bit_at = [&](int bit_index) {
           return (byte_value >> bit_index) & 1;
         };
-        agg.first_bit = bit_at(0);
         for (int bit_index = 0; bit_index < 8; ++bit_index) {
           const int value = bit_at(bit_index);
           current += value ? 1 : -1;
@@ -442,10 +438,6 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
             maximum = current;
             agg.pos_first_max = static_cast<std::uint8_t>(bit_index);
           }
-          if (bit_index + 1 < 8 && value == 1 && bit_at(bit_index + 1) == 0) {
-            ++agg.pattern10_count;
-          }
-          agg.last_bit = static_cast<std::uint8_t>(value);
         }
         agg.block_excess = static_cast<std::int8_t>(current);
         agg.min_excess = static_cast<std::int8_t>(minimum);

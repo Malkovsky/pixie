@@ -80,7 +80,7 @@ class BitVector {
   AlignedStorage select0_samples_;   // 64-bit global positions
   size_t num_bits_{};
   size_t padded_size_{};
-  size_t max_rank_;
+  size_t max_rank_{};
 
   std::span<const uint64_t> bits_;
 

@@ -1059,6 +1059,14 @@ TEST(RmMBTreeExperimental, EmptyInput) {
   EXPECT_EQ(rm.enclose(0), pixie::experimental::RmMBTree<>::npos);
 }
 
+TEST(RmMBTreeExperimental, SpanConstructorRejectsShortInputStorage) {
+  std::vector<std::uint64_t> words(1, 0);
+  EXPECT_THROW(
+      (pixie::experimental::RmMBTree<>(std::span<const std::uint64_t>(words),
+                                       /*bit_count=*/65)),
+      std::invalid_argument);
+}
+
 TEST(RmMBTreeExperimental, RankSelectIgnoresDirtyTrailingStorage) {
   std::vector<std::uint64_t> words = {
       0b101ull, std::numeric_limits<std::uint64_t>::max()};
@@ -1074,6 +1082,17 @@ TEST(RmMBTreeExperimental, RankSelectIgnoresDirtyTrailingStorage) {
   EXPECT_EQ(rm.select1(3), pixie::experimental::RmMBTree<>::npos);
   EXPECT_EQ(rm.select0(1), 1u);
   EXPECT_EQ(rm.select0(2), pixie::experimental::RmMBTree<>::npos);
+}
+
+TEST(RmMBTreeExperimental, ParenthesesOnUnmatchedBoundaryBits) {
+  const std::string bits = "1";
+  auto words = pack_words_lsb_first(bits);
+  pixie::experimental::RmMBTree<> rm(std::span<const std::uint64_t>(words),
+                                     bits.size());
+
+  EXPECT_EQ(rm.close(0), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.open(0), 0u);
+  EXPECT_EQ(rm.enclose(0), pixie::experimental::RmMBTree<>::npos);
 }
 
 TEST(RmMBTreeExperimental, InvalidArgumentsGuards) {
