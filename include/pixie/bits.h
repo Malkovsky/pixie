@@ -43,8 +43,114 @@ static inline const __m256i mask_first_half = _mm256_setr_epi8(
 );
 
 // clang-format on
+
+/**
+ * @brief Test 16 int16 RmM btree child ranges for a node-local target.
+ * @details Each lane represents one child summary. The function checks whether
+ * @p target lies in `[prefix_before[i] + min_excess[i],
+ * prefix_before[i] + max_excess[i]]`. When @p include_zero_boundary is true,
+ * it also accepts `target == prefix_before[i]`, which represents the left
+ * boundary match used by backward search.
+ * @param prefix_before Exclusive prefix excess before each child.
+ * @param min_excess Per-child minimum excess relative to the child start.
+ * @param max_excess Per-child maximum excess relative to the child start.
+ * @param target Target excess relative to the start of the parent node.
+ * @param include_zero_boundary Whether to accept child left-boundary matches.
+ * @return Bit mask with bit `i` set when lane `i` can contain the target.
+ */
+static inline uint32_t rmm_btree_match_mask_i16x16(const int16_t* prefix_before,
+                                                   const int16_t* min_excess,
+                                                   const int16_t* max_excess,
+                                                   int16_t target,
+                                                   bool include_zero_boundary) {
+  const __m256i vtarget = _mm256_set1_epi16(target);
+  const __m256i vprefix =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(prefix_before));
+  const __m256i vmin =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(min_excess));
+  const __m256i vmax =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(max_excess));
+
+  const __m256i lower = _mm256_adds_epi16(vprefix, vmin);
+  const __m256i upper = _mm256_adds_epi16(vprefix, vmax);
+  const __m256i ge_lower = _mm256_or_si256(_mm256_cmpgt_epi16(vtarget, lower),
+                                           _mm256_cmpeq_epi16(vtarget, lower));
+  const __m256i le_upper = _mm256_or_si256(_mm256_cmpgt_epi16(upper, vtarget),
+                                           _mm256_cmpeq_epi16(upper, vtarget));
+  __m256i matched = _mm256_and_si256(ge_lower, le_upper);
+  if (include_zero_boundary) {
+    matched = _mm256_or_si256(matched, _mm256_cmpeq_epi16(vtarget, vprefix));
+  }
+
+  const uint32_t byte_mask =
+      static_cast<uint32_t>(_mm256_movemask_epi8(matched));
+  uint32_t result = 0;
+  for (size_t lane = 0; lane < 16; ++lane) {
+    const uint32_t lane_mask = 0x3u << (lane * 2);
+    if ((byte_mask & lane_mask) == lane_mask) {
+      result |= uint32_t{1} << lane;
+    }
+  }
+  return result;
+}
+
+/**
+ * @brief Test 4 int64 RmM btree child ranges for a node-local target.
+ * @details Each lane represents one child summary. The function subtracts the
+ * child prefix from @p target to form a child-relative target, then checks it
+ * against the child's `[min_excess, max_excess]` range. When
+ * @p include_zero_boundary is true, it also accepts a zero relative target for
+ * the left-boundary match used by backward search.
+ * @param prefix_before Exclusive prefix excess before each child.
+ * @param min_excess Per-child minimum excess relative to the child start.
+ * @param max_excess Per-child maximum excess relative to the child start.
+ * @param target Target excess relative to the start of the parent node.
+ * @param include_zero_boundary Whether to accept child left-boundary matches.
+ * @return Bit mask with bit `i` set when lane `i` can contain the target.
+ */
+static inline uint32_t rmm_btree_match_mask_i64x4(const int64_t* prefix_before,
+                                                  const int64_t* min_excess,
+                                                  const int64_t* max_excess,
+                                                  int64_t target,
+                                                  bool include_zero_boundary) {
+  const __m256i vtarget = _mm256_set1_epi64x(target);
+  const __m256i vprefix =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(prefix_before));
+  const __m256i vmin =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(min_excess));
+  const __m256i vmax =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(max_excess));
+
+  const __m256i relative = _mm256_sub_epi64(vtarget, vprefix);
+  const __m256i ge_min = _mm256_or_si256(_mm256_cmpgt_epi64(relative, vmin),
+                                         _mm256_cmpeq_epi64(relative, vmin));
+  const __m256i le_max = _mm256_or_si256(_mm256_cmpgt_epi64(vmax, relative),
+                                         _mm256_cmpeq_epi64(vmax, relative));
+  __m256i matched = _mm256_and_si256(ge_min, le_max);
+  if (include_zero_boundary) {
+    matched = _mm256_or_si256(matched, _mm256_cmpeq_epi64(vtarget, vprefix));
+  }
+
+  const uint32_t byte_mask =
+      static_cast<uint32_t>(_mm256_movemask_epi8(matched));
+  uint32_t result = 0;
+  for (size_t lane = 0; lane < 4; ++lane) {
+    const uint32_t lane_mask = 0xffu << (lane * 8);
+    if ((byte_mask & lane_mask) == lane_mask) {
+      result |= uint32_t{1} << lane;
+    }
+  }
+  return result;
+}
 #endif
 
+/**
+ * @brief Return a mask with the lowest @p num bits set.
+ * @details Values greater than or equal to 64 produce an all-ones mask, which
+ * avoids undefined behavior from shifting by the word width.
+ * @param num Number of low bits to set.
+ * @return A 64-bit mask containing ones in positions `[0, num)`.
+ */
 static inline uint64_t first_bits_mask(size_t num) {
   return num >= 64 ? UINT64_MAX : ((1llu << num) - 1);
 }
