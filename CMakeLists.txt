@@ -201,6 +201,14 @@ if(PIXIE_BENCHMARKS)
         benchmark
         ${PIXIE_DIAGNOSTICS_LIBS})
 
+    add_executable(bench_rmm_btree
+        src/benchmarks/bench_rmm_btree.cpp)
+    target_include_directories(bench_rmm_btree
+        PUBLIC include)
+    target_link_libraries(bench_rmm_btree
+        benchmark
+        ${PIXIE_DIAGNOSTICS_LIBS})
+
     if(PIXIE_THIRD_PARTY_BACKENDS)
         add_executable(bench_rmm_sdsl
             src/benchmarks/bench_rmm_sdsl.cpp)

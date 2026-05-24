@@ -647,4 +647,62 @@ static inline void excess_positions_512_expand_avx512(const uint64_t* s,
 #endif
 }
 
+struct ExcessByteLut {
+  uint8_t masks[256][17];  // target index: T + 8
+  int8_t deltas[256];
+
+  constexpr ExcessByteLut() : masks{}, deltas{} {
+    for (int b = 0; b < 256; ++b) {
+      int pop = 0;
+      for (int i = 0; i < 8; ++i) {
+        if ((b >> i) & 1) {
+          pop++;
+        }
+      }
+      deltas[b] = static_cast<int8_t>(2 * pop - 8);
+
+      for (int t = -8; t <= 8; ++t) {
+        uint8_t mask = 0;
+        int cur_pop = 0;
+        for (int i = 0; i < 8; ++i) {
+          if ((b >> i) & 1) {
+            cur_pop++;
+          }
+          int excess = 2 * cur_pop - (i + 1);
+          if (excess == t) {
+            mask |= (1 << i);
+          }
+        }
+        masks[b][t + 8] = mask;
+      }
+    }
+  }
+};
+
+inline constexpr ExcessByteLut kExcessByteLut;
+
+static inline void excess_positions_512_byte_lut(const uint64_t* s,
+                                                 int target_x,
+                                                 uint64_t* out) noexcept {
+  out[0] = out[1] = out[2] = out[3] = 0;
+  out[4] = out[5] = out[6] = out[7] = 0;
+
+  if (target_x < -512 || target_x > 512) {
+    return;
+  }
+
+  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(s);
+  uint8_t* out_bytes = reinterpret_cast<uint8_t*>(out);
+
+  int cur = 0;
+  for (int i = 0; i < 64; ++i) {
+    const uint8_t b = bytes[i];
+    const int target_rel = target_x - cur;
+    if (target_rel >= -8 && target_rel <= 8) {
+      out_bytes[i] = kExcessByteLut.masks[b][target_rel + 8];
+    }
+    cur += kExcessByteLut.deltas[b];
+  }
+}
+
 }  // namespace pixie::experimental

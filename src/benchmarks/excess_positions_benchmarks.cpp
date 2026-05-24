@@ -9,6 +9,7 @@
 #include <vector>
 
 using pixie::experimental::excess_positions_512_branching_lut;
+using pixie::experimental::excess_positions_512_byte_lut;
 using pixie::experimental::excess_positions_512_expand;
 using pixie::experimental::excess_positions_512_expand8;
 using pixie::experimental::excess_positions_512_expand_avx512;
@@ -211,6 +212,32 @@ static void BM_ExcessPositions512_Scalar(benchmark::State& state) {
 }
 
 BENCHMARK(BM_ExcessPositions512_Scalar)
+    ->ArgNames({"X"})
+    ->Args({-64})
+    ->Args({-8})
+    ->Args({0})
+    ->Args({8})
+    ->Args({64});
+
+static void BM_ExcessPositions512_ByteLUT(benchmark::State& state) {
+  const int target_x = state.range(0);
+  const auto blocks = make_blocks();
+  const size_t num_blocks = blocks.size();
+
+  alignas(64) uint64_t out[8];
+  size_t idx = 0;
+
+  for (auto _ : state) {
+    const auto& s = blocks[idx % num_blocks];
+    excess_positions_512_byte_lut(s.data(), target_x, out);
+    benchmark::DoNotOptimize(out);
+    ++idx;
+  }
+
+  state.SetItemsProcessed(state.iterations());
+}
+
+BENCHMARK(BM_ExcessPositions512_ByteLUT)
     ->ArgNames({"X"})
     ->Args({-64})
     ->Args({-8})

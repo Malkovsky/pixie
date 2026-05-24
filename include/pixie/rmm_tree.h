@@ -928,46 +928,46 @@ class RmMTree : public RmMBase<RmMTree> {
   /**
    * @brief close_impl(@p open_position): matching ')' for '(' at @p
    * open_position.
-   * @todo This method still uses the older boundary-adjusted search convention;
-   * align it with SDSL-style zero-based parenthesis indexing.
    * @return Position of matching ')', or npos.
    */
   inline size_t close_impl(const size_t& open_position) const {
     if (open_position >= num_bits) {
       return npos;
     }
-    return fwdsearch_impl(open_position, -1);
+    if (!bit(open_position)) {
+      return open_position;
+    }
+    return fwdsearch_impl(open_position, 0);
   }
 
   /**
    * @brief open_impl(@p close_position): matching '(' for ')' at @p
    * close_position.
-   * @todo This method still uses the older boundary-adjusted search convention;
-   * align it with SDSL-style zero-based parenthesis indexing.
    * @return Position of matching '(', or npos.
    */
   inline size_t open_impl(const size_t& close_position) const {
-    // bwdsearch allows i in [1..num_bits]
-    if (close_position == 0 || close_position > num_bits) {
+    if (close_position >= num_bits) {
       return npos;
     }
-    const size_t result = bwdsearch_impl(close_position, 0);
-    return (result == npos ? npos : result + 1);
+    if (bit(close_position)) {
+      return close_position;
+    }
+    return bwdsearch_impl(close_position + 1, 0);
   }
 
   /**
    * @brief enclose_impl(@p position): opening '(' that strictly encloses @p
    * position.
-   * @todo This method still uses the older boundary-adjusted search convention;
-   * align it with SDSL-style zero-based parenthesis indexing.
    * @return Position of enclosing '(', or npos.
    */
   inline size_t enclose_impl(const size_t& position) const {
-    if (position == 0 || position > num_bits) {
+    if (position >= num_bits) {
       return npos;
     }
-    const size_t result = bwdsearch_impl(position, -2);
-    return (result == npos ? npos : result + 1);
+    if (!bit(position)) {
+      return open_impl(position);
+    }
+    return bwdsearch_impl(position + 1, -2);
   }
 
  private:

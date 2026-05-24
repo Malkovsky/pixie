@@ -12,9 +12,9 @@ struct RmMBenchmarkTraits<pixie::SdslRmMTree> {
 
   static bool SupportsOp(std::string_view op) {
     return op == "rank1" || op == "rank0" || op == "select1" ||
-           op == "excess" || op == "fwdsearch" || op == "range_min_query_pos" ||
-           op == "range_min_query_val" || op == "close" || op == "open" ||
-           op == "enclose";
+           op == "excess" || op == "fwdsearch" || op == "bwdsearch" ||
+           op == "range_min_query_pos" || op == "range_min_query_val" ||
+           op == "close" || op == "open" || op == "enclose";
   }
 };
 
