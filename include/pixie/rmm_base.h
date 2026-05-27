@@ -193,6 +193,13 @@ class RmMBase {
     return impl().enclose_impl(open_position);
   }
 
+  /**
+   * @brief Read bit at position @p position (LSB-first across words).
+   */
+  int bit_impl(const size_t& position) const noexcept {
+    return impl().bit_impl(position);
+  }
+
  private:
   const Impl& impl() const { return static_cast<const Impl&>(*this); }
 };

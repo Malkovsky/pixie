@@ -246,7 +246,7 @@ class RmMTree : public RmMBase<RmMTree> {
     pattern_count += rr_in_block(block_begin, end_position);
     // boundary between the last full node and the leaf tail
     if (block_index > 0 && end_position > block_begin &&
-        previous_last_bit == 1 && bit(block_begin) == 0) {
+        previous_last_bit == 1 && bit_impl(block_begin) == 0) {
       ++pattern_count;
     }
     return pattern_count;
@@ -710,7 +710,7 @@ class RmMTree : public RmMBase<RmMTree> {
           std::min(range_end, begin_block_end - 1);
       for (size_t position = range_begin; position <= end_of_first_chunk;
            ++position) {
-        current_excess += bit(position) ? +1 : -1;
+        current_excess += bit_impl(position) ? +1 : -1;
         if (current_excess < min_value) {
           min_value = current_excess;
           local_count = 1;
@@ -745,7 +745,7 @@ class RmMTree : public RmMBase<RmMTree> {
       int current_excess = 0, min_value = INT_MAX, local_count = 0;
       for (size_t position = end_block_start; position <= range_end;
            ++position) {
-        current_excess += bit(position) ? +1 : -1;
+        current_excess += bit_impl(position) ? +1 : -1;
         if (current_excess < min_value) {
           min_value = current_excess;
           local_count = 1;
@@ -968,6 +968,13 @@ class RmMTree : public RmMBase<RmMTree> {
       return open_impl(position);
     }
     return bwdsearch_impl(position + 1, -2);
+  }
+
+  /**
+   * @brief Read bit at position @p position (LSB-first across words).
+   */
+  inline int bit_impl(const size_t& position) const noexcept {
+    return (bits[position >> 6] >> (position & 63)) & 1u;
   }
 
  private:
@@ -1407,7 +1414,7 @@ class RmMTree : public RmMBase<RmMTree> {
       pos += 16;
     }
     while (pos < end) {
-      cur += bit(pos) ? +1 : -1;
+      cur += bit_impl(pos) ? +1 : -1;
       if (cur == required_delta) {
         return pos;
       }
@@ -1440,7 +1447,7 @@ class RmMTree : public RmMBase<RmMTree> {
 
     size_t pos = start;
     while (pos < end && (pos & 7)) {
-      cur += bit(pos) ? +1 : -1;
+      cur += bit_impl(pos) ? +1 : -1;
       if (cur == required_delta) {
         if (out_total) {
           *out_total = cur;
@@ -1481,7 +1488,7 @@ class RmMTree : public RmMBase<RmMTree> {
     }
 
     while (pos < end) {
-      cur += bit(pos) ? +1 : -1;
+      cur += bit_impl(pos) ? +1 : -1;
       if (cur == required_delta) {
         if (out_total) {
           *out_total = cur;
@@ -1530,7 +1537,7 @@ class RmMTree : public RmMBase<RmMTree> {
     }
 
     while (position < search_end) {
-      current_excess += bit(position) ? 1 : -1;
+      current_excess += bit_impl(position) ? 1 : -1;
       if (current_excess == required_delta) {
         return position;
       }
@@ -1656,14 +1663,14 @@ class RmMTree : public RmMBase<RmMTree> {
         return npos;
       }
       const size_t bit_pos = pos_end - 1;
-      cur_end -= bit(bit_pos) ? +1 : -1;  // move one bit to the left
+      cur_end -= bit_impl(bit_pos) ? +1 : -1;  // move one bit to the left
       pos_end = bit_pos;
     }
 #else
     size_t last_boundary = npos;
     int cur = 0;
     for (size_t pos = block_begin; pos < boundary_max; ++pos) {
-      cur += bit(pos) ? +1 : -1;
+      cur += bit_impl(pos) ? +1 : -1;
       if (cur == required_delta) {
         last_boundary = pos + 1;
       }
@@ -1902,7 +1909,7 @@ class RmMTree : public RmMBase<RmMTree> {
     if (block_end == seg_end) {
       const int total = node_total_excess[node_index];
       if (!allow_right_boundary && block_end > segment_base) {
-        prefix_override = total - (bit(block_end - 1) ? +1 : -1);
+        prefix_override = total - (bit_impl(block_end - 1) ? +1 : -1);
       } else {
         prefix_override = total;
       }
@@ -2203,13 +2210,6 @@ class RmMTree : public RmMBase<RmMTree> {
   }
 
   /**
-   * @brief Read bit at position @p position (LSB-first across words).
-   */
-  inline int bit(const size_t& position) const noexcept {
-    return (bits[position >> 6] >> (position & 63)) & 1u;
-  }
-
-  /**
    * @brief Number of ones in node @p node_index computed from size and total
    * excess.
    */
@@ -2240,7 +2240,7 @@ class RmMTree : public RmMBase<RmMTree> {
     }
     // to byte alignment
     while (range_begin <= range_end && (range_begin & 7)) {
-      current_excess += bit(range_begin) ? +1 : -1;
+      current_excess += bit_impl(range_begin) ? +1 : -1;
       if (current_excess < min_value) {
         min_value = current_excess;
         count = 1;
@@ -2265,7 +2265,7 @@ class RmMTree : public RmMBase<RmMTree> {
     }
     // tail
     while (range_begin <= range_end) {
-      current_excess += bit(range_begin) ? +1 : -1;
+      current_excess += bit_impl(range_begin) ? +1 : -1;
       if (current_excess < min_value) {
         min_value = current_excess;
         count = 1;
@@ -2335,7 +2335,7 @@ class RmMTree : public RmMBase<RmMTree> {
     size_t position = range_begin;
 
     while (position <= range_end && (position & 7)) {
-      current_excess += bit(position) ? +1 : -1;
+      current_excess += bit_impl(position) ? +1 : -1;
       if (current_excess < min_value) {
         min_value = current_excess;
       }
@@ -2349,7 +2349,7 @@ class RmMTree : public RmMBase<RmMTree> {
       position += 8;
     }
     while (position <= range_end) {
-      current_excess += bit(position) ? +1 : -1;
+      current_excess += bit_impl(position) ? +1 : -1;
       if (current_excess < min_value) {
         min_value = current_excess;
       }
@@ -2361,7 +2361,7 @@ class RmMTree : public RmMBase<RmMTree> {
 
     // to byte alignment
     while (position <= range_end && (position & 7)) {
-      current_excess += bit(position) ? +1 : -1;
+      current_excess += bit_impl(position) ? +1 : -1;
       if (current_excess == min_value) {
         if (--target_min_rank == 0) {
           return position;
@@ -2392,7 +2392,7 @@ class RmMTree : public RmMBase<RmMTree> {
 
     // tail
     while (position <= range_end) {
-      current_excess += bit(position) ? +1 : -1;
+      current_excess += bit_impl(position) ? +1 : -1;
       if (current_excess == min_value) {
         if (--target_min_rank == 0) {
           return position;
@@ -2495,7 +2495,7 @@ class RmMTree : public RmMBase<RmMTree> {
         // prefix at boundary_max = start_position-1:
         // leaf_delta is prefix at start_position, subtract last step
         (start_position > leaf_block_begin
-             ? (leaf_delta - (bit(start_position - 1) ? +1 : -1))
+             ? (leaf_delta - (bit_impl(start_position - 1) ? +1 : -1))
              : 0));
   }
 
@@ -2516,7 +2516,7 @@ class RmMTree : public RmMBase<RmMTree> {
 
     // to byte allignment
     while (range_begin <= range_end && (range_begin & 7)) {
-      current_excess += bit(range_begin) ? +1 : -1;
+      current_excess += bit_impl(range_begin) ? +1 : -1;
       if (current_excess < min_value) {
         min_value = current_excess;
         first_position = range_begin;
@@ -2538,7 +2538,7 @@ class RmMTree : public RmMBase<RmMTree> {
 
     // tail
     while (range_begin <= range_end) {
-      current_excess += bit(range_begin) ? +1 : -1;
+      current_excess += bit_impl(range_begin) ? +1 : -1;
       if (current_excess < min_value) {
         min_value = current_excess;
         first_position = range_begin;
@@ -2565,7 +2565,7 @@ class RmMTree : public RmMBase<RmMTree> {
     first_position = npos;
 
     while (range_begin <= range_end && (range_begin & 7)) {
-      current_excess += bit(range_begin) ? +1 : -1;
+      current_excess += bit_impl(range_begin) ? +1 : -1;
       if (current_excess > max_value) {
         max_value = current_excess;
         first_position = range_begin;
@@ -2585,7 +2585,7 @@ class RmMTree : public RmMBase<RmMTree> {
     }
 
     while (range_begin <= range_end) {
-      current_excess += bit(range_begin) ? +1 : -1;
+      current_excess += bit_impl(range_begin) ? +1 : -1;
       if (current_excess > max_value) {
         max_value = current_excess;
         first_position = range_begin;
@@ -2649,7 +2649,7 @@ class RmMTree : public RmMBase<RmMTree> {
       segment_size_bits[leaf_node_index] = segment_end - segment_begin;
 
       if (segment_begin < segment_end) {
-        node_first_bit[leaf_node_index] = bit(segment_begin);
+        node_first_bit[leaf_node_index] = bit_impl(segment_begin);
       }
 
       const auto& aggregates_table = LUT8();
@@ -2693,7 +2693,7 @@ class RmMTree : public RmMBase<RmMTree> {
 
       // Tail < 8 bits
       while (position < segment_end) {
-        const uint8_t bit_value = bit(position);
+        const uint8_t bit_value = bit_impl(position);
         if (previous_bit == 1 && bit_value == 0) {
           pattern10_count++;
         }

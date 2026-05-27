@@ -114,6 +114,7 @@
                 "benchmark_tests",
                 "test_rmm",
                 "louds_tree_tests",
+                "dfuds_tree_tests",
                 "excess_positions_tests"
             ]
         },
@@ -126,6 +127,7 @@
                 "benchmark_tests",
                 "test_rmm",
                 "louds_tree_tests",
+                "dfuds_tree_tests",
                 "excess_positions_tests"
             ]
         },
@@ -137,6 +139,7 @@
                 "benchmarks",
                 "bench_rmm",
                 "louds_tree_benchmarks",
+                "dfuds_tree_benchmarks",
                 "alignment_comparison",
                 "excess_positions_benchmarks"
             ]
@@ -150,6 +153,7 @@
                 "bench_rmm",
                 "bench_rmm_sdsl",
                 "louds_tree_benchmarks",
+                "dfuds_tree_benchmarks",
                 "alignment_comparison",
                 "excess_positions_benchmarks"
             ]
@@ -162,6 +166,7 @@
                 "benchmarks",
                 "bench_rmm",
                 "louds_tree_benchmarks",
+                "dfuds_tree_benchmarks",
                 "alignment_comparison",
                 "excess_positions_benchmarks"
             ]
@@ -183,6 +188,7 @@
                 "benchmark_tests",
                 "test_rmm",
                 "louds_tree_tests",
+                "dfuds_tree_tests",
                 "excess_positions_tests"
             ]
         },
@@ -195,6 +201,7 @@
                 "benchmark_tests",
                 "test_rmm",
                 "louds_tree_tests",
+                "dfuds_tree_tests",
                 "excess_positions_tests"
             ]
         }

@@ -277,6 +277,10 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
     return position < size_ ? position : npos;
   }
 
+  int bit_impl(const size_t& position) const noexcept {
+    return (bits_[position >> 6] >> (position & 63)) & 1u;
+  }
+
  private:
   void reset_support() { tree_ = BpSupport(&bits_); }
 
