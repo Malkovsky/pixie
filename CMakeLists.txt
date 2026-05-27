@@ -248,6 +248,15 @@ if(PIXIE_BENCHMARKS)
         benchmark_main
         ${PIXIE_DIAGNOSTICS_LIBS})
 
+    add_executable(bp_tree_benchmarks
+            src/benchmarks/bp_tree_benchmarks.cpp)
+    target_include_directories(bp_tree_benchmarks
+            PUBLIC include)
+    target_link_libraries(bp_tree_benchmarks
+            benchmark
+            benchmark_main
+            ${PIXIE_DIAGNOSTICS_LIBS})
+
     add_executable(dfuds_tree_benchmarks
             src/benchmarks/dfuds_tree_benchmarks.cpp)
     target_include_directories(dfuds_tree_benchmarks
