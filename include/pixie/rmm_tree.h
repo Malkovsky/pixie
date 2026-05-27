@@ -2210,6 +2210,13 @@ class RmMTree : public RmMBase<RmMTree> {
   }
 
   /**
+   * @brief Read bit at position @p position (LSB-first across words).
+   */
+  inline int bit(const size_t& position) const noexcept {
+    return (bits[position >> 6] >> (position & 63)) & 1u;
+  }
+
+  /**
    * @brief Number of ones in node @p node_index computed from size and total
    * excess.
    */
