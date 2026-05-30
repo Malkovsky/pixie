@@ -2,13 +2,579 @@
 
 #include <pixie/bits.h>
 
+#include <algorithm>
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 
+/**
+ * Benchmark note:
+ *
+ * This header keeps experimental and historical excess_min/excess_positions
+ * variants for comparison benchmarks. Production excess code lives in
+ * pixie/bits.h; a benchmark win here should be treated as a candidate to port,
+ * not evidence that callers use this variant already.
+ *
+ * Diagnostic run, 2026-05-30:
+ *   taskset -c 0 build/benchmarks-diagnostic_local/excess_positions_benchmarks
+ *     --benchmark_filter='BM_ExcessMin128(_|/|$)'
+ *     --benchmark_repetitions=3
+ *     --benchmark_perf_counters=CYCLES,INSTRUCTIONS,CACHE-MISSES
+ *     --benchmark_counters_tabular=true
+ *
+ * Production excess_min_128:
+ *   range      ns    cycles  instructions  cache misses
+ *   0-128     8.1    35.8   117.9         0.001
+ *   0-127    11.6    50.9   174.9         0.001
+ *   0-16      3.7    16.4    88.5         0.000
+ *   0-32      5.6    24.7   124.8         0.000
+ *   0-48      9.1    40.5   122.1         0.000
+ *   0-64      8.1    36.2   121.4         0.000
+ *   0-31     12.1    54.2   177.6         0.000
+ *   1-17     14.4    64.6   213.3         0.000
+ *   3-35     13.5    60.1   212.4         0.000
+ *   5-37     12.9    57.5   215.3         0.000
+ *   32-64     7.4    33.1   153.0         0.000
+ *   33-65    14.3    63.6   214.6         0.001
+ *   64-96     7.8    34.2   148.9         0.000
+ *   61-93    16.0    69.4   218.5         0.002
+ *   96-128    6.5    28.1   151.9         0.001
+ *   56-72     5.2    22.7   116.5         0.000
+ *   60-68     8.5    38.1   148.7         0.000
+ *   63-64     3.1    13.3    84.0         0.000
+ *   17-17     2.1     9.1    47.0         0.000
+ *   Random   11.3    49.7   197.0         0.001
+ *
+ * New non-aligned/random range timings, ns:
+ *   range   Prod  Scalar  Nibble  Byte  Hybrid  Expand16  Lane64  Split64  Skip
+ *   1-17    14.4    14.6    10.1  12.5    11.9      30.3    13.3     15.9  16.3
+ *   3-35    13.5    27.1    12.5  14.2    16.1      46.1    13.1     12.7  14.1
+ *   5-37    12.9    27.0    14.6  15.2    18.5      44.7    13.5     13.0  14.7
+ *   33-65   14.3    26.6    13.3  17.8    17.4      42.1    14.5     13.3  13.6
+ *   61-93   16.0    26.6    15.4  14.8    17.7      43.8    14.0     13.6  11.4
+ *   Random  11.3    39.9    18.9  14.7    11.5      68.2    11.9     12.4  12.6
+ *
+ * Random range hardware counters:
+ *   variant       ns    cycles  instructions
+ *   Production   11.3    49.7   197.0
+ *   ScalarBits   39.9   175.9   721.9
+ *   NibbleLUT    18.9    83.2   291.2
+ *   ByteLUT      14.7    63.9   261.2
+ *   HybridLUT    11.5    50.8   209.8
+ *   Expand16     68.2   300.8   879.8
+ *   Lane64SSE    11.9    52.1   224.1
+ *   Split64SSE   12.4    54.1   236.9
+ *   ShortSkip    12.6    55.7   252.5
+ *
+ * Diagnostic run, 2026-05-30:
+ *   taskset -c 0 build/benchmarks-diagnostic_local/excess_positions_benchmarks
+ *     --benchmark_filter='BM_ExcessPositions512'
+ *     --benchmark_repetitions=3
+ *     --benchmark_perf_counters=CYCLES,INSTRUCTIONS,CACHE-MISSES
+ *     --benchmark_counters_tabular=true
+ *
+ * excess_positions_512 random target in [-128, 128]:
+ *   variant        ns    cycles  instructions  cache misses
+ *   Production    11.4    50.8   188.9         0.001
+ *   LUTAVX512     12.8    56.8   195.5         0.002
+ *   BranchingLUT  16.7    73.4   261.4         0.003
+ *   ExpandAVX512  21.0    93.6   266.6         0.003
+ *   Expand8       24.6   109.9   449.7         0.002
+ *   Expand        46.8   207.7   784.8         0.006
+ *   ByteLUT       49.7   221.4   754.5         0.008
+ *   Scalar       374.2  1656.0  7716.6         0.041
+ *
+ * excess_positions_512 fixed-target timings, ns:
+ *   variant       -64   -8    0     8    64
+ *   Production    11.6  18.0  18.3  19.1  12.3
+ *   LUTAVX512     13.4  17.9  19.2  21.3  13.2
+ *   BranchingLUT  19.1  28.9  28.7  28.3  16.8
+ *   ExpandAVX512  22.7  36.6  36.3  36.2  22.5
+ *   Expand8       17.6  52.7  47.5  46.9  17.7
+ *   Expand        51.0  85.9  86.1  85.5  53.9
+ *   ByteLUT       34.7  77.4  76.9  79.0  34.3
+ *   Scalar       367.2 433.5 466.3 428.1 364.6
+ */
+
 namespace pixie::experimental {
 
+namespace detail {
+
+constexpr int8_t nibble_delta(uint8_t x) {
+  return static_cast<int8_t>(2 * std::popcount(x) - 4);
+}
+
+constexpr int8_t byte_delta(uint8_t x) {
+  return static_cast<int8_t>(2 * std::popcount(x) - 8);
+}
+
+constexpr int8_t min_prefix(uint8_t x, int bits) {
+  int cur = 0;
+  int best = 0;
+  for (int bit = 0; bit < bits; ++bit) {
+    cur += ((x >> bit) & 1u) != 0 ? 1 : -1;
+    if (bit == 0 || cur < best) {
+      best = cur;
+    }
+  }
+  return static_cast<int8_t>(best);
+}
+
+constexpr int8_t min_prefix_offset(uint8_t x, int bits) {
+  int cur = 0;
+  int best = 0;
+  int best_offset = 1;
+  for (int bit = 0; bit < bits; ++bit) {
+    cur += ((x >> bit) & 1u) != 0 ? 1 : -1;
+    if (bit == 0 || cur < best) {
+      best = cur;
+      best_offset = bit + 1;
+    }
+  }
+  return static_cast<int8_t>(best_offset);
+}
+
+template <size_t N, typename Fn>
+constexpr std::array<int8_t, N> make_lut(Fn fn) {
+  std::array<int8_t, N> out{};
+  for (size_t i = 0; i < N; ++i) {
+    out[i] = fn(static_cast<uint8_t>(i));
+  }
+  return out;
+}
+
+static inline constexpr std::array<int8_t, 16> kNibbleDelta =
+    make_lut<16>([](uint8_t x) { return nibble_delta(x); });
+static inline constexpr std::array<int8_t, 16> kNibbleMin =
+    make_lut<16>([](uint8_t x) { return min_prefix(x, 4); });
+static inline constexpr std::array<int8_t, 16> kNibbleMinOffset =
+    make_lut<16>([](uint8_t x) { return min_prefix_offset(x, 4); });
+static inline constexpr std::array<int8_t, 256> kByteDelta =
+    make_lut<256>([](uint8_t x) { return byte_delta(x); });
+static inline constexpr std::array<int8_t, 256> kByteMin =
+    make_lut<256>([](uint8_t x) { return min_prefix(x, 8); });
+static inline constexpr std::array<int8_t, 256> kByteMinOffset =
+    make_lut<256>([](uint8_t x) { return min_prefix_offset(x, 8); });
+
+static inline void scan_bit(const uint64_t* s,
+                            size_t bit,
+                            int& current,
+                            int& best,
+                            size_t& best_offset) noexcept {
+  current += ((s[bit >> 6] >> (bit & 63)) & 1ull) != 0 ? 1 : -1;
+  const size_t offset = bit + 1;
+  if (current < best) {
+    best = current;
+    best_offset = offset;
+  }
+}
+
+}  // namespace detail
+
+/**
+ * @brief Reference scalar excess_min_128 implementation.
+ *
+ * @details Workflow:
+ *
+ *   prefix(left) -> scan bits left..right-1 -> first strict minimum
+ *
+ * The value at offset left is included before scanning any bits, matching the
+ * production inclusive prefix range [left, right]. Each scanned bit advances to
+ * the next prefix offset. Ties are intentionally ignored, so the first minimum
+ * offset is preserved.
+ */
+static inline ExcessResult excess_min_128_scalar_bits(const uint64_t* s,
+                                                      size_t left,
+                                                      size_t right) noexcept {
+  if (left > right) {
+    return {};
+  }
+  left = std::min<size_t>(left, 128);
+  right = std::min<size_t>(right, 128);
+
+  int best = prefix_excess_128(s, left);
+  size_t best_offset = left;
+  if (left == right) {
+    return {best, best_offset};
+  }
+
+  int current = best;
+  for (size_t bit = left; bit < right; ++bit) {
+    detail::scan_bit(s, bit, current, best, best_offset);
+  }
+  return {best, best_offset};
+}
+
+/**
+ * @brief Scalar 4-bit LUT excess_min_128 experiment.
+ *
+ * @details Workflow:
+ *
+ *   unaligned bits -> full nibbles -> trailing bits
+ *                      | delta
+ *                      | local min
+ *                      ` first local min offset
+ *
+ * Full nibbles use lookup tables for the nibble delta, the minimum prefix value
+ * inside positions 1..4, and the first local bit offset that reaches that
+ * minimum. Boundary bits are scanned scalar so the LUT never observes bits
+ * outside the query range.
+ */
+static inline ExcessResult excess_min_128_nibble_lut(const uint64_t* s,
+                                                     size_t left,
+                                                     size_t right) noexcept {
+  if (left > right) {
+    return {};
+  }
+  left = std::min<size_t>(left, 128);
+  right = std::min<size_t>(right, 128);
+
+  int best = prefix_excess_128(s, left);
+  size_t best_offset = left;
+  if (left == right) {
+    return {best, best_offset};
+  }
+
+  int current = best;
+  size_t bit = left;
+  for (; bit < right && (bit & 3u) != 0; ++bit) {
+    detail::scan_bit(s, bit, current, best, best_offset);
+  }
+
+  for (; bit + 4 <= right; bit += 4) {
+    const uint8_t nibble =
+        static_cast<uint8_t>((s[bit >> 6] >> (bit & 63)) & 0xFu);
+    const int candidate = current + detail::kNibbleMin[nibble];
+    if (candidate < best) {
+      best = candidate;
+      best_offset = bit + static_cast<size_t>(detail::kNibbleMinOffset[nibble]);
+    }
+    current += detail::kNibbleDelta[nibble];
+  }
+
+  for (; bit < right; ++bit) {
+    detail::scan_bit(s, bit, current, best, best_offset);
+  }
+  return {best, best_offset};
+}
+
+/**
+ * @brief Scalar 8-bit LUT excess_min_128 experiment.
+ *
+ * @details Workflow:
+ *
+ *   unaligned bits -> full bytes -> trailing bits
+ *                     | delta
+ *                     | local min
+ *                     ` first local min offset
+ *
+ * Full bytes use lookup tables for byte delta, minimum prefix value inside
+ * positions 1..8, and the first local bit offset that reaches that minimum.
+ * This reduces loop iterations on byte-aligned ranges but pays scalar boundary
+ * work on unaligned ranges.
+ */
+static inline ExcessResult excess_min_128_byte_lut(const uint64_t* s,
+                                                   size_t left,
+                                                   size_t right) noexcept {
+  if (left > right) {
+    return {};
+  }
+  left = std::min<size_t>(left, 128);
+  right = std::min<size_t>(right, 128);
+
+  int best = prefix_excess_128(s, left);
+  size_t best_offset = left;
+  if (left == right) {
+    return {best, best_offset};
+  }
+
+  int current = best;
+  size_t bit = left;
+  for (; bit < right && (bit & 7u) != 0; ++bit) {
+    detail::scan_bit(s, bit, current, best, best_offset);
+  }
+
+  for (; bit + 8 <= right; bit += 8) {
+    const uint8_t byte =
+        static_cast<uint8_t>((s[bit >> 6] >> (bit & 63)) & 0xFFu);
+    const int candidate = current + detail::kByteMin[byte];
+    if (candidate < best) {
+      best = candidate;
+      best_offset = bit + static_cast<size_t>(detail::kByteMinOffset[byte]);
+    }
+    current += detail::kByteDelta[byte];
+  }
+
+  for (; bit < right; ++bit) {
+    detail::scan_bit(s, bit, current, best, best_offset);
+  }
+  return {best, best_offset};
+}
+
+/**
+ * @brief Hybrid dispatch over scalar, byte-LUT, nibble-LUT, and production.
+ *
+ * @details Workflow:
+ *
+ *   width <= 2                  -> scalar bits
+ *   width <= 64 and byte aligned -> byte LUT
+ *   width <= 32                 -> nibble LUT
+ *   otherwise                   -> production excess_min_128
+ *
+ * This variant probes whether the fastest implementation depends primarily on
+ * query width and boundary alignment. It keeps production behavior for wider
+ * ranges where the AVX2 production path usually wins.
+ */
+static inline ExcessResult excess_min_128_hybrid_lut(const uint64_t* s,
+                                                     size_t left,
+                                                     size_t right) noexcept {
+  if (left > right) {
+    return {};
+  }
+  const size_t clamped_left = std::min<size_t>(left, 128);
+  const size_t clamped_right = std::min<size_t>(right, 128);
+  const size_t width = clamped_right - clamped_left;
+
+  if (width <= 2) {
+    return excess_min_128_scalar_bits(s, left, right);
+  }
+  if (width <= 64 && (clamped_left & 7u) == 0 && (clamped_right & 7u) == 0) {
+    return excess_min_128_byte_lut(s, left, right);
+  }
+  if (width <= 32) {
+    return excess_min_128_nibble_lut(s, left, right);
+  }
+  return excess_min_128(s, left, right);
+}
+
 #ifdef PIXIE_AVX2_SUPPORT
+// clang-format off
+static inline const __m128i excess_lut_delta_128 = _mm_setr_epi8(
+    -4, -2, -2,  0,
+    -2,  0,  0,  2,
+    -2,  0,  0,  2,
+     0,  2,  2,  4);
+static inline const __m128i excess_lut_min_128 = _mm_setr_epi8(
+    -4, -2, -2,  0,
+    -2,  0, -1,  1,
+    -3, -1, -1,  1,
+    -2,  0, -1,  1);
+static inline const __m128i excess_lut_nibble_index_128 = _mm_setr_epi8(
+     0,  1,  2,  3,
+     4,  5,  6,  7,
+     8,  9, 10, 11,
+    12, 13, 14, 15);
+static inline const __m128i excess_lut_nibble_mask_128 = _mm_set1_epi8(0x0F);
+// clang-format on
+
+namespace detail {
+
+static inline __m128i excess_nibbles_64_sse(uint64_t word) noexcept {
+  const __m128i word_vec = _mm_cvtsi64_si128(static_cast<int64_t>(word));
+  const __m128i lo_nibbles =
+      _mm_and_si128(word_vec, excess_lut_nibble_mask_128);
+  const __m128i hi_nibbles =
+      _mm_and_si128(_mm_srli_epi16(word_vec, 4), excess_lut_nibble_mask_128);
+  return _mm_unpacklo_epi8(lo_nibbles, hi_nibbles);
+}
+
+static inline __m128i excess_prefix_sum_16x_i8(__m128i v) noexcept {
+  __m128i x = v;
+  __m128i t = _mm_slli_si128(x, 1);
+  x = _mm_add_epi8(x, t);
+  t = _mm_slli_si128(x, 2);
+  x = _mm_add_epi8(x, t);
+  t = _mm_slli_si128(x, 4);
+  x = _mm_add_epi8(x, t);
+  t = _mm_slli_si128(x, 8);
+  return _mm_add_epi8(x, t);
+}
+
+static inline void scan_full_nibbles_64_sse(uint64_t word,
+                                            int lane_base_excess,
+                                            size_t lane_base_offset,
+                                            size_t first_nibble,
+                                            size_t last_nibble,
+                                            int& best,
+                                            size_t& best_offset) noexcept {
+  if (first_nibble >= last_nibble) {
+    return;
+  }
+
+  const __m128i nibbles = excess_nibbles_64_sse(word);
+  __m128i ps =
+      excess_prefix_sum_16x_i8(_mm_shuffle_epi8(excess_lut_delta_128, nibbles));
+  const __m128i excl_ps = _mm_alignr_epi8(ps, _mm_setzero_si128(), 15);
+  const __m128i candidates = _mm_add_epi8(
+      _mm_add_epi8(_mm_set1_epi8(static_cast<int8_t>(lane_base_excess)),
+                   excl_ps),
+      _mm_shuffle_epi8(excess_lut_min_128, nibbles));
+
+  const __m128i idx = excess_lut_nibble_index_128;
+  const __m128i first_minus_one =
+      _mm_set1_epi8(static_cast<int8_t>(static_cast<int>(first_nibble) - 1));
+  const __m128i last = _mm_set1_epi8(static_cast<int8_t>(last_nibble));
+  const __m128i active = _mm_and_si128(_mm_cmpgt_epi8(idx, first_minus_one),
+                                       _mm_cmpgt_epi8(last, idx));
+  const __m128i masked_candidates =
+      _mm_blendv_epi8(_mm_set1_epi8(127), candidates, active);
+
+  __m128i min128 = masked_candidates;
+  min128 = _mm_min_epi8(min128, _mm_alignr_epi8(min128, min128, 8));
+  min128 = _mm_min_epi8(min128, _mm_alignr_epi8(min128, min128, 4));
+  min128 = _mm_min_epi8(min128, _mm_alignr_epi8(min128, min128, 2));
+  min128 = _mm_min_epi8(min128, _mm_alignr_epi8(min128, min128, 1));
+
+  const int candidate_min =
+      static_cast<int>(static_cast<int8_t>(_mm_extract_epi8(min128, 0)));
+  if (candidate_min < best) {
+    const __m128i equal_min = _mm_cmpeq_epi8(
+        masked_candidates, _mm_set1_epi8(static_cast<int8_t>(candidate_min)));
+    const uint32_t equal_mask =
+        static_cast<uint32_t>(_mm_movemask_epi8(equal_min));
+    const uint32_t nibble_index = std::countr_zero(equal_mask);
+    const uint8_t nibble =
+        static_cast<uint8_t>((word >> (nibble_index * 4u)) & 0xFu);
+    best = candidate_min;
+    best_offset = lane_base_offset + static_cast<size_t>(nibble_index) * 4u +
+                  static_cast<size_t>(kNibbleMinOffset[nibble]);
+  }
+}
+
+static inline ExcessResult excess_min_128_split64_sse_impl(
+    const uint64_t* s,
+    size_t left,
+    size_t right) noexcept {
+  if (left > right) {
+    return {};
+  }
+  left = std::min<size_t>(left, 128);
+  right = std::min<size_t>(right, 128);
+
+  int best = prefix_excess_128(s, left);
+  size_t best_offset = left;
+  if (left == right) {
+    return {best, best_offset};
+  }
+
+  int current = best;
+  size_t bit = left;
+  for (; bit < right && (bit & 3u) != 0; ++bit) {
+    scan_bit(s, bit, current, best, best_offset);
+  }
+
+  size_t first_full_nibble = bit >> 2;
+  const size_t last_full_nibble = right >> 2;
+  while (first_full_nibble < last_full_nibble) {
+    const size_t word_index = first_full_nibble >> 4;
+    const size_t lane_first = first_full_nibble & 15u;
+    const size_t lane_last =
+        std::min<size_t>(last_full_nibble - word_index * 16u, 16);
+    const size_t lane_base_offset = word_index * 64u;
+    scan_full_nibbles_64_sse(
+        s[word_index], prefix_excess_128(s, lane_base_offset), lane_base_offset,
+        lane_first, lane_last, best, best_offset);
+    first_full_nibble = word_index * 16u + lane_last;
+  }
+
+  bit = std::max(bit, first_full_nibble * 4u);
+  current = prefix_excess_128(s, bit);
+  for (; bit < right; ++bit) {
+    scan_bit(s, bit, current, best, best_offset);
+  }
+
+  return {best, best_offset};
+}
+
+}  // namespace detail
+
+/**
+ * @brief Single-64-bit-lane SSE excess_min_128 experiment.
+ *
+ * @details Workflow:
+ *
+ *   scalar boundary -> one 64-bit word as 16 nibbles -> scalar tail
+ *                     fallback to production if full nibbles cross words
+ *
+ * This variant tests whether short ranges benefit from avoiding the 128-bit
+ * cross-lane prefix work used by broader vector paths. It only handles the
+ * single-word full-nibble case; multi-word ranges fall back to production.
+ */
+static inline ExcessResult excess_min_128_lane64_sse(const uint64_t* s,
+                                                     size_t left,
+                                                     size_t right) noexcept {
+  if (left > right) {
+    return {};
+  }
+  const size_t clamped_left = std::min<size_t>(left, 128);
+  const size_t clamped_right = std::min<size_t>(right, 128);
+  const size_t first_full_nibble = ((clamped_left + 3u) & ~size_t{3}) >> 2;
+  const size_t last_full_nibble = clamped_right >> 2;
+  if (first_full_nibble < last_full_nibble &&
+      (first_full_nibble >> 4) != ((last_full_nibble - 1u) >> 4)) {
+    return excess_min_128(s, left, right);
+  }
+  return detail::excess_min_128_split64_sse_impl(s, left, right);
+}
+
+/**
+ * @brief Split-64-bit-lane SSE excess_min_128 experiment.
+ *
+ * @details Workflow:
+ *
+ *   scalar boundary -> word 0 full nibbles -> word 1 full nibbles -> tail
+ *                       16-nibble SSE         16-nibble SSE
+ *
+ * Each 64-bit word is processed as an independent 16-nibble vector scan. The
+ * base excess for a word is recomputed from prefix_excess_128, avoiding
+ * vector-prefix carry propagation across the 64-bit boundary.
+ */
+static inline ExcessResult excess_min_128_split64_sse(const uint64_t* s,
+                                                      size_t left,
+                                                      size_t right) noexcept {
+  return detail::excess_min_128_split64_sse_impl(s, left, right);
+}
+
+/**
+ * @brief Short-range dispatch experiment.
+ *
+ * @details Workflow:
+ *
+ *   width <= 2              -> scalar bits
+ *   full nibbles in 1 word  -> lane64 SSE
+ *   width <= 80             -> split64 SSE
+ *   otherwise               -> production excess_min_128
+ *
+ * This variant tests two ideas together: avoid 128-bit lane crossing when a
+ * query is contained in one 64-bit word, and skip a few production iterations
+ * for medium ranges where split-lane scans may be cheaper.
+ */
+static inline ExcessResult excess_min_128_short_skip(const uint64_t* s,
+                                                     size_t left,
+                                                     size_t right) noexcept {
+  if (left > right) {
+    return {};
+  }
+  const size_t clamped_left = std::min<size_t>(left, 128);
+  const size_t clamped_right = std::min<size_t>(right, 128);
+  const size_t width = clamped_right - clamped_left;
+  if (width <= 2) {
+    return excess_min_128_scalar_bits(s, left, right);
+  }
+
+  const size_t first_full_nibble = ((clamped_left + 3u) & ~size_t{3}) >> 2;
+  const size_t last_full_nibble = clamped_right >> 2;
+  if (first_full_nibble < last_full_nibble &&
+      (first_full_nibble >> 4) == ((last_full_nibble - 1u) >> 4)) {
+    return excess_min_128_lane64_sse(s, left, right);
+  }
+  if (width <= 80) {
+    return excess_min_128_split64_sse(s, left, right);
+  }
+  return excess_min_128(s, left, right);
+}
+
 // clang-format off
 static inline const __m256i excess_branch_lut_em4 = _mm256_setr_epi8(
     0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -133,6 +699,88 @@ static inline int8_t excess_last_prefix_32x_i8(__m256i pref) noexcept {
   return (int8_t)_mm_extract_epi8(hi, 15);
 }
 
+/**
+ * @brief AVX2 expand-to-i16 excess_min_128 experiment.
+ *
+ * @details Workflow:
+ *
+ *   16 input bits -> 16 x i16 +/-1 -> vector prefix sum -> store -> scalar min
+ *
+ * The implementation scans eight 16-bit chunks. For chunks overlapping the
+ * query, bits are expanded to signed +/-1 i16 lanes and prefix summed with the
+ * running carry. The vector result is stored to memory, then relevant lanes are
+ * checked scalar for the first strict minimum.
+ */
+static inline ExcessResult excess_min_128_expand16_avx2(const uint64_t* s,
+                                                        size_t left,
+                                                        size_t right) noexcept {
+  if (left > right) {
+    return {};
+  }
+  left = std::min<size_t>(left, 128);
+  right = std::min<size_t>(right, 128);
+
+  int best = prefix_excess_128(s, left);
+  size_t best_offset = left;
+  if (left == right) {
+    return {best, best_offset};
+  }
+
+  const __m256i masks = excess_bit_masks_16x();
+  const __m256i zero = _mm256_setzero_si256();
+  const __m256i pos = _mm256_set1_epi16(1);
+  const __m256i neg = _mm256_set1_epi16(-1);
+
+  int carry = 0;
+  alignas(32) int16_t prefix_values[16];
+  for (size_t chunk = 0; chunk < 8; ++chunk) {
+    const size_t chunk_bit = chunk * 16;
+    const uint16_t bits =
+        chunk < 4
+            ? static_cast<uint16_t>((s[0] >> (chunk * 16)) & 0xFFFFu)
+            : static_cast<uint16_t>((s[1] >> ((chunk - 4) * 16)) & 0xFFFFu);
+    const int delta = 2 * static_cast<int>(std::popcount(bits)) - 16;
+
+    if (chunk_bit + 1 <= right && chunk_bit + 16 >= left) {
+      const __m256i selected = _mm256_and_si256(
+          _mm256_set1_epi16(static_cast<int16_t>(bits)), masks);
+      const __m256i is_zero = _mm256_cmpeq_epi16(selected, zero);
+      const __m256i steps = _mm256_blendv_epi8(pos, neg, is_zero);
+      const __m256i pref =
+          _mm256_add_epi16(excess_prefix_sum_16x_i16(steps),
+                           _mm256_set1_epi16(static_cast<int16_t>(carry)));
+      _mm256_store_si256(reinterpret_cast<__m256i*>(prefix_values), pref);
+
+      for (size_t lane = 0; lane < 16; ++lane) {
+        const size_t offset = chunk_bit + lane + 1;
+        if (offset < left || offset > right) {
+          continue;
+        }
+        const int value = prefix_values[lane];
+        if (value < best) {
+          best = value;
+          best_offset = offset;
+        }
+      }
+    }
+    carry += delta;
+  }
+
+  return {best, best_offset};
+}
+
+/**
+ * @brief Historical AVX2 branching-LUT excess_positions_512 variant.
+ *
+ * @details Workflow:
+ *
+ *   128-bit block -> 32 nibbles -> prefix sums -> branch by target-relative
+ *                                 -> LUT masks -> packed output bits
+ *
+ * Each 128-bit block is converted to nibbles, prefix-summed, and filtered by
+ * reachability. A family of per-target LUTs produces within-nibble match masks,
+ * which are packed back to the output words.
+ */
 static inline void excess_positions_512_branching_lut(const uint64_t* s,
                                                       int target_x,
                                                       uint64_t* out) noexcept {
@@ -249,6 +897,13 @@ static inline void excess_positions_512_branching_lut(const uint64_t* s,
   }
 }
 #else
+/**
+ * @brief Scalar fallback for the branching-LUT positions variant.
+ *
+ * @details Used when AVX2 is not enabled. Delegates to production
+ * excess_positions_512 so callers can benchmark the same symbol across build
+ * configurations.
+ */
 static inline void excess_positions_512_branching_lut(const uint64_t* s,
                                                       int target_x,
                                                       uint64_t* out) noexcept {
@@ -378,6 +1033,19 @@ static inline uint64_t excess_repeat_byte(int value) noexcept {
          static_cast<uint8_t>(static_cast<int8_t>(value));
 }
 
+/**
+ * @brief AVX-512 nibble-LUT excess_positions_512 experiment.
+ *
+ * @details Workflow:
+ *
+ *   256 input bits -> 64 nibbles -> two 128-bit logical halves
+ *                  -> nibble prefix/LUT matches -> packed output masks
+ *
+ * The implementation processes four words at a time. It computes reachability
+ * for each 128-bit half, converts bytes to nibbles, builds exclusive prefix
+ * sums, compares nibble-local positions against the target, and packs matches
+ * back to four output words.
+ */
 static inline void excess_positions_512_lut_avx512(const uint64_t* s,
                                                    int target_x,
                                                    uint64_t* out) noexcept {
@@ -463,6 +1131,13 @@ static inline void excess_positions_512_lut_avx512(const uint64_t* s,
   }
 }
 #else
+/**
+ * @brief Fallback for the AVX-512 LUT positions variant.
+ *
+ * @details Used when AVX-512 is not enabled. Delegates to production
+ * excess_positions_512 so callers can benchmark the same symbol across build
+ * configurations.
+ */
 static inline void excess_positions_512_lut_avx512(const uint64_t* s,
                                                    int target_x,
                                                    uint64_t* out) noexcept {
@@ -470,6 +1145,18 @@ static inline void excess_positions_512_lut_avx512(const uint64_t* s,
 }
 #endif
 
+/**
+ * @brief Expand-to-i16 excess_positions_512 experiment.
+ *
+ * @details Workflow:
+ *
+ *   16 input bits -> 16 x i16 +/-1 -> vector prefix sum -> compare target
+ *                 -> pext mask -> output word
+ *
+ * With AVX2, this variant scans 16-bit chunks, expands them to i16 prefix
+ * lanes, compares absolute prefix values against the target, and compresses the
+ * comparison mask into output bits. Without AVX2 it uses a scalar scan.
+ */
 static inline void excess_positions_512_expand(const uint64_t* s,
                                                int target_x,
                                                uint64_t* out) noexcept {
@@ -541,6 +1228,18 @@ static inline void excess_positions_512_expand(const uint64_t* s,
 #endif
 }
 
+/**
+ * @brief AVX2 expand-to-i8 excess_positions_512 experiment.
+ *
+ * @details Workflow:
+ *
+ *   32 input bits -> 32 x i8 +/-1 -> byte prefix sum -> compare target
+ *                 -> movemask -> output word
+ *
+ * This variant handles 32-bit chunks. It first checks whether the target is
+ * reachable within the chunk, then expands bits to byte lanes and uses the
+ * vector comparison mask directly as output bits.
+ */
 static inline void excess_positions_512_expand8(const uint64_t* s,
                                                 int target_x,
                                                 uint64_t* out) noexcept {
@@ -601,6 +1300,18 @@ static inline void excess_positions_512_expand8(const uint64_t* s,
 #endif
 }
 
+/**
+ * @brief AVX-512 expand-to-i8 excess_positions_512 experiment.
+ *
+ * @details Workflow:
+ *
+ *   64 input bits -> 64 x i8 +/-1 -> byte prefix sum -> k-mask output
+ *
+ * This variant processes one 64-bit word per vector. If the target is
+ * unreachable in the word, it advances by popcount delta only. Otherwise it
+ * expands the word to byte lanes, prefix-sums the lanes, compares against the
+ * target, and stores the resulting AVX-512 mask as the output word.
+ */
 static inline void excess_positions_512_expand_avx512(const uint64_t* s,
                                                       int target_x,
                                                       uint64_t* out) noexcept {
@@ -681,6 +1392,19 @@ struct ExcessByteLut {
 
 inline constexpr ExcessByteLut kExcessByteLut;
 
+/**
+ * @brief Scalar byte-LUT excess_positions_512 experiment.
+ *
+ * @details Workflow:
+ *
+ *   byte -> relative target in [-8, 8] -> LUT match mask
+ *        -> byte delta -> next byte base excess
+ *
+ * The table stores, for each byte, all bit positions that reach each local
+ * target and the byte delta. The scan walks 64 bytes, emits a mask when the
+ * relative target is in range, and then advances the running excess by the
+ * byte delta.
+ */
 static inline void excess_positions_512_byte_lut(const uint64_t* s,
                                                  int target_x,
                                                  uint64_t* out) noexcept {

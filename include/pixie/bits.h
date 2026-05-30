@@ -3,6 +3,7 @@
 #include <immintrin.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -798,14 +799,47 @@ static inline const __m256i excess_lut_pos2 = _mm256_setr_epi8(
     -1,  1,  1,  3,
     -3, -1, -1,  1,
     -1,  1,  1,  3);
+static inline const __m256i excess_lut_min = _mm256_setr_epi8(
+    -4, -2, -2,  0,
+    -2,  0, -1,  1,
+    -3, -1, -1,  1,
+    -2,  0, -1,  1,
+    -4, -2, -2,  0,
+    -2,  0, -1,  1,
+    -3, -1, -1,  1,
+    -2,  0, -1,  1);
+static inline constexpr int8_t excess_lut_min_offset[16] = {
+    4, 4, 4, 4, 2, 2, 1, 1, 3, 3, 1, 1, 2, 2, 1, 1};
 static inline const __m256i excess_lut_pack_multiplier =
     _mm256_set1_epi16(0x1001);
 static inline const __m256i excess_lut_bit0 = _mm256_set1_epi8(1);
 static inline const __m256i excess_lut_bit1 = _mm256_set1_epi8(2);
 static inline const __m256i excess_lut_bit2 = _mm256_set1_epi8(4);
 static inline const __m256i excess_lut_bit3 = _mm256_set1_epi8(8);
+static inline const __m256i excess_lut_nibble_index = _mm256_setr_epi8(
+     0,  1,  2,  3,
+     4,  5,  6,  7,
+     8,  9, 10, 11,
+    12, 13, 14, 15,
+    16, 17, 18, 19,
+    20, 21, 22, 23,
+    24, 25, 26, 27,
+    28, 29, 30, 31);
 static inline const __m128i excess_lut_nibble_mask = _mm_set1_epi8(0x0F);
 // clang-format on
+
+static inline __m256i excess_nibbles_128_avx2(const uint64_t* s) noexcept {
+  __m128i word_vec = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s));
+  __m128i lo_nibbles = _mm_and_si128(word_vec, excess_lut_nibble_mask);
+  __m128i hi_nibbles =
+      _mm_and_si128(_mm_srli_epi16(word_vec, 4), excess_lut_nibble_mask);
+
+  __m128i unpack_lo = _mm_unpacklo_epi8(lo_nibbles, hi_nibbles);
+  __m128i unpack_hi = _mm_unpackhi_epi8(lo_nibbles, hi_nibbles);
+
+  return _mm256_inserti128_si256(_mm256_castsi128_si256(unpack_lo), unpack_hi,
+                                 1);
+}
 
 static inline __m256i excess_bit_masks_16x_i16() noexcept {
   return _mm256_setr_epi16(0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020,
@@ -841,10 +875,58 @@ static inline __m256i excess_prefix_sum_16x_i16(__m256i v) noexcept {
  * offset attaining the minimum. Invalid ranges return offset 128 as a
  * sentinel.
  */
-struct ExcessMin128Result {
+struct ExcessResult {
   int min_excess = 0;
   size_t offset = 128;
 };
+
+constexpr int8_t excess_byte_delta_value(uint8_t x) {
+  return static_cast<int8_t>(2 * std::popcount(x) - 8);
+}
+
+constexpr int8_t excess_byte_min_prefix_value(uint8_t x) {
+  int cur = 0;
+  int best = 0;
+  for (int bit = 0; bit < 8; ++bit) {
+    cur += ((x >> bit) & 1u) != 0 ? 1 : -1;
+    if (bit == 0 || cur < best) {
+      best = cur;
+    }
+  }
+  return static_cast<int8_t>(best);
+}
+
+constexpr int8_t excess_byte_min_prefix_offset_value(uint8_t x) {
+  int cur = 0;
+  int best = 0;
+  int best_offset = 1;
+  for (int bit = 0; bit < 8; ++bit) {
+    cur += ((x >> bit) & 1u) != 0 ? 1 : -1;
+    if (bit == 0 || cur < best) {
+      best = cur;
+      best_offset = bit + 1;
+    }
+  }
+  return static_cast<int8_t>(best_offset);
+}
+
+template <typename Fn>
+constexpr std::array<int8_t, 256> excess_make_byte_lut(Fn fn) {
+  std::array<int8_t, 256> out{};
+  for (size_t i = 0; i < out.size(); ++i) {
+    out[i] = fn(static_cast<uint8_t>(i));
+  }
+  return out;
+}
+
+static inline constexpr std::array<int8_t, 256> excess_byte_delta_lut =
+    excess_make_byte_lut([](uint8_t x) { return excess_byte_delta_value(x); });
+static inline constexpr std::array<int8_t, 256> excess_byte_min_lut =
+    excess_make_byte_lut(
+        [](uint8_t x) { return excess_byte_min_prefix_value(x); });
+static inline constexpr std::array<int8_t, 256> excess_byte_min_offset_lut =
+    excess_make_byte_lut(
+        [](uint8_t x) { return excess_byte_min_prefix_offset_value(x); });
 
 /**
  * @brief Find every prefix whose excess equals target_x in a 128-bit bitstring.
@@ -879,22 +961,13 @@ static inline int excess_positions_128(const uint64_t* s,
   const __m256i vbit1 = excess_lut_bit1;
   const __m256i vbit2 = excess_lut_bit2;
   const __m256i vbit3 = excess_lut_bit3;
-  const __m128i vnibble_mask = excess_lut_nibble_mask;
 
   const int d = 2 * target_x - block_delta;
   if (d < -128 || d > 128) {
     return block_delta;
   }
 
-  __m128i word_vec = _mm_loadu_si128((const __m128i*)s);
-  __m128i lo_nibbles = _mm_and_si128(word_vec, vnibble_mask);
-  __m128i hi_nibbles = _mm_and_si128(_mm_srli_epi16(word_vec, 4), vnibble_mask);
-
-  __m128i unpack_lo = _mm_unpacklo_epi8(lo_nibbles, hi_nibbles);
-  __m128i unpack_hi = _mm_unpackhi_epi8(lo_nibbles, hi_nibbles);
-
-  __m256i nibbles =
-      _mm256_inserti128_si256(_mm256_castsi128_si256(unpack_lo), unpack_hi, 1);
+  __m256i nibbles = excess_nibbles_128_avx2(s);
 
   __m256i ps = _mm256_shuffle_epi8(vdelta, nibbles);
   ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 1));
@@ -974,15 +1047,59 @@ static inline int prefix_excess_128(const uint64_t* s,
   return 2 * ones - static_cast<int>(end_offset);
 }
 
+static inline ExcessResult excess_min_128_byte_lut_short(
+    const uint64_t* s,
+    size_t left,
+    size_t right) noexcept {
+  int best = prefix_excess_128(s, left);
+  size_t best_offset = left;
+  if (left == right) {
+    return {best, best_offset};
+  }
+
+  int current = best;
+  size_t bit = left;
+  for (; bit < right && (bit & 7u) != 0; ++bit) {
+    current += ((s[bit >> 6] >> (bit & 63)) & 1ull) != 0 ? 1 : -1;
+    const size_t offset = bit + 1;
+    if (current < best) {
+      best = current;
+      best_offset = offset;
+    }
+  }
+
+  for (; bit + 8 <= right; bit += 8) {
+    const uint8_t byte =
+        static_cast<uint8_t>((s[bit >> 6] >> (bit & 63)) & 0xFFu);
+    const int candidate = current + excess_byte_min_lut[byte];
+    if (candidate < best) {
+      best = candidate;
+      best_offset = bit + static_cast<size_t>(excess_byte_min_offset_lut[byte]);
+    }
+    current += excess_byte_delta_lut[byte];
+  }
+
+  for (; bit < right; ++bit) {
+    current += ((s[bit >> 6] >> (bit & 63)) & 1ull) != 0 ? 1 : -1;
+    const size_t offset = bit + 1;
+    if (current < best) {
+      best = current;
+      best_offset = offset;
+    }
+  }
+
+  return {best, best_offset};
+}
+
 /**
  * @brief Return the minimum prefix excess and first attaining offset.
  * @param s 2 little-endian uint64_t words (bit 0 of s[0] is the first bit).
  * @param left First prefix position to consider, inclusive.
  * @param right Last prefix position to consider, inclusive.
  */
-static inline ExcessMin128Result excess_min_128(const uint64_t* s,
-                                                size_t left,
-                                                size_t right) noexcept {
+static inline ExcessResult excess_min_128(const uint64_t* s,
+                                          size_t left,
+                                          size_t right) noexcept {
   if (left > right) {
     return {};
   }
@@ -994,46 +1111,93 @@ static inline ExcessMin128Result excess_min_128(const uint64_t* s,
   if (left == right) {
     return {best, best_offset};
   }
+  if (right - left <= 32 && (left & 7u) == 0 && (right & 7u) == 0)
+      [[unlikely]] {
+    return excess_min_128_byte_lut_short(s, left, right);
+  }
 
 #ifdef PIXIE_AVX2_SUPPORT
-  static const __m256i masks = excess_bit_masks_16x_i16();
-  static const __m256i zero = _mm256_setzero_si256();
-  static const __m256i pos = _mm256_set1_epi16(1);
-  static const __m256i neg = _mm256_set1_epi16(-1);
-
-  int carry = 0;
-  alignas(32) int16_t prefix_values[16];
-  for (size_t chunk = 0; chunk < 8; ++chunk) {
-    const size_t chunk_bit = chunk * 16;
-    const uint16_t bits =
-        chunk < 4
-            ? static_cast<uint16_t>((s[0] >> (chunk * 16)) & 0xFFFFu)
-            : static_cast<uint16_t>((s[1] >> ((chunk - 4) * 16)) & 0xFFFFu);
-    const int delta = 2 * static_cast<int>(std::popcount(bits)) - 16;
-
-    if (chunk_bit + 1 <= right && chunk_bit + 16 >= left) {
-      const __m256i selected = _mm256_and_si256(
-          _mm256_set1_epi16(static_cast<int16_t>(bits)), masks);
-      const __m256i is_zero = _mm256_cmpeq_epi16(selected, zero);
-      const __m256i steps = _mm256_blendv_epi8(pos, neg, is_zero);
-      const __m256i pref =
-          _mm256_add_epi16(excess_prefix_sum_16x_i16(steps),
-                           _mm256_set1_epi16(static_cast<int16_t>(carry)));
-      _mm256_store_si256(reinterpret_cast<__m256i*>(prefix_values), pref);
-
-      for (size_t lane = 0; lane < 16; ++lane) {
-        const size_t offset = chunk_bit + lane + 1;
-        if (offset < left || offset > right) {
-          continue;
-        }
-        const int value = prefix_values[lane];
-        if (value < best) {
-          best = value;
-          best_offset = offset;
-        }
-      }
+  int current = best;
+  size_t bit = left;
+  for (; bit < right && (bit & 3u) != 0; ++bit) {
+    current += ((s[bit >> 6] >> (bit & 63)) & 1ull) != 0 ? 1 : -1;
+    const size_t offset = bit + 1;
+    if (current < best) {
+      best = current;
+      best_offset = offset;
     }
-    carry += delta;
+  }
+
+  const size_t first_full_nibble = bit >> 2;
+  const size_t last_full_nibble = right >> 2;
+  if (first_full_nibble < last_full_nibble) {
+    const __m256i nibbles = excess_nibbles_128_avx2(s);
+
+    __m256i ps = _mm256_shuffle_epi8(excess_lut_delta, nibbles);
+    ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 1));
+    ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 2));
+    ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 4));
+    ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 8));
+
+    __m128i ps_lo = _mm256_castsi256_si128(ps);
+    __m128i ps_hi = _mm256_extracti128_si256(ps, 1);
+    __m128i carry =
+        _mm_set1_epi8(static_cast<int8_t>(_mm_extract_epi8(ps_lo, 15)));
+    ps_hi = _mm_add_epi8(ps_hi, carry);
+    ps = _mm256_inserti128_si256(_mm256_castsi128_si256(ps_lo), ps_hi, 1);
+
+    __m256i b = _mm256_permute2x128_si256(ps, ps, 0x08);
+    const __m256i excl_ps = _mm256_alignr_epi8(ps, b, 15);
+    const __m256i candidates =
+        _mm256_add_epi8(excl_ps, _mm256_shuffle_epi8(excess_lut_min, nibbles));
+
+    const __m256i idx = excess_lut_nibble_index;
+    const int first_minus_one_value = static_cast<int>(first_full_nibble) - 1;
+    const __m256i first_minus_one =
+        _mm256_set1_epi8(static_cast<int8_t>(first_minus_one_value));
+    const __m256i last =
+        _mm256_set1_epi8(static_cast<int8_t>(last_full_nibble));
+    const __m256i active = _mm256_and_si256(
+        _mm256_cmpgt_epi8(idx, first_minus_one), _mm256_cmpgt_epi8(last, idx));
+    const __m256i masked_candidates =
+        _mm256_blendv_epi8(_mm256_set1_epi8(127), candidates, active);
+
+    __m128i min128 =
+        _mm_min_epi8(_mm256_castsi256_si128(masked_candidates),
+                     _mm256_extracti128_si256(masked_candidates, 1));
+    min128 = _mm_min_epi8(min128, _mm_alignr_epi8(min128, min128, 8));
+    min128 = _mm_min_epi8(min128, _mm_alignr_epi8(min128, min128, 4));
+    min128 = _mm_min_epi8(min128, _mm_alignr_epi8(min128, min128, 2));
+    min128 = _mm_min_epi8(min128, _mm_alignr_epi8(min128, min128, 1));
+
+    const int candidate_min =
+        static_cast<int>(static_cast<int8_t>(_mm_extract_epi8(min128, 0)));
+    if (candidate_min < best) {
+      const __m256i equal_min = _mm256_cmpeq_epi8(
+          masked_candidates,
+          _mm256_set1_epi8(static_cast<int8_t>(candidate_min)));
+      const uint32_t equal_mask =
+          static_cast<uint32_t>(_mm256_movemask_epi8(equal_min));
+      const uint32_t nibble_index = std::countr_zero(equal_mask);
+      const uint64_t word = s[nibble_index >> 4];
+      const uint8_t nibble =
+          static_cast<uint8_t>((word >> ((nibble_index & 15u) * 4u)) & 0xFu);
+      best = candidate_min;
+      best_offset = static_cast<size_t>(nibble_index) * 4u +
+                    static_cast<size_t>(excess_lut_min_offset[nibble]);
+    }
+
+    bit = last_full_nibble * 4;
+    current = prefix_excess_128(s, bit);
+  }
+
+  for (; bit < right; ++bit) {
+    current += ((s[bit >> 6] >> (bit & 63)) & 1ull) != 0 ? 1 : -1;
+    const size_t offset = bit + 1;
+    if (current < best) {
+      best = current;
+      best_offset = offset;
+    }
   }
 #else
   int current = 0;

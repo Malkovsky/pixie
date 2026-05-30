@@ -10,12 +10,22 @@
 #include <random>
 #include <utility>
 
+using pixie::experimental::excess_min_128_byte_lut;
+using pixie::experimental::excess_min_128_hybrid_lut;
 using pixie::experimental::excess_positions_512_branching_lut;
 using pixie::experimental::excess_positions_512_byte_lut;
 using pixie::experimental::excess_positions_512_expand;
 using pixie::experimental::excess_positions_512_expand8;
 using pixie::experimental::excess_positions_512_expand_avx512;
 using pixie::experimental::excess_positions_512_lut_avx512;
+#ifdef PIXIE_AVX2_SUPPORT
+using pixie::experimental::excess_min_128_expand16_avx2;
+using pixie::experimental::excess_min_128_lane64_sse;
+using pixie::experimental::excess_min_128_short_skip;
+using pixie::experimental::excess_min_128_split64_sse;
+#endif
+using pixie::experimental::excess_min_128_nibble_lut;
+using pixie::experimental::excess_min_128_scalar_bits;
 
 static void naive_excess_positions_512(const uint64_t* s,
                                        int target_x,
@@ -69,9 +79,9 @@ static int naive_prefix_excess_128(const uint64_t* s, size_t end_offset) {
   return cur;
 }
 
-static ExcessMin128Result naive_excess_min_128(const uint64_t* s,
-                                               size_t left,
-                                               size_t right) {
+static ExcessResult naive_excess_min_128(const uint64_t* s,
+                                         size_t left,
+                                         size_t right) {
   if (left > right) {
     return {};
   }
@@ -170,6 +180,23 @@ static void check_matches_naive(Fn fn,
       << fn_name << " case=" << case_id << " x=" << target_x;
 }
 
+template <typename Fn>
+static void check_min_matches_naive(Fn fn,
+                                    const char* fn_name,
+                                    const uint64_t* s,
+                                    size_t left,
+                                    size_t right,
+                                    int case_id = 0) {
+  const ExcessResult result = fn(s, left, right);
+  const ExcessResult expected = naive_excess_min_128(s, left, right);
+  ASSERT_EQ(result.min_excess, expected.min_excess)
+      << fn_name << " case=" << case_id << " left=" << left
+      << " right=" << right;
+  ASSERT_EQ(result.offset, expected.offset)
+      << fn_name << " case=" << case_id << " left=" << left
+      << " right=" << right;
+}
+
 TEST(ExcessPositions128, MatchesNaiveMasksAndDelta) {
   const std::array<std::array<uint64_t, 2>, 4> cases = {{
       {0, 0},
@@ -231,9 +258,8 @@ TEST(ExcessPositions128, MinMatchesNaiveFixedCases) {
 
   for (const auto& s : cases) {
     for (const auto [left, right] : ranges) {
-      const ExcessMin128Result result = excess_min_128(s.data(), left, right);
-      const ExcessMin128Result expected =
-          naive_excess_min_128(s.data(), left, right);
+      const ExcessResult result = excess_min_128(s.data(), left, right);
+      const ExcessResult expected = naive_excess_min_128(s.data(), left, right);
       EXPECT_EQ(result.min_excess, expected.min_excess)
           << "left=" << left << " right=" << right;
       EXPECT_EQ(result.offset, expected.offset)
@@ -245,18 +271,54 @@ TEST(ExcessPositions128, MinMatchesNaiveFixedCases) {
 TEST(ExcessPositions128, MinReturnsFirstTie) {
   const std::array<uint64_t, 2> s = {0x5555555555555555ull,
                                      0x5555555555555555ull};
-  const ExcessMin128Result result = excess_min_128(s.data(), 0, 128);
+  const ExcessResult result = excess_min_128(s.data(), 0, 128);
   EXPECT_EQ(result.min_excess, 0);
   EXPECT_EQ(result.offset, 0u);
 
-  const ExcessMin128Result shifted = excess_min_128(s.data(), 1, 128);
+  const ExcessResult shifted = excess_min_128(s.data(), 1, 128);
   EXPECT_EQ(shifted.min_excess, 0);
   EXPECT_EQ(shifted.offset, 2u);
+
+  const ExcessResult left_tie = excess_min_128(s.data(), 2, 128);
+  EXPECT_EQ(left_tie.min_excess, 0);
+  EXPECT_EQ(left_tie.offset, 2u);
+}
+
+TEST(ExcessPositions128, MinHandlesRightBoundary) {
+  const std::array<uint64_t, 2> s = {0, 0};
+
+  const ExcessResult without_last = excess_min_128(s.data(), 0, 127);
+  EXPECT_EQ(without_last.min_excess, -127);
+  EXPECT_EQ(without_last.offset, 127u);
+
+  const ExcessResult with_last = excess_min_128(s.data(), 0, 128);
+  EXPECT_EQ(with_last.min_excess, -128);
+  EXPECT_EQ(with_last.offset, 128u);
+}
+
+TEST(ExcessPositions128, MinPartialNibbleBoundsExcludeOuterMin) {
+  const std::array<uint64_t, 2> s = {0, 0};
+
+  const ExcessResult short_prefix = excess_min_128(s.data(), 1, 2);
+  EXPECT_EQ(short_prefix.min_excess, -2);
+  EXPECT_EQ(short_prefix.offset, 2u);
+
+  const ExcessResult short_suffix = excess_min_128(s.data(), 2, 3);
+  EXPECT_EQ(short_suffix.min_excess, -3);
+  EXPECT_EQ(short_suffix.offset, 3u);
+}
+
+TEST(ExcessPositions128, MinPositiveRangeKeepsLeftBoundary) {
+  const std::array<uint64_t, 2> s = {UINT64_MAX, UINT64_MAX};
+
+  const ExcessResult result = excess_min_128(s.data(), 64, 128);
+  EXPECT_EQ(result.min_excess, 64);
+  EXPECT_EQ(result.offset, 64u);
 }
 
 TEST(ExcessPositions128, MinInvalidRangeUsesSentinel) {
   const std::array<uint64_t, 2> s = {0, 0};
-  const ExcessMin128Result result = excess_min_128(s.data(), 17, 16);
+  const ExcessResult result = excess_min_128(s.data(), 17, 16);
   EXPECT_EQ(result.min_excess, 0);
   EXPECT_EQ(result.offset, 128u);
 }
@@ -273,13 +335,86 @@ TEST(ExcessPositions128, MinMatchesNaiveRandom) {
       if (left > right) {
         std::swap(left, right);
       }
-      const ExcessMin128Result result = excess_min_128(s.data(), left, right);
-      const ExcessMin128Result expected =
-          naive_excess_min_128(s.data(), left, right);
+      const ExcessResult result = excess_min_128(s.data(), left, right);
+      const ExcessResult expected = naive_excess_min_128(s.data(), left, right);
       ASSERT_EQ(result.min_excess, expected.min_excess)
           << "case=" << t << " left=" << left << " right=" << right;
       ASSERT_EQ(result.offset, expected.offset)
           << "case=" << t << " left=" << left << " right=" << right;
+    }
+  }
+}
+
+TEST(ExcessPositions128Experimental, MinVariantsMatchNaive) {
+  const std::array<std::array<uint64_t, 2>, 6> cases = {{
+      {0, 0},
+      {UINT64_MAX, UINT64_MAX},
+      {0xAAAAAAAAAAAAAAAAull, 0x5555555555555555ull},
+      {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull},
+      {0x0000FFFF0000FFFFull, 0xFFFF0000FFFF0000ull},
+      {0x1111222233334444ull, 0x8888777766665555ull},
+  }};
+  const std::array<std::pair<size_t, size_t>, 25> ranges = {{
+      {0, 128},   {0, 127},   {0, 16},    {0, 31},    {0, 32},
+      {0, 48},    {0, 64},    {32, 64},   {64, 96},   {96, 128},
+      {56, 72},   {60, 68},   {63, 64},   {17, 17},   {1, 2},
+      {2, 3},     {3, 6},     {5, 5},     {64, 64},   {64, 128},
+      {127, 128}, {128, 128}, {120, 127}, {129, 140}, {17, 16},
+  }};
+
+  int case_id = 0;
+  for (const auto& s : cases) {
+    for (const auto [left, right] : ranges) {
+      check_min_matches_naive(excess_min_128_scalar_bits, "scalar_bits",
+                              s.data(), left, right, case_id);
+      check_min_matches_naive(excess_min_128_nibble_lut, "nibble_lut", s.data(),
+                              left, right, case_id);
+      check_min_matches_naive(excess_min_128_byte_lut, "byte_lut", s.data(),
+                              left, right, case_id);
+      check_min_matches_naive(excess_min_128_hybrid_lut, "hybrid_lut", s.data(),
+                              left, right, case_id);
+#ifdef PIXIE_AVX2_SUPPORT
+      check_min_matches_naive(excess_min_128_expand16_avx2, "expand16_avx2",
+                              s.data(), left, right, case_id);
+      check_min_matches_naive(excess_min_128_lane64_sse, "lane64_sse", s.data(),
+                              left, right, case_id);
+      check_min_matches_naive(excess_min_128_split64_sse, "split64_sse",
+                              s.data(), left, right, case_id);
+      check_min_matches_naive(excess_min_128_short_skip, "short_skip", s.data(),
+                              left, right, case_id);
+#endif
+      ++case_id;
+    }
+  }
+}
+
+TEST(ExcessPositions128Experimental, MinVariantsMatchNaiveRandom) {
+  std::mt19937_64 rng(44);
+  std::uniform_int_distribution<size_t> offset_dist(0, 140);
+
+  for (int t = 0; t < 500; ++t) {
+    const std::array<uint64_t, 2> s = {rng(), rng()};
+    for (int q = 0; q < 16; ++q) {
+      const size_t left = offset_dist(rng);
+      const size_t right = offset_dist(rng);
+      check_min_matches_naive(excess_min_128_scalar_bits, "scalar_bits",
+                              s.data(), left, right, t);
+      check_min_matches_naive(excess_min_128_nibble_lut, "nibble_lut", s.data(),
+                              left, right, t);
+      check_min_matches_naive(excess_min_128_byte_lut, "byte_lut", s.data(),
+                              left, right, t);
+      check_min_matches_naive(excess_min_128_hybrid_lut, "hybrid_lut", s.data(),
+                              left, right, t);
+#ifdef PIXIE_AVX2_SUPPORT
+      check_min_matches_naive(excess_min_128_expand16_avx2, "expand16_avx2",
+                              s.data(), left, right, t);
+      check_min_matches_naive(excess_min_128_lane64_sse, "lane64_sse", s.data(),
+                              left, right, t);
+      check_min_matches_naive(excess_min_128_split64_sse, "split64_sse",
+                              s.data(), left, right, t);
+      check_min_matches_naive(excess_min_128_short_skip, "short_skip", s.data(),
+                              left, right, t);
+#endif
     }
   }
 }

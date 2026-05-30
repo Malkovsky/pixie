@@ -183,6 +183,15 @@ if(PIXIE_TESTS)
             gtest
             gtest_main
             ${PIXIE_DIAGNOSTICS_LIBS})
+
+    add_executable(rmq_tests
+        src/tests/rmq_tests.cpp)
+    target_include_directories(rmq_tests
+        PUBLIC include)
+    target_link_libraries(rmq_tests
+        gtest
+        gtest_main
+        ${PIXIE_DIAGNOSTICS_LIBS})
 endif()
 
 # ---------------------------------------------------------------------------
@@ -215,6 +224,14 @@ if(PIXIE_BENCHMARKS)
     target_include_directories(bench_rmm_btree
         PUBLIC include)
     target_link_libraries(bench_rmm_btree
+        benchmark
+        ${PIXIE_DIAGNOSTICS_LIBS})
+
+    add_executable(bench_rmq
+        src/benchmarks/bench_rmq.cpp)
+    target_include_directories(bench_rmq
+        PUBLIC include)
+    target_link_libraries(bench_rmq
         benchmark
         ${PIXIE_DIAGNOSTICS_LIBS})
 

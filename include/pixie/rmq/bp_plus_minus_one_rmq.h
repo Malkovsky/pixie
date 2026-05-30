@@ -212,8 +212,7 @@ class BpPlusMinusOneRmq {
   std::int64_t block_base_depth(std::size_t block,
                                 const std::array<std::uint64_t, 2>& bits,
                                 std::size_t size) const {
-    const ExcessMin128Result full_min =
-        excess_min_128(bits.data(), 0, size - 1);
+    const ExcessResult full_min = excess_min_128(bits.data(), 0, size - 1);
     return block_min_values_[block] - full_min.min_excess;
   }
 
@@ -225,7 +224,7 @@ class BpPlusMinusOneRmq {
     right_offset = std::min(right_offset, size - 1);
     const auto bits = block_bits(block);
     const std::int64_t base_depth = block_base_depth(block, bits, size);
-    const ExcessMin128Result result =
+    const ExcessResult result =
         excess_min_128(bits.data(), left_offset, right_offset);
     if (result.offset == npos || result.offset >= size) {
       return {};
@@ -237,7 +236,7 @@ class BpPlusMinusOneRmq {
     const std::size_t begin = block * BlockSize;
     const std::size_t size = block_size(block);
     const auto bits = block_bits(block);
-    const ExcessMin128Result result = excess_min_128(bits.data(), 0, size - 1);
+    const ExcessResult result = excess_min_128(bits.data(), 0, size - 1);
     if (result.offset == npos || result.offset >= size) {
       return {};
     }
