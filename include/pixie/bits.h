@@ -2,6 +2,7 @@
 
 #include <immintrin.h>
 
+#include <algorithm>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -805,7 +806,45 @@ static inline const __m256i excess_lut_bit2 = _mm256_set1_epi8(4);
 static inline const __m256i excess_lut_bit3 = _mm256_set1_epi8(8);
 static inline const __m128i excess_lut_nibble_mask = _mm_set1_epi8(0x0F);
 // clang-format on
+
+static inline __m256i excess_bit_masks_16x_i16() noexcept {
+  return _mm256_setr_epi16(0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020,
+                           0x0040, 0x0080, 0x0100, 0x0200, 0x0400, 0x0800,
+                           0x1000, 0x2000, 0x4000,
+                           static_cast<int16_t>(0x8000));
+}
+
+static inline __m256i excess_prefix_sum_16x_i16(__m256i v) noexcept {
+  __m256i x = v;
+  __m256i t = _mm256_slli_si256(x, 2);
+  x = _mm256_add_epi16(x, t);
+  t = _mm256_slli_si256(x, 4);
+  x = _mm256_add_epi16(x, t);
+  t = _mm256_slli_si256(x, 8);
+  x = _mm256_add_epi16(x, t);
+
+  __m128i lo = _mm256_extracti128_si256(x, 0);
+  __m128i hi = _mm256_extracti128_si256(x, 1);
+  const int16_t carry = static_cast<int16_t>(_mm_extract_epi16(lo, 7));
+  hi = _mm_add_epi16(hi, _mm_set1_epi16(carry));
+
+  __m256i out = _mm256_castsi128_si256(lo);
+  return _mm256_inserti128_si256(out, hi, 1);
+}
 #endif
+
+/**
+ * @brief Minimum prefix excess in a 128-bit bitstring range.
+ * @details Prefix positions are offsets in `[0, 128]`; position 0 is the
+ * empty prefix and position `k` is the excess after consuming the first `k`
+ * bits. The query range `[left, right]` is inclusive. Ties return the first
+ * offset attaining the minimum. Invalid ranges return offset 128 as a
+ * sentinel.
+ */
+struct ExcessMin128Result {
+  int min_excess = 0;
+  size_t offset = 128;
+};
 
 /**
  * @brief Find every prefix whose excess equals target_x in a 128-bit bitstring.
@@ -933,6 +972,82 @@ static inline int prefix_excess_128(const uint64_t* s,
       std::popcount(s[1] &
                     first_bits_mask(static_cast<uint32_t>(end_offset - 64))));
   return 2 * ones - static_cast<int>(end_offset);
+}
+
+/**
+ * @brief Return the minimum prefix excess and first attaining offset.
+ * @param s 2 little-endian uint64_t words (bit 0 of s[0] is the first bit).
+ * @param left First prefix position to consider, inclusive.
+ * @param right Last prefix position to consider, inclusive.
+ */
+static inline ExcessMin128Result excess_min_128(const uint64_t* s,
+                                                size_t left,
+                                                size_t right) noexcept {
+  if (left > right) {
+    return {};
+  }
+  left = std::min<size_t>(left, 128);
+  right = std::min<size_t>(right, 128);
+
+  int best = prefix_excess_128(s, left);
+  size_t best_offset = left;
+  if (left == right) {
+    return {best, best_offset};
+  }
+
+#ifdef PIXIE_AVX2_SUPPORT
+  static const __m256i masks = excess_bit_masks_16x_i16();
+  static const __m256i zero = _mm256_setzero_si256();
+  static const __m256i pos = _mm256_set1_epi16(1);
+  static const __m256i neg = _mm256_set1_epi16(-1);
+
+  int carry = 0;
+  alignas(32) int16_t prefix_values[16];
+  for (size_t chunk = 0; chunk < 8; ++chunk) {
+    const size_t chunk_bit = chunk * 16;
+    const uint16_t bits =
+        chunk < 4
+            ? static_cast<uint16_t>((s[0] >> (chunk * 16)) & 0xFFFFu)
+            : static_cast<uint16_t>((s[1] >> ((chunk - 4) * 16)) & 0xFFFFu);
+    const int delta = 2 * static_cast<int>(std::popcount(bits)) - 16;
+
+    if (chunk_bit + 1 <= right && chunk_bit + 16 >= left) {
+      const __m256i selected = _mm256_and_si256(
+          _mm256_set1_epi16(static_cast<int16_t>(bits)), masks);
+      const __m256i is_zero = _mm256_cmpeq_epi16(selected, zero);
+      const __m256i steps = _mm256_blendv_epi8(pos, neg, is_zero);
+      const __m256i pref =
+          _mm256_add_epi16(excess_prefix_sum_16x_i16(steps),
+                           _mm256_set1_epi16(static_cast<int16_t>(carry)));
+      _mm256_store_si256(reinterpret_cast<__m256i*>(prefix_values), pref);
+
+      for (size_t lane = 0; lane < 16; ++lane) {
+        const size_t offset = chunk_bit + lane + 1;
+        if (offset < left || offset > right) {
+          continue;
+        }
+        const int value = prefix_values[lane];
+        if (value < best) {
+          best = value;
+          best_offset = offset;
+        }
+      }
+    }
+    carry += delta;
+  }
+#else
+  int current = 0;
+  for (size_t bit = 0; bit < right; ++bit) {
+    current += ((s[bit >> 6] >> (bit & 63)) & 1ull) != 0 ? 1 : -1;
+    const size_t offset = bit + 1;
+    if (offset >= left && current < best) {
+      best = current;
+      best_offset = offset;
+    }
+  }
+#endif
+
+  return {best, best_offset};
 }
 
 /**

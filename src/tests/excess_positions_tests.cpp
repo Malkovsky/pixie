@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <numeric>
 #include <random>
+#include <utility>
 
 using pixie::experimental::excess_positions_512_branching_lut;
 using pixie::experimental::excess_positions_512_byte_lut;
@@ -66,6 +67,41 @@ static int naive_prefix_excess_128(const uint64_t* s, size_t end_offset) {
     cur += bit ? +1 : -1;
   }
   return cur;
+}
+
+static ExcessMin128Result naive_excess_min_128(const uint64_t* s,
+                                               size_t left,
+                                               size_t right) {
+  if (left > right) {
+    return {};
+  }
+  left = std::min<size_t>(left, 128);
+  right = std::min<size_t>(right, 128);
+
+  int cur = 0;
+  int best = 0;
+  size_t best_offset = 0;
+  bool found = false;
+  if (left == 0) {
+    found = true;
+  }
+  for (size_t bit = 0; bit < right; ++bit) {
+    cur += ((s[bit >> 6] >> (bit & 63)) & 1ull) != 0 ? 1 : -1;
+    const size_t offset = bit + 1;
+    if (offset < left) {
+      continue;
+    }
+    if (!found || cur < best) {
+      best = cur;
+      best_offset = offset;
+      found = true;
+    }
+  }
+  if (!found) {
+    best = naive_prefix_excess_128(s, left);
+    best_offset = left;
+  }
+  return {best, best_offset};
 }
 
 static size_t naive_forward_search_128(const uint64_t* s,
@@ -166,6 +202,84 @@ TEST(ExcessPositions128, PrefixExcessMatchesNaive) {
       EXPECT_EQ(prefix_excess_128(s.data(), offset),
                 naive_prefix_excess_128(s.data(), offset))
           << "case=" << t << " offset=" << offset;
+    }
+  }
+}
+
+TEST(ExcessPositions128, MinMatchesNaiveFixedCases) {
+  const std::array<std::array<uint64_t, 2>, 5> cases = {{
+      {0, 0},
+      {UINT64_MAX, UINT64_MAX},
+      {0xAAAAAAAAAAAAAAAAull, 0x5555555555555555ull},
+      {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull},
+      {0x0000FFFF0000FFFFull, 0xFFFF0000FFFF0000ull},
+  }};
+  const std::array<std::pair<size_t, size_t>, 12> ranges = {{
+      {0, 128},
+      {0, 0},
+      {1, 1},
+      {63, 65},
+      {64, 64},
+      {64, 128},
+      {3, 6},
+      {5, 5},
+      {127, 128},
+      {128, 128},
+      {120, 127},
+      {129, 140},
+  }};
+
+  for (const auto& s : cases) {
+    for (const auto [left, right] : ranges) {
+      const ExcessMin128Result result = excess_min_128(s.data(), left, right);
+      const ExcessMin128Result expected =
+          naive_excess_min_128(s.data(), left, right);
+      EXPECT_EQ(result.min_excess, expected.min_excess)
+          << "left=" << left << " right=" << right;
+      EXPECT_EQ(result.offset, expected.offset)
+          << "left=" << left << " right=" << right;
+    }
+  }
+}
+
+TEST(ExcessPositions128, MinReturnsFirstTie) {
+  const std::array<uint64_t, 2> s = {0x5555555555555555ull,
+                                     0x5555555555555555ull};
+  const ExcessMin128Result result = excess_min_128(s.data(), 0, 128);
+  EXPECT_EQ(result.min_excess, 0);
+  EXPECT_EQ(result.offset, 0u);
+
+  const ExcessMin128Result shifted = excess_min_128(s.data(), 1, 128);
+  EXPECT_EQ(shifted.min_excess, 0);
+  EXPECT_EQ(shifted.offset, 2u);
+}
+
+TEST(ExcessPositions128, MinInvalidRangeUsesSentinel) {
+  const std::array<uint64_t, 2> s = {0, 0};
+  const ExcessMin128Result result = excess_min_128(s.data(), 17, 16);
+  EXPECT_EQ(result.min_excess, 0);
+  EXPECT_EQ(result.offset, 128u);
+}
+
+TEST(ExcessPositions128, MinMatchesNaiveRandom) {
+  std::mt19937_64 rng(43);
+  std::uniform_int_distribution<size_t> offset_dist(0, 128);
+
+  for (int t = 0; t < 1000; ++t) {
+    const std::array<uint64_t, 2> s = {rng(), rng()};
+    for (int q = 0; q < 32; ++q) {
+      size_t left = offset_dist(rng);
+      size_t right = offset_dist(rng);
+      if (left > right) {
+        std::swap(left, right);
+      }
+      const ExcessMin128Result result = excess_min_128(s.data(), left, right);
+      const ExcessMin128Result expected =
+          naive_excess_min_128(s.data(), left, right);
+      ASSERT_EQ(result.min_excess, expected.min_excess)
+          << "case=" << t << " left=" << left << " right=" << right;
+      ASSERT_EQ(result.offset, expected.offset)
+          << "case=" << t << " left=" << left << " right=" << right;
     }
   }
 }
