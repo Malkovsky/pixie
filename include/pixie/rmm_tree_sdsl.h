@@ -35,7 +35,7 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
 
   SdslRmMTree(std::span<const std::uint64_t> words,
               std::size_t bit_count,
-              std::size_t) {
+              std::size_t _ = 0) {
     size_ = bit_count;
     const std::size_t valid_words = (bit_count + 63) / 64;
     for (std::size_t i = 0; i < valid_words; ++i) {
