@@ -63,6 +63,19 @@ static std::vector<std::pair<size_t, size_t>> make_128_ranges(
   return ranges;
 }
 
+static std::vector<std::pair<size_t, size_t>> make_disjoint_boundary_ranges(
+    size_t num_ranges = 4096) {
+  std::mt19937_64 rng(45);
+  std::uniform_int_distribution<size_t> prefix_dist(0, 126);
+  std::vector<std::pair<size_t, size_t>> ranges(num_ranges);
+  for (auto& [suffix_left, prefix_right] : ranges) {
+    prefix_right = prefix_dist(rng);
+    std::uniform_int_distribution<size_t> suffix_dist(prefix_right + 1, 127);
+    suffix_left = suffix_dist(rng);
+  }
+  return ranges;
+}
+
 static std::vector<int> make_512_targets(size_t num_targets = 4096) {
   std::mt19937 rng(44);
   std::uniform_int_distribution<int> target_dist(-128, 128);
@@ -112,6 +125,57 @@ BENCHMARK(BM_ExcessMin128)
     ->Args({60, 68})
     ->Args({63, 64})
     ->Args({17, 17});
+
+static void BM_ExcessMin128BoundaryPairIndependent(benchmark::State& state) {
+  const auto blocks = make_128_blocks();
+  const auto ranges = make_disjoint_boundary_ranges();
+  const size_t num_blocks = blocks.size();
+  const size_t num_ranges = ranges.size();
+
+  size_t idx = 0;
+  for (auto _ : state) {
+    const auto& suffix = blocks[idx % num_blocks];
+    const auto& prefix = blocks[(idx + 1) % num_blocks];
+    const auto [suffix_left, prefix_right] = ranges[idx % num_ranges];
+    ExcessResult suffix_result =
+        excess_min_128(suffix.data(), suffix_left, 127);
+    ExcessResult prefix_result = excess_min_128(prefix.data(), 0, prefix_right);
+    benchmark::DoNotOptimize(suffix_result.min_excess);
+    benchmark::DoNotOptimize(suffix_result.offset);
+    benchmark::DoNotOptimize(prefix_result.min_excess);
+    benchmark::DoNotOptimize(prefix_result.offset);
+    ++idx;
+  }
+
+  state.SetItemsProcessed(state.iterations());
+}
+
+BENCHMARK(BM_ExcessMin128BoundaryPairIndependent);
+
+static void BM_ExcessMin128BoundaryPairFused(benchmark::State& state) {
+  const auto blocks = make_128_blocks();
+  const auto ranges = make_disjoint_boundary_ranges();
+  const size_t num_blocks = blocks.size();
+  const size_t num_ranges = ranges.size();
+
+  size_t idx = 0;
+  for (auto _ : state) {
+    const auto& suffix = blocks[idx % num_blocks];
+    const auto& prefix = blocks[(idx + 1) % num_blocks];
+    const auto [suffix_left, prefix_right] = ranges[idx % num_ranges];
+    ExcessBoundaryPairResult result = excess_min_128_disjoint_suffix_prefix(
+        suffix.data(), suffix_left, prefix.data(), prefix_right);
+    benchmark::DoNotOptimize(result.suffix.min_excess);
+    benchmark::DoNotOptimize(result.suffix.offset);
+    benchmark::DoNotOptimize(result.prefix.min_excess);
+    benchmark::DoNotOptimize(result.prefix.offset);
+    ++idx;
+  }
+
+  state.SetItemsProcessed(state.iterations());
+}
+
+BENCHMARK(BM_ExcessMin128BoundaryPairFused);
 
 template <ExcessResult (*Fn)(const uint64_t*, size_t, size_t)>
 static void BM_ExcessMin128Variant(benchmark::State& state) {

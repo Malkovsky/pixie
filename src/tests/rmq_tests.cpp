@@ -166,6 +166,27 @@ TEST(RmqBpPlusMinusOne, CrossBlockTieKeepsFirstPosition) {
                           std::less<std::int64_t>()));
 }
 
+TEST(RmqBpPlusMinusOne, DisjointBoundaryRangeMatchesNaive) {
+  std::vector<std::int64_t> depths(384);
+  for (std::size_t i = 1; i < depths.size(); ++i) {
+    const bool up = (i % 9 == 0) || (i % 9 == 3) || (i % 11 == 0);
+    depths[i] = depths[i - 1] + (up ? 1 : -1);
+  }
+
+  const std::vector<std::uint64_t> bits = pack_depth_deltas(depths);
+  const pixie::rmq::BpPlusMinusOneRmq<> rmq(bits, depths.size());
+  const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
+      {96, 160}, {120, 140}, {127, 129}, {190, 258}, {250, 260},
+  };
+
+  for (const auto [left, right] : ranges) {
+    EXPECT_EQ(rmq.arg_min(left, right),
+              naive_arg_min(std::span<const std::int64_t>(depths), left, right,
+                            std::less<std::int64_t>()))
+        << "range=[" << left << "," << right << "]";
+  }
+}
+
 TEST(RmqBpPlusMinusOne, RejectsTooSmallBitSpan) {
   const std::vector<std::uint64_t> bits;
   EXPECT_THROW((pixie::rmq::BpPlusMinusOneRmq<>(bits, 2)),

@@ -31,17 +31,51 @@ class SparseTable : public RmqBase<SparseTable<T, Compare, Index>, T> {
       RmqBase<SparseTable<T, Compare, Index>, T>::npos;
   static constexpr Index invalid_index = std::numeric_limits<Index>::max();
 
+  /**
+   * @brief Construct an empty sparse table.
+   */
   SparseTable() = default;
 
+  /**
+   * @brief Build a sparse table over @p values.
+   *
+   * @details The values are not copied and must outlive this object. Equal
+   * values keep the smaller index as the RMQ answer.
+   *
+   * @param values Values to index.
+   * @param compare Ordering used to choose minima.
+   * @throws std::length_error if @p Index cannot represent all positions.
+   */
   explicit SparseTable(std::span<const T> values, Compare compare = Compare())
       : values_(values), compare_(compare) {
     build();
   }
 
+  /**
+   * @brief Return the number of indexed values.
+   *
+   * @return `values.size()` from construction.
+   */
   std::size_t size_impl() const { return values_.size(); }
 
+  /**
+   * @brief Return the value at an indexed position.
+   *
+   * @param position Zero-based position in the indexed values.
+   * @return Copy of the value at @p position.
+   */
   T value_at_impl(std::size_t position) const { return values_[position]; }
 
+  /**
+   * @brief Return the first minimum position in [@p left, @p right].
+   *
+   * @details Answers in O(1) by comparing the two power-of-two ranges covering
+   * the inclusive query interval. Ties return the smaller position.
+   *
+   * @param left First position in the query range.
+   * @param right Last position in the query range.
+   * @return Zero-based position of the first range minimum, or `npos`.
+   */
   std::size_t arg_min_impl(std::size_t left, std::size_t right) const {
     if (left > right || right >= values_.size()) {
       return npos;
@@ -55,6 +89,16 @@ class SparseTable : public RmqBase<SparseTable<T, Compare, Index>, T> {
   }
 
  private:
+  /**
+   * @brief Choose the better of two candidate positions.
+   *
+   * @details `npos` is treated as missing. If both values compare equal, the
+   * smaller position wins to preserve first-minimum semantics.
+   *
+   * @param left First candidate position, or `npos`.
+   * @param right Second candidate position, or `npos`.
+   * @return Position of the selected candidate.
+   */
   std::size_t better(std::size_t left, std::size_t right) const {
     if (left == npos) {
       return right;
@@ -71,6 +115,14 @@ class SparseTable : public RmqBase<SparseTable<T, Compare, Index>, T> {
     return std::min(left, right);
   }
 
+  /**
+   * @brief Build all sparse-table levels over the indexed values.
+   *
+   * @details Level 0 stores singleton positions. Each higher level stores the
+   * first minimum of two adjacent half ranges from the previous level.
+   *
+   * @throws std::length_error if @p Index cannot represent all positions.
+   */
   void build() {
     table_.clear();
     if (values_.empty()) {

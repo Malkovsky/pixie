@@ -162,6 +162,28 @@ static size_t count_matches(const uint64_t* out) {
   return cnt;
 }
 
+static void check_boundary_pair_matches_independent(
+    const std::array<uint64_t, 2>& suffix,
+    size_t suffix_left,
+    const std::array<uint64_t, 2>& prefix,
+    size_t prefix_right) {
+  const ExcessBoundaryPairResult result = excess_min_128_disjoint_suffix_prefix(
+      suffix.data(), suffix_left, prefix.data(), prefix_right);
+  const ExcessResult expected_suffix =
+      excess_min_128(suffix.data(), suffix_left, 127);
+  const ExcessResult expected_prefix =
+      excess_min_128(prefix.data(), 0, prefix_right);
+
+  ASSERT_EQ(result.suffix.min_excess, expected_suffix.min_excess)
+      << "suffix_left=" << suffix_left << " prefix_right=" << prefix_right;
+  ASSERT_EQ(result.suffix.offset, expected_suffix.offset)
+      << "suffix_left=" << suffix_left << " prefix_right=" << prefix_right;
+  ASSERT_EQ(result.prefix.min_excess, expected_prefix.min_excess)
+      << "suffix_left=" << suffix_left << " prefix_right=" << prefix_right;
+  ASSERT_EQ(result.prefix.offset, expected_prefix.offset)
+      << "suffix_left=" << suffix_left << " prefix_right=" << prefix_right;
+}
+
 template <typename Fn>
 static void check_matches_naive(Fn fn,
                                 const char* fn_name,
@@ -343,6 +365,65 @@ TEST(ExcessPositions128, MinMatchesNaiveRandom) {
           << "case=" << t << " left=" << left << " right=" << right;
     }
   }
+}
+
+TEST(ExcessPositions128, DisjointBoundaryPairMatchesIndependentFixedCases) {
+  const std::array<std::array<uint64_t, 2>, 5> cases = {{
+      {0, 0},
+      {UINT64_MAX, UINT64_MAX},
+      {0xAAAAAAAAAAAAAAAAull, 0x5555555555555555ull},
+      {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull},
+      {0x0000FFFF0000FFFFull, 0xFFFF0000FFFF0000ull},
+  }};
+  const std::array<std::pair<size_t, size_t>, 10> ranges = {{
+      {1, 0},
+      {4, 3},
+      {17, 16},
+      {32, 31},
+      {63, 62},
+      {64, 32},
+      {65, 63},
+      {96, 31},
+      {127, 0},
+      {120, 119},
+  }};
+
+  for (const auto& suffix : cases) {
+    for (const auto& prefix : cases) {
+      for (const auto [suffix_left, prefix_right] : ranges) {
+        check_boundary_pair_matches_independent(suffix, suffix_left, prefix,
+                                                prefix_right);
+      }
+    }
+  }
+}
+
+TEST(ExcessPositions128, DisjointBoundaryPairMatchesIndependentRandom) {
+  std::mt19937_64 rng(45);
+  std::uniform_int_distribution<size_t> prefix_dist(0, 126);
+
+  for (int t = 0; t < 1000; ++t) {
+    const std::array<uint64_t, 2> suffix = {rng(), rng()};
+    const std::array<uint64_t, 2> prefix = {rng(), rng()};
+    for (int q = 0; q < 16; ++q) {
+      const size_t prefix_right = prefix_dist(rng);
+      std::uniform_int_distribution<size_t> suffix_dist(prefix_right + 1, 127);
+      const size_t suffix_left = suffix_dist(rng);
+      check_boundary_pair_matches_independent(suffix, suffix_left, prefix,
+                                              prefix_right);
+    }
+  }
+}
+
+TEST(ExcessPositions128, BoundaryPairFallbackMatchesIndependent) {
+  const std::array<uint64_t, 2> suffix = {0x0123456789ABCDEFull,
+                                          0xFEDCBA9876543210ull};
+  const std::array<uint64_t, 2> prefix = {0x0000FFFF0000FFFFull,
+                                          0xFFFF0000FFFF0000ull};
+
+  check_boundary_pair_matches_independent(suffix, 32, prefix, 32);
+  check_boundary_pair_matches_independent(suffix, 0, prefix, 127);
+  check_boundary_pair_matches_independent(suffix, 128, prefix, 0);
 }
 
 TEST(ExcessPositions128Experimental, MinVariantsMatchNaive) {

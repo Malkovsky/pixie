@@ -880,6 +880,17 @@ struct ExcessResult {
   size_t offset = 128;
 };
 
+/**
+ * @brief Pair of boundary minimum results for adjacent BP query blocks.
+ *
+ * @details `suffix` is local to the left/suffix block and `prefix` is local to
+ * the right/prefix block.
+ */
+struct ExcessBoundaryPairResult {
+  ExcessResult suffix;
+  ExcessResult prefix;
+};
+
 constexpr int8_t excess_byte_delta_value(uint8_t x) {
   return static_cast<int8_t>(2 * std::popcount(x) - 8);
 }
@@ -1106,14 +1117,15 @@ static inline ExcessResult excess_min_128(const uint64_t* s,
   left = std::min<size_t>(left, 128);
   right = std::min<size_t>(right, 128);
 
+  if (right - left <= 32 && (left & 7u) == 0 && (right & 7u) == 0)
+      [[unlikely]] {
+    return excess_min_128_byte_lut_short(s, left, right);
+  }
+
   int best = prefix_excess_128(s, left);
   size_t best_offset = left;
   if (left == right) {
     return {best, best_offset};
-  }
-  if (right - left <= 32 && (left & 7u) == 0 && (right & 7u) == 0)
-      [[unlikely]] {
-    return excess_min_128_byte_lut_short(s, left, right);
   }
 
 #ifdef PIXIE_AVX2_SUPPORT
@@ -1130,7 +1142,10 @@ static inline ExcessResult excess_min_128(const uint64_t* s,
 
   const size_t first_full_nibble = bit >> 2;
   const size_t last_full_nibble = right >> 2;
-  if (first_full_nibble < last_full_nibble) {
+  const size_t right_partial_width = bit < right ? (right & 3u) : 0;
+  const size_t end_nibble =
+      last_full_nibble + (right_partial_width == 0 ? 0 : 1);
+  if (first_full_nibble < end_nibble) {
     const __m256i nibbles = excess_nibbles_128_avx2(s);
 
     __m256i ps = _mm256_shuffle_epi8(excess_lut_delta, nibbles);
@@ -1148,19 +1163,34 @@ static inline ExcessResult excess_min_128(const uint64_t* s,
 
     __m256i b = _mm256_permute2x128_si256(ps, ps, 0x08);
     const __m256i excl_ps = _mm256_alignr_epi8(ps, b, 15);
-    const __m256i candidates =
-        _mm256_add_epi8(excl_ps, _mm256_shuffle_epi8(excess_lut_min, nibbles));
+    __m256i local_min = _mm256_shuffle_epi8(excess_lut_min, nibbles);
+    if (right_partial_width != 0) {
+      __m256i partial_min = _mm256_shuffle_epi8(excess_lut_pos0, nibbles);
+      if (right_partial_width >= 2) {
+        partial_min = _mm256_min_epi8(
+            partial_min, _mm256_shuffle_epi8(excess_lut_pos1, nibbles));
+      }
+      if (right_partial_width >= 3) {
+        partial_min = _mm256_min_epi8(
+            partial_min, _mm256_shuffle_epi8(excess_lut_pos2, nibbles));
+      }
+      local_min = _mm256_blendv_epi8(
+          local_min, partial_min,
+          _mm256_cmpeq_epi8(
+              excess_lut_nibble_index,
+              _mm256_set1_epi8(static_cast<int8_t>(last_full_nibble))));
+    }
+    const __m256i partial_candidates = _mm256_add_epi8(excl_ps, local_min);
 
     const __m256i idx = excess_lut_nibble_index;
     const int first_minus_one_value = static_cast<int>(first_full_nibble) - 1;
     const __m256i first_minus_one =
         _mm256_set1_epi8(static_cast<int8_t>(first_minus_one_value));
-    const __m256i last =
-        _mm256_set1_epi8(static_cast<int8_t>(last_full_nibble));
+    const __m256i last = _mm256_set1_epi8(static_cast<int8_t>(end_nibble));
     const __m256i active = _mm256_and_si256(
         _mm256_cmpgt_epi8(idx, first_minus_one), _mm256_cmpgt_epi8(last, idx));
     const __m256i masked_candidates =
-        _mm256_blendv_epi8(_mm256_set1_epi8(127), candidates, active);
+        _mm256_blendv_epi8(_mm256_set1_epi8(127), partial_candidates, active);
 
     __m128i min128 =
         _mm_min_epi8(_mm256_castsi256_si128(masked_candidates),
@@ -1183,12 +1213,25 @@ static inline ExcessResult excess_min_128(const uint64_t* s,
       const uint8_t nibble =
           static_cast<uint8_t>((word >> ((nibble_index & 15u) * 4u)) & 0xFu);
       best = candidate_min;
-      best_offset = static_cast<size_t>(nibble_index) * 4u +
-                    static_cast<size_t>(excess_lut_min_offset[nibble]);
+      if (right_partial_width != 0 && nibble_index == last_full_nibble) {
+        int local = 0;
+        int local_best = 0;
+        size_t local_offset = 1;
+        for (size_t i = 0; i < right_partial_width; ++i) {
+          local += ((nibble >> i) & 1u) != 0 ? 1 : -1;
+          if (i == 0 || local < local_best) {
+            local_best = local;
+            local_offset = i + 1;
+          }
+        }
+        best_offset = static_cast<size_t>(nibble_index) * 4u + local_offset;
+      } else {
+        best_offset = static_cast<size_t>(nibble_index) * 4u +
+                      static_cast<size_t>(excess_lut_min_offset[nibble]);
+      }
     }
 
-    bit = last_full_nibble * 4;
-    current = prefix_excess_128(s, bit);
+    bit = end_nibble * 4;
   }
 
   for (; bit < right; ++bit) {
@@ -1212,6 +1255,215 @@ static inline ExcessResult excess_min_128(const uint64_t* s,
 #endif
 
   return {best, best_offset};
+}
+
+/**
+ * @brief Compute disjoint suffix/prefix boundary minima for two 128-bit blocks.
+ *
+ * @details Computes `excess_min_128(suffix_s, suffix_left, 127)` and
+ * `excess_min_128(prefix_s, 0, prefix_right)`. When `suffix_left >
+ * prefix_right`, the AVX2 path packs the two disjoint local ranges into one
+ * nibble stream and shares the prefix-sum/reduction work. Non-disjoint or
+ * out-of-shape inputs fall back to the two independent production calls.
+ *
+ * @param suffix_s Left boundary block.
+ * @param suffix_left First local prefix offset in the suffix range.
+ * @param prefix_s Right boundary block.
+ * @param prefix_right Last local prefix offset in the prefix range.
+ * @return Pair of local minimum results.
+ */
+static inline ExcessBoundaryPairResult excess_min_128_disjoint_suffix_prefix(
+    const uint64_t* suffix_s,
+    size_t suffix_left,
+    const uint64_t* prefix_s,
+    size_t prefix_right) noexcept {
+  suffix_left = std::min<size_t>(suffix_left, 128);
+  prefix_right = std::min<size_t>(prefix_right, 128);
+  if (suffix_left <= prefix_right || suffix_left > 127 || prefix_right > 127) {
+    return {excess_min_128(suffix_s, suffix_left, 127),
+            excess_min_128(prefix_s, 0, prefix_right)};
+  }
+
+#ifdef PIXIE_AVX2_SUPPORT
+  ExcessResult prefix{0, 0};
+
+  int suffix_best = prefix_excess_128(suffix_s, suffix_left);
+  ExcessResult suffix{suffix_best, suffix_left};
+  size_t suffix_bit = suffix_left;
+  int suffix_current = suffix_best;
+  for (; suffix_bit < 127 && (suffix_bit & 3u) != 0; ++suffix_bit) {
+    suffix_current +=
+        ((suffix_s[suffix_bit >> 6] >> (suffix_bit & 63)) & 1ull) != 0 ? 1 : -1;
+    const size_t offset = suffix_bit + 1;
+    if (suffix_current < suffix.min_excess) {
+      suffix = {suffix_current, offset};
+    }
+  }
+
+  alignas(32) int8_t lane_nibbles[32] = {};
+  alignas(32) int8_t lane_indices[32] = {};
+  alignas(32) int8_t prefix_active[32] = {};
+  alignas(32) int8_t suffix_active[32] = {};
+  alignas(32) int8_t partial_widths[32] = {};
+  alignas(32) int8_t prefix_partial[32] = {};
+  alignas(32) int8_t suffix_partial[32] = {};
+
+  size_t lane = 0;
+  int prefix_artificial_delta = 0;
+  const size_t prefix_last_nibble = prefix_right >> 2;
+  const size_t prefix_partial_width = prefix_right & 3u;
+  const size_t prefix_end_nibble =
+      prefix_last_nibble + (prefix_partial_width == 0 ? 0 : 1);
+  for (size_t nibble_index = 0; nibble_index < prefix_end_nibble;
+       ++nibble_index) {
+    const uint64_t word = prefix_s[nibble_index >> 4];
+    const uint8_t nibble =
+        static_cast<uint8_t>((word >> ((nibble_index & 15u) * 4u)) & 0xFu);
+    lane_nibbles[lane] = static_cast<int8_t>(nibble);
+    lane_indices[lane] = static_cast<int8_t>(nibble_index);
+    prefix_active[lane] = static_cast<int8_t>(0xFFu);
+    if (prefix_partial_width != 0 && nibble_index == prefix_last_nibble) {
+      partial_widths[lane] = static_cast<int8_t>(prefix_partial_width);
+      prefix_partial[lane] = static_cast<int8_t>(0xFFu);
+    }
+    prefix_artificial_delta += 2 * std::popcount(nibble) - 4;
+    ++lane;
+  }
+
+  if (suffix_bit < 127) {
+    const size_t suffix_first_nibble = suffix_bit >> 2;
+    for (size_t nibble_index = suffix_first_nibble; nibble_index < 32;
+         ++nibble_index) {
+      const uint64_t word = suffix_s[nibble_index >> 4];
+      const uint8_t nibble =
+          static_cast<uint8_t>((word >> ((nibble_index & 15u) * 4u)) & 0xFu);
+      lane_nibbles[lane] = static_cast<int8_t>(nibble);
+      lane_indices[lane] = static_cast<int8_t>(nibble_index);
+      suffix_active[lane] = static_cast<int8_t>(0xFFu);
+      if (nibble_index == 31) {
+        partial_widths[lane] = 3;
+        suffix_partial[lane] = static_cast<int8_t>(0xFFu);
+      }
+      ++lane;
+    }
+  }
+
+  if (lane > 32) {
+    return {excess_min_128(suffix_s, suffix_left, 127),
+            excess_min_128(prefix_s, 0, prefix_right)};
+  }
+
+  __m256i nibbles =
+      _mm256_load_si256(reinterpret_cast<const __m256i*>(lane_nibbles));
+  __m256i ps = _mm256_shuffle_epi8(excess_lut_delta, nibbles);
+  ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 1));
+  ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 2));
+  ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 4));
+  ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 8));
+
+  __m128i ps_lo = _mm256_castsi256_si128(ps);
+  __m128i ps_hi = _mm256_extracti128_si256(ps, 1);
+  __m128i carry =
+      _mm_set1_epi8(static_cast<int8_t>(_mm_extract_epi8(ps_lo, 15)));
+  ps_hi = _mm_add_epi8(ps_hi, carry);
+  ps = _mm256_inserti128_si256(_mm256_castsi128_si256(ps_lo), ps_hi, 1);
+
+  __m256i b = _mm256_permute2x128_si256(ps, ps, 0x08);
+  const __m256i excl_ps = _mm256_alignr_epi8(ps, b, 15);
+
+  __m256i local_min = _mm256_shuffle_epi8(excess_lut_min, nibbles);
+  const __m256i width =
+      _mm256_load_si256(reinterpret_cast<const __m256i*>(partial_widths));
+  __m256i partial_min = _mm256_shuffle_epi8(excess_lut_pos0, nibbles);
+  partial_min = _mm256_min_epi8(
+      partial_min,
+      _mm256_blendv_epi8(_mm256_set1_epi8(127),
+                         _mm256_shuffle_epi8(excess_lut_pos1, nibbles),
+                         _mm256_cmpgt_epi8(width, _mm256_set1_epi8(1))));
+  partial_min = _mm256_min_epi8(
+      partial_min,
+      _mm256_blendv_epi8(_mm256_set1_epi8(127),
+                         _mm256_shuffle_epi8(excess_lut_pos2, nibbles),
+                         _mm256_cmpgt_epi8(width, _mm256_set1_epi8(2))));
+  const __m256i any_partial = _mm256_or_si256(
+      _mm256_load_si256(reinterpret_cast<const __m256i*>(prefix_partial)),
+      _mm256_load_si256(reinterpret_cast<const __m256i*>(suffix_partial)));
+  local_min = _mm256_blendv_epi8(local_min, partial_min, any_partial);
+
+  const __m256i base_candidates = _mm256_add_epi8(excl_ps, local_min);
+  const __m256i prefix_mask =
+      _mm256_load_si256(reinterpret_cast<const __m256i*>(prefix_active));
+  const __m256i suffix_mask =
+      _mm256_load_si256(reinterpret_cast<const __m256i*>(suffix_active));
+  const __m256i sentinel = _mm256_set1_epi8(127);
+
+  const __m256i prefix_candidates =
+      _mm256_blendv_epi8(sentinel, base_candidates, prefix_mask);
+  const __m256i suffix_candidates = _mm256_blendv_epi8(
+      sentinel,
+      _mm256_add_epi8(base_candidates,
+                      _mm256_set1_epi8(static_cast<int8_t>(
+                          suffix_current - prefix_artificial_delta))),
+      suffix_mask);
+
+  auto reduce_min = [](__m256i values) {
+    __m128i min128 = _mm_min_epi8(_mm256_castsi256_si128(values),
+                                  _mm256_extracti128_si256(values, 1));
+    min128 = _mm_min_epi8(min128, _mm_alignr_epi8(min128, min128, 8));
+    min128 = _mm_min_epi8(min128, _mm_alignr_epi8(min128, min128, 4));
+    min128 = _mm_min_epi8(min128, _mm_alignr_epi8(min128, min128, 2));
+    min128 = _mm_min_epi8(min128, _mm_alignr_epi8(min128, min128, 1));
+    return static_cast<int>(static_cast<int8_t>(_mm_extract_epi8(min128, 0)));
+  };
+
+  auto local_offset = [](uint8_t nibble, size_t width_value) {
+    if (width_value == 0 || width_value == 4) {
+      return static_cast<size_t>(excess_lut_min_offset[nibble]);
+    }
+    int current = 0;
+    int best = 0;
+    size_t best_offset = 1;
+    for (size_t i = 0; i < width_value; ++i) {
+      current += ((nibble >> i) & 1u) != 0 ? 1 : -1;
+      if (i == 0 || current < best) {
+        best = current;
+        best_offset = i + 1;
+      }
+    }
+    return best_offset;
+  };
+
+  const int prefix_min = reduce_min(prefix_candidates);
+  if (prefix_min < prefix.min_excess) {
+    const uint32_t mask = static_cast<uint32_t>(_mm256_movemask_epi8(
+        _mm256_cmpeq_epi8(prefix_candidates,
+                          _mm256_set1_epi8(static_cast<int8_t>(prefix_min)))));
+    const uint32_t prefix_lane = std::countr_zero(mask);
+    const uint8_t nibble = static_cast<uint8_t>(lane_nibbles[prefix_lane]);
+    prefix.min_excess = prefix_min;
+    prefix.offset =
+        static_cast<size_t>(lane_indices[prefix_lane]) * 4u +
+        local_offset(nibble, static_cast<size_t>(partial_widths[prefix_lane]));
+  }
+
+  const int suffix_min = reduce_min(suffix_candidates);
+  if (suffix_min < suffix.min_excess) {
+    const uint32_t mask = static_cast<uint32_t>(_mm256_movemask_epi8(
+        _mm256_cmpeq_epi8(suffix_candidates,
+                          _mm256_set1_epi8(static_cast<int8_t>(suffix_min)))));
+    const uint32_t suffix_lane = std::countr_zero(mask);
+    const uint8_t nibble = static_cast<uint8_t>(lane_nibbles[suffix_lane]);
+    suffix.min_excess = suffix_min;
+    suffix.offset =
+        static_cast<size_t>(lane_indices[suffix_lane]) * 4u +
+        local_offset(nibble, static_cast<size_t>(partial_widths[suffix_lane]));
+  }
+
+  return {suffix, prefix};
+#else
+  return {excess_min_128(suffix_s, suffix_left, 127),
+          excess_min_128(prefix_s, 0, prefix_right)};
+#endif
 }
 
 /**

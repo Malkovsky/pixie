@@ -31,17 +31,51 @@ class SegmentTree : public RmqBase<SegmentTree<T, Compare, Index>, T> {
       RmqBase<SegmentTree<T, Compare, Index>, T>::npos;
   static constexpr Index invalid_index = std::numeric_limits<Index>::max();
 
+  /**
+   * @brief Construct an empty segment tree.
+   */
   SegmentTree() = default;
 
+  /**
+   * @brief Build an iterative segment tree over @p values.
+   *
+   * @details The values are not copied and must outlive this object. Equal
+   * values keep the smaller index as the RMQ answer.
+   *
+   * @param values Values to index.
+   * @param compare Ordering used to choose minima.
+   * @throws std::length_error if @p Index cannot represent all positions.
+   */
   explicit SegmentTree(std::span<const T> values, Compare compare = Compare())
       : values_(values), compare_(compare) {
     build();
   }
 
+  /**
+   * @brief Return the number of indexed values.
+   *
+   * @return `values.size()` from construction.
+   */
   std::size_t size_impl() const { return values_.size(); }
 
+  /**
+   * @brief Return the value at an indexed position.
+   *
+   * @param position Zero-based position in the indexed values.
+   * @return Copy of the value at @p position.
+   */
   T value_at_impl(std::size_t position) const { return values_[position]; }
 
+  /**
+   * @brief Return the first minimum position in [@p left, @p right].
+   *
+   * @details Answers in O(log n) by walking the flat iterative segment tree.
+   * Ties return the smaller position.
+   *
+   * @param left First position in the query range.
+   * @param right Last position in the query range.
+   * @return Zero-based position of the first range minimum, or `npos`.
+   */
   std::size_t arg_min_impl(std::size_t left, std::size_t right) const {
     if (left > right || right >= values_.size()) {
       return npos;
@@ -69,6 +103,17 @@ class SegmentTree : public RmqBase<SegmentTree<T, Compare, Index>, T> {
   }
 
  private:
+  /**
+   * @brief Choose the better of two candidate positions.
+   *
+   * @details `npos` and `invalid_index` are treated as missing. If both values
+   * compare equal, the smaller position wins to preserve first-minimum
+   * semantics.
+   *
+   * @param left First candidate position, `npos`, or `invalid_index`.
+   * @param right Second candidate position, `npos`, or `invalid_index`.
+   * @return Position of the selected candidate.
+   */
   std::size_t better(std::size_t left, std::size_t right) const {
     if (left == npos || left == invalid_index) {
       return right;
@@ -85,6 +130,15 @@ class SegmentTree : public RmqBase<SegmentTree<T, Compare, Index>, T> {
     return std::min(left, right);
   }
 
+  /**
+   * @brief Build the flat iterative segment tree.
+   *
+   * @details Leaves start at `leaf_base_`, which is the next power of two.
+   * Unused leaves contain `invalid_index`, and internal nodes store the first
+   * minimum position of their covered segment.
+   *
+   * @throws std::length_error if @p Index cannot represent all positions.
+   */
   void build() {
     tree_.clear();
     leaf_base_ = 0;
