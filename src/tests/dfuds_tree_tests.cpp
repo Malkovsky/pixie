@@ -55,6 +55,7 @@ TEST(DfudsTreeTest, RandomTreeDFS) {
       }
       size_t deg = dfuds_tree.degree(cur);
       EXPECT_EQ(deg, debug_tree.degree(debug));
+      EXPECT_EQ(dfuds_tree.is_leaf(cur), debug_tree.is_leaf(debug));
 
       if (deg == 0) {
         continue;
@@ -95,6 +96,7 @@ TEST(DfudsTreeTest, RandomTreeBFS) {
       }
       size_t deg = dfuds_tree.degree(cur);
       EXPECT_EQ(deg, debug_tree.degree(debug));
+      EXPECT_EQ(dfuds_tree.is_leaf(cur), debug_tree.is_leaf(debug));
 
       if (deg == 0) {
         continue;
