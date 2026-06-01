@@ -196,7 +196,7 @@ class RmMBase {
   /**
    * @brief Read bit at position @p position (LSB-first across words).
    */
-  int bit_impl(const size_t& position) const noexcept {
+  int bit(const size_t& position) const noexcept {
     return impl().bit_impl(position);
   }
 

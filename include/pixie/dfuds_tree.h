@@ -53,7 +53,7 @@ class DFUDSTree {
    * @brief Indicates if @p node is a leaf
    */
   bool is_leaf(const Node& node) const {
-    return (node.pos + 1 == num_bits_) or rmm_.bit_impl(node.pos) == 0;
+    return (node.pos + 1 == num_bits_) or rmm_.bit(node.pos) == 0;
   }
 
   /**
