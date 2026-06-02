@@ -6,9 +6,6 @@
 #include <random>
 #include <vector>
 
-#include "bp_tree.h"
-
-using Node = pixie::BpTree::Node;
 using pixie::LoudsNode;
 
 std::vector<std::vector<size_t>> generate_random_tree(size_t tree_size,
@@ -88,29 +85,6 @@ std::vector<uint64_t> adj_to_louds(
   return louds;
 }
 
-std::vector<uint64_t> adj_to_bp(size_t tree_size,
-                                const std::vector<std::vector<size_t>>& adj) {
-  size_t bp_size = tree_size * 2;
-  std::vector<uint64_t> bp((bp_size + 63) / 64, 0);
-  std::vector<std::pair<size_t, size_t>> stack;
-  stack.push_back(std::make_pair(0, 0));
-  size_t pos = 0;
-  bp[pos >> 6] = bp[pos >> 6] | (1ULL << (pos & 63));
-  while (!stack.empty()) {
-    auto& [v, p] = stack.back();
-    p++;
-    if (p >= adj[v].size()) {
-      pos++;
-      stack.pop_back();
-      continue;
-    }
-    pos++;
-    bp[pos >> 6] = bp[pos >> 6] | (1ULL << (pos & 63));
-    stack.push_back(std::make_pair(adj[v][p], 0));
-  }
-  return bp;
-}
-
 struct AdjListNode {
   size_t number;
 };
@@ -120,14 +94,6 @@ bool operator==(const AdjListNode& a, const LoudsNode& b) {
 }
 
 bool operator==(const LoudsNode& b, const AdjListNode& a) {
-  return a.number == b.number;
-}
-
-bool operator==(const AdjListNode& a, const Node& b) {
-  return a.number == b.number;
-}
-
-bool operator==(const Node& b, const AdjListNode& a) {
   return a.number == b.number;
 }
 

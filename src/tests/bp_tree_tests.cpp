@@ -6,8 +6,9 @@
 #include <random>
 #include <stack>
 
-using Node = pixie::BpTree::Node;
-using pixie::BpTree;
+using Node = pixie::BPTree::Node;
+using pixie::adj_to_bp;
+using pixie::BPTree;
 
 TEST(BpTreeTest, Basic) {
   std::vector<std::vector<size_t>> adj = {{0, 1}, {0, 2}, {1, 3}, {2, 4}, {3}};
@@ -15,7 +16,7 @@ TEST(BpTreeTest, Basic) {
 
   std::vector<uint64_t> bp = adj_to_bp(tree_size, adj);
 
-  BpTree bp_tree(bp, 5);
+  BPTree bp_tree(bp, 5);
   AdjListTree debug_tree(adj);
 
   Node cur = bp_tree.root();
@@ -34,7 +35,7 @@ TEST(BpTreeTest, RandomTreeDFS) {
     std::vector<std::vector<size_t>> adj = generate_random_tree(tree_size, rng);
     adj = dfs_order(tree_size, adj);
     std::vector<uint64_t> bp = adj_to_bp(tree_size, adj);
-    BpTree bp_tree(bp, tree_size);
+    BPTree bp_tree(bp, tree_size);
     AdjListTree debug_tree(adj);
 
     std::stack<std::pair<Node, AdjListNode>> st;
@@ -53,6 +54,7 @@ TEST(BpTreeTest, RandomTreeDFS) {
       }
       size_t deg = bp_tree.degree(cur);
       EXPECT_EQ(deg, debug_tree.degree(debug));
+      EXPECT_EQ(bp_tree.is_leaf(cur), debug_tree.is_leaf(debug));
 
       if (deg == 0) {
         continue;
@@ -74,7 +76,7 @@ TEST(BpTreeTest, RandomTreeBFS) {
     std::vector<std::vector<size_t>> adj = generate_random_tree(tree_size, rng);
     adj = dfs_order(tree_size, adj);
     std::vector<uint64_t> bp = adj_to_bp(tree_size, adj);
-    BpTree bp_tree(bp, tree_size);
+    BPTree bp_tree(bp, tree_size);
     AdjListTree debug_tree(adj);
 
     std::queue<std::pair<Node, AdjListNode>> st;
@@ -92,6 +94,7 @@ TEST(BpTreeTest, RandomTreeBFS) {
       }
       size_t deg = bp_tree.degree(cur);
       EXPECT_EQ(deg, debug_tree.degree(debug));
+      EXPECT_EQ(bp_tree.is_leaf(cur), debug_tree.is_leaf(debug));
 
       if (deg == 0) {
         continue;

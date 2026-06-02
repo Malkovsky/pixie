@@ -4,13 +4,15 @@
 
 #include <cstdint>
 
+#include "utils.h"
+
 namespace pixie {
 
 /**
  * @brief A tree class based on the balances parentheses (BP)
  * representation
  */
-class BpTree {
+class BPTree {
  private:
   const size_t num_bits_;
   RmMTree rmm;
@@ -23,6 +25,9 @@ class BpTree {
     size_t number;
     size_t pos;
 
+    /**
+     * @brief A node class of BP tree
+     */
     Node(size_t node_number, size_t bp_pos)
         : number(node_number), pos(bp_pos) {}
   };
@@ -30,7 +35,7 @@ class BpTree {
   /**
    * @brief Constructor from an external array of uint64_t
    */
-  explicit BpTree(const std::vector<std::uint64_t>& words, size_t tree_size)
+  explicit BPTree(const std::vector<std::uint64_t>& words, size_t tree_size)
       : num_bits_(2 * tree_size), rmm(words, 2 * tree_size) {}
 
   /**
@@ -133,4 +138,36 @@ class BpTree {
     return Node(num, pos);
   }
 };
+
+std::vector<uint64_t> adj_to_bp(size_t tree_size,
+                                const std::vector<std::vector<size_t>>& adj) {
+  size_t bp_size = tree_size * 2;
+  std::vector<uint64_t> bp((bp_size + 63) / 64, 0);
+  std::vector<std::pair<size_t, size_t>> stack;
+  stack.push_back(std::make_pair(0, 0));
+  size_t pos = 0;
+  bp[pos >> 6] = bp[pos >> 6] | (1ULL << (pos & 63));
+  while (!stack.empty()) {
+    auto& [v, p] = stack.back();
+    p++;
+    if (p >= adj[v].size()) {
+      pos++;
+      stack.pop_back();
+      continue;
+    }
+    pos++;
+    bp[pos >> 6] = bp[pos >> 6] | (1ULL << (pos & 63));
+    stack.push_back(std::make_pair(adj[v][p], 0));
+  }
+  return bp;
+}
+
+bool operator==(const AdjListNode& a, const BPTree::Node& b) {
+  return a.number == b.number;
+}
+
+bool operator==(const BPTree::Node& b, const AdjListNode& a) {
+  return a.number == b.number;
+}
+
 }  // namespace pixie
