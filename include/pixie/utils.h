@@ -46,6 +46,32 @@ std::vector<std::vector<size_t>> bfs_order(
   return bfs_adj;
 }
 
+std::vector<std::vector<size_t>> dfs_order(
+    size_t tree_size,
+    const std::vector<std::vector<size_t>>& adj) {
+  std::vector<std::vector<size_t>> dfs_adj(tree_size);
+  std::vector<std::pair<size_t, size_t>> stack;
+  dfs_adj[0].push_back(0);
+  stack.push_back({0, 0});
+  std::vector<size_t> renumbering(tree_size, 0);
+  size_t next_number = 1;
+  while (!stack.empty()) {
+    auto& [v, i] = stack.back();
+    i++;
+    if (i == adj[v].size()) {
+      stack.pop_back();
+      continue;
+    }
+    size_t u = adj[v][i];
+    renumbering[u] = next_number++;
+    dfs_adj[renumbering[v]].push_back(renumbering[u]);
+    dfs_adj[renumbering[u]].push_back(renumbering[v]);
+
+    stack.push_back(std::pair{u, 0});
+  }
+  return dfs_adj;
+}
+
 std::vector<uint64_t> adj_to_louds(
     size_t tree_size,
     const std::vector<std::vector<size_t>>& adj) {
