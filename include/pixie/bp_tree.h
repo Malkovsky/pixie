@@ -113,8 +113,8 @@ class BPTree {
     if (node.number == 0) {
       return root();
     }
-    size_t pos = rmm.enclose(node.pos + 1);
-    size_t num = rmm.rank1(pos) - 1;
+    size_t pos = rmm.enclose(node.pos);
+    size_t num = rmm.rank1(pos);
     return Node(num, pos);
   }
 
@@ -122,8 +122,8 @@ class BPTree {
    * @brief Indicates if @p node is last child
    */
   bool is_last_child(const Node& node) const {
-    size_t end = rmm.close(node.pos + 1);
-    if (end + 1 >= num_bits_) {
+    size_t end = rmm.close(node.pos);
+    if (end + 2 >= num_bits_) {
       return true;
     }
     return rmm.bit(end + 1) == 0;
@@ -133,7 +133,7 @@ class BPTree {
    * @brief Returns next sibling of a @p node
    */
   Node next_sibling(const Node& node) const {
-    size_t pos = rmm.close(node.pos + 1) + 1;
+    size_t pos = rmm.close(node.pos) + 1;
     size_t num = rmm.rank1(pos + 1) - 1;
     return Node(num, pos);
   }
