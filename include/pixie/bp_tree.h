@@ -52,7 +52,7 @@ class BPTree {
    * @brief Indicates if @p node is a leaf
    */
   bool is_leaf(const Node& node) const {
-    return (node.pos + 1 == num_bits_) or rmm.bit(node.pos + 1) == 0;
+    return (node.pos + 2 == num_bits_) or rmm.bit(node.pos + 1) == 0;
   }
 
   /**
@@ -123,10 +123,8 @@ class BPTree {
    */
   bool is_last_child(const Node& node) const {
     size_t end = rmm.close(node.pos);
-    if (end + 2 >= num_bits_) {
-      return true;
-    }
-    return rmm.bit(end + 1) == 0;
+
+    return end + 2 >= num_bits_ or rmm.bit(end + 1) == 0;
   }
 
   /**
