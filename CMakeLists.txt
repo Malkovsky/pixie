@@ -256,6 +256,10 @@ if(PIXIE_BENCHMARKS)
             benchmark
             benchmark_main
             ${PIXIE_DIAGNOSTICS_LIBS})
+    if(PIXIE_THIRD_PARTY_BACKENDS)
+        target_include_directories(bp_tree_benchmarks
+                PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
+    endif()
 
     add_executable(dfuds_tree_benchmarks
             src/benchmarks/dfuds_tree_benchmarks.cpp)

@@ -10,6 +10,14 @@ using BPTree = pixie::BPTree<pixie::RmMTree>;
 using Node = BPTree::Node;
 using pixie::adj_to_bp;
 
+bool operator==(const AdjListNode& a, const Node& b) {
+  return a.number == b.number;
+}
+
+bool operator==(Node& b, const AdjListNode& a) {
+  return a.number == b.number;
+}
+
 TEST(BpTreeTest, Basic) {
   std::vector<std::vector<size_t>> adj = {{0, 1}, {0, 2}, {1, 3}, {2, 4}, {3}};
   size_t tree_size = 5;

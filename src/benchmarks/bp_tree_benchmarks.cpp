@@ -4,7 +4,14 @@
 
 #include <random>
 
+#ifdef SDSL_SUPPORT
+#pragma message("SDSL_SUPPORT enabled")
+#include "pixie/rmm_tree_sdsl.h"
+using BPTree = pixie::BPTree<pixie::SdslRmMTree>;
+#else
+#pragma message("SDSL_SUPPORT disabled")
 using BPTree = pixie::BPTree<pixie::RmMTree>;
+#endif
 using Node = BPTree::Node;
 
 /**

@@ -43,7 +43,8 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
                 "PIXIE_TESTS": "OFF",
-                "PIXIE_BENCHMARKS": "ON"
+                "PIXIE_BENCHMARKS": "ON",
+                "PIXIE_THIRD_PARTY_BACKENDS": "OFF"
             }
         },
         {

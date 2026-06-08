@@ -158,14 +158,4 @@ std::vector<uint64_t> adj_to_bp(size_t tree_size,
   }
   return bp;
 }
-
-bool operator==(const AdjListNode& a, const typename BPTree<RmMTree>::Node b) {
-  return a.number == b.number;
-}
-
-template <typename RMMTree>
-bool operator==(const typename BPTree<RmMTree>::Node b, const AdjListNode& a) {
-  return a.number == b.number;
-}
-
 }  // namespace pixie
