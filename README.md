@@ -214,6 +214,22 @@ The RMQ benchmark harness rotates through several value arrays so results are
 less dependent on the global-minimum position. The `width` argument is the
 maximum query width, not an exact width.
 
+To compare the new backend with `SegmentBTreeXL`, run both benchmark families
+with a Google Benchmark filter. For example, after registering the new backend
+as `rmq_linear` and `rmq_build_linear`:
+
+```sh
+./build/release/bench_rmq \
+  --benchmark_filter='^(rmq_linear|rmq_segment_btree_xl)/(4194304|16777216)/(64|4096|262144|4194304|16777216)$'
+
+./build/release/bench_rmq \
+  --benchmark_filter='^(rmq_build_linear|rmq_build_segment_btree_xl)/(262144|4194304|16777216)$'
+```
+
+The first command compares query time for `2^22` and `2^24` input sizes across
+the common RMQ widths. The second command compares construction time for the
+same implementations.
+
 ### RmM Tree
 
 ```sh
