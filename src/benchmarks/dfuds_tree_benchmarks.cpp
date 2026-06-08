@@ -4,9 +4,17 @@
 
 #include <random>
 
-using Node = pixie::DFUDSTree::Node;
+#ifdef SDSL_SUPPORT
+#pragma message("SDSL_SUPPORT enabled")
+#include "pixie/rmm_tree_sdsl.h"
+using DFUDSTree = pixie::DFUDSTree<pixie::SdslRmMTree>;
+#else
+#pragma message("SDSL_SUPPORT disabled")
+using DFUDSTree = pixie::DFUDSTree<pixie::RmMTree>;
+#endif
+
+using Node = DFUDSTree::Node;
 using pixie::adj_to_dfuds;
-using pixie::DFUDSTree;
 
 /**
  * DFS with O(1) extra memory

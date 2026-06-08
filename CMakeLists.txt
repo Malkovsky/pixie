@@ -247,6 +247,10 @@ if(PIXIE_BENCHMARKS)
             benchmark
             benchmark_main
             ${PIXIE_DIAGNOSTICS_LIBS})
+    if(PIXIE_THIRD_PARTY_BACKENDS)
+        target_include_directories(dfuds_tree_benchmarks
+                PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
+    endif()
 
     add_executable(alignment_comparison
         src/benchmarks/alignment_comparison.cpp)
