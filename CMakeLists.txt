@@ -175,6 +175,15 @@ if(PIXIE_TESTS)
         gtest_main
         ${PIXIE_DIAGNOSTICS_LIBS})
 
+    add_executable(select512_experimental_tests
+        src/tests/select512_experimental_tests.cpp)
+    target_include_directories(select512_experimental_tests
+        PUBLIC include)
+    target_link_libraries(select512_experimental_tests
+        gtest
+        gtest_main
+        ${PIXIE_DIAGNOSTICS_LIBS})
+
     add_executable(dfuds_tree_tests
             src/tests/dfuds_tree_tests.cpp)
     target_include_directories(dfuds_tree_tests
@@ -262,6 +271,15 @@ if(PIXIE_BENCHMARKS)
     target_include_directories(excess_positions_benchmarks
         PUBLIC include)
     target_link_libraries(excess_positions_benchmarks
+        benchmark
+        benchmark_main
+        ${PIXIE_DIAGNOSTICS_LIBS})
+
+    add_executable(select512_benchmarks
+        src/benchmarks/select512_benchmarks.cpp)
+    target_include_directories(select512_benchmarks
+        PUBLIC include)
+    target_link_libraries(select512_benchmarks
         benchmark
         benchmark_main
         ${PIXIE_DIAGNOSTICS_LIBS})
