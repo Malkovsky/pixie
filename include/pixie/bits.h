@@ -309,8 +309,8 @@ static inline uint64_t select0_512(const uint64_t* x, uint64_t rank0) {
 #ifdef PIXIE_AVX512_SUPPORT
 
   __m512i res = _mm512_loadu_epi64(x);
-  res = _mm512_xor_epi64(res, _mm512_set1_epi64(-1));
-  __m512i counts = _mm512_popcnt_epi64(res);
+  __m512i counts =
+      _mm512_sub_epi64(_mm512_set1_epi64(64), _mm512_popcnt_epi64(res));
   __m512i prefix = counts;
 
   const __m512i idx_shift1 = _mm512_set_epi64(6, 5, 4, 3, 2, 1, 0, 0);
