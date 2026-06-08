@@ -6,36 +6,65 @@
 #include <span>
 #include <vector>
 
-/**
- * @brief A simple struct to represent a aligned storage for a cache line.
- */
-struct alignas(64) CacheLine {
-  std::array<std::byte, 64> data;
-};
+namespace pixie {
+
+inline constexpr std::size_t kAlignedStorageLineBytes = 64;
+inline constexpr std::size_t kAlignedStorageLineBits =
+    kAlignedStorageLineBytes * 8;
+inline constexpr std::size_t kAlignedStorageLineWords64 =
+    kAlignedStorageLineBytes / sizeof(std::uint64_t);
+inline constexpr std::size_t kAlignedStorageLineWords16 =
+    kAlignedStorageLineBytes / sizeof(std::uint16_t);
 
 /**
- * @brief A simple aligned storage for cache-line sized blocks.
+ * @brief A 64-byte aligned storage block.
+ */
+struct alignas(kAlignedStorageLineBytes) CacheLine {
+  std::array<std::byte, kAlignedStorageLineBytes> data{};
+};
+
+static_assert(alignof(CacheLine) == kAlignedStorageLineBytes);
+static_assert(sizeof(CacheLine) == kAlignedStorageLineBytes);
+static_assert(kAlignedStorageLineBytes % sizeof(std::uint64_t) == 0);
+static_assert(kAlignedStorageLineBytes % sizeof(std::uint16_t) == 0);
+
+/**
+ * @brief Aligned storage for 64-byte blocks.
  *
- * @details Provides typed views over the same underlying storage as cache
- * lines, 64-bit words, or bytes. All spans are contiguous and sized to the
- * total storage capacity.
+ * @details The constructor and resize accept a logical size in bits. Storage is
+ * rounded up to a full 64-byte block, and all views expose the padded capacity.
  */
 class AlignedStorage {
  private:
   std::vector<CacheLine> data_;
 
+  static constexpr std::size_t LinesForBits(std::size_t bits) {
+    return bits / kAlignedStorageLineBits +
+           (bits % kAlignedStorageLineBits != 0);
+  }
+
  public:
   AlignedStorage() = default;
   /**
-   * @brief Construct storage for at least @p bits bytes, rounded up to 512
-   * bits.
+   * @brief Construct storage for at least @p bits bits.
    */
-  AlignedStorage(size_t bits) : data_((bits + 511) / 512) {}
+  explicit AlignedStorage(std::size_t bits) : data_(LinesForBits(bits)) {}
 
   /**
-   * @brief Resize storage to hold at least @p bits bits, rounded up to 512
+   * @brief Resize storage to hold at least @p bits bits.
    */
-  void resize(size_t bits) { data_.resize((bits + 511) / 512); }
+  void resize(std::size_t bits) { data_.resize(LinesForBits(bits)); }
+
+  /** @brief Padded storage capacity in bits. */
+  std::size_t capacity_bits() const {
+    return data_.size() * kAlignedStorageLineBits;
+  }
+
+  /** @brief Padded storage capacity in bytes. */
+  std::size_t capacity_bytes() const {
+    return data_.size() * kAlignedStorageLineBytes;
+  }
+
   /** @brief Mutable view as cache lines. */
   std::span<CacheLine> AsLines() { return data_; }
   /** @brief Const view as cache lines. */
@@ -44,45 +73,44 @@ class AlignedStorage {
   /**
    * @brief Mutable view as 64-bit words.
    */
-  std::span<uint64_t> As64BitInts() {
-    return std::span<uint64_t>(reinterpret_cast<uint64_t*>(data_.data()),
-                               data_.size() * 8);
+  std::span<std::uint64_t> As64BitInts() {
+    return std::span<std::uint64_t>(
+        reinterpret_cast<std::uint64_t*>(data_.data()),
+        data_.size() * kAlignedStorageLineWords64);
   }
 
   /** @brief Const view as 64-bit words. */
-  std::span<const uint64_t> AsConst64BitInts() const {
-    return std::span<const uint64_t>(
-        reinterpret_cast<const uint64_t*>(data_.data()), data_.size() * 8);
+  std::span<const std::uint64_t> AsConst64BitInts() const {
+    return std::span<const std::uint64_t>(
+        reinterpret_cast<const std::uint64_t*>(data_.data()),
+        data_.size() * kAlignedStorageLineWords64);
   }
 
   /**
    * @brief Mutable view as bytes.
-   * @note Uses a byte pointer to the underlying storage.
    */
-  std::span<std::byte> AsBytes() {
-    return std::span<std::byte>(reinterpret_cast<std::byte*>(data_.data()),
-                                data_.size() * 64);
-  }
+  std::span<std::byte> AsBytes() { return std::as_writable_bytes(AsLines()); }
 
   /** @brief Const view as bytes. */
   std::span<const std::byte> AsConstBytes() const {
-    return std::span<const std::byte>(
-        reinterpret_cast<const std::byte*>(data_.data()), data_.size() * 64);
+    return std::as_bytes(AsConstLines());
   }
 
   /**
-   * @brief Mutable view as bytes.
-   * @note Uses a byte pointer to the underlying storage.
+   * @brief Mutable view as 16-bit words.
    */
   std::span<std::uint16_t> As16BitInts() {
     return std::span<std::uint16_t>(
-        reinterpret_cast<std::uint16_t*>(data_.data()), data_.size() * 32);
+        reinterpret_cast<std::uint16_t*>(data_.data()),
+        data_.size() * kAlignedStorageLineWords16);
   }
 
-  /** @brief Const view as bytes. */
+  /** @brief Const view as 16-bit words. */
   std::span<const std::uint16_t> AsConst16BitInts() const {
     return std::span<const std::uint16_t>(
         reinterpret_cast<const std::uint16_t*>(data_.data()),
-        data_.size() * 32);
+        data_.size() * kAlignedStorageLineWords16);
   }
 };
+
+}  // namespace pixie

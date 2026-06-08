@@ -9,8 +9,8 @@ namespace pixie::rmq {
  * @brief CRTP facade for static range-minimum-query indexes.
  *
  * Implementations are non-owning indexes over an external random-access array.
- * Queries use inclusive zero-based ranges and return the first position
- * attaining the minimum. Invalid ranges return `npos`.
+ * Queries use half-open zero-based ranges `[left, right)` and return the first
+ * position attaining the minimum. Invalid or empty ranges return `npos`.
  */
 template <class Impl, class Value>
 class RmqBase {
@@ -35,13 +35,14 @@ class RmqBase {
   bool empty() const { return size() == 0; }
 
   /**
-   * @brief Return the first minimum position in [@p left, @p right].
+   * @brief Return the first minimum position in [@p left, @p right).
    *
-   * @details The query range is inclusive. Ties are resolved by returning the
-   * smallest position attaining the minimum. Invalid ranges return `npos`.
+   * @details The query range is half-open. Ties are resolved by returning the
+   * smallest position attaining the minimum. Invalid or empty ranges return
+   * `npos`.
    *
    * @param left First position in the query range.
-   * @param right Last position in the query range.
+   * @param right One past the last position in the query range.
    * @return Zero-based position of the first range minimum, or `npos`.
    */
   std::size_t arg_min(std::size_t left, std::size_t right) const {
@@ -49,13 +50,13 @@ class RmqBase {
   }
 
   /**
-   * @brief Return the minimum value in [@p left, @p right].
+   * @brief Return the minimum value in [@p left, @p right).
    *
-   * @details Invalid ranges return a default-constructed value.
+   * @details Invalid or empty ranges return a default-constructed value.
    *
    * @param left First position in the query range.
-   * @param right Last position in the query range.
-   * @return The minimum value in the inclusive range, or `Value{}`.
+   * @param right One past the last position in the query range.
+   * @return The minimum value in the half-open range, or `Value{}`.
    */
   Value range_min(std::size_t left, std::size_t right) const {
     const std::size_t position = arg_min(left, right);

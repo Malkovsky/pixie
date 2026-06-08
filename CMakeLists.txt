@@ -184,6 +184,15 @@ if(PIXIE_TESTS)
             gtest_main
             ${PIXIE_DIAGNOSTICS_LIBS})
 
+    add_executable(excess_record_lows_tests
+        src/tests/excess_record_lows_tests.cpp)
+    target_include_directories(excess_record_lows_tests
+        PUBLIC include)
+    target_link_libraries(excess_record_lows_tests
+        gtest
+        gtest_main
+        ${PIXIE_DIAGNOSTICS_LIBS})
+
     add_executable(rmq_tests
         src/tests/rmq_tests.cpp)
     target_include_directories(rmq_tests

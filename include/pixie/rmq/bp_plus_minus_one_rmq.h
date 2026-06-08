@@ -23,9 +23,9 @@ namespace pixie::rmq {
  * @details The indexed depth sequence is represented by BP deltas: bit 1 means
  * the next depth is current + 1, and bit 0 means current - 1. A sequence with
  * @p depth_count depth positions has @p depth_count - 1 delta bits. Blocks
- * match the 128-bit excess primitives in `bits.h`; each block stores a compact
- * 16-byte summary with its base depth, absolute minimum value, and first local
- * offset attaining that minimum.
+ * match the 64-bit or 128-bit excess primitives in `bits.h`; each block stores
+ * a compact 16-byte summary with its base depth, absolute minimum value, and
+ * first local offset attaining that minimum.
  *
  * @tparam Index Unsigned integer type used for stored positions.
  * @tparam BlockSize Number of depth positions per microblock.
@@ -33,7 +33,7 @@ namespace pixie::rmq {
 template <class Index = std::size_t, std::size_t BlockSize = 128>
 class BpPlusMinusOneRmq {
  public:
-  static_assert(BlockSize == 128);
+  static_assert(BlockSize == 64 || BlockSize == 128);
 
   static constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
   static constexpr Index invalid_index = std::numeric_limits<Index>::max();
@@ -135,36 +135,50 @@ class BpPlusMinusOneRmq {
   bool empty() const { return depth_count_ == 0; }
 
   /**
-   * @brief Return the first minimum depth position in [@p left, @p right].
+   * @brief Return the first minimum depth position in [@p left, @p right).
    *
-   * @details The query range is inclusive over depth positions, not delta-bit
+   * @details The query range is half-open over depth positions, not delta-bit
    * positions. Ties return the smallest position attaining the minimum depth.
+   * Empty or invalid ranges return `npos`.
    *
    * @param left First depth position in the query range.
-   * @param right Last depth position in the query range.
+   * @param right One past the last depth position in the query range.
    * @return Zero-based position of the first range minimum, or `npos`.
    */
   std::size_t arg_min(std::size_t left, std::size_t right) const {
-    if (left > right || right >= depth_count_) {
+    if (left >= right || right > depth_count_) {
       return npos;
     }
 
+    const std::size_t last = right - 1;
     const std::size_t left_block = left / BlockSize;
-    const std::size_t right_block = right / BlockSize;
+    const std::size_t right_block = last / BlockSize;
     if (left_block == right_block) {
       return scan_block_range_position(left_block, left % BlockSize,
-                                       right % BlockSize);
+                                       last % BlockSize);
     }
 
     const std::size_t left_offset = left % BlockSize;
-    const std::size_t right_offset = right % BlockSize;
-    Candidate answer =
-        scan_block_range(left_block, left_offset, block_size(left_block) - 1);
-    answer = better(answer, scan_block_range(right_block, 0, right_offset));
+    const std::size_t right_offset = last % BlockSize;
+    Candidate answer;
+    if (left_offset > right_offset && left_offset < BlockSize - 1 &&
+        right_offset > 0) {
+      const auto left_bits = block_bits(left_block);
+      const auto right_bits = block_bits(right_block);
+      const ExcessBoundaryPairResult result = block_disjoint_boundary_min(
+          left_bits.data(), left_offset, right_bits.data(), right_offset);
+      answer = local_excess_result_candidate(left_block, result.suffix);
+      answer = better(
+          answer, local_excess_result_candidate(right_block, result.prefix));
+    } else {
+      answer =
+          scan_block_range(left_block, left_offset, block_size(left_block) - 1);
+      answer = better(answer, scan_block_range(right_block, 0, right_offset));
+    }
 
     if (left_block + 1 < right_block) {
       const std::size_t block_position =
-          macro_rmq_.arg_min(left_block + 1, right_block - 1);
+          macro_rmq_.arg_min(left_block + 1, right_block);
       if (block_position != MacroRmq::npos) {
         answer = better(answer, scan_full_block(block_position));
       }
@@ -180,7 +194,7 @@ class BpPlusMinusOneRmq {
   };
 
   /**
-   * @brief Packed summary for one 128-position depth block.
+   * @brief Packed summary for one depth block.
    *
    * @details Stores signed 48-bit base depth, signed 48-bit absolute block
    * minimum, and 16-bit first local offset of that minimum in two 64-bit words.
@@ -375,7 +389,7 @@ class BpPlusMinusOneRmq {
    * @brief Build block summaries and the macro sparse table.
    *
    * @details Computes the absolute base depth, absolute block minimum, and
-   * first local minimum offset for each 128-position block.
+   * first local minimum offset for each block.
    *
    * @throws std::length_error if @p Index or a packed block summary overflows.
    * @throws std::invalid_argument if the input bit span is too small.
@@ -401,37 +415,17 @@ class BpPlusMinusOneRmq {
     for (std::size_t block = 0; block < block_count; ++block) {
       const std::size_t begin = block * BlockSize;
       const std::size_t size = std::min(BlockSize, depth_count_ - begin);
-      std::size_t min_offset = 0;
-      std::int64_t min_depth = base_depth;
-      std::int64_t current_depth = base_depth;
-      for (std::size_t offset = 1; offset < size; ++offset) {
-        const std::size_t delta_position = begin + offset - 1;
-        const bool up = bit(delta_position);
-        current_depth += up ? 1 : -1;
-        if (current_depth < min_depth) {
-          min_depth = current_depth;
-          min_offset = offset;
-        }
-      }
+      const auto bits = block_bits(block);
+      const ExcessResult block_min = block_excess_min(bits.data(), 0, size - 1);
 
-      block_summaries_.push_back(
-          BlockSummary::make(base_depth, min_depth, min_offset));
+      block_summaries_.push_back(BlockSummary::make(
+          base_depth, base_depth + block_min.min_excess, block_min.offset));
       if (block + 1 < block_count) {
-        base_depth += block_excess(begin, next_block_delta_count(begin));
+        base_depth += block_excess(bits, next_block_delta_count(begin));
       }
     }
 
     reset_macro_rmq();
-  }
-
-  /**
-   * @brief Read one BP delta bit.
-   *
-   * @param position Zero-based delta-bit position.
-   * @return `true` for a +1 step and `false` for a -1 step.
-   */
-  bool bit(std::size_t position) const {
-    return ((input_bits_[position >> 6] >> (position & 63)) & 1u) != 0;
   }
 
   /**
@@ -445,13 +439,16 @@ class BpPlusMinusOneRmq {
   }
 
   /**
-   * @brief Load the two 64-bit words backing a 128-position block.
+   * @brief Load the words backing one block.
    *
    * @param block Zero-based block index.
-   * @return Pair of words suitable for `excess_min_128`.
+   * @return Pair of words; 64-position blocks use only the first word.
    */
   std::array<std::uint64_t, 2> block_bits(std::size_t block) const {
     const std::size_t first_word = block * (BlockSize / 64);
+    if constexpr (BlockSize == 64) {
+      return {word_or_zero(first_word), 0};
+    }
     return {word_or_zero(first_word), word_or_zero(first_word + 1)};
   }
 
@@ -470,16 +467,55 @@ class BpPlusMinusOneRmq {
   /**
    * @brief Compute total excess over a contiguous delta-bit range.
    *
-   * @param begin First delta-bit position.
+   * @param bits Two words loaded from a block boundary.
    * @param delta_count Number of delta bits to scan.
    * @return Sum of +1/-1 deltas in the range.
    */
-  std::int64_t block_excess(std::size_t begin, std::size_t delta_count) const {
-    std::int64_t excess = 0;
-    for (std::size_t i = 0; i < delta_count; ++i) {
-      excess += bit(begin + i) ? 1 : -1;
+  std::int64_t block_excess(const std::array<std::uint64_t, 2>& bits,
+                            std::size_t delta_count) const {
+    if constexpr (BlockSize == 64) {
+      return prefix_excess_64(bits.data(), delta_count);
     }
-    return excess;
+    return prefix_excess_128(bits.data(), delta_count);
+  }
+
+  /**
+   * @brief Find the local minimum in a block-width bit range.
+   *
+   * @param bits Words loaded from a block boundary.
+   * @param left First local prefix offset, inclusive.
+   * @param right Last local prefix offset, inclusive.
+   * @return Local minimum excess result.
+   */
+  ExcessResult block_excess_min(const std::uint64_t* bits,
+                                std::size_t left,
+                                std::size_t right) const {
+    if constexpr (BlockSize == 64) {
+      return excess_min_64(bits, left, right);
+    }
+    return excess_min_128(bits, left, right);
+  }
+
+  /**
+   * @brief Find local minima for disjoint left-suffix and right-prefix ranges.
+   *
+   * @param suffix_bits Words loaded from the left boundary block.
+   * @param suffix_left First local prefix offset in the suffix range.
+   * @param prefix_bits Words loaded from the right boundary block.
+   * @param prefix_right Last local prefix offset in the prefix range.
+   * @return Pair of local minimum results.
+   */
+  ExcessBoundaryPairResult block_disjoint_boundary_min(
+      const std::uint64_t* suffix_bits,
+      std::size_t suffix_left,
+      const std::uint64_t* prefix_bits,
+      std::size_t prefix_right) const {
+    if constexpr (BlockSize == 64) {
+      return excess_min_64_disjoint_suffix_prefix(suffix_bits, suffix_left,
+                                                  prefix_bits, prefix_right);
+    }
+    return excess_min_128_disjoint_suffix_prefix(suffix_bits, suffix_left,
+                                                 prefix_bits, prefix_right);
   }
 
   /**
@@ -501,7 +537,7 @@ class BpPlusMinusOneRmq {
     right_offset = std::min(right_offset, size - 1);
     const auto bits = block_bits(block);
     const ExcessResult result =
-        excess_min_128(bits.data(), left_offset, right_offset);
+        block_excess_min(bits.data(), left_offset, right_offset);
     if (result.offset == npos || result.offset >= size) {
       return npos;
     }
@@ -511,7 +547,8 @@ class BpPlusMinusOneRmq {
   /**
    * @brief Scan an inclusive local range inside one block.
    *
-   * @details Uses `excess_min_128` for the relative minimum and combines it
+   * @details Uses the block-width excess-min primitive for the relative minimum
+   * and combines it
    * with the stored block base depth to return an absolute-depth candidate.
    *
    * @param block Zero-based block index.
@@ -527,11 +564,28 @@ class BpPlusMinusOneRmq {
     right_offset = std::min(right_offset, size - 1);
     const auto bits = block_bits(block);
     const ExcessResult result =
-        excess_min_128(bits.data(), left_offset, right_offset);
+        block_excess_min(bits.data(), left_offset, right_offset);
     if (result.offset == npos || result.offset >= size) {
       return {};
     }
     return {begin + result.offset,
+            block_summaries_[block].base_depth() + result.min_excess};
+  }
+
+  /**
+   * @brief Convert a local excess-min result into an absolute-depth candidate.
+   *
+   * @param block Zero-based block index owning @p result.
+   * @param result Local minimum result from a block-width excess primitive.
+   * @return Candidate containing global position and absolute depth.
+   */
+  Candidate local_excess_result_candidate(std::size_t block,
+                                          ExcessResult result) const {
+    const std::size_t size = block_size(block);
+    if (result.offset == npos || result.offset >= size) {
+      return {};
+    }
+    return {block * BlockSize + result.offset,
             block_summaries_[block].base_depth() + result.min_excess};
   }
 

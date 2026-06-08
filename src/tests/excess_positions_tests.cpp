@@ -79,6 +79,16 @@ static int naive_prefix_excess_128(const uint64_t* s, size_t end_offset) {
   return cur;
 }
 
+static int naive_prefix_excess_64(const uint64_t* s, size_t end_offset) {
+  end_offset = std::min<size_t>(end_offset, 64);
+  int cur = 0;
+  for (size_t i = 0; i < end_offset; ++i) {
+    const int bit = int((s[0] >> i) & 1ull);
+    cur += bit ? +1 : -1;
+  }
+  return cur;
+}
+
 static ExcessResult naive_excess_min_128(const uint64_t* s,
                                          size_t left,
                                          size_t right) {
@@ -109,6 +119,41 @@ static ExcessResult naive_excess_min_128(const uint64_t* s,
   }
   if (!found) {
     best = naive_prefix_excess_128(s, left);
+    best_offset = left;
+  }
+  return {best, best_offset};
+}
+
+static ExcessResult naive_excess_min_64(const uint64_t* s,
+                                        size_t left,
+                                        size_t right) {
+  if (left > right) {
+    return {};
+  }
+  left = std::min<size_t>(left, 64);
+  right = std::min<size_t>(right, 64);
+
+  int cur = 0;
+  int best = 0;
+  size_t best_offset = 0;
+  bool found = false;
+  if (left == 0) {
+    found = true;
+  }
+  for (size_t bit = 0; bit < right; ++bit) {
+    cur += ((s[0] >> bit) & 1ull) != 0 ? 1 : -1;
+    const size_t offset = bit + 1;
+    if (offset < left) {
+      continue;
+    }
+    if (!found || cur < best) {
+      best = cur;
+      best_offset = offset;
+      found = true;
+    }
+  }
+  if (!found) {
+    best = naive_prefix_excess_64(s, left);
     best_offset = left;
   }
   return {best, best_offset};
@@ -255,6 +300,21 @@ TEST(ExcessPositions128, PrefixExcessMatchesNaive) {
   }
 }
 
+TEST(ExcessPositions64, PrefixExcessMatchesNaive) {
+  std::mt19937_64 rng(44);
+  const std::array<size_t, 11> offsets = {0,  1,  2,  31, 32, 33,
+                                          62, 63, 64, 65, 96};
+
+  for (int t = 0; t < 1000; ++t) {
+    const std::array<uint64_t, 1> s = {rng()};
+    for (size_t offset : offsets) {
+      EXPECT_EQ(prefix_excess_64(s.data(), offset),
+                naive_prefix_excess_64(s.data(), offset))
+          << "case=" << t << " offset=" << offset;
+    }
+  }
+}
+
 TEST(ExcessPositions128, MinMatchesNaiveFixedCases) {
   const std::array<std::array<uint64_t, 2>, 5> cases = {{
       {0, 0},
@@ -282,6 +342,41 @@ TEST(ExcessPositions128, MinMatchesNaiveFixedCases) {
     for (const auto [left, right] : ranges) {
       const ExcessResult result = excess_min_128(s.data(), left, right);
       const ExcessResult expected = naive_excess_min_128(s.data(), left, right);
+      EXPECT_EQ(result.min_excess, expected.min_excess)
+          << "left=" << left << " right=" << right;
+      EXPECT_EQ(result.offset, expected.offset)
+          << "left=" << left << " right=" << right;
+    }
+  }
+}
+
+TEST(ExcessPositions64, MinMatchesNaiveFixedCases) {
+  const std::array<std::array<uint64_t, 1>, 5> cases = {{
+      {0},
+      {UINT64_MAX},
+      {0xAAAAAAAAAAAAAAAAull},
+      {0x0123456789ABCDEFull},
+      {0x0000FFFF0000FFFFull},
+  }};
+  const std::array<std::pair<size_t, size_t>, 12> ranges = {{
+      {0, 64},
+      {0, 0},
+      {1, 1},
+      {31, 33},
+      {32, 32},
+      {32, 64},
+      {3, 6},
+      {5, 5},
+      {63, 64},
+      {64, 64},
+      {56, 63},
+      {65, 96},
+  }};
+
+  for (const auto& s : cases) {
+    for (const auto [left, right] : ranges) {
+      const ExcessResult result = excess_min_64(s.data(), left, right);
+      const ExcessResult expected = naive_excess_min_64(s.data(), left, right);
       EXPECT_EQ(result.min_excess, expected.min_excess)
           << "left=" << left << " right=" << right;
       EXPECT_EQ(result.offset, expected.offset)
@@ -318,6 +413,18 @@ TEST(ExcessPositions128, MinHandlesRightBoundary) {
   EXPECT_EQ(with_last.offset, 128u);
 }
 
+TEST(ExcessPositions64, MinHandlesRightBoundary) {
+  const std::array<uint64_t, 1> s = {0};
+
+  const ExcessResult without_last = excess_min_64(s.data(), 0, 63);
+  EXPECT_EQ(without_last.min_excess, -63);
+  EXPECT_EQ(without_last.offset, 63u);
+
+  const ExcessResult with_last = excess_min_64(s.data(), 0, 64);
+  EXPECT_EQ(with_last.min_excess, -64);
+  EXPECT_EQ(with_last.offset, 64u);
+}
+
 TEST(ExcessPositions128, MinPartialNibbleBoundsExcludeOuterMin) {
   const std::array<uint64_t, 2> s = {0, 0};
 
@@ -345,6 +452,13 @@ TEST(ExcessPositions128, MinInvalidRangeUsesSentinel) {
   EXPECT_EQ(result.offset, 128u);
 }
 
+TEST(ExcessPositions64, MinInvalidRangeUsesSentinel) {
+  const std::array<uint64_t, 1> s = {0};
+  const ExcessResult result = excess_min_64(s.data(), 17, 16);
+  EXPECT_EQ(result.min_excess, 0);
+  EXPECT_EQ(result.offset, 128u);
+}
+
 TEST(ExcessPositions128, MinMatchesNaiveRandom) {
   std::mt19937_64 rng(43);
   std::uniform_int_distribution<size_t> offset_dist(0, 128);
@@ -363,6 +477,74 @@ TEST(ExcessPositions128, MinMatchesNaiveRandom) {
           << "case=" << t << " left=" << left << " right=" << right;
       ASSERT_EQ(result.offset, expected.offset)
           << "case=" << t << " left=" << left << " right=" << right;
+    }
+  }
+}
+
+TEST(ExcessPositions64, MinMatchesNaiveRandom) {
+  std::mt19937_64 rng(45);
+  std::uniform_int_distribution<size_t> offset_dist(0, 64);
+
+  for (int t = 0; t < 1000; ++t) {
+    const std::array<uint64_t, 1> s = {rng()};
+    for (int q = 0; q < 32; ++q) {
+      size_t left = offset_dist(rng);
+      size_t right = offset_dist(rng);
+      if (left > right) {
+        std::swap(left, right);
+      }
+      const ExcessResult result = excess_min_64(s.data(), left, right);
+      const ExcessResult expected = naive_excess_min_64(s.data(), left, right);
+      ASSERT_EQ(result.min_excess, expected.min_excess)
+          << "case=" << t << " left=" << left << " right=" << right;
+      ASSERT_EQ(result.offset, expected.offset)
+          << "case=" << t << " left=" << left << " right=" << right;
+    }
+  }
+}
+
+TEST(ExcessPositions64, DisjointBoundaryPairMatchesIndependentFixedCases) {
+  const std::array<std::array<uint64_t, 1>, 5> cases = {{
+      {0},
+      {UINT64_MAX},
+      {0xAAAAAAAAAAAAAAAAull},
+      {0x0123456789ABCDEFull},
+      {0x0000FFFF0000FFFFull},
+  }};
+  const std::array<std::pair<size_t, size_t>, 8> ranges = {{
+      {1, 0},
+      {4, 3},
+      {17, 5},
+      {31, 8},
+      {47, 11},
+      {61, 13},
+      {62, 62},
+      {64, 64},
+  }};
+
+  for (const auto& suffix : cases) {
+    for (const auto& prefix : cases) {
+      for (const auto [suffix_left, prefix_right] : ranges) {
+        const ExcessBoundaryPairResult result =
+            excess_min_64_disjoint_suffix_prefix(suffix.data(), suffix_left,
+                                                 prefix.data(), prefix_right);
+        const ExcessResult expected_suffix =
+            excess_min_64(suffix.data(), suffix_left, 63);
+        const ExcessResult expected_prefix =
+            excess_min_64(prefix.data(), 0, prefix_right);
+        EXPECT_EQ(result.suffix.min_excess, expected_suffix.min_excess)
+            << "suffix_left=" << suffix_left
+            << " prefix_right=" << prefix_right;
+        EXPECT_EQ(result.suffix.offset, expected_suffix.offset)
+            << "suffix_left=" << suffix_left
+            << " prefix_right=" << prefix_right;
+        EXPECT_EQ(result.prefix.min_excess, expected_prefix.min_excess)
+            << "suffix_left=" << suffix_left
+            << " prefix_right=" << prefix_right;
+        EXPECT_EQ(result.prefix.offset, expected_prefix.offset)
+            << "suffix_left=" << suffix_left
+            << " prefix_right=" << prefix_right;
+      }
     }
   }
 }

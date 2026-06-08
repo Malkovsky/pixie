@@ -36,6 +36,11 @@ When a task matches a skill, read:
 3. **SIMD conditional compilation**: Uses `#ifdef PIXIE_AVX512_SUPPORT` / `PIXIE_AVX2_SUPPORT` with scalar fallbacks.
 4. **Target domain**: Optimized for data sizes up to 2^64 bits.
 5. **Platform**: Linux/Unix is the primary target platform.
+6. **Interval convention**: Public APIs, tests, and benchmarks use C++-style
+   half-open ranges `[left, right)`: `left` is included and `right` is excluded.
+   Empty ranges (`left == right`) are invalid unless an API explicitly documents
+   otherwise. Low-level primitives may still use their own documented interval
+   conventions.
 
 ### Why Header-Only?
 

@@ -67,34 +67,31 @@ class SegmentTree : public RmqBase<SegmentTree<T, Compare, Index>, T> {
   T value_at_impl(std::size_t position) const { return values_[position]; }
 
   /**
-   * @brief Return the first minimum position in [@p left, @p right].
+   * @brief Return the first minimum position in [@p left, @p right).
    *
    * @details Answers in O(log n) by walking the flat iterative segment tree.
    * Ties return the smaller position.
    *
    * @param left First position in the query range.
-   * @param right Last position in the query range.
+   * @param right One past the last position in the query range.
    * @return Zero-based position of the first range minimum, or `npos`.
    */
   std::size_t arg_min_impl(std::size_t left, std::size_t right) const {
-    if (left > right || right >= values_.size()) {
+    if (left >= right || right > values_.size()) {
       return npos;
     }
 
     left += leaf_base_;
     right += leaf_base_;
     std::size_t answer = npos;
-    while (left <= right) {
+    while (left < right) {
       if ((left & 1u) != 0) {
         answer = better(answer, tree_[left]);
         ++left;
       }
-      if ((right & 1u) == 0) {
-        answer = better(answer, tree_[right]);
-        if (right == 0) {
-          break;
-        }
+      if ((right & 1u) != 0) {
         --right;
+        answer = better(answer, tree_[right]);
       }
       left >>= 1;
       right >>= 1;
@@ -131,6 +128,26 @@ class SegmentTree : public RmqBase<SegmentTree<T, Compare, Index>, T> {
   }
 
   /**
+   * @brief Choose the better child while building the tree.
+   *
+   * @details Child ranges are disjoint and ordered, so ties keep the left
+   * child. Missing tail leaves use `invalid_index`.
+   *
+   * @param left Candidate from the left child.
+   * @param right Candidate from the right child.
+   * @return Candidate for the parent node, or `invalid_index`.
+   */
+  Index build_better(Index left, Index right) const {
+    if (left == invalid_index) {
+      return right;
+    }
+    if (right == invalid_index) {
+      return left;
+    }
+    return compare_(values_[right], values_[left]) ? right : left;
+  }
+
+  /**
    * @brief Build the flat iterative segment tree.
    *
    * @details Leaves start at `leaf_base_`, which is the next power of two.
@@ -150,14 +167,16 @@ class SegmentTree : public RmqBase<SegmentTree<T, Compare, Index>, T> {
     }
 
     leaf_base_ = std::bit_ceil(values_.size());
-    tree_.assign(2 * leaf_base_, invalid_index);
+    tree_.clear();
+    tree_.resize(2 * leaf_base_);
     for (std::size_t i = 0; i < values_.size(); ++i) {
       tree_[leaf_base_ + i] = static_cast<Index>(i);
     }
+    std::fill(tree_.begin() + leaf_base_ + values_.size(), tree_.end(),
+              invalid_index);
     for (std::size_t node = leaf_base_; node > 1;) {
       --node;
-      tree_[node] =
-          static_cast<Index>(better(tree_[node << 1], tree_[(node << 1) | 1]));
+      tree_[node] = build_better(tree_[node << 1], tree_[(node << 1) | 1]);
     }
   }
 
