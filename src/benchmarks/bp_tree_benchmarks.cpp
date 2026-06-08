@@ -4,8 +4,8 @@
 
 #include <random>
 
-using Node = pixie::BpTree::Node;
-using pixie::BpTree;
+using BPTree = pixie::BPTree<pixie::RmMTree>;
+using Node = BPTree::Node;
 
 /**
  * DFS with O(1) extra memory
@@ -18,8 +18,8 @@ static void BM_BpTreeDFS(benchmark::State& state) {
     state.PauseTiming();
     std::vector<std::vector<size_t>> adj = generate_random_tree(tree_size, rng);
     adj = dfs_order(tree_size, adj);
-    std::vector<uint64_t> bp = adj_to_bp(tree_size, adj);
-    BpTree tree(bp, tree_size);
+    std::vector<uint64_t> bp = pixie::adj_to_bp(tree_size, adj);
+    BPTree tree(bp, tree_size);
 
     Node cur = tree.root();
     bool above = 1;

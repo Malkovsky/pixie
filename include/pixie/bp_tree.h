@@ -2,8 +2,6 @@
 
 #include <pixie/rmm_tree.h>
 
-#include <cstdint>
-
 #include "utils.h"
 
 namespace pixie {
@@ -12,10 +10,11 @@ namespace pixie {
  * @brief A tree class based on the balances parentheses (BP)
  * representation
  */
+template <typename RMMTree>
 class BPTree {
  private:
   const size_t num_bits_;
-  RmMTree rmm;
+  RMMTree rmm_;
 
  public:
   /**
@@ -36,7 +35,7 @@ class BPTree {
    * @brief Constructor from an external array of uint64_t
    */
   explicit BPTree(const std::vector<std::uint64_t>& words, size_t tree_size)
-      : num_bits_(2 * tree_size), rmm(words, 2 * tree_size) {}
+      : num_bits_(2 * tree_size), rmm_(words, 2 * tree_size) {}
 
   /**
    * @brief Returns the root node
@@ -52,7 +51,7 @@ class BPTree {
    * @brief Indicates if @p node is a leaf
    */
   bool is_leaf(const Node& node) const {
-    return (node.pos + 2 == num_bits_) or rmm.bit(node.pos + 1) == 0;
+    return (node.pos + 2 == num_bits_) or rmm_.bit(node.pos + 1) == 0;
   }
 
   /**
@@ -113,8 +112,8 @@ class BPTree {
     if (node.number == 0) {
       return root();
     }
-    size_t pos = rmm.enclose(node.pos);
-    size_t num = rmm.rank1(pos);
+    size_t pos = rmm_.enclose(node.pos);
+    size_t num = rmm_.rank1(pos);
     return Node(num, pos);
   }
 
@@ -122,17 +121,17 @@ class BPTree {
    * @brief Indicates if @p node is last child
    */
   bool is_last_child(const Node& node) const {
-    size_t end = rmm.close(node.pos);
+    size_t end = rmm_.close(node.pos);
 
-    return end + 2 >= num_bits_ or rmm.bit(end + 1) == 0;
+    return end + 2 >= num_bits_ or rmm_.bit(end + 1) == 0;
   }
 
   /**
    * @brief Returns next sibling of a @p node
    */
   Node next_sibling(const Node& node) const {
-    size_t pos = rmm.close(node.pos) + 1;
-    size_t num = rmm.rank1(pos + 1) - 1;
+    size_t pos = rmm_.close(node.pos) + 1;
+    size_t num = rmm_.rank1(pos + 1) - 1;
     return Node(num, pos);
   }
 };
@@ -160,11 +159,12 @@ std::vector<uint64_t> adj_to_bp(size_t tree_size,
   return bp;
 }
 
-bool operator==(const AdjListNode& a, const BPTree::Node& b) {
+bool operator==(const AdjListNode& a, const typename BPTree<RmMTree>::Node b) {
   return a.number == b.number;
 }
 
-bool operator==(const BPTree::Node& b, const AdjListNode& a) {
+template <typename RMMTree>
+bool operator==(const typename BPTree<RmMTree>::Node b, const AdjListNode& a) {
   return a.number == b.number;
 }
 
