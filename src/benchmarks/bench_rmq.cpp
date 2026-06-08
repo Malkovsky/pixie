@@ -1149,6 +1149,19 @@ void register_benchmarks() {
         ->Arg(static_cast<std::int64_t>(size))
         ->Unit(benchmark::kMillisecond);
     benchmark::RegisterBenchmark(
+        "rmq_build_node_euler_btree_exp_mask_leaf",
+        &run_value_rmq_build<pixie::rmq::experimental::NodeEulerBTreeRmq<
+            std::int64_t, std::less<std::int64_t>, Index, 248, 256,
+            pixie::rmq::experimental::PrefixSuffixMaskLeafSelectorTag>>)
+        ->Arg(static_cast<std::int64_t>(size))
+        ->Unit(benchmark::kMillisecond);
+    benchmark::RegisterBenchmark(
+        "rmq_build_segment_btree_xl",
+        &run_value_rmq_build<pixie::rmq::SegmentBTreeXl<
+            std::int64_t, std::less<std::int64_t>, Index>>)
+        ->Arg(static_cast<std::int64_t>(size))
+        ->Unit(benchmark::kMillisecond);
+    benchmark::RegisterBenchmark(
         "rmq_build_bp_plus_minus_one",
         &run_bp_rmq_build<pixie::rmq::BpPlusMinusOneRmq<Index>>)
         ->Arg(static_cast<std::int64_t>(size))
@@ -1223,6 +1236,21 @@ void register_benchmarks() {
       benchmark::RegisterBenchmark(
           "rmq_node_euler_btree_exp",
           &run_queries<pixie::rmq::experimental::NodeEulerBTreeRmq<
+              std::int64_t, std::less<std::int64_t>, Index>>)
+          ->Args({static_cast<std::int64_t>(size),
+                  static_cast<std::int64_t>(width)})
+          ->Unit(benchmark::kNanosecond);
+      benchmark::RegisterBenchmark(
+          "rmq_node_euler_btree_exp_mask_leaf",
+          &run_queries<pixie::rmq::experimental::NodeEulerBTreeRmq<
+              std::int64_t, std::less<std::int64_t>, Index, 248, 256,
+              pixie::rmq::experimental::PrefixSuffixMaskLeafSelectorTag>>)
+          ->Args({static_cast<std::int64_t>(size),
+                  static_cast<std::int64_t>(width)})
+          ->Unit(benchmark::kNanosecond);
+      benchmark::RegisterBenchmark(
+          "rmq_segment_btree_xl",
+          &run_queries<pixie::rmq::SegmentBTreeXl<
               std::int64_t, std::less<std::int64_t>, Index>>)
           ->Args({static_cast<std::int64_t>(size),
                   static_cast<std::int64_t>(width)})

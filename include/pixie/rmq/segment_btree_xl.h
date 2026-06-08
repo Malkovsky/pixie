@@ -16,7 +16,7 @@
 #include <utility>
 #include <vector>
 
-namespace pixie::rmq::experimental {
+namespace pixie::rmq {
 
 /**
  * @brief Low-level selector tag for BP-based 252-value leaves.
@@ -29,64 +29,80 @@ struct BpLeafSelectorTag {};
 struct PrefixSuffixMaskLeafSelectorTag {};
 
 /**
- * @brief Experimental value RMQ with compact per-level BP selectors.
+ * @brief Segment B-tree RMQ with compact per-level selectors and XL leaves.
  *
- * @details The default low level uses 252-value leaves with local BP selectors.
- * The prefix/suffix mask low level supports 248-value leaves with an 8-bit
- * local-minimum offset packed into 32 bytes, or 496-value leaves with a 16-bit
- * local-minimum offset packed into 64 bytes. Middle internal nodes use 192-way
- * fanout and store 384 BP bits, a 64-bit absolute
- * subtree-minimum position, and 64 bits of zero-rank prefix metadata in the
- * selector, with a side cache for each middle node's minimum value. High nodes
- * use 256-way fanout and are only the root and its child level, so there are at
- * most 257 of them. High nodes add sparse tables over child-minimum slots and
- * cache each child slot's value range and subtree minimum.
+ * @details This is a static, non-owning value-RMQ index over an external value
+ * array. Values are split into leaves, leaves are grouped into a B-tree, and
+ * each node stores a selector over the minima of its immediate children. Query
+ * ranges use the library-wide half-open convention `[left, right)`, invalid
+ * ranges return `npos`, and equal values resolve to the smaller original
+ * position.
  *
- * This backend is intentionally not included by `pixie/rmq.h`; include this
- * header directly while evaluating the experiment.
+ * The default low level uses 496-value prefix/suffix mask leaves. A leaf stores
+ * one bit for each prefix/suffix record position plus a 16-bit local-minimum
+ * offset in one 64-byte object. Prefix or suffix ranges can be answered from
+ * this mask; interior partial ranges fall back to a linear scan of the original
+ * values. The same implementation also supports 248-value mask leaves and
+ * 252-value BP leaves for controlled experiments.
+ *
+ * Middle internal nodes use 192-way fanout. Their selector is a 512-bit local
+ * Cartesian-tree balanced-parentheses encoding over child minima: 384 BP bits,
+ * a 64-bit absolute subtree-minimum position, and 64 bits of zero-rank prefix
+ * metadata. Middle-node minimum values are cached in a side vector so comparing
+ * candidates does not require repeatedly descending to leaves.
+ *
+ * High nodes use 256-way fanout and are limited to the root and its child
+ * level, so there are at most 257 high nodes. They keep the same local BP
+ * selector, cache child value ranges and child subtree minima, and add sparse
+ * tables over child-minimum slots. This spends more space at the top of the
+ * tree to reduce work on wide queries while keeping the high-level metadata
+ * small enough to stay cache-resident.
+ *
+ * Querying starts at the lowest node that covers both endpoint leaves. At each
+ * internal node, the selector is asked for the best child over the intersecting
+ * child-slot range. If that child is fully covered, or its stored subtree
+ * minimum lies inside the query, that candidate is final for the node.
+ * Otherwise only the affected border child is corrected recursively and
+ * compared with the middle full-child range. All comparisons use `(value,
+ * position)` semantics so traversal order cannot change tie-breaking.
  *
  * @tparam T Value type in the indexed array.
  * @tparam Compare Strict weak ordering used to choose minima.
  * @tparam Index Unsigned integer type used for stored positions.
- * @tparam LeafSize Number of original values per leaf. This experimental
- * backend currently supports 252 with BP leaves and 248 or 496 with mask
- * leaves.
- * @tparam Fanout Number of children per high internal node. This experimental
- * backend currently supports only 256. Middle internal nodes use 192.
+ * @tparam LeafSize Number of original values per leaf. This backend currently
+ * supports 252 with BP leaves and 248 or 496 with mask leaves.
+ * @tparam Fanout Number of children per high internal node. This backend
+ * currently supports only 256. Middle internal nodes use 192.
  * @tparam LowLevelSelector Compile-time low-level selector tag.
  */
 template <class T,
           class Compare = std::less<T>,
           class Index = std::size_t,
-          std::size_t LeafSize = 252,
+          std::size_t LeafSize = 496,
           std::size_t Fanout = 256,
-          class LowLevelSelector = BpLeafSelectorTag>
-class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
-                                                           Compare,
-                                                           Index,
-                                                           LeafSize,
-                                                           Fanout,
-                                                           LowLevelSelector>,
-                                         T> {
+          class LowLevelSelector = PrefixSuffixMaskLeafSelectorTag>
+class SegmentBTreeXl
+    : public RmqBase<
+          SegmentBTreeXl<T, Compare, Index, LeafSize, Fanout, LowLevelSelector>,
+          T> {
  public:
   static_assert(std::is_unsigned_v<Index>,
-                "NodeEulerBTreeRmq index type must be unsigned");
+                "SegmentBTreeXl index type must be unsigned");
   static constexpr bool kBpLeafSelector =
       std::is_same_v<LowLevelSelector, BpLeafSelectorTag>;
   static constexpr bool kMaskLeafSelector =
       std::is_same_v<LowLevelSelector, PrefixSuffixMaskLeafSelectorTag>;
   static_assert((kBpLeafSelector && LeafSize == 252) ||
                     (kMaskLeafSelector && (LeafSize == 248 || LeafSize == 496)),
-                "experimental NodeEulerBTreeRmq requires 252-value BP leaves "
+                "SegmentBTreeXl requires 252-value BP leaves "
                 "or 248/496-value prefix/suffix mask leaves");
   static_assert(Fanout == 256,
-                "experimental NodeEulerBTreeRmq currently requires 256-way "
-                "internal nodes");
+                "SegmentBTreeXl currently requires 256-way internal nodes");
   static_assert(kBpLeafSelector || kMaskLeafSelector,
-                "unsupported experimental low-level selector tag");
+                "unsupported SegmentBTreeXl low-level selector tag");
 
   using Self =
-      NodeEulerBTreeRmq<T, Compare, Index, LeafSize, Fanout, LowLevelSelector>;
+      SegmentBTreeXl<T, Compare, Index, LeafSize, Fanout, LowLevelSelector>;
 
   static constexpr std::size_t npos = RmqBase<Self, T>::npos;
   static constexpr Index invalid_index = std::numeric_limits<Index>::max();
@@ -95,16 +111,32 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
   static constexpr std::size_t kMiddleFanout = 192;
 
   /**
-   * @brief Construct an empty experimental RMQ index.
+   * @brief Construct an empty RMQ index.
    */
-  NodeEulerBTreeRmq() = default;
-  NodeEulerBTreeRmq(const NodeEulerBTreeRmq&) = default;
-  NodeEulerBTreeRmq(NodeEulerBTreeRmq&&) noexcept = default;
-  NodeEulerBTreeRmq& operator=(const NodeEulerBTreeRmq&) = default;
-  NodeEulerBTreeRmq& operator=(NodeEulerBTreeRmq&&) noexcept = default;
+  SegmentBTreeXl() = default;
 
   /**
-   * @brief Build an experimental B-tree RMQ index over @p values.
+   * @brief Copy an RMQ index while preserving its non-owning value span.
+   */
+  SegmentBTreeXl(const SegmentBTreeXl&) = default;
+
+  /**
+   * @brief Move an RMQ index while preserving selector and cache storage.
+   */
+  SegmentBTreeXl(SegmentBTreeXl&&) noexcept = default;
+
+  /**
+   * @brief Copy-assign an RMQ index and its cached metadata.
+   */
+  SegmentBTreeXl& operator=(const SegmentBTreeXl&) = default;
+
+  /**
+   * @brief Move-assign an RMQ index and its cached metadata.
+   */
+  SegmentBTreeXl& operator=(SegmentBTreeXl&&) noexcept = default;
+
+  /**
+   * @brief Build a segment B-tree RMQ index over @p values.
    *
    * @details The values are not copied and must outlive this object. Equal
    * values keep the smaller original position as the answer.
@@ -113,8 +145,8 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
    * @param compare Ordering used to choose minima.
    * @throws std::length_error if @p Index cannot represent all positions.
    */
-  explicit NodeEulerBTreeRmq(std::span<const T> values,
-                             Compare compare = Compare())
+  explicit SegmentBTreeXl(std::span<const T> values,
+                          Compare compare = Compare())
       : values_(values), compare_(compare) {
     build();
   }
@@ -195,12 +227,23 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
 
   class alignas(64) Bp512Selector {
    public:
+    /**
+     * @brief Construct an empty packed BP selector.
+     */
     Bp512Selector() = default;
 
+    /**
+     * @brief Build a stable local Cartesian-tree BP selector.
+     *
+     * @details The selector indexes @p entry_count logical entries. The
+     * supplied comparator returns whether the left entry is strictly better
+     * than the right entry. Equal entries keep the smaller slot by using the
+     * same stable rule as the value-level RMQ.
+     */
     template <class EntryLess>
     void build(std::size_t entry_count, EntryLess entry_less) {
       if (entry_count > kSelectorEntries) {
-        throw std::length_error("NodeEulerBTreeRmq local selector too large");
+        throw std::length_error("SegmentBTreeXl local selector too large");
       }
 
       bp_bits_.fill(0);
@@ -226,6 +269,12 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
       }
     }
 
+    /**
+     * @brief Return the first minimum slot in a local entry range.
+     *
+     * @details This path is used by BP leaves and high nodes whose BP words do
+     * not share storage with zero-rank prefix metadata.
+     */
     std::size_t arg_min(std::size_t slot_left,
                         std::size_t slot_right,
                         std::size_t entry_count) const {
@@ -258,6 +307,13 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
       return entry < entry_count ? entry : npos;
     }
 
+    /**
+     * @brief Return the first minimum slot using packed zero-rank metadata.
+     *
+     * @details Middle nodes overwrite the last selector word with zero-rank
+     * prefixes, so rank/select operations must consult the packed metadata
+     * instead of treating all eight words as raw BP bits.
+     */
     std::size_t arg_min_with_zero_prefix(std::size_t slot_left,
                                          std::size_t slot_right,
                                          std::size_t entry_count) const {
@@ -293,15 +349,24 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
       return entry < entry_count ? entry : npos;
     }
 
+    /**
+     * @brief Return the BP close position for a local entry slot.
+     */
     std::size_t close_position(std::size_t slot) const {
       return select0_512(bp_bits_.data(), slot);
     }
 
+    /**
+     * @brief Count zero bits before @p position in the raw BP sequence.
+     */
     std::size_t rank0_at(std::size_t position, std::size_t bit_count) const {
       position = std::min(position, bit_count);
       return position - rank_512(bp_bits_.data(), position);
     }
 
+    /**
+     * @brief Pack a leaf-local minimum offset into the spare BP bits.
+     */
     void set_embedded_min_offset(std::size_t offset) {
       bp_bits_[kEmbeddedOffsetBit >> 6] =
           (bp_bits_[kEmbeddedOffsetBit >> 6] & ~kEmbeddedOffsetMask) |
@@ -309,21 +374,33 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
            << (kEmbeddedOffsetBit & 63));
     }
 
+    /**
+     * @brief Return the leaf-local minimum offset stored in the selector.
+     */
     std::uint8_t embedded_min_offset() const {
       return static_cast<std::uint8_t>(
           (bp_bits_[kEmbeddedOffsetBit >> 6] & kEmbeddedOffsetMask) >>
           (kEmbeddedOffsetBit & 63));
     }
 
+    /**
+     * @brief Store a node's absolute subtree minimum position.
+     */
     void set_embedded_min_position(std::size_t position) {
       bp_bits_[kEmbeddedPositionBit >> 6] =
           static_cast<std::uint64_t>(position);
     }
 
+    /**
+     * @brief Return the absolute subtree minimum position stored in a node.
+     */
     std::size_t embedded_min_position() const {
       return static_cast<std::size_t>(bp_bits_[kEmbeddedPositionBit >> 6]);
     }
 
+    /**
+     * @brief Pack per-word zero-count prefixes for middle-node selectors.
+     */
     void build_zero_prefix_metadata(std::size_t bit_count) {
       const std::size_t word_count = (bit_count + 63) / 64;
       std::uint64_t packed = 0;
@@ -343,6 +420,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     }
 
    private:
+    /**
+     * @brief Prepend one BP bit while building the sequence right-to-left.
+     */
     std::size_t prepend_bp_bit(std::size_t& write_position, bool bit) {
       --write_position;
       if (bit) {
@@ -352,17 +432,26 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
       return write_position;
     }
 
+    /**
+     * @brief Return open-minus-close excess before a raw BP position.
+     */
     int prefix_excess(std::size_t position) const {
       position = std::min(position, kSelectorBits);
       const std::size_t ones = rank_512(bp_bits_.data(), position);
       return static_cast<int>(2 * ones) - static_cast<int>(position);
     }
 
+    /**
+     * @brief Return the packed zero-count prefix at a 64-bit word boundary.
+     */
     std::size_t zero_prefix_at_word(std::size_t word) const {
       return static_cast<std::uint8_t>(bp_bits_[kMiddleZeroPrefixWord] >>
                                        (8 * word));
     }
 
+    /**
+     * @brief Count close parentheses before @p position using packed prefixes.
+     */
     std::size_t rank0_at_with_zero_prefix(std::size_t position,
                                           std::size_t bit_count) const {
       position = std::min(position, bit_count);
@@ -377,6 +466,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
       return zeros;
     }
 
+    /**
+     * @brief Return BP excess when the last word stores zero-rank metadata.
+     */
     int prefix_excess_with_zero_prefix(std::size_t position,
                                        std::size_t bit_count) const {
       position = std::min(position, bit_count);
@@ -385,6 +477,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
                      rank0_at_with_zero_prefix(position, bit_count));
     }
 
+    /**
+     * @brief Select a close parenthesis using packed per-word zero counts.
+     */
     std::size_t close_position_with_zero_prefix(std::size_t slot,
                                                 std::size_t bit_count) const {
       const std::size_t word_count = (bit_count + 63) / 64;
@@ -404,6 +499,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
       return npos;
     }
 
+    /**
+     * @brief Return the position of the minimum BP depth in a depth range.
+     */
     std::size_t depth_arg_min(std::size_t left,
                               std::size_t right,
                               std::size_t bit_count) const {
@@ -446,6 +544,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
       return best_position;
     }
 
+    /**
+     * @brief Return the minimum-depth position for middle-node packed BP data.
+     */
     std::size_t depth_arg_min_with_zero_prefix(std::size_t left,
                                                std::size_t right,
                                                std::size_t bit_count) const {
@@ -498,13 +599,23 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
 
   class alignas(LeafSize == 496 ? 64 : 32) PrefixSuffixMaskLeafSelector {
    public:
+    /**
+     * @brief Construct an empty prefix/suffix mask selector.
+     */
     PrefixSuffixMaskLeafSelector() = default;
 
+    /**
+     * @brief Build prefix/suffix record masks and store the local minimum.
+     *
+     * @details A bit is set for every prefix-minimum record and every
+     * suffix-minimum record. Equal suffix values set the smaller slot so
+     * first-minimum tie-breaking is preserved.
+     */
     template <class EntryLess>
     void build(std::size_t entry_count, EntryLess entry_less) {
       if (entry_count > kMaskEntries) {
         throw std::length_error(
-            "NodeEulerBTreeRmq prefix/suffix leaf selector too large");
+            "SegmentBTreeXl prefix/suffix leaf selector too large");
       }
 
       words_.fill(0);
@@ -535,6 +646,14 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
       set_embedded_min_offset(prefix_best);
     }
 
+    /**
+     * @brief Return a local minimum slot when the mask can answer directly.
+     *
+     * @details The mask answers full-leaf ranges, prefixes before the global
+     * leaf minimum, and suffixes after the global leaf minimum. Interior ranges
+     * that cannot be represented by prefix/suffix records return `npos` so the
+     * caller can scan original values.
+     */
     std::size_t arg_min(std::size_t slot_left,
                         std::size_t slot_right,
                         std::size_t entry_count) const {
@@ -559,12 +678,18 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
       return npos;
     }
 
+    /**
+     * @brief Pack the local minimum offset into the high bits of the mask.
+     */
     void set_embedded_min_offset(std::size_t offset) {
       words_[kOffsetWord] =
           (words_[kOffsetWord] & kMaskWordMask) |
           ((static_cast<std::uint64_t>(offset) & kOffsetMask) << kOffsetShift);
     }
 
+    /**
+     * @brief Return the local minimum offset packed into the mask words.
+     */
     std::size_t embedded_min_offset() const {
       return static_cast<std::size_t>((words_[kOffsetWord] >> kOffsetShift) &
                                       kOffsetMask);
@@ -578,6 +703,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     static constexpr std::size_t kOffsetWord = kMaskEntries / 64;
     static constexpr std::size_t kOffsetShift = kMaskEntries & 63;
 
+    /**
+     * @brief Return a mask with the lowest @p bits set.
+     */
     static constexpr std::uint64_t low_bits_mask(std::size_t bits) {
       if (bits == 0) {
         return 0;
@@ -594,14 +722,23 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     static_assert(!kMaskLeafSelector || kPackedBits % 64 == 0);
     static_assert(!kMaskLeafSelector || kOffsetShift + kOffsetBits == 64);
 
+    /**
+     * @brief Set the prefix/suffix-record bit for a local leaf slot.
+     */
     void set_mask_bit(std::size_t slot) {
       words_[slot >> 6] |= std::uint64_t{1} << (slot & 63);
     }
 
+    /**
+     * @brief Return a mask word with embedded offset bits hidden.
+     */
     std::uint64_t mask_word(std::size_t word) const {
       return word == kOffsetWord ? words_[word] & kMaskWordMask : words_[word];
     }
 
+    /**
+     * @brief Return the last set record bit strictly before @p limit.
+     */
     std::size_t previous_set_bit_before(std::size_t limit) const {
       if (limit == 0) {
         return npos;
@@ -623,6 +760,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
       return npos;
     }
 
+    /**
+     * @brief Return the first set record bit at or after @p slot.
+     */
     std::size_t next_set_bit_at_or_after(std::size_t slot) const {
       std::size_t word = slot >> 6;
       std::uint64_t bits = mask_word(word) & ~first_bits_mask(slot & 63);
@@ -649,6 +789,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
                                           PrefixSuffixMaskLeafSelector,
                                           Bp512Selector>;
 
+  /**
+   * @brief Return whether a stored position is one of the missing sentinels.
+   */
   bool missing_position(std::size_t position) const {
     if constexpr (kInvalidIndexEqualsNpos) {
       return position == npos;
@@ -658,6 +801,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     }
   }
 
+  /**
+   * @brief Wrap an original value position as a comparable candidate.
+   */
   MinCandidate value_candidate(std::size_t position) const {
     if (missing_position(position)) {
       return {};
@@ -665,6 +811,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     return {position, values_.data() + position};
   }
 
+  /**
+   * @brief Return a node's cached subtree-minimum candidate.
+   */
   MinCandidate subtree_min_candidate(std::size_t level,
                                      std::size_t node) const {
     const std::size_t position = subtree_min_position(level, node);
@@ -674,6 +823,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     return {position, &subtree_min_value(level, node)};
   }
 
+  /**
+   * @brief Return a child slot's subtree-minimum candidate.
+   */
   MinCandidate subtree_child_min_candidate(std::size_t level,
                                            std::size_t node,
                                            std::size_t slot) const {
@@ -682,6 +834,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
                                  node * fanout_at_level(level) + slot);
   }
 
+  /**
+   * @brief Return a high-node child candidate using high-child metadata.
+   */
   MinCandidate high_child_min_candidate(std::size_t level,
                                         std::size_t node,
                                         std::size_t slot) const {
@@ -695,6 +850,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     return {position, &subtree_min_value(child_level, child)};
   }
 
+  /**
+   * @brief Return whether @p left is strictly better than @p right.
+   */
   bool strictly_better_candidate(MinCandidate left, MinCandidate right) const {
     if (missing_position(left.position)) {
       return false;
@@ -705,6 +863,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     return compare_(*left.value, *right.value);
   }
 
+  /**
+   * @brief Choose the better candidate using value, then smaller position.
+   */
   MinCandidate better_candidate(MinCandidate left, MinCandidate right) const {
     if (missing_position(left.position)) {
       return right;
@@ -721,6 +882,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     return right.position < left.position ? right : left;
   }
 
+  /**
+   * @brief Compare two regular child slots while building a local selector.
+   */
   bool strictly_better_subtree_child_slot(std::size_t level,
                                           std::size_t node,
                                           std::size_t left_slot,
@@ -730,6 +894,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
         subtree_child_min_candidate(level, node, right_slot));
   }
 
+  /**
+   * @brief Compare two high-node child slots while building high metadata.
+   */
   bool strictly_better_high_child_slot(std::size_t level,
                                        std::size_t node,
                                        std::size_t left_slot,
@@ -739,6 +906,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
         high_child_min_candidate(level, node, right_slot));
   }
 
+  /**
+   * @brief Build all levels, selectors, and cached minimum metadata.
+   */
   void build() {
     leaf_selectors_.clear();
     medium_selectors_.clear();
@@ -758,7 +928,7 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
       return;
     }
     if (values_.size() > static_cast<std::size_t>(invalid_index)) {
-      throw std::length_error("NodeEulerBTreeRmq index type is too small");
+      throw std::length_error("SegmentBTreeXl index type is too small");
     }
 
     initialize_layout((values_.size() + LeafSize - 1) / LeafSize);
@@ -773,6 +943,12 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     }
   }
 
+  /**
+   * @brief Compute level sizes, fanouts, flat offsets, and cache storage.
+   *
+   * @details The top two tree levels are marked as high levels. Levels below
+   * them use the middle-node layout. Level zero always stores leaf selectors.
+   */
   void initialize_layout(std::size_t leaf_count) {
     level_sizes_.push_back(leaf_count);
     level_value_spans_.push_back(LeafSize);
@@ -828,6 +1004,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     high_sparse_min_slots_.resize(high_node_count * kHighSparseSlotsPerNode);
   }
 
+  /**
+   * @brief Build one leaf selector over original values.
+   */
   void build_leaf(std::size_t leaf) {
     LeafSelector& selector = leaf_selectors_[leaf];
     const std::size_t begin = node_value_begin(0, leaf);
@@ -842,6 +1021,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     }
   }
 
+  /**
+   * @brief Build one internal node selector and its cached minima.
+   */
   void build_internal_node(std::size_t level, std::size_t node) {
     Bp512Selector& selector = mutable_selector_at(level, node);
     const std::size_t count = entry_count(level, node);
@@ -882,6 +1064,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     }
   }
 
+  /**
+   * @brief Multiply two extents, saturating at `std::size_t` maximum.
+   */
   static std::size_t saturating_product(std::size_t left, std::size_t right) {
     if (left != 0 && right > std::numeric_limits<std::size_t>::max() / left) {
       return std::numeric_limits<std::size_t>::max();
@@ -889,10 +1074,20 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     return left * right;
   }
 
+  /**
+   * @brief Return `ceil(value / divisor)` for positive divisors.
+   */
   static std::size_t ceil_div(std::size_t value, std::size_t divisor) {
     return (value + divisor - 1) / divisor;
   }
 
+  /**
+   * @brief Return the first minimum position for a possibly partial leaf.
+   *
+   * @details Full leaves use the embedded minimum. Mask leaves answer prefix
+   * and suffix ranges through their record bits and fall back to scanning only
+   * for unsupported interior ranges.
+   */
   std::size_t leaf_range_min(std::size_t leaf,
                              std::size_t left,
                              std::size_t right) const {
@@ -929,6 +1124,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     }
   }
 
+  /**
+   * @brief Scan original values to answer a range inside a leaf.
+   */
   std::size_t linear_range_min(std::size_t left, std::size_t right) const {
     if (left >= right) {
       return npos;
@@ -951,6 +1149,13 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
   }
 
 #ifdef PIXIE_AVX2_SUPPORT
+  /**
+   * @brief AVX2 scan for signed 64-bit minimum ranges.
+   *
+   * @details Vector lanes track the best value and first position seen so far.
+   * Equal values keep the earlier position by only replacing lanes on strict
+   * value improvement.
+   */
   std::size_t linear_range_min_i64_avx2(std::size_t left,
                                         std::size_t right) const {
     const std::int64_t* data = values_.data();
@@ -1005,6 +1210,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
   }
 #endif
 
+  /**
+   * @brief Find the lowest tree node that contains both endpoint leaves.
+   */
   std::pair<std::size_t, std::size_t> covering_node(
       std::size_t left_leaf,
       std::size_t right_leaf) const {
@@ -1020,15 +1228,29 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     return {level, left_node};
   }
 
+  /**
+   * @brief Return the leaf index containing an original value position.
+   */
   std::size_t leaf_for_value(std::size_t position) const {
     return position / LeafSize;
   }
 
+  /**
+   * @brief Return the child index at @p child_level containing a value.
+   */
   std::size_t child_for_value(std::size_t child_level,
                               std::size_t position) const {
     return position / level_value_spans_[child_level];
   }
 
+  /**
+   * @brief Query a child-slot range of an internal node.
+   *
+   * @details The node selector first picks the best child in the requested slot
+   * range. If that child cannot be accepted directly because only a border part
+   * is queried, the two border children are queried recursively and the middle
+   * full-child range is answered by the current node selector.
+   */
   MinCandidate query_child_slots(std::size_t level,
                                  std::size_t node,
                                  std::size_t slot_left,
@@ -1104,6 +1326,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     return answer;
   }
 
+  /**
+   * @brief Return the best candidate among fully covered child slots.
+   */
   MinCandidate full_child_slot_range_min(std::size_t level,
                                          std::size_t node,
                                          std::size_t slot_left,
@@ -1127,6 +1352,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     return subtree_child_min_candidate(level, node, slot);
   }
 
+  /**
+   * @brief Query a tree node for the minimum candidate in a value range.
+   */
   MinCandidate query_node(std::size_t level,
                           std::size_t node,
                           std::size_t left,
@@ -1152,14 +1380,23 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     return query_child_slots(level, node, left_slot, right_slot, left, right);
   }
 
+  /**
+   * @brief Return whether a position lies inside a half-open range.
+   */
   bool contains_position(std::size_t left,
                          std::size_t right,
                          std::size_t position) const {
     return !missing_position(position) && left <= position && position < right;
   }
 
+  /**
+   * @brief Return the number of B-tree levels, including leaves.
+   */
   std::size_t level_count() const { return level_sizes_.size(); }
 
+  /**
+   * @brief Return the number of entries in a leaf or child slots in a node.
+   */
   std::size_t entry_count(std::size_t level, std::size_t node) const {
     if (level == 0) {
       const std::size_t begin = node_value_begin(0, node);
@@ -1170,15 +1407,24 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
                                  level_sizes_[level - 1] - first_child);
   }
 
+  /**
+   * @brief Return the first original value position covered by a node.
+   */
   std::size_t node_value_begin(std::size_t level, std::size_t node) const {
     return node * level_value_spans_[level];
   }
 
+  /**
+   * @brief Return one past the last original value position covered by a node.
+   */
   std::size_t node_value_end(std::size_t level, std::size_t node) const {
     return std::min(values_.size(),
                     node_value_begin(level, node) + level_value_spans_[level]);
   }
 
+  /**
+   * @brief Return a node's absolute subtree-minimum position.
+   */
   std::size_t subtree_min_position(std::size_t level, std::size_t node) const {
     if (level == 0) {
       return node_value_begin(0, node) +
@@ -1190,6 +1436,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     return selector_at(level, node).embedded_min_position();
   }
 
+  /**
+   * @brief Return a cached reference to a node's subtree-minimum value.
+   */
   const T& subtree_min_value(std::size_t level, std::size_t node) const {
     if (level == 0) {
       return values_[subtree_min_position(0, node)];
@@ -1200,6 +1449,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     return medium_min_values_[medium_flat_index(level, node)];
   }
 
+  /**
+   * @brief Return an immutable internal-node BP selector.
+   */
   const Bp512Selector& selector_at(std::size_t level, std::size_t node) const {
     if (is_high_level(level)) {
       return high_selectors_[high_flat_index(level, node)];
@@ -1207,6 +1459,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     return medium_selectors_[medium_flat_index(level, node)];
   }
 
+  /**
+   * @brief Return a mutable internal-node BP selector while building.
+   */
   Bp512Selector& mutable_selector_at(std::size_t level, std::size_t node) {
     if (is_high_level(level)) {
       return high_selectors_[high_flat_index(level, node)];
@@ -1214,6 +1469,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     return medium_selectors_[medium_flat_index(level, node)];
   }
 
+  /**
+   * @brief Run the appropriate local selector for an internal node.
+   */
   std::size_t selector_arg_min(std::size_t level,
                                std::size_t node,
                                std::size_t slot_left,
@@ -1226,45 +1484,75 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     return selector.arg_min_with_zero_prefix(slot_left, slot_right, count);
   }
 
+  /**
+   * @brief Return whether a level uses the high-node layout.
+   */
   bool is_high_level(std::size_t level) const {
     return level > 0 && level >= high_level_begin_ && level < level_count();
   }
 
+  /**
+   * @brief Map a medium-level node to its flat storage index.
+   */
   std::size_t medium_flat_index(std::size_t level, std::size_t node) const {
     return medium_level_offsets_[level] + node;
   }
 
+  /**
+   * @brief Return the fanout used to group children at a level.
+   */
   std::size_t fanout_at_level(std::size_t level) const {
     return level_fanouts_[level];
   }
 
+  /**
+   * @brief Map a high-level node to its flat storage index.
+   */
   std::size_t high_flat_index(std::size_t level, std::size_t node) const {
     return high_level_offsets_[level] + node;
   }
 
+  /**
+   * @brief Return the first child-metadata record for a high node.
+   */
   const HighChildMetadata* high_child_metadata_begin(std::size_t level,
                                                      std::size_t node) const {
     return high_child_metadata_.data() + high_flat_index(level, node) * Fanout;
   }
 
+  /**
+   * @brief Return mutable sparse-slot storage for one high node.
+   */
   std::uint8_t* mutable_high_sparse_min_slots_begin(std::size_t high_flat) {
     return high_sparse_min_slots_.data() + high_flat * kHighSparseSlotsPerNode;
   }
 
+  /**
+   * @brief Return sparse-slot storage for one high node.
+   */
   const std::uint8_t* high_sparse_min_slots_begin(std::size_t high_flat) const {
     return high_sparse_min_slots_.data() + high_flat * kHighSparseSlotsPerNode;
   }
 
+  /**
+   * @brief Return high-child metadata by flat high-node index and slot.
+   */
   const HighChildMetadata& high_child_metadata_at(std::size_t high_flat,
                                                   std::size_t slot) const {
     return high_child_metadata_[high_flat * Fanout + slot];
   }
 
+  /**
+   * @brief Return mutable high-child metadata while building.
+   */
   HighChildMetadata& mutable_high_child_metadata_at(std::size_t high_flat,
                                                     std::size_t slot) {
     return high_child_metadata_[high_flat * Fanout + slot];
   }
 
+  /**
+   * @brief Choose the better high-node child slot.
+   */
   std::size_t better_high_child_slot(std::size_t level,
                                      std::size_t node,
                                      std::size_t left_slot,
@@ -1276,6 +1564,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
                                                                     : left_slot;
   }
 
+  /**
+   * @brief Build sparse tables over high-node child minima.
+   */
   void build_high_sparse_min_slots(std::size_t level,
                                    std::size_t node,
                                    std::size_t count) {
@@ -1301,6 +1592,9 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
     }
   }
 
+  /**
+   * @brief Return the best high-node child slot in a slot range.
+   */
   std::size_t high_sparse_arg_min(std::size_t level,
                                   std::size_t node,
                                   std::size_t slot_left,
@@ -1341,4 +1635,4 @@ class NodeEulerBTreeRmq : public RmqBase<NodeEulerBTreeRmq<T,
   std::size_t high_level_begin_ = std::numeric_limits<std::size_t>::max();
 };
 
-}  // namespace pixie::rmq::experimental
+}  // namespace pixie::rmq

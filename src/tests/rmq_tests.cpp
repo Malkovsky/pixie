@@ -152,6 +152,36 @@ struct ExperimentalNodeEulerBTreeCase {
   static MaxRmq make_max(std::span<const int> values) { return MaxRmq(values); }
 };
 
+struct ExperimentalNodeEulerBTreeMaskLeafCase {
+  using Rmq = pixie::rmq::experimental::NodeEulerBTreeRmq<
+      int,
+      std::less<int>,
+      std::size_t,
+      248,
+      256,
+      pixie::rmq::experimental::PrefixSuffixMaskLeafSelectorTag>;
+  using MaxRmq = pixie::rmq::experimental::NodeEulerBTreeRmq<
+      int,
+      std::greater<int>,
+      std::size_t,
+      248,
+      256,
+      pixie::rmq::experimental::PrefixSuffixMaskLeafSelectorTag>;
+
+  static Rmq make(std::span<const int> values) { return Rmq(values); }
+
+  static MaxRmq make_max(std::span<const int> values) { return MaxRmq(values); }
+};
+
+struct SegmentBTreeXlCase {
+  using Rmq = pixie::rmq::SegmentBTreeXl<int>;
+  using MaxRmq = pixie::rmq::SegmentBTreeXl<int, std::greater<int>>;
+
+  static Rmq make(std::span<const int> values) { return Rmq(values); }
+
+  static MaxRmq make_max(std::span<const int> values) { return MaxRmq(values); }
+};
+
 struct BpPlusMinusOne128Case {
   using Rmq = pixie::rmq::BpPlusMinusOneRmq<>;
   static constexpr std::size_t kBlockSize = 128;
@@ -260,7 +290,9 @@ using ValueRmqCases = ::testing::Types<SparseTableCase,
                                        SegmentTreeCase,
                                        CartesianTreeCase,
                                        NodeEulerBTreeCase,
-                                       ExperimentalNodeEulerBTreeCase>;
+                                       ExperimentalNodeEulerBTreeCase,
+                                       ExperimentalNodeEulerBTreeMaskLeafCase,
+                                       SegmentBTreeXlCase>;
 TYPED_TEST_SUITE(ValueRmqContractTest, ValueRmqCases);
 
 TYPED_TEST(ValueRmqContractTest, ExhaustiveSmallArray) {
@@ -695,6 +727,101 @@ TEST(RmqExperimentalNodeEulerBTree, LeafEmbeddedOffsetBoundaryRanges) {
   }
 }
 
+TEST(RmqExperimentalNodeEulerBTree, MaskLeafBoundaryAndFallbackRanges) {
+  using Rmq = pixie::rmq::experimental::NodeEulerBTreeRmq<
+      int, std::less<int>, std::size_t, 248, 256,
+      pixie::rmq::experimental::PrefixSuffixMaskLeafSelectorTag>;
+  constexpr std::size_t kLeaf = Rmq::kLeafSize;
+  static_assert(kLeaf == 248);
+
+  std::vector<int> values(2 * kLeaf + 13, 1000);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] += static_cast<int>(i % 17);
+  }
+
+  values[20] = 80;
+  values[40] = 70;
+  values[80] = 60;
+  values[90] = 60;
+  values[123] = -100;
+  values[160] = 10;
+  values[200] = 5;
+  values[220] = 0;
+  values[kLeaf - 1] = 0;
+
+  values[kLeaf + 7] = -7;
+  values[kLeaf + 91] = -11;
+  values[2 * kLeaf + 3] = -13;
+
+  const Rmq rmq{std::span<const int>(values)};
+  const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
+      {0, kLeaf},
+      {0, 41},
+      {0, 100},
+      {0, 123},
+      {90, 160},
+      {130, kLeaf},
+      {221, kLeaf},
+      {130, 210},
+      {kLeaf - 5, kLeaf + 8},
+      {kLeaf, 2 * kLeaf},
+      {2 * kLeaf - 3, values.size()},
+      {0, values.size()},
+  };
+
+  for (const auto [left, right] : ranges) {
+    const std::size_t expected = naive_arg_min(std::span<const int>(values),
+                                               left, right, std::less<int>());
+    EXPECT_EQ(rmq.arg_min(left, right), expected)
+        << "range=[" << left << "," << right << ")";
+    EXPECT_EQ(rmq.range_min(left, right), values[expected])
+        << "range=[" << left << "," << right << ")";
+  }
+}
+
+TEST(RmqSegmentBTreeXl, BoundaryAndFallbackRanges) {
+  using Rmq = pixie::rmq::SegmentBTreeXl<int>;
+  constexpr std::size_t kLeaf = Rmq::kLeafSize;
+  static_assert(kLeaf == 496);
+
+  std::vector<int> values(2 * kLeaf + 17, 2000);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] += static_cast<int>((i * 7 + i / 3) % 31);
+  }
+
+  values[32] = 120;
+  values[96] = 70;
+  values[160] = 55;
+  values[240] = -100;
+  values[241] = -100;
+  values[320] = 30;
+  values[440] = 5;
+  values[kLeaf - 1] = 5;
+
+  values[kLeaf + 11] = -9;
+  values[kLeaf + 173] = -17;
+  values[2 * kLeaf + 5] = -21;
+
+  const Rmq rmq{std::span<const int>(values)};
+  const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
+      {0, kLeaf},         {0, 97},
+      {0, 240},           {96, 241},
+      {250, kLeaf},       {441, kLeaf},
+      {300, 450},         {kLeaf - 7, kLeaf + 12},
+      {kLeaf, 2 * kLeaf}, {2 * kLeaf - 5, values.size()},
+      {0, values.size()},
+  };
+
+  for (const auto [left, right] : ranges) {
+    const std::size_t expected = naive_arg_min(std::span<const int>(values),
+                                               left, right, std::less<int>());
+    EXPECT_EQ(rmq.arg_min(left, right), expected)
+        << "range=[" << left << "," << right << ")";
+    EXPECT_EQ(rmq.range_min(left, right), values[expected])
+        << "range=[" << left << "," << right << ")";
+  }
+}
+
 TEST(RmqExperimentalNodeEulerBTree, DuplicateHeavyRandomDifferentialTo8193) {
   using Rmq = pixie::rmq::experimental::NodeEulerBTreeRmq<int>;
   std::mt19937_64 rng(9127);
@@ -709,6 +836,74 @@ TEST(RmqExperimentalNodeEulerBTree, DuplicateHeavyRandomDifferentialTo8193) {
     for (std::size_t i = 0; i < values.size(); ++i) {
       values[i] = value_dist(rng);
       if ((i % 13) < 7) {
+        values[i] = 0;
+      }
+    }
+
+    const Rmq rmq{std::span<const int>(values)};
+    std::uniform_int_distribution<std::size_t> width_dist(1, size);
+    for (std::size_t query = 0; query < 2000; ++query) {
+      const std::size_t width = width_dist(rng);
+      std::uniform_int_distribution<std::size_t> left_dist(0, size - width);
+      const std::size_t left = left_dist(rng);
+      const std::size_t right = left + width;
+      const std::size_t expected = naive_arg_min(std::span<const int>(values),
+                                                 left, right, std::less<int>());
+      EXPECT_EQ(rmq.arg_min(left, right), expected)
+          << "range=[" << left << "," << right << ")";
+    }
+  }
+}
+
+TEST(RmqExperimentalNodeEulerBTree, MaskLeafDuplicateHeavyRandomTo8193) {
+  using Rmq = pixie::rmq::experimental::NodeEulerBTreeRmq<
+      int, std::less<int>, std::size_t, 248, 256,
+      pixie::rmq::experimental::PrefixSuffixMaskLeafSelectorTag>;
+  std::mt19937_64 rng(901248);
+  std::uniform_int_distribution<int> value_dist(-3, 3);
+  const std::vector<std::size_t> sizes = {
+      1, 2, 17, 247, 248, 249, 1024, 4096, 8191, 8192, 8193,
+  };
+
+  for (const std::size_t size : sizes) {
+    SCOPED_TRACE(size);
+    std::vector<int> values(size);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      values[i] = value_dist(rng);
+      if ((i % 11) < 6) {
+        values[i] = 0;
+      }
+    }
+
+    const Rmq rmq{std::span<const int>(values)};
+    std::uniform_int_distribution<std::size_t> width_dist(1, size);
+    for (std::size_t query = 0; query < 2000; ++query) {
+      const std::size_t width = width_dist(rng);
+      std::uniform_int_distribution<std::size_t> left_dist(0, size - width);
+      const std::size_t left = left_dist(rng);
+      const std::size_t right = left + width;
+      const std::size_t expected = naive_arg_min(std::span<const int>(values),
+                                                 left, right, std::less<int>());
+      EXPECT_EQ(rmq.arg_min(left, right), expected)
+          << "range=[" << left << "," << right << ")";
+    }
+  }
+}
+
+TEST(RmqSegmentBTreeXl, DuplicateHeavyRandomTo8193) {
+  using Rmq = pixie::rmq::SegmentBTreeXl<int>;
+  std::mt19937_64 rng(901496);
+  std::uniform_int_distribution<int> value_dist(-3, 3);
+  const std::vector<std::size_t> sizes = {
+      1, 2, 17, 495, 496, 497, 1024, 4096, 8191, 8192, 8193,
+  };
+
+  for (const std::size_t size : sizes) {
+    SCOPED_TRACE(size);
+    std::vector<int> values(size);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      values[i] = value_dist(rng);
+      if ((i % 11) < 6) {
         values[i] = 0;
       }
     }
