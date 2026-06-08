@@ -1157,7 +1157,7 @@ void register_benchmarks() {
         ->Unit(benchmark::kMillisecond);
     benchmark::RegisterBenchmark(
         "rmq_build_segment_btree_xl",
-        &run_value_rmq_build<pixie::rmq::SegmentBTreeXl<
+        &run_value_rmq_build<pixie::rmq::SegmentBTreeXL<
             std::int64_t, std::less<std::int64_t>, Index>>)
         ->Arg(static_cast<std::int64_t>(size))
         ->Unit(benchmark::kMillisecond);
@@ -1250,7 +1250,7 @@ void register_benchmarks() {
           ->Unit(benchmark::kNanosecond);
       benchmark::RegisterBenchmark(
           "rmq_segment_btree_xl",
-          &run_queries<pixie::rmq::SegmentBTreeXl<
+          &run_queries<pixie::rmq::SegmentBTreeXL<
               std::int64_t, std::less<std::int64_t>, Index>>)
           ->Args({static_cast<std::int64_t>(size),
                   static_cast<std::int64_t>(width)})

@@ -131,6 +131,89 @@ python3 scripts/excess_benchmark_table.py excess_positions.json -o src/docs/exce
 Generated benchmark documentation can be written to `src/docs/benchmark_results.md`;
 the documentation pipeline does not run benchmarks.
 
+### Adding an RMQ Benchmark
+
+Value RMQ implementations are benchmarked through the common CRTP interface in
+`pixie::rmq::RmqBase`. To add a comparable backend, implement a non-owning index
+that can be constructed from `std::span<const T>` and provides:
+
+* `size_impl()`
+* `arg_min_impl(left, right)` for half-open ranges `[left, right)`
+* `value_at_impl(position)`
+
+The public `size()`, `empty()`, `arg_min()`, and `range_min()` methods are then
+provided by `RmqBase`. Ties should return the smaller original position.
+
+Minimal example:
+
+```cpp
+#include <pixie/rmq/rmq_base.h>
+
+#include <cstddef>
+#include <functional>
+#include <span>
+
+namespace pixie::rmq {
+
+template <class T, class Compare = std::less<T>>
+class LinearRmq : public RmqBase<LinearRmq<T, Compare>, T> {
+ public:
+  using Self = LinearRmq<T, Compare>;
+  static constexpr std::size_t npos = RmqBase<Self, T>::npos;
+
+  explicit LinearRmq(std::span<const T> values, Compare compare = Compare())
+      : values_(values), compare_(compare) {}
+
+  std::size_t size_impl() const { return values_.size(); }
+
+  std::size_t arg_min_impl(std::size_t left, std::size_t right) const {
+    if (left >= right || right > values_.size()) {
+      return npos;
+    }
+    std::size_t best = left;
+    for (std::size_t i = left + 1; i < right; ++i) {
+      if (compare_(values_[i], values_[best])) {
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  T value_at_impl(std::size_t position) const { return values_[position]; }
+
+ private:
+  std::span<const T> values_;
+  Compare compare_;
+};
+
+}  // namespace pixie::rmq
+```
+
+Then add rows to `src/benchmarks/bench_rmq.cpp` in `register_benchmarks()`.
+Use `run_value_rmq_build` for construction cost and `run_queries` for query
+cost:
+
+```cpp
+benchmark::RegisterBenchmark(
+    "rmq_build_linear",
+    &run_value_rmq_build<pixie::rmq::LinearRmq<
+        std::int64_t, std::less<std::int64_t>>>)
+    ->Arg(static_cast<std::int64_t>(size))
+    ->Unit(benchmark::kMillisecond);
+
+benchmark::RegisterBenchmark(
+    "rmq_linear",
+    &run_queries<pixie::rmq::LinearRmq<
+        std::int64_t, std::less<std::int64_t>>>)
+    ->Args({static_cast<std::int64_t>(size),
+            static_cast<std::int64_t>(width)})
+    ->Unit(benchmark::kNanosecond);
+```
+
+The RMQ benchmark harness rotates through several value arrays so results are
+less dependent on the global-minimum position. The `width` argument is the
+maximum query width, not an exact width.
+
 ### RmM Tree
 
 ```sh

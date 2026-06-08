@@ -822,6 +822,42 @@ TEST(RmqSegmentBTreeXl, BoundaryAndFallbackRanges) {
   }
 }
 
+TEST(RmqSegmentBTreeXl, LeafSelectorEnumVariants) {
+  using MaskRmq = pixie::rmq::SegmentBTreeXL<
+      int, std::less<int>, std::size_t, 248, 256,
+      pixie::rmq::SegmentBTreeXLLeafSelector::PrefixSuffix>;
+  using BpRmq =
+      pixie::rmq::SegmentBTreeXL<int, std::less<int>, std::size_t, 252, 256,
+                                 pixie::rmq::SegmentBTreeXLLeafSelector::BP>;
+
+  std::vector<int> values(4099, 10000);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] = static_cast<int>((i * 37 + i / 7) % 257);
+  }
+  values[13] = -50;
+  values[251] = -70;
+  values[252] = -70;
+  values[747] = -90;
+  values[2048] = -120;
+  values[4098] = -110;
+
+  const MaskRmq mask_rmq{std::span<const int>(values)};
+  const BpRmq bp_rmq{std::span<const int>(values)};
+  const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
+      {0, 1},      {0, 252},     {1, 251},           {248, 253},   {251, 753},
+      {700, 2100}, {2048, 2049}, {0, values.size()}, {3000, 4099},
+  };
+
+  for (const auto [left, right] : ranges) {
+    const std::size_t expected = naive_arg_min(std::span<const int>(values),
+                                               left, right, std::less<int>());
+    EXPECT_EQ(mask_rmq.arg_min(left, right), expected)
+        << "mask range=[" << left << "," << right << ")";
+    EXPECT_EQ(bp_rmq.arg_min(left, right), expected)
+        << "bp range=[" << left << "," << right << ")";
+  }
+}
+
 TEST(RmqExperimentalNodeEulerBTree, DuplicateHeavyRandomDifferentialTo8193) {
   using Rmq = pixie::rmq::experimental::NodeEulerBTreeRmq<int>;
   std::mt19937_64 rng(9127);

@@ -19,14 +19,12 @@
 namespace pixie::rmq {
 
 /**
- * @brief Low-level selector tag for BP-based 252-value leaves.
+ * @brief Low-level selector implementation used by SegmentBTreeXL leaves.
  */
-struct BpLeafSelectorTag {};
-
-/**
- * @brief Low-level selector tag for prefix/suffix mask leaves.
- */
-struct PrefixSuffixMaskLeafSelectorTag {};
+enum class SegmentBTreeXLLeafSelector {
+  PrefixSuffix,
+  BP,
+};
 
 /**
  * @brief Segment B-tree RMQ with compact per-level selectors and XL leaves.
@@ -58,6 +56,34 @@ struct PrefixSuffixMaskLeafSelectorTag {};
  * tree to reduce work on wide queries while keeping the high-level metadata
  * small enough to stay cache-resident.
  *
+ * @code
+ * value array, n entries
+ * |
+ * +-- L0: leaves
+ * |       ceil(n / 496) nodes by default
+ * |       each leaf covers <=496 values and stores one 64-byte selector
+ * |
+ * +-- L1..Lm: middle levels, only when the frontier is > 256 * 256 nodes
+ * |       fanout 192
+ * |       each node stores one 512-bit BP selector over child minima
+ * |
+ * +-- H0: high child level
+ * |       fanout 256, <=256 nodes
+ * |       BP selector + child ranges + child minima + sparse child table
+ * |
+ * +-- H1: high root
+ *         fanout 256, one node
+ *         BP selector + child ranges + child minima + sparse child table
+ *
+ * Examples with default 496-value leaves:
+ *
+ * n = 2^24:
+ *   33,826 leaves -> 133 high nodes -> 1 high root
+ *
+ * n = 2^26:
+ *   135,301 leaves -> 705 middle nodes -> 3 high nodes -> 1 high root
+ * @endcode
+ *
  * Querying starts at the lowest node that covers both endpoint leaves. At each
  * internal node, the selector is asked for the best child over the intersecting
  * child-slot range. If that child is fully covered, or its stored subtree
@@ -73,36 +99,37 @@ struct PrefixSuffixMaskLeafSelectorTag {};
  * supports 252 with BP leaves and 248 or 496 with mask leaves.
  * @tparam Fanout Number of children per high internal node. This backend
  * currently supports only 256. Middle internal nodes use 192.
- * @tparam LowLevelSelector Compile-time low-level selector tag.
+ * @tparam LeafSelectorKind Compile-time low-level selector kind.
  */
 template <class T,
           class Compare = std::less<T>,
           class Index = std::size_t,
           std::size_t LeafSize = 496,
           std::size_t Fanout = 256,
-          class LowLevelSelector = PrefixSuffixMaskLeafSelectorTag>
-class SegmentBTreeXl
+          SegmentBTreeXLLeafSelector LeafSelectorKind =
+              SegmentBTreeXLLeafSelector::PrefixSuffix>
+class SegmentBTreeXL
     : public RmqBase<
-          SegmentBTreeXl<T, Compare, Index, LeafSize, Fanout, LowLevelSelector>,
+          SegmentBTreeXL<T, Compare, Index, LeafSize, Fanout, LeafSelectorKind>,
           T> {
  public:
   static_assert(std::is_unsigned_v<Index>,
-                "SegmentBTreeXl index type must be unsigned");
+                "SegmentBTreeXL index type must be unsigned");
   static constexpr bool kBpLeafSelector =
-      std::is_same_v<LowLevelSelector, BpLeafSelectorTag>;
+      LeafSelectorKind == SegmentBTreeXLLeafSelector::BP;
   static constexpr bool kMaskLeafSelector =
-      std::is_same_v<LowLevelSelector, PrefixSuffixMaskLeafSelectorTag>;
+      LeafSelectorKind == SegmentBTreeXLLeafSelector::PrefixSuffix;
   static_assert((kBpLeafSelector && LeafSize == 252) ||
                     (kMaskLeafSelector && (LeafSize == 248 || LeafSize == 496)),
-                "SegmentBTreeXl requires 252-value BP leaves "
+                "SegmentBTreeXL requires 252-value BP leaves "
                 "or 248/496-value prefix/suffix mask leaves");
   static_assert(Fanout == 256,
-                "SegmentBTreeXl currently requires 256-way internal nodes");
+                "SegmentBTreeXL currently requires 256-way internal nodes");
   static_assert(kBpLeafSelector || kMaskLeafSelector,
-                "unsupported SegmentBTreeXl low-level selector tag");
+                "unsupported SegmentBTreeXL low-level selector kind");
 
   using Self =
-      SegmentBTreeXl<T, Compare, Index, LeafSize, Fanout, LowLevelSelector>;
+      SegmentBTreeXL<T, Compare, Index, LeafSize, Fanout, LeafSelectorKind>;
 
   static constexpr std::size_t npos = RmqBase<Self, T>::npos;
   static constexpr Index invalid_index = std::numeric_limits<Index>::max();
@@ -113,27 +140,27 @@ class SegmentBTreeXl
   /**
    * @brief Construct an empty RMQ index.
    */
-  SegmentBTreeXl() = default;
+  SegmentBTreeXL() = default;
 
   /**
    * @brief Copy an RMQ index while preserving its non-owning value span.
    */
-  SegmentBTreeXl(const SegmentBTreeXl&) = default;
+  SegmentBTreeXL(const SegmentBTreeXL&) = default;
 
   /**
    * @brief Move an RMQ index while preserving selector and cache storage.
    */
-  SegmentBTreeXl(SegmentBTreeXl&&) noexcept = default;
+  SegmentBTreeXL(SegmentBTreeXL&&) noexcept = default;
 
   /**
    * @brief Copy-assign an RMQ index and its cached metadata.
    */
-  SegmentBTreeXl& operator=(const SegmentBTreeXl&) = default;
+  SegmentBTreeXL& operator=(const SegmentBTreeXL&) = default;
 
   /**
    * @brief Move-assign an RMQ index and its cached metadata.
    */
-  SegmentBTreeXl& operator=(SegmentBTreeXl&&) noexcept = default;
+  SegmentBTreeXL& operator=(SegmentBTreeXL&&) noexcept = default;
 
   /**
    * @brief Build a segment B-tree RMQ index over @p values.
@@ -145,7 +172,7 @@ class SegmentBTreeXl
    * @param compare Ordering used to choose minima.
    * @throws std::length_error if @p Index cannot represent all positions.
    */
-  explicit SegmentBTreeXl(std::span<const T> values,
+  explicit SegmentBTreeXL(std::span<const T> values,
                           Compare compare = Compare())
       : values_(values), compare_(compare) {
     build();
@@ -243,7 +270,7 @@ class SegmentBTreeXl
     template <class EntryLess>
     void build(std::size_t entry_count, EntryLess entry_less) {
       if (entry_count > kSelectorEntries) {
-        throw std::length_error("SegmentBTreeXl local selector too large");
+        throw std::length_error("SegmentBTreeXL local selector too large");
       }
 
       bp_bits_.fill(0);
@@ -615,7 +642,7 @@ class SegmentBTreeXl
     void build(std::size_t entry_count, EntryLess entry_less) {
       if (entry_count > kMaskEntries) {
         throw std::length_error(
-            "SegmentBTreeXl prefix/suffix leaf selector too large");
+            "SegmentBTreeXL prefix/suffix leaf selector too large");
       }
 
       words_.fill(0);
@@ -928,7 +955,7 @@ class SegmentBTreeXl
       return;
     }
     if (values_.size() > static_cast<std::size_t>(invalid_index)) {
-      throw std::length_error("SegmentBTreeXl index type is too small");
+      throw std::length_error("SegmentBTreeXL index type is too small");
     }
 
     initialize_layout((values_.size() + LeafSize - 1) / LeafSize);
@@ -1634,5 +1661,18 @@ class SegmentBTreeXl
   std::vector<std::size_t> level_fanouts_;
   std::size_t high_level_begin_ = std::numeric_limits<std::size_t>::max();
 };
+
+/**
+ * @brief Compatibility alias for the historical SegmentBTreeXl spelling.
+ */
+template <class T,
+          class Compare = std::less<T>,
+          class Index = std::size_t,
+          std::size_t LeafSize = 496,
+          std::size_t Fanout = 256,
+          SegmentBTreeXLLeafSelector LeafSelectorKind =
+              SegmentBTreeXLLeafSelector::PrefixSuffix>
+using SegmentBTreeXl =
+    SegmentBTreeXL<T, Compare, Index, LeafSize, Fanout, LeafSelectorKind>;
 
 }  // namespace pixie::rmq
