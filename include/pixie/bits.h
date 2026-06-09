@@ -45,6 +45,10 @@ static inline const __m256i mask_first_half = _mm256_setr_epi8(
 // clang-format on
 #endif
 
+#if defined(__BMI2__) && !defined(PIXIE_DISABLE_BMI2)
+#define PIXIE_BMI2_SUPPORT
+#endif
+
 /**
  * @brief Test 16 int16 RmM btree child ranges for a node-local target.
  * @details Each lane represents one child summary. The function checks whether
@@ -235,37 +239,144 @@ static inline uint64_t rank_512(const uint64_t* x, uint64_t count) {
 #endif
 }
 
+#ifndef PIXIE_BMI2_SUPPORT
+struct PixieSelectByteLut {
+  uint8_t popcounts[256];
+  uint8_t select[256][8];
+
+  constexpr PixieSelectByteLut() : popcounts{}, select{} {
+    for (int byte = 0; byte < 256; ++byte) {
+      for (int rank = 0; rank < 8; ++rank) {
+        select[byte][rank] = 8;
+      }
+
+      int count = 0;
+      for (int bit = 0; bit < 8; ++bit) {
+        if (((byte >> bit) & 1) != 0) {
+          select[byte][count++] = static_cast<uint8_t>(bit);
+        }
+      }
+      popcounts[byte] = static_cast<uint8_t>(count);
+    }
+  }
+};
+
+static inline constexpr PixieSelectByteLut pixie_select_byte_lut;
+
+static inline uint64_t select_64_no_bmi2(uint64_t x, uint64_t rank) {
+  uint64_t offset = 0;
+
+  uint64_t count = std::popcount(static_cast<uint32_t>(x));
+  if (rank >= count) {
+    rank -= count;
+    x >>= 32;
+    offset += 32;
+  }
+
+  count = std::popcount(static_cast<uint16_t>(x));
+  if (rank >= count) {
+    rank -= count;
+    x >>= 16;
+    offset += 16;
+  }
+
+  const auto low_byte = static_cast<uint8_t>(x);
+  count = pixie_select_byte_lut.popcounts[low_byte];
+  if (rank >= count) {
+    rank -= count;
+    x >>= 8;
+    offset += 8;
+  }
+
+  return offset + pixie_select_byte_lut.select[static_cast<uint8_t>(x)][rank];
+}
+#endif
+
 /**
  * @brief Return position of @p rank 1 bit in @p x
  */
 static inline uint64_t select_64(uint64_t x, uint64_t rank) {
-  return _tzcnt_u64(_pdep_u64(1ull << rank, x));
+#ifdef PIXIE_BMI2_SUPPORT
+  return std::countr_zero(_pdep_u64(1ull << rank, x));
+#else
+  return select_64_no_bmi2(x, rank);
+#endif
 }
 
-/**
- * @brief Return position of @p rank 1 bit in @p x
- * @details Selecting within 64-bit word can be done
- * using combination of _tzcnt_u64(_pdep_u64(1 << rank, x))
- * See Pandey P., Bender M. A., Johnson R. A fast x86 implementation of select
- * https://arxiv.org/abs/1706.00990
- *
- * To find a 64-bit word inside a 512-bit region we use
- * We first popcounts of all 8 64-bit words with _mm512_popcnt_epi64
- * and then perform a linear scan.
- *
- * Notably a SWAR algorithm for parallel binary search
- * http://www-graphics.stanford.edu/~seander/bithacks.html#SelectPosFromMSBRank
- * might be used as a backoff algorithm for selecting in a 64-bit word.
- * It can also be used as an alternative for linear search but i don't
- * see a proper SIMD algorithm to make it faster.
- */
-static inline uint64_t select_512(const uint64_t* x, uint64_t rank) {
+template <bool Invert>
+static inline uint64_t select_512_word_count(uint64_t word) {
+  if constexpr (Invert) {
+    return std::popcount(~word);
+  } else {
+    return std::popcount(word);
+  }
+}
+
+template <bool Invert>
+static inline uint64_t select_512_selected_word(uint64_t word) {
+  if constexpr (Invert) {
+    return ~word;
+  } else {
+    return word;
+  }
+}
+
+template <bool Invert>
+static inline uint64_t select_512_scalar_impl(const uint64_t* x,
+                                              uint64_t rank) {
+  for (size_t i = 0; i < 8; ++i) {
+    const uint64_t count = select_512_word_count<Invert>(x[i]);
+    if (rank < count) {
+      return i * 64 + select_64(select_512_selected_word<Invert>(x[i]), rank);
+    }
+    rank -= count;
+  }
+  return 512;
+}
+
+#ifdef PIXIE_AVX2_SUPPORT
+template <bool Invert>
+static inline void select_512_avx2_counts(const uint64_t* x, uint64_t* counts) {
+  const __m256i low_mask = _mm256_set1_epi8(0x0F);
+  const __m256i zero = _mm256_setzero_si256();
+  const __m256i sixty_four = _mm256_set1_epi64x(64);
+
+  for (int half = 0; half < 2; ++half) {
+    const __m256i words =
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(x + 4 * half));
+
+    const __m256i low_nibbles = _mm256_and_si256(words, low_mask);
+    const __m256i high_nibbles =
+        _mm256_and_si256(_mm256_srli_epi16(words, 4), low_mask);
+    const __m256i byte_counts =
+        _mm256_add_epi8(_mm256_shuffle_epi8(lookup_popcount_4, low_nibbles),
+                        _mm256_shuffle_epi8(lookup_popcount_4, high_nibbles));
+    __m256i word_counts = _mm256_sad_epu8(byte_counts, zero);
+    if constexpr (Invert) {
+      word_counts = _mm256_sub_epi64(sixty_four, word_counts);
+    }
+    _mm256_store_si256(reinterpret_cast<__m256i*>(counts + 4 * half),
+                       word_counts);
+  }
+}
+
+template <bool Invert>
+static inline uint64_t select_512_avx2_impl(const uint64_t* x, uint64_t rank) {
+  alignas(32) uint64_t counts[8];
+  select_512_avx2_counts<Invert>(x, counts);
+
+  for (size_t i = 0; i < 8; ++i) {
+    if (rank < counts[i]) {
+      return i * 64 + select_64(select_512_selected_word<Invert>(x[i]), rank);
+    }
+    rank -= counts[i];
+  }
+  return 512;
+}
+#endif
+
 #ifdef PIXIE_AVX512_SUPPORT
-
-  __m512i res = _mm512_loadu_epi64(x);
-  __m512i counts = _mm512_popcnt_epi64(res);
-  __m512i prefix = counts;
-
+static inline __m512i select_512_avx512_prefix_sum_u64(__m512i prefix) {
   const __m512i idx_shift1 = _mm512_set_epi64(6, 5, 4, 3, 2, 1, 0, 0);
   const __m512i idx_shift2 = _mm512_set_epi64(5, 4, 3, 2, 1, 0, 0, 0);
   const __m512i idx_shift4 = _mm512_set_epi64(3, 2, 1, 0, 0, 0, 0, 0);
@@ -275,76 +386,67 @@ static inline uint64_t select_512(const uint64_t* x, uint64_t rank) {
   tmp = _mm512_maskz_permutexvar_epi64(0xFC, idx_shift2, prefix);
   prefix = _mm512_add_epi64(prefix, tmp);
   tmp = _mm512_maskz_permutexvar_epi64(0xF0, idx_shift4, prefix);
-  prefix = _mm512_add_epi64(prefix, tmp);
+  return _mm512_add_epi64(prefix, tmp);
+}
 
-  __mmask8 mask = _mm512_cmpgt_epu64_mask(prefix, _mm512_set1_epi64(rank));
-  uint32_t i = _tzcnt_u32(static_cast<uint32_t>(mask));
-  uint64_t prev = 0;
-  if (i != 0) {
-    __m512i idx_prev = _mm512_set1_epi64(static_cast<int64_t>(i - 1));
-    __m512i prev_vec = _mm512_permutexvar_epi64(idx_prev, prefix);
-    prev = static_cast<uint64_t>(
-        _mm_cvtsi128_si64(_mm512_castsi512_si128(prev_vec)));
+static inline uint64_t select_512_avx512_previous_prefix(__m512i prefix,
+                                                         uint32_t lane) {
+  if (lane == 0) {
+    return 0;
   }
-  return i * 64 + select_64(x[i], rank - prev);
+  const __m512i idx_previous =
+      _mm512_set1_epi64(static_cast<int64_t>(lane - 1));
+  const __m512i previous_vec = _mm512_permutexvar_epi64(idx_previous, prefix);
+  return static_cast<uint64_t>(
+      _mm_cvtsi128_si64(_mm512_castsi512_si128(previous_vec)));
+}
 
+template <bool Invert>
+static inline uint64_t select_512_avx512_impl(const uint64_t* x,
+                                              uint64_t rank) {
+  const __m512i words = _mm512_loadu_epi64(x);
+  __m512i prefix = _mm512_popcnt_epi64(words);
+  if constexpr (Invert) {
+    prefix = _mm512_sub_epi64(_mm512_set1_epi64(64), prefix);
+  }
+  prefix = select_512_avx512_prefix_sum_u64(prefix);
+
+  const __mmask8 mask = _mm512_cmpgt_epu64_mask(
+      prefix, _mm512_set1_epi64(static_cast<int64_t>(rank)));
+  const uint32_t lane = std::countr_zero(static_cast<uint32_t>(mask));
+  const uint64_t previous = select_512_avx512_previous_prefix(prefix, lane);
+  return lane * 64 +
+         select_64(select_512_selected_word<Invert>(x[lane]), rank - previous);
+}
+#endif
+
+/**
+ * @brief Return position of @p rank 1 bit in @p x.
+ * @details Uses AVX-512, then AVX2, then scalar fallback. The 64-bit in-word
+ * select uses BMI2 PDEP unless PIXIE_DISABLE_BMI2 is defined or BMI2 is not
+ * available.
+ */
+static inline uint64_t select_512(const uint64_t* x, uint64_t rank) {
+#ifdef PIXIE_AVX512_SUPPORT
+  return select_512_avx512_impl<false>(x, rank);
+#elif defined(PIXIE_AVX2_SUPPORT)
+  return select_512_avx2_impl<false>(x, rank);
 #else
-
-  size_t i = 0;
-  int popcount = std::popcount(x[0]);
-  while (i < 7 && popcount <= rank) {
-    rank -= popcount;
-    popcount = std::popcount(x[++i]);
-  }
-  return i * 64 + select_64(x[i], rank);
-
+  return select_512_scalar_impl<false>(x, rank);
 #endif
 }
 
 /**
- * @brief Return position of @p rank0 0 bit in @p x
+ * @brief Return position of @p rank0 0 bit in @p x.
  * @details select_512 with bit inversion.
  */
 static inline uint64_t select0_512(const uint64_t* x, uint64_t rank0) {
 #ifdef PIXIE_AVX512_SUPPORT
-
-  __m512i res = _mm512_loadu_epi64(x);
-  res = _mm512_xor_epi64(res, _mm512_set1_epi64(-1));
-  __m512i counts = _mm512_popcnt_epi64(res);
-  __m512i prefix = counts;
-
-  const __m512i idx_shift1 = _mm512_set_epi64(6, 5, 4, 3, 2, 1, 0, 0);
-  const __m512i idx_shift2 = _mm512_set_epi64(5, 4, 3, 2, 1, 0, 0, 0);
-  const __m512i idx_shift4 = _mm512_set_epi64(3, 2, 1, 0, 0, 0, 0, 0);
-
-  __m512i tmp = _mm512_maskz_permutexvar_epi64(0xFE, idx_shift1, prefix);
-  prefix = _mm512_add_epi64(prefix, tmp);
-  tmp = _mm512_maskz_permutexvar_epi64(0xFC, idx_shift2, prefix);
-  prefix = _mm512_add_epi64(prefix, tmp);
-  tmp = _mm512_maskz_permutexvar_epi64(0xF0, idx_shift4, prefix);
-  prefix = _mm512_add_epi64(prefix, tmp);
-
-  __mmask8 mask = _mm512_cmpgt_epu64_mask(prefix, _mm512_set1_epi64(rank0));
-  uint32_t i = _tzcnt_u32(static_cast<uint32_t>(mask));
-  uint64_t prev = 0;
-  if (i != 0) {
-    __m512i idx_prev = _mm512_set1_epi64(static_cast<int64_t>(i - 1));
-    __m512i prev_vec = _mm512_permutexvar_epi64(idx_prev, prefix);
-    prev = static_cast<uint64_t>(
-        _mm_cvtsi128_si64(_mm512_castsi512_si128(prev_vec)));
-  }
-  return i * 64 + select_64(~x[i], rank0 - prev);
-
+  return select_512_avx512_impl<true>(x, rank0);
+#elif defined(PIXIE_AVX2_SUPPORT)
+  return select_512_avx2_impl<true>(x, rank0);
 #else
-
-  size_t i = 0;
-  int popcount = std::popcount(~x[0]);
-  while (i < 7 && popcount <= rank0) {
-    rank0 -= popcount;
-    popcount = std::popcount(~x[++i]);
-  }
-  return i * 64 + select_64(~x[i], rank0);
-
+  return select_512_scalar_impl<true>(x, rank0);
 #endif
 }
 

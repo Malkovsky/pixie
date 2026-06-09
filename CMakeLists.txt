@@ -15,6 +15,13 @@ if(DISABLE_AVX512)
     message(STATUS "DISABLE_AVX512 is ON")
 endif()
 
+option(PIXIE_DISABLE_BMI2 "Disable BMI2 instructions" OFF)
+if(PIXIE_DISABLE_BMI2)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mno-bmi2")
+    add_compile_definitions(PIXIE_DISABLE_BMI2)
+    message(STATUS "PIXIE_DISABLE_BMI2 is ON")
+endif()
+
 option(ENABLE_ADDRESS_SANITIZER "Enable AddressSanitizer" OFF)
 if(ENABLE_ADDRESS_SANITIZER)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
@@ -175,6 +182,15 @@ if(PIXIE_TESTS)
         gtest_main
         ${PIXIE_DIAGNOSTICS_LIBS})
 
+    add_executable(select512_experimental_tests
+        src/tests/select512_experimental_tests.cpp)
+    target_include_directories(select512_experimental_tests
+        PUBLIC include)
+    target_link_libraries(select512_experimental_tests
+        gtest
+        gtest_main
+        ${PIXIE_DIAGNOSTICS_LIBS})
+
     add_executable(dfuds_tree_tests
             src/tests/dfuds_tree_tests.cpp)
     target_include_directories(dfuds_tree_tests
@@ -262,6 +278,15 @@ if(PIXIE_BENCHMARKS)
     target_include_directories(excess_positions_benchmarks
         PUBLIC include)
     target_link_libraries(excess_positions_benchmarks
+        benchmark
+        benchmark_main
+        ${PIXIE_DIAGNOSTICS_LIBS})
+
+    add_executable(select512_benchmarks
+        src/benchmarks/select512_benchmarks.cpp)
+    target_include_directories(select512_benchmarks
+        PUBLIC include)
+    target_link_libraries(select512_benchmarks
         benchmark
         benchmark_main
         ${PIXIE_DIAGNOSTICS_LIBS})
