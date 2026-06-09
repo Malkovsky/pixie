@@ -1,7 +1,12 @@
 #include <gtest/gtest.h>
 #include <pixie/rmq.h>
+#include <pixie/rmq/experimental/cartesian_tree_rmm_btree_rmq.h>
 #include <pixie/rmq/experimental/node_euler_btree_rmq.h>
 #include <pixie/rmq/node_euler_btree_rmq.h>
+
+#ifdef SDSL_SUPPORT
+#include <pixie/rmq/sdsl_sct_rmq.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -133,6 +138,17 @@ struct CartesianTreeCase {
   static MaxRmq make_max(std::span<const int> values) { return MaxRmq(values); }
 };
 
+struct ExperimentalCartesianTreeRmMBTreeCase {
+  using Rmq = pixie::rmq::experimental::CartesianTreeRmMBTreeRmq<int>;
+  using MaxRmq =
+      pixie::rmq::experimental::CartesianTreeRmMBTreeRmq<int,
+                                                         std::greater<int>>;
+
+  static Rmq make(std::span<const int> values) { return Rmq(values); }
+
+  static MaxRmq make_max(std::span<const int> values) { return MaxRmq(values); }
+};
+
 struct NodeEulerBTreeCase {
   using Rmq = pixie::rmq::NodeEulerBTreeRmq<int>;
   using MaxRmq = pixie::rmq::NodeEulerBTreeRmq<int, std::greater<int>>;
@@ -195,6 +211,16 @@ struct BpPlusMinusOne128Case {
 struct BpPlusMinusOne64Case {
   using Rmq = pixie::rmq::BpPlusMinusOneRmq<std::size_t, 64>;
   static constexpr std::size_t kBlockSize = 64;
+
+  static Rmq make(std::span<const std::uint64_t> bits,
+                  std::size_t depth_count) {
+    return Rmq(bits, depth_count);
+  }
+};
+
+struct ExperimentalRmMBTreePlusMinusOneCase {
+  using Rmq = pixie::rmq::experimental::RmMBTreePlusMinusOneRmq<>;
+  static constexpr std::size_t kBlockSize = Rmq::kBlockSize;
 
   static Rmq make(std::span<const std::uint64_t> bits,
                   std::size_t depth_count) {
@@ -289,6 +315,7 @@ class ValueRmqContractTest : public ::testing::Test {};
 using ValueRmqCases = ::testing::Types<SparseTableCase,
                                        SegmentTreeCase,
                                        CartesianTreeCase,
+                                       ExperimentalCartesianTreeRmMBTreeCase,
                                        NodeEulerBTreeCase,
                                        ExperimentalNodeEulerBTreeCase,
                                        ExperimentalNodeEulerBTreeMaskLeafCase,
@@ -368,6 +395,39 @@ TYPED_TEST(ValueRmqContractTest, DifferentialRandom) {
     check_all_ranges(rmq, std::span<const int>(values), std::less<int>());
   }
 }
+
+#ifdef SDSL_SUPPORT
+TEST(RmqSdslSct, MatchesPixieMinContractForSignedValuesAndDuplicates) {
+  const std::vector<int> values = {4, -3, 7, -3, 0, -8, -8, 2, 2};
+  const pixie::rmq::SdslSctRmq<int> rmq{std::span<const int>(values)};
+
+  check_all_ranges(rmq, std::span<const int>(values), std::less<int>());
+  EXPECT_EQ(rmq.arg_min(0, values.size()), 5u);
+  EXPECT_EQ(rmq.arg_min(5, 7), 5u);
+  EXPECT_EQ(rmq.arg_min(6, 7), 6u);
+  EXPECT_EQ(rmq.arg_min(3, 3), pixie::rmq::SdslSctRmq<int>::npos);
+  EXPECT_EQ(rmq.arg_min(0, values.size() + 1),
+            pixie::rmq::SdslSctRmq<int>::npos);
+}
+
+TEST(RmqSdslSct, DifferentialRandom) {
+  std::mt19937_64 rng(123);
+  std::uniform_int_distribution<int> value_dist(-20, 20);
+  for (std::size_t size = 1; size <= 129; size += 16) {
+    std::vector<int> values(size);
+    std::generate(values.begin(), values.end(),
+                  [&] { return value_dist(rng); });
+
+    const pixie::rmq::SdslSctRmq<int> rmq{std::span<const int>(values)};
+    check_all_ranges(rmq, std::span<const int>(values), std::less<int>());
+  }
+
+  const std::vector<int> empty_values;
+  const pixie::rmq::SdslSctRmq<int> empty{std::span<const int>(empty_values)};
+  EXPECT_TRUE(empty.empty());
+  EXPECT_EQ(empty.arg_min(0, 0), pixie::rmq::SdslSctRmq<int>::npos);
+}
+#endif
 
 TEST(RmqNodeEulerBTree, BoundarySizesAroundLeavesAndInternalNodes) {
   using Rmq = pixie::rmq::NodeEulerBTreeRmq<int>;
@@ -1041,6 +1101,7 @@ class DepthRmqContractTest : public ::testing::Test {};
 
 using DepthRmqCases = ::testing::Types<BpPlusMinusOne128Case,
                                        BpPlusMinusOne64Case,
+                                       ExperimentalRmMBTreePlusMinusOneCase,
                                        OneIntervalBTreeCase,
                                        OneIntervalBTreeBoundaryRecordsCase>;
 TYPED_TEST_SUITE(DepthRmqContractTest, DepthRmqCases);

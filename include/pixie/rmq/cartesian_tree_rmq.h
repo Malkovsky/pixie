@@ -22,9 +22,27 @@ namespace pixie::rmq {
  * @brief General RMQ via the Ferrada-Navarro BP Cartesian-tree encoding.
  *
  * @details Builds the balanced-parentheses representation of the Cartesian-tree
- * RMQ information directly from the indexed values. Queries use select/rank on
- * BP positions plus a ±1 RMQ over BP prefix excess. The indexed values are not
- * owned and must outlive this object.
+ * RMQ information directly from the indexed values. The construction scans the
+ * input right-to-left with a monotone stack and emits the BP sequence used by
+ * the Ferrada-Navarro formulation. Queries map the half-open value interval to
+ * positions in that BP sequence with `select0`, run a ±1 RMQ over BP prefix
+ * excess, and map the winning BP position back to an array index with `rank0`.
+ *
+ * The indexed values are not owned and must outlive this object. `arg_min()`
+ * answers from the BP indexes alone; `range_min()` still reads the external
+ * value span after the position is known. Equal values are handled stably: the
+ * smaller original position remains the first minimum.
+ *
+ * This implementation is a practical BP Cartesian-tree backend, not a fully
+ * compressed 2n + o(n)-bit object: it stores the 2n BP bits plus the supporting
+ * `BitVector` rank/select index and a `BpPlusMinusOneRmq` over BP excess.
+ *
+ * References:
+ * - Johannes Fischer, "Optimal Succinctness for Range Minimum Queries",
+ *   LATIN 2010; arXiv:0812.2775.
+ * - Hector Ferrada and Gonzalo Navarro, "Improved Range Minimum Queries",
+ *   Data Compression Conference 2016; Journal of Discrete Algorithms 43
+ *   (2017), doi:10.1016/j.jda.2016.09.002.
  *
  * @tparam T Value type in the indexed array.
  * @tparam Compare Strict weak ordering used to choose minima.
