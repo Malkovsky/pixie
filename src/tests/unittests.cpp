@@ -2,11 +2,77 @@
 #include <pixie/bits.h>
 #include <pixie/bitvector.h>
 
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cstdint>
+#include <limits>
 #include <numeric>
 #include <random>
+#include <vector>
 
 using pixie::BitVector;
 using pixie::BitVectorInterleaved;
+
+namespace {
+
+using SelectBlock = std::array<uint64_t, 8>;
+
+uint64_t naive_select_512(const uint64_t* bits, uint64_t rank, bool value) {
+  uint64_t seen = 0;
+  for (uint64_t i = 0; i < 512; ++i) {
+    const bool bit = ((bits[i >> 6] >> (i & 63)) & 1ull) != 0;
+    if (bit == value) {
+      if (seen == rank) {
+        return i;
+      }
+      ++seen;
+    }
+  }
+  return 512;
+}
+
+uint64_t count_ones(const SelectBlock& block) {
+  uint64_t count = 0;
+  for (uint64_t word : block) {
+    count += std::popcount(word);
+  }
+  return count;
+}
+
+std::vector<uint64_t> sample_ranks(uint64_t count) {
+  std::vector<uint64_t> ranks;
+  if (count == 0) {
+    return ranks;
+  }
+
+  ranks.push_back(0);
+  ranks.push_back(count / 2);
+  ranks.push_back(count - 1);
+  std::sort(ranks.begin(), ranks.end());
+  ranks.erase(std::unique(ranks.begin(), ranks.end()), ranks.end());
+  return ranks;
+}
+
+void expect_select_samples(const SelectBlock& block,
+                           const char* label,
+                           int case_id) {
+  const uint64_t ones = count_ones(block);
+  const uint64_t zeros = 512 - ones;
+
+  for (uint64_t rank : sample_ranks(ones)) {
+    ASSERT_EQ(select_512(block.data(), rank),
+              naive_select_512(block.data(), rank, true))
+        << "select1 rank=" << rank << " case=" << case_id << " label=" << label;
+  }
+  for (uint64_t rank : sample_ranks(zeros)) {
+    ASSERT_EQ(select0_512(block.data(), rank),
+              naive_select_512(block.data(), rank, false))
+        << "select0 rank=" << rank << " case=" << case_id << " label=" << label;
+  }
+}
+
+}  // namespace
 
 TEST(Rank512, Ones) {
   std::array<uint64_t, 8> a{std::numeric_limits<uint64_t>::max(),
@@ -94,6 +160,60 @@ TEST(SelectZero512, Zeros) {
     auto p = select0_512(a.data(), i);
     EXPECT_EQ(p, i);
   }
+}
+
+TEST(Select512, Alternating) {
+  const SelectBlock block = {0xAAAAAAAAAAAAAAAAull, 0x5555555555555555ull,
+                             0xAAAAAAAAAAAAAAAAull, 0x5555555555555555ull,
+                             0xAAAAAAAAAAAAAAAAull, 0x5555555555555555ull,
+                             0xAAAAAAAAAAAAAAAAull, 0x5555555555555555ull};
+  for (uint64_t rank = 0; rank < 256; ++rank) {
+    ASSERT_EQ(select_512(block.data(), rank),
+              naive_select_512(block.data(), rank, true));
+    ASSERT_EQ(select0_512(block.data(), rank),
+              naive_select_512(block.data(), rank, false));
+  }
+}
+
+TEST(Select512, SingleBitPositions) {
+  for (int position = 0; position < 512; ++position) {
+    SelectBlock block = {0, 0, 0, 0, 0, 0, 0, 0};
+    block[position >> 6] = uint64_t{1} << (position & 63);
+
+    ASSERT_EQ(select_512(block.data(), 0), position);
+    expect_select_samples(block, "single_bit", position);
+  }
+}
+
+TEST(SelectZero512, SingleZeroPositions) {
+  for (int position = 0; position < 512; ++position) {
+    SelectBlock block = {std::numeric_limits<uint64_t>::max(),
+                         std::numeric_limits<uint64_t>::max(),
+                         std::numeric_limits<uint64_t>::max(),
+                         std::numeric_limits<uint64_t>::max(),
+                         std::numeric_limits<uint64_t>::max(),
+                         std::numeric_limits<uint64_t>::max(),
+                         std::numeric_limits<uint64_t>::max(),
+                         std::numeric_limits<uint64_t>::max()};
+    block[position >> 6] &= ~(uint64_t{1} << (position & 63));
+
+    ASSERT_EQ(select0_512(block.data(), 0), position);
+    expect_select_samples(block, "single_zero", position);
+  }
+}
+
+TEST(Select512, EmptyWordGaps) {
+  const SelectBlock block = {0, 0x8000000000000000ull,
+                             0, 0x0123456789ABCDEFull,
+                             0, std::numeric_limits<uint64_t>::max(),
+                             0, 0x0000000000000001ull};
+  const uint64_t ones = count_ones(block);
+  for (uint64_t rank = 0; rank < ones; ++rank) {
+    ASSERT_EQ(select_512(block.data(), rank),
+              naive_select_512(block.data(), rank, true))
+        << "rank=" << rank;
+  }
+  expect_select_samples(block, "empty_word_gaps", 0);
 }
 
 TEST(Select512, Random) {

@@ -12,27 +12,53 @@
 using pixie::experimental::select0_512_avx2_binary_lut;
 using pixie::experimental::select0_512_avx2_broadword_lut;
 using pixie::experimental::select0_512_avx2_byte_lut;
+using pixie::experimental::select0_512_avx2_no_pdep;
 using pixie::experimental::select0_512_avx2_pdep;
+using pixie::experimental::select0_512_avx2_vigna_broadword;
 using pixie::experimental::select0_512_avx512_binary_lut;
 using pixie::experimental::select0_512_avx512_broadword_lut;
 using pixie::experimental::select0_512_avx512_byte_lut;
+using pixie::experimental::select0_512_avx512_experimental_default;
+using pixie::experimental::select0_512_avx512_hybrid1_pdep;
+using pixie::experimental::select0_512_avx512_hybrid2_no_pdep;
+using pixie::experimental::select0_512_avx512_hybrid2_pdep;
+using pixie::experimental::select0_512_avx512_hybrid4_pdep;
+using pixie::experimental::select0_512_avx512_no_pdep;
 using pixie::experimental::select0_512_avx512_pdep;
+using pixie::experimental::select0_512_avx512_vigna_broadword;
+using pixie::experimental::select0_512_experimental_default;
 using pixie::experimental::select0_512_scalar_binary_lut;
 using pixie::experimental::select0_512_scalar_broadword_lut;
 using pixie::experimental::select0_512_scalar_byte_lut;
+using pixie::experimental::select0_512_scalar_experimental_default;
+using pixie::experimental::select0_512_scalar_no_pdep;
 using pixie::experimental::select0_512_scalar_pdep;
+using pixie::experimental::select0_512_scalar_vigna_broadword;
 using pixie::experimental::select_512_avx2_binary_lut;
 using pixie::experimental::select_512_avx2_broadword_lut;
 using pixie::experimental::select_512_avx2_byte_lut;
+using pixie::experimental::select_512_avx2_no_pdep;
 using pixie::experimental::select_512_avx2_pdep;
+using pixie::experimental::select_512_avx2_vigna_broadword;
 using pixie::experimental::select_512_avx512_binary_lut;
 using pixie::experimental::select_512_avx512_broadword_lut;
 using pixie::experimental::select_512_avx512_byte_lut;
+using pixie::experimental::select_512_avx512_experimental_default;
+using pixie::experimental::select_512_avx512_hybrid1_pdep;
+using pixie::experimental::select_512_avx512_hybrid2_no_pdep;
+using pixie::experimental::select_512_avx512_hybrid2_pdep;
+using pixie::experimental::select_512_avx512_hybrid4_pdep;
+using pixie::experimental::select_512_avx512_no_pdep;
 using pixie::experimental::select_512_avx512_pdep;
+using pixie::experimental::select_512_avx512_vigna_broadword;
+using pixie::experimental::select_512_experimental_default;
 using pixie::experimental::select_512_scalar_binary_lut;
 using pixie::experimental::select_512_scalar_broadword_lut;
 using pixie::experimental::select_512_scalar_byte_lut;
+using pixie::experimental::select_512_scalar_experimental_default;
+using pixie::experimental::select_512_scalar_no_pdep;
 using pixie::experimental::select_512_scalar_pdep;
+using pixie::experimental::select_512_scalar_vigna_broadword;
 
 namespace {
 
@@ -143,6 +169,15 @@ PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_ScalarBinaryLUT,
 PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_ScalarBroadwordLUT,
                                  select_512_scalar_broadword_lut,
                                  rank1);
+PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_ScalarVignaBroadword,
+                                 select_512_scalar_vigna_broadword,
+                                 rank1);
+PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_ScalarNoPDEP,
+                                 select_512_scalar_no_pdep,
+                                 rank1);
+PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_ScalarExperimentalDefault,
+                                 select_512_scalar_experimental_default,
+                                 rank1);
 PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_AVX2PDEP,
                                  select_512_avx2_pdep,
                                  rank1);
@@ -155,6 +190,12 @@ PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_AVX2BinaryLUT,
 PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_AVX2BroadwordLUT,
                                  select_512_avx2_broadword_lut,
                                  rank1);
+PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_AVX2VignaBroadword,
+                                 select_512_avx2_vigna_broadword,
+                                 rank1);
+PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_AVX2NoPDEP,
+                                 select_512_avx2_no_pdep,
+                                 rank1);
 PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_AVX512PDEP,
                                  select_512_avx512_pdep,
                                  rank1);
@@ -166,6 +207,30 @@ PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_AVX512BinaryLUT,
                                  rank1);
 PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_AVX512BroadwordLUT,
                                  select_512_avx512_broadword_lut,
+                                 rank1);
+PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_AVX512VignaBroadword,
+                                 select_512_avx512_vigna_broadword,
+                                 rank1);
+PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_AVX512NoPDEP,
+                                 select_512_avx512_no_pdep,
+                                 rank1);
+PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_AVX512Hybrid1PDEP,
+                                 select_512_avx512_hybrid1_pdep,
+                                 rank1);
+PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_AVX512Hybrid2PDEP,
+                                 select_512_avx512_hybrid2_pdep,
+                                 rank1);
+PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_AVX512Hybrid4PDEP,
+                                 select_512_avx512_hybrid4_pdep,
+                                 rank1);
+PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_AVX512Hybrid2NoPDEP,
+                                 select_512_avx512_hybrid2_no_pdep,
+                                 rank1);
+PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_AVX512ExperimentalDefault,
+                                 select_512_avx512_experimental_default,
+                                 rank1);
+PIXIE_DEFINE_SELECT512_BENCHMARK(Select512_ExperimentalDefault,
+                                 select_512_experimental_default,
                                  rank1);
 
 PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_Current, ::select0_512, rank0);
@@ -181,6 +246,15 @@ PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_ScalarBinaryLUT,
 PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_ScalarBroadwordLUT,
                                  select0_512_scalar_broadword_lut,
                                  rank0);
+PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_ScalarVignaBroadword,
+                                 select0_512_scalar_vigna_broadword,
+                                 rank0);
+PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_ScalarNoPDEP,
+                                 select0_512_scalar_no_pdep,
+                                 rank0);
+PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_ScalarExperimentalDefault,
+                                 select0_512_scalar_experimental_default,
+                                 rank0);
 PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_AVX2PDEP,
                                  select0_512_avx2_pdep,
                                  rank0);
@@ -193,6 +267,12 @@ PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_AVX2BinaryLUT,
 PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_AVX2BroadwordLUT,
                                  select0_512_avx2_broadword_lut,
                                  rank0);
+PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_AVX2VignaBroadword,
+                                 select0_512_avx2_vigna_broadword,
+                                 rank0);
+PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_AVX2NoPDEP,
+                                 select0_512_avx2_no_pdep,
+                                 rank0);
 PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_AVX512PDEP,
                                  select0_512_avx512_pdep,
                                  rank0);
@@ -204,6 +284,30 @@ PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_AVX512BinaryLUT,
                                  rank0);
 PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_AVX512BroadwordLUT,
                                  select0_512_avx512_broadword_lut,
+                                 rank0);
+PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_AVX512VignaBroadword,
+                                 select0_512_avx512_vigna_broadword,
+                                 rank0);
+PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_AVX512NoPDEP,
+                                 select0_512_avx512_no_pdep,
+                                 rank0);
+PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_AVX512Hybrid1PDEP,
+                                 select0_512_avx512_hybrid1_pdep,
+                                 rank0);
+PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_AVX512Hybrid2PDEP,
+                                 select0_512_avx512_hybrid2_pdep,
+                                 rank0);
+PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_AVX512Hybrid4PDEP,
+                                 select0_512_avx512_hybrid4_pdep,
+                                 rank0);
+PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_AVX512Hybrid2NoPDEP,
+                                 select0_512_avx512_hybrid2_no_pdep,
+                                 rank0);
+PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_AVX512ExperimentalDefault,
+                                 select0_512_avx512_experimental_default,
+                                 rank0);
+PIXIE_DEFINE_SELECT512_BENCHMARK(SelectZero512_ExperimentalDefault,
+                                 select0_512_experimental_default,
                                  rank0);
 
 #undef PIXIE_DEFINE_SELECT512_BENCHMARK

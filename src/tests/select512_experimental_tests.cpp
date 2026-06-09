@@ -13,31 +13,60 @@
 using pixie::experimental::select0_512_avx2_binary_lut;
 using pixie::experimental::select0_512_avx2_broadword_lut;
 using pixie::experimental::select0_512_avx2_byte_lut;
+using pixie::experimental::select0_512_avx2_no_pdep;
 using pixie::experimental::select0_512_avx2_pdep;
+using pixie::experimental::select0_512_avx2_vigna_broadword;
 using pixie::experimental::select0_512_avx512_binary_lut;
 using pixie::experimental::select0_512_avx512_broadword_lut;
 using pixie::experimental::select0_512_avx512_byte_lut;
+using pixie::experimental::select0_512_avx512_experimental_default;
+using pixie::experimental::select0_512_avx512_hybrid1_pdep;
+using pixie::experimental::select0_512_avx512_hybrid2_no_pdep;
+using pixie::experimental::select0_512_avx512_hybrid2_pdep;
+using pixie::experimental::select0_512_avx512_hybrid4_pdep;
+using pixie::experimental::select0_512_avx512_no_pdep;
 using pixie::experimental::select0_512_avx512_pdep;
+using pixie::experimental::select0_512_avx512_vigna_broadword;
+using pixie::experimental::select0_512_experimental_default;
 using pixie::experimental::select0_512_scalar_binary_lut;
 using pixie::experimental::select0_512_scalar_broadword_lut;
 using pixie::experimental::select0_512_scalar_byte_lut;
+using pixie::experimental::select0_512_scalar_experimental_default;
+using pixie::experimental::select0_512_scalar_no_pdep;
 using pixie::experimental::select0_512_scalar_pdep;
+using pixie::experimental::select0_512_scalar_vigna_broadword;
 using pixie::experimental::select_512_avx2_binary_lut;
 using pixie::experimental::select_512_avx2_broadword_lut;
 using pixie::experimental::select_512_avx2_byte_lut;
+using pixie::experimental::select_512_avx2_no_pdep;
 using pixie::experimental::select_512_avx2_pdep;
+using pixie::experimental::select_512_avx2_vigna_broadword;
 using pixie::experimental::select_512_avx512_binary_lut;
 using pixie::experimental::select_512_avx512_broadword_lut;
 using pixie::experimental::select_512_avx512_byte_lut;
+using pixie::experimental::select_512_avx512_experimental_default;
+using pixie::experimental::select_512_avx512_hybrid1_pdep;
+using pixie::experimental::select_512_avx512_hybrid2_no_pdep;
+using pixie::experimental::select_512_avx512_hybrid2_pdep;
+using pixie::experimental::select_512_avx512_hybrid4_pdep;
+using pixie::experimental::select_512_avx512_no_pdep;
 using pixie::experimental::select_512_avx512_pdep;
+using pixie::experimental::select_512_avx512_vigna_broadword;
+using pixie::experimental::select_512_experimental_default;
 using pixie::experimental::select_512_scalar_binary_lut;
 using pixie::experimental::select_512_scalar_broadword_lut;
 using pixie::experimental::select_512_scalar_byte_lut;
+using pixie::experimental::select_512_scalar_experimental_default;
+using pixie::experimental::select_512_scalar_no_pdep;
 using pixie::experimental::select_512_scalar_pdep;
+using pixie::experimental::select_512_scalar_vigna_broadword;
 using pixie::experimental::select_64_binary_lut;
 using pixie::experimental::select_64_broadword_lut;
 using pixie::experimental::select_64_byte_lut;
+using pixie::experimental::select_64_experimental_default;
+using pixie::experimental::select_64_no_pdep;
 using pixie::experimental::select_64_pdep;
+using pixie::experimental::select_64_vigna_broadword;
 
 namespace {
 
@@ -58,12 +87,20 @@ static const SelectVariant kVariants[] = {
      select0_512_scalar_binary_lut},
     {"scalar_broadword_lut", select_512_scalar_broadword_lut,
      select0_512_scalar_broadword_lut},
+    {"scalar_vigna_broadword", select_512_scalar_vigna_broadword,
+     select0_512_scalar_vigna_broadword},
+    {"scalar_no_pdep", select_512_scalar_no_pdep, select0_512_scalar_no_pdep},
+    {"scalar_experimental_default", select_512_scalar_experimental_default,
+     select0_512_scalar_experimental_default},
     {"avx2_pdep", select_512_avx2_pdep, select0_512_avx2_pdep},
     {"avx2_byte_lut", select_512_avx2_byte_lut, select0_512_avx2_byte_lut},
     {"avx2_binary_lut", select_512_avx2_binary_lut,
      select0_512_avx2_binary_lut},
     {"avx2_broadword_lut", select_512_avx2_broadword_lut,
      select0_512_avx2_broadword_lut},
+    {"avx2_vigna_broadword", select_512_avx2_vigna_broadword,
+     select0_512_avx2_vigna_broadword},
+    {"avx2_no_pdep", select_512_avx2_no_pdep, select0_512_avx2_no_pdep},
     {"avx512_pdep", select_512_avx512_pdep, select0_512_avx512_pdep},
     {"avx512_byte_lut", select_512_avx512_byte_lut,
      select0_512_avx512_byte_lut},
@@ -71,6 +108,21 @@ static const SelectVariant kVariants[] = {
      select0_512_avx512_binary_lut},
     {"avx512_broadword_lut", select_512_avx512_broadword_lut,
      select0_512_avx512_broadword_lut},
+    {"avx512_vigna_broadword", select_512_avx512_vigna_broadword,
+     select0_512_avx512_vigna_broadword},
+    {"avx512_no_pdep", select_512_avx512_no_pdep, select0_512_avx512_no_pdep},
+    {"avx512_hybrid1_pdep", select_512_avx512_hybrid1_pdep,
+     select0_512_avx512_hybrid1_pdep},
+    {"avx512_hybrid2_pdep", select_512_avx512_hybrid2_pdep,
+     select0_512_avx512_hybrid2_pdep},
+    {"avx512_hybrid4_pdep", select_512_avx512_hybrid4_pdep,
+     select0_512_avx512_hybrid4_pdep},
+    {"avx512_hybrid2_no_pdep", select_512_avx512_hybrid2_no_pdep,
+     select0_512_avx512_hybrid2_no_pdep},
+    {"avx512_experimental_default", select_512_avx512_experimental_default,
+     select0_512_avx512_experimental_default},
+    {"experimental_default", select_512_experimental_default,
+     select0_512_experimental_default},
 };
 
 uint64_t naive_select_512(const uint64_t* s, uint64_t rank, bool value) {
@@ -157,6 +209,14 @@ TEST(Select64Experimental, ByteLutMatchesPdep) {
           << "binary_lut case=" << t << " rank=" << rank;
       ASSERT_EQ(select_64_broadword_lut(word, rank), select_64_pdep(word, rank))
           << "broadword_lut case=" << t << " rank=" << rank;
+      ASSERT_EQ(select_64_vigna_broadword(word, rank),
+                select_64_pdep(word, rank))
+          << "vigna_broadword case=" << t << " rank=" << rank;
+      ASSERT_EQ(select_64_no_pdep(word, rank), select_64_pdep(word, rank))
+          << "no_pdep case=" << t << " rank=" << rank;
+      ASSERT_EQ(select_64_experimental_default(word, rank),
+                select_64_pdep(word, rank))
+          << "experimental_default case=" << t << " rank=" << rank;
     }
   }
 }

@@ -15,6 +15,13 @@ if(DISABLE_AVX512)
     message(STATUS "DISABLE_AVX512 is ON")
 endif()
 
+option(PIXIE_DISABLE_BMI2 "Disable BMI2 instructions" OFF)
+if(PIXIE_DISABLE_BMI2)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mno-bmi2")
+    add_compile_definitions(PIXIE_DISABLE_BMI2)
+    message(STATUS "PIXIE_DISABLE_BMI2 is ON")
+endif()
+
 option(ENABLE_ADDRESS_SANITIZER "Enable AddressSanitizer" OFF)
 if(ENABLE_ADDRESS_SANITIZER)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
