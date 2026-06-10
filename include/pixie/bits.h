@@ -2,7 +2,6 @@
 
 #include <immintrin.h>
 
-#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -46,6 +45,140 @@ static inline const __m256i mask_first_half = _mm256_setr_epi8(
 // clang-format on
 #endif
 
+/**
+ * @brief Test 16 int16 RmM btree child ranges for a node-local target.
+ * @details Each lane represents one child summary. The function checks whether
+ * @p target lies in `[prefix_before[i] + min_excess[i],
+ * prefix_before[i] + max_excess[i]]`. When @p include_zero_boundary is true,
+ * it also accepts `target == prefix_before[i]`, which represents the left
+ * boundary match used by backward search.
+ * @param prefix_before Exclusive prefix excess before each child.
+ * @param min_excess Per-child minimum excess relative to the child start.
+ * @param max_excess Per-child maximum excess relative to the child start.
+ * @param target Target excess relative to the start of the parent node.
+ * @param include_zero_boundary Whether to accept child left-boundary matches.
+ * @return Bit mask with bit `i` set when lane `i` can contain the target.
+ */
+static inline uint32_t rmm_btree_match_mask_i16x16(const int16_t* prefix_before,
+                                                   const int16_t* min_excess,
+                                                   const int16_t* max_excess,
+                                                   int16_t target,
+                                                   bool include_zero_boundary) {
+#ifdef PIXIE_AVX2_SUPPORT
+  const __m256i vtarget = _mm256_set1_epi16(target);
+  const __m256i vprefix =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(prefix_before));
+  const __m256i vmin =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(min_excess));
+  const __m256i vmax =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(max_excess));
+
+  const __m256i lower = _mm256_adds_epi16(vprefix, vmin);
+  const __m256i upper = _mm256_adds_epi16(vprefix, vmax);
+  const __m256i ge_lower = _mm256_or_si256(_mm256_cmpgt_epi16(vtarget, lower),
+                                           _mm256_cmpeq_epi16(vtarget, lower));
+  const __m256i le_upper = _mm256_or_si256(_mm256_cmpgt_epi16(upper, vtarget),
+                                           _mm256_cmpeq_epi16(upper, vtarget));
+  __m256i matched = _mm256_and_si256(ge_lower, le_upper);
+  if (include_zero_boundary) {
+    matched = _mm256_or_si256(matched, _mm256_cmpeq_epi16(vtarget, vprefix));
+  }
+
+  const uint32_t byte_mask =
+      static_cast<uint32_t>(_mm256_movemask_epi8(matched));
+  uint32_t result = 0;
+  for (size_t lane = 0; lane < 16; ++lane) {
+    const uint32_t lane_mask = 0x3u << (lane * 2);
+    if ((byte_mask & lane_mask) == lane_mask) {
+      result |= uint32_t{1} << lane;
+    }
+  }
+  return result;
+#else
+  uint32_t result = 0;
+  for (size_t lane = 0; lane < 16; ++lane) {
+    const int lower = prefix_before[lane] + min_excess[lane];
+    const int upper = prefix_before[lane] + max_excess[lane];
+    const bool found = (lower <= target && target <= upper) ||
+                       (include_zero_boundary && target == prefix_before[lane]);
+    if (found) {
+      result |= uint32_t{1} << lane;
+    }
+  }
+  return result;
+#endif
+}
+
+/**
+ * @brief Test 4 int64 RmM btree child ranges for a node-local target.
+ * @details Each lane represents one child summary. The function subtracts the
+ * child prefix from @p target to form a child-relative target, then checks it
+ * against the child's `[min_excess, max_excess]` range. When
+ * @p include_zero_boundary is true, it also accepts a zero relative target for
+ * the left-boundary match used by backward search.
+ * @param prefix_before Exclusive prefix excess before each child.
+ * @param min_excess Per-child minimum excess relative to the child start.
+ * @param max_excess Per-child maximum excess relative to the child start.
+ * @param target Target excess relative to the start of the parent node.
+ * @param include_zero_boundary Whether to accept child left-boundary matches.
+ * @return Bit mask with bit `i` set when lane `i` can contain the target.
+ */
+static inline uint32_t rmm_btree_match_mask_i64x4(const int64_t* prefix_before,
+                                                  const int64_t* min_excess,
+                                                  const int64_t* max_excess,
+                                                  int64_t target,
+                                                  bool include_zero_boundary) {
+#ifdef PIXIE_AVX2_SUPPORT
+  const __m256i vtarget = _mm256_set1_epi64x(target);
+  const __m256i vprefix =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(prefix_before));
+  const __m256i vmin =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(min_excess));
+  const __m256i vmax =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(max_excess));
+
+  const __m256i relative = _mm256_sub_epi64(vtarget, vprefix);
+  const __m256i ge_min = _mm256_or_si256(_mm256_cmpgt_epi64(relative, vmin),
+                                         _mm256_cmpeq_epi64(relative, vmin));
+  const __m256i le_max = _mm256_or_si256(_mm256_cmpgt_epi64(vmax, relative),
+                                         _mm256_cmpeq_epi64(vmax, relative));
+  __m256i matched = _mm256_and_si256(ge_min, le_max);
+  if (include_zero_boundary) {
+    matched = _mm256_or_si256(matched, _mm256_cmpeq_epi64(vtarget, vprefix));
+  }
+
+  const uint32_t byte_mask =
+      static_cast<uint32_t>(_mm256_movemask_epi8(matched));
+  uint32_t result = 0;
+  for (size_t lane = 0; lane < 4; ++lane) {
+    const uint32_t lane_mask = 0xffu << (lane * 8);
+    if ((byte_mask & lane_mask) == lane_mask) {
+      result |= uint32_t{1} << lane;
+    }
+  }
+  return result;
+#else
+  uint32_t result = 0;
+  for (size_t lane = 0; lane < 4; ++lane) {
+    const int64_t relative = target - prefix_before[lane];
+    const bool found =
+        (min_excess[lane] <= relative && relative <= max_excess[lane]) ||
+        (include_zero_boundary && relative == 0);
+    if (found) {
+      result |= uint32_t{1} << lane;
+    }
+  }
+  return result;
+#endif
+}
+
+/**
+ * @brief Return a mask with the lowest @p num bits set.
+ * @details Values greater than or equal to 64 produce an all-ones mask, which
+ * avoids undefined behavior from shifting by the word width.
+ * @param num Number of low bits to set.
+ * @return A 64-bit mask containing ones in positions `[0, num)`.
+ */
 static inline uint64_t first_bits_mask(size_t num) {
   return num >= 64 ? UINT64_MAX : ((1llu << num) - 1);
 }
@@ -413,7 +546,7 @@ static inline uint16_t lower_bound_delta_8x64(const uint64_t* x,
  * @brief Compare 32 16-bit numbers of @p x with @p y and
  * return the count of numbers where @p x is less then @p y
  */
-uint16_t lower_bound_32x16(const uint16_t* x, uint16_t y) {
+static inline uint16_t lower_bound_32x16(const uint16_t* x, uint16_t y) {
 #ifdef PIXIE_AVX512_SUPPORT
 
   auto y_32 = _mm512_set1_epi16(y);
@@ -468,10 +601,10 @@ uint16_t lower_bound_32x16(const uint16_t* x, uint16_t y) {
  * offsets.
  * @param delta_scalar Shared delta offset.
  */
-uint16_t lower_bound_delta_32x16(const uint16_t* x,
-                                 uint16_t y,
-                                 const uint16_t* delta_array,
-                                 uint16_t delta_scalar) {
+static inline uint16_t lower_bound_delta_32x16(const uint16_t* x,
+                                               uint16_t y,
+                                               const uint16_t* delta_array,
+                                               uint16_t delta_scalar) {
 #ifdef PIXIE_AVX512_SUPPORT
 
   const __m512i dlt_512 = _mm512_loadu_epi64(delta_array);
@@ -540,7 +673,7 @@ uint16_t lower_bound_delta_32x16(const uint16_t* x,
  * @param result Pointer to store the 64 resulting 4-bit popcount values (packed
  * in 32 bytes)
  */
-void popcount_64x4(const uint8_t* x, uint8_t* result) {
+static inline void popcount_64x4(const uint8_t* x, uint8_t* result) {
 #ifdef PIXIE_AVX512_SUPPORT
   __m256i data = _mm256_loadu_si256((__m256i const*)x);
 
@@ -587,7 +720,7 @@ void popcount_64x4(const uint8_t* x, uint8_t* result) {
  * @param result Pointer to store the 64 resulting 4-bit popcount values
  * (packed in 32 bytes)
  */
-void popcount_32x8(const uint8_t* x, uint8_t* result) {
+static inline void popcount_32x8(const uint8_t* x, uint8_t* result) {
 #ifdef PIXIE_AVX512_SUPPORT
   // Load 64 4-bit integers (256 bits total)
   __m256i data = _mm256_loadu_si256((__m256i const*)x);
@@ -621,6 +754,305 @@ void popcount_32x8(const uint8_t* x, uint8_t* result) {
 #endif
 }
 
+#ifdef PIXIE_AVX2_SUPPORT
+// clang-format off
+// LUT for total excess change across a 4-bit nibble
+static inline const __m256i excess_lut_delta = _mm256_setr_epi8(
+    -4, -2, -2,  0,
+    -2,  0,  0,  2,
+    -2,  0,  0,  2,
+     0,  2,  2,  4,
+    -4, -2, -2,  0,
+    -2,  0,  0,  2,
+    -2,  0,  0,  2,
+     0,  2,  2,  4);
+
+// LUTs for target relative excess positions
+static inline const __m256i excess_lut_pos0 = _mm256_setr_epi8(
+    -1,  1, -1,  1,
+    -1,  1, -1,  1,
+    -1,  1, -1,  1,
+    -1,  1, -1,  1,
+    -1,  1, -1,  1,
+    -1,  1, -1,  1,
+    -1,  1, -1,  1,
+    -1,  1, -1,  1);
+
+static inline const __m256i excess_lut_pos1 = _mm256_setr_epi8(
+    -2,  0,  0,  2,
+    -2,  0,  0,  2,
+    -2,  0,  0,  2,
+    -2,  0,  0,  2,
+    -2,  0,  0,  2,
+    -2,  0,  0,  2,
+    -2,  0,  0,  2,
+    -2,  0,  0,  2);
+
+static inline const __m256i excess_lut_pos2 = _mm256_setr_epi8(
+    -3, -1, -1,  1,
+    -1,  1,  1,  3,
+    -3, -1, -1,  1,
+    -1,  1,  1,  3,
+    -3, -1, -1,  1,
+    -1,  1,  1,  3,
+    -3, -1, -1,  1,
+    -1,  1,  1,  3);
+static inline const __m256i excess_lut_pack_multiplier =
+    _mm256_set1_epi16(0x1001);
+static inline const __m256i excess_lut_bit0 = _mm256_set1_epi8(1);
+static inline const __m256i excess_lut_bit1 = _mm256_set1_epi8(2);
+static inline const __m256i excess_lut_bit2 = _mm256_set1_epi8(4);
+static inline const __m256i excess_lut_bit3 = _mm256_set1_epi8(8);
+static inline const __m128i excess_lut_nibble_mask = _mm_set1_epi8(0x0F);
+// clang-format on
+#endif
+
+/**
+ * @brief Find every prefix whose excess equals target_x in a 128-bit bitstring.
+ *
+ * Excess(i) = 2*popcount(bits[0..i-1]) - i   for i in [0..128].
+ * Bit (w*64 + b) of out[w] is set iff excess(w*64 + b + 1) == target_x.
+ * I.e. out bit index b corresponds to prefix length (b+1).
+ *
+ * @param s 2 little-endian uint64_t words (bit 0 of s[0] is the first bit).
+ * @param target_x Target excess value in [-128, 128]; outside this range out is
+ * zeroed.
+ * @param out 2 uint64_t words receiving the result bitmask.
+ * @return Total excess change across the 128-bit bitstring.
+ */
+static inline int excess_positions_128(const uint64_t* s,
+                                       int target_x,
+                                       uint64_t* out) noexcept {
+  out[0] = out[1] = 0;
+  const int block_delta = 2 * (std::popcount(s[0]) + std::popcount(s[1])) - 128;
+
+  if (target_x < -128 || target_x > 128) {
+    return block_delta;
+  }
+
+#ifdef PIXIE_AVX2_SUPPORT
+  const __m256i vdelta = excess_lut_delta;
+  const __m256i vpos0 = excess_lut_pos0;
+  const __m256i vpos1 = excess_lut_pos1;
+  const __m256i vpos2 = excess_lut_pos2;
+  const __m256i vmult = excess_lut_pack_multiplier;
+  const __m256i vbit0 = excess_lut_bit0;
+  const __m256i vbit1 = excess_lut_bit1;
+  const __m256i vbit2 = excess_lut_bit2;
+  const __m256i vbit3 = excess_lut_bit3;
+  const __m128i vnibble_mask = excess_lut_nibble_mask;
+
+  const int d = 2 * target_x - block_delta;
+  if (d < -128 || d > 128) {
+    return block_delta;
+  }
+
+  __m128i word_vec = _mm_loadu_si128((const __m128i*)s);
+  __m128i lo_nibbles = _mm_and_si128(word_vec, vnibble_mask);
+  __m128i hi_nibbles = _mm_and_si128(_mm_srli_epi16(word_vec, 4), vnibble_mask);
+
+  __m128i unpack_lo = _mm_unpacklo_epi8(lo_nibbles, hi_nibbles);
+  __m128i unpack_hi = _mm_unpackhi_epi8(lo_nibbles, hi_nibbles);
+
+  __m256i nibbles =
+      _mm256_inserti128_si256(_mm256_castsi128_si256(unpack_lo), unpack_hi, 1);
+
+  __m256i ps = _mm256_shuffle_epi8(vdelta, nibbles);
+  ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 1));
+  ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 2));
+  ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 4));
+  ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 8));
+
+  __m128i ps_lo = _mm256_castsi256_si128(ps);
+  __m128i ps_hi = _mm256_extracti128_si256(ps, 1);
+  __m128i carry = _mm_set1_epi8((int8_t)_mm_extract_epi8(ps_lo, 15));
+  ps_hi = _mm_add_epi8(ps_hi, carry);
+  ps = _mm256_inserti128_si256(_mm256_castsi128_si256(ps_lo), ps_hi, 1);
+
+  __m256i b = _mm256_permute2x128_si256(ps, ps, 0x08);
+  __m256i excl_ps = _mm256_alignr_epi8(ps, b, 15);
+
+  __m256i vtgt = _mm256_set1_epi8((int8_t)target_x);
+  __m256i t = _mm256_sub_epi8(vtgt, excl_ps);
+
+  __m256i cmp0 = _mm256_cmpeq_epi8(_mm256_shuffle_epi8(vpos0, nibbles), t);
+  __m256i cmp1 = _mm256_cmpeq_epi8(_mm256_shuffle_epi8(vpos1, nibbles), t);
+  __m256i cmp2 = _mm256_cmpeq_epi8(_mm256_shuffle_epi8(vpos2, nibbles), t);
+  __m256i cmp3 = _mm256_cmpeq_epi8(ps, vtgt);
+
+  __m256i bit0 = _mm256_and_si256(cmp0, vbit0);
+  __m256i bit1 = _mm256_and_si256(cmp1, vbit1);
+  __m256i bit2 = _mm256_and_si256(cmp2, vbit2);
+  __m256i bit3 = _mm256_and_si256(cmp3, vbit3);
+
+  __m256i total_match =
+      _mm256_or_si256(_mm256_or_si256(bit0, bit1), _mm256_or_si256(bit2, bit3));
+
+  __m256i res = _mm256_maddubs_epi16(total_match, vmult);
+  __m128i res_lo = _mm256_castsi256_si128(res);
+  __m128i res_hi = _mm256_extracti128_si256(res, 1);
+  __m128i packed = _mm_packus_epi16(res_lo, res_hi);
+
+  _mm_storeu_si128((__m128i*)out, packed);
+#else
+  int cur = 0;
+  for (size_t i = 0; i < 128; ++i) {
+    const uint64_t w = s[i >> 6];
+    const int bit = int((w >> (i & 63)) & 1ull);
+    cur += bit ? +1 : -1;
+    if (cur == target_x) {
+      out[i >> 6] |= (uint64_t{1} << (i & 63));
+    }
+  }
+#endif
+  return block_delta;
+}
+
+/**
+ * @brief Prefix excess in a 128-bit bitstring.
+ *
+ * Excess(i) = 2*popcount(bits[0..i-1]) - i for i in [0, 128].
+ *
+ * @param s 2 little-endian uint64_t words (bit 0 of s[0] is the first bit).
+ * @param end_offset Exclusive prefix boundary, clamped to [0, 128].
+ * @return Prefix excess on [0, end_offset).
+ */
+static inline int prefix_excess_128(const uint64_t* s,
+                                    size_t end_offset) noexcept {
+  end_offset = end_offset > 128 ? 128 : end_offset;
+  if (end_offset == 0) {
+    return 0;
+  }
+  if (end_offset <= 64) {
+    const int ones = static_cast<int>(std::popcount(
+        s[0] & first_bits_mask(static_cast<uint32_t>(end_offset))));
+    return 2 * ones - static_cast<int>(end_offset);
+  }
+  const int ones = static_cast<int>(
+      std::popcount(s[0]) +
+      std::popcount(s[1] &
+                    first_bits_mask(static_cast<uint32_t>(end_offset - 64))));
+  return 2 * ones - static_cast<int>(end_offset);
+}
+
+/**
+ * @brief Find the first prefix reaching target_x in a 128-bit bitstring.
+ *
+ * Searches the prefix excess values represented by excess_positions_128 and
+ * ignores matches before start_offset. The returned offset is the bit position
+ * whose inclusive prefix reaches target_x.
+ *
+ * @param s 2 little-endian uint64_t words (bit 0 of s[0] is the first bit).
+ * @param target_x Target excess value relative to the beginning of this
+ * 128-bit bitstring.
+ * @param start_offset First bit position eligible for a match, in [0, 128].
+ * @param block_excess Optional output for the total excess change across the
+ * 128-bit bitstring.
+ * @return Matching bit offset in [0, 127], or 128 if no match exists.
+ */
+static inline size_t forward_search_128(const uint64_t* s,
+                                        int target_x,
+                                        size_t start_offset,
+                                        int* block_excess = nullptr) noexcept {
+  uint64_t out[2];
+  const int delta = excess_positions_128(s, target_x, out);
+  if (block_excess != nullptr) {
+    *block_excess = delta;
+  }
+  if (start_offset >= 128) {
+    return 128;
+  }
+
+  const size_t first_word = start_offset >> 6;
+  const size_t first_bit = start_offset & 63;
+  for (size_t word = first_word; word < 2; ++word) {
+    uint64_t mask = out[word];
+    if (word == first_word && first_bit != 0) {
+      mask &= ~first_bits_mask(first_bit);
+    }
+    if (mask != 0) {
+      return word * 64 + std::countr_zero(mask);
+    }
+  }
+  return 128;
+}
+
+/**
+ * @brief Find the last prefix before end_offset reaching target_x in a 128-bit
+ * bitstring.
+ *
+ * Searches prefix boundary positions strictly before end_offset, matching the
+ * RmM backward-search convention. A return value of 0 is a valid match for the
+ * chunk-start boundary when target_x is zero.
+ *
+ * @param s 2 little-endian uint64_t words (bit 0 of s[0] is the first bit).
+ * @param target_x Target excess value relative to the beginning of this
+ * 128-bit bitstring.
+ * @param end_offset Exclusive right boundary for the search, in [0, 128].
+ * @param block_excess Optional output for the total excess change across the
+ * 128-bit bitstring.
+ * @return Matching prefix boundary offset in [0, 127], or 128 if no match
+ * exists.
+ */
+static inline size_t backward_search_128(const uint64_t* s,
+                                         int target_x,
+                                         size_t end_offset,
+                                         int* block_excess = nullptr) noexcept {
+  uint64_t out[2];
+  const int delta = excess_positions_128(s, target_x, out);
+  if (block_excess != nullptr) {
+    *block_excess = delta;
+  }
+  if (end_offset == 0) {
+    return 128;
+  }
+
+  const size_t max_prefix_length = end_offset - 1;
+  if (max_prefix_length > 0) {
+    const size_t last_bit_index = max_prefix_length - 1;
+    size_t word = last_bit_index >> 6;
+    const size_t bit_in_word = last_bit_index & 63;
+    uint64_t mask = out[word] & first_bits_mask(bit_in_word + 1);
+    while (true) {
+      if (mask != 0) {
+        return word * 64 + (63 - std::countl_zero(mask)) + 1;
+      }
+      if (word == 0) {
+        break;
+      }
+      --word;
+      mask = out[word];
+    }
+  }
+  return target_x == 0 ? 0 : 128;
+}
+
+/**
+ * @brief Find every prefix whose excess equals target_x in a 512-bit bitstring.
+ *
+ * Excess(i) = 2*popcount(bits[0..i-1]) - i   for i in [0..512].
+ * Bit (w*64 + b) of out[w] is set iff excess(w*64 + b + 1) == target_x.
+ * I.e. out bit index b corresponds to prefix length (b+1).
+ *
+ * @param s 8 little-endian uint64_t words (bit 0 of s[0] is the first bit).
+ * @param target_x Target excess value in [-512, 512]; outside this range out is
+ * zeroed.
+ * @param out 8 uint64_t words receiving the result bitmask.
+ */
+static inline void excess_positions_512(const uint64_t* s,
+                                        int target_x,
+                                        uint64_t* out) noexcept {
+  if (target_x < -512 || target_x > 512) {
+    out[0] = out[1] = out[2] = out[3] = 0;
+    out[4] = out[5] = out[6] = out[7] = 0;
+    return;
+  }
+
+  for (int k = 0; k < 4; ++k) {
+    target_x -= excess_positions_128(s + 2 * k, target_x, out + 2 * k);
+  }
+}
+
 /**
  * @brief Calculates 32 bit ranks of every 8th bit, result is stored as 32
 
@@ -632,7 +1064,7 @@ void popcount_32x8(const uint8_t* x, uint8_t* result) {
  * @param
  * result Pointer to store the resulting 32 8-bit integers
  */
-void rank_32x8(const uint8_t* x, uint8_t* result) {
+static inline void rank_32x8(const uint8_t* x, uint8_t* result) {
 #ifdef PIXIE_AVX512_SUPPORT
   // Step 1: Calculate popcount of each byte
   popcount_32x8(x, result);

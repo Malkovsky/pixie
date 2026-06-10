@@ -1,6 +1,7 @@
 #pragma once
 #include <immintrin.h>
 #include <pixie/bits.h>
+#include <pixie/rmm_base.h>
 
 #include <algorithm>
 #include <array>
@@ -9,7 +10,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <string>
+#include <span>
+#include <stdexcept>
 #include <vector>
 
 namespace pixie {
@@ -29,12 +31,14 @@ namespace pixie {
  *  - mincount / minselect (count/selection of minima)
  *  - close / open / enclose (BP navigation)
  *
- *  The bitvector is LSB-first inside each 64-bit word.
+ *  The bitvector is LSB-first inside each 64-bit word. RmMTree stores a
+ *  non-owning view of those words; callers must keep the backing storage alive
+ *  and immutable for the lifetime of the tree.
  */
-class RmMTree {
+class RmMTree : public RmMBase<RmMTree> {
   // ------------ bitvector ------------
-  std::vector<std::uint64_t> bits;  // LSB-first
-  size_t num_bits = 0;              // number of bits
+  std::span<const std::uint64_t> bits;  // LSB-first, externally owned
+  size_t num_bits = 0;                  // number of bits
 
   // ------------ blocking ------------
   size_t block_bits = 64;  // block size (bits), leaf covers <= block_bits bits
@@ -93,36 +97,26 @@ class RmMTree {
   RmMTree() = default;
 
   /**
-   * @brief Build from a '0'/'1' string.
-   * @param bit_string Bitstring (characters '0' and '1').
-   * @param leaf_block_bits Desired leaf size (power of two, 0 = auto).
-   * @param max_overhead Max allowed overhead fraction (<0 to disable
-   * constraint).
-   * @details Block size priority: (1) respect @p max_overhead, (2) explicit @p
-   * leaf_block_bits, (3) set to ceil_pow2(log2(num_bits)).
-   */
-  explicit RmMTree(const std::string& bit_string,
-                   const size_t& leaf_block_bits /*0=auto*/ = 0,
-                   const float& max_overhead /*<0=off*/ = -1.0) {
-    build_from_string(bit_string, leaf_block_bits, max_overhead);
-  }
-
-  /**
-   * @brief Build from 64-bit words (LSB-first).
-   * @param words Array of words holding bits LSB-first.
+   * @brief Build from a non-owning view of 64-bit words (LSB-first).
+   * @param words Non-owning view of words holding bits LSB-first.
    * @param bit_count Number of valid bits.
    * @param leaf_block_bits Desired leaf size (power of two, 0 = auto).
    * @param max_overhead Max allowed overhead fraction (<0 to disable
    * constraint).
    * @details Block size priority: (1) respect @p max_overhead, (2) explicit @p
    * leaf_block_bits, (3) set to ceil_pow2(log2(num_bits)).
+   *
+   * The caller must keep @p words alive and immutable for the lifetime of this
+   * tree.
    */
-  explicit RmMTree(const std::vector<std::uint64_t>& words,
+  explicit RmMTree(std::span<const std::uint64_t> words,
                    size_t bit_count,
                    const size_t& leaf_block_bits /*0=auto*/ = 0,
                    const float& max_overhead /*<0=off*/ = -1.0) {
     build_from_words(words, bit_count, leaf_block_bits, max_overhead);
   }
+
+  size_t size_impl() const { return num_bits; }
 
   // --------- queries: rank/select/excess ----------
 
@@ -130,7 +124,7 @@ class RmMTree {
    * @brief Number of ones in prefix [0, @p end_position).
    * @details Returns 0 for @p end_position == 0.
    */
-  size_t rank1(const size_t& end_position) const {
+  size_t rank1_impl(const size_t& end_position) const {
     if (end_position == 0) {
       return 0;
     }
@@ -153,17 +147,17 @@ class RmMTree {
 
   /**
    * @brief Number of zeros in prefix [0, @p end_position).
-   * @details Computed as @p end_position - rank1(@p end_position).
+   * @details Computed as @p end_position - rank1_impl(@p end_position).
    */
-  size_t rank0(const size_t& end_position) const {
-    return end_position - rank1(end_position);
+  size_t rank0_impl(const size_t& end_position) const {
+    return end_position - rank1_impl(end_position);
   }
 
   /**
    * @brief 1-based select of the @p target_one_rank-th one.
    * @return Position of @p target_one_rank-th '1' or npos if not found.
    */
-  size_t select1(size_t target_one_rank) const {
+  size_t select1_impl(size_t target_one_rank) const {
     if (target_one_rank == 0 || num_bits == 0) {
       return npos;
     }
@@ -194,7 +188,7 @@ class RmMTree {
    * @brief 1-based select of the @p target_zero_rank-th zero.
    * @return Position of @p target_zero_rank-th '0' or npos if not found.
    */
-  size_t select0(size_t target_zero_rank) const {
+  size_t select0_impl(size_t target_zero_rank) const {
     if (target_zero_rank == 0 || num_bits == 0) {
       return npos;
     }
@@ -229,7 +223,7 @@ class RmMTree {
    * @details Counts p where bit[p]==1 and bit[p+1]==0 with p+1<@p
    * end_position.
    */
-  size_t rank10(const size_t& end_position) const {
+  size_t rank10_impl(const size_t& end_position) const {
     if (end_position <= 1) {
       return 0;
     }
@@ -262,7 +256,7 @@ class RmMTree {
    * @brief 1-based select of the @p target_pattern_rank-th "10" start.
    * @return Position p such that bits[p..p+1]=="10", or npos if not found.
    */
-  size_t select10(size_t target_pattern_rank) const {
+  size_t select10_impl(size_t target_pattern_rank) const {
     if (target_pattern_rank == 0 || num_bits == 0) {
       return npos;
     }
@@ -317,17 +311,17 @@ class RmMTree {
   /**
    * @brief Prefix excess on [0, @p end_position): +1 for '1', −1 for '0'.
    */
-  inline int excess(const size_t& end_position) const {
-    return int64_t(rank1(end_position)) * 2 - int64_t(end_position);
+  inline int excess_impl(const size_t& end_position) const {
+    return int64_t(rank1_impl(end_position)) * 2 - int64_t(end_position);
   }
 
   /**
    * @brief Forward search: first position p ≥ @p start_position where
-   * excess(p) = excess(@p start_position) + @p delta.
+   * excess_impl(p) = excess_impl(@p start_position) + @p delta.
    * @details Scans remainder of current leaf, then descends using precomputed
    * bounds. Returns npos if no such position exists.
    */
-  size_t fwdsearch(const size_t& start_position, const int& delta) const {
+  size_t fwdsearch_impl(const size_t& start_position, const int& delta) const {
     if (start_position >= num_bits) {
       return npos;
     }
@@ -387,11 +381,11 @@ class RmMTree {
 
   /**
    * @brief Backward search: last position p ≤ @p start_position where
-   * excess(p) = excess(@p start_position) + @p delta.
+   * excess_impl(p) = excess_impl(@p start_position) + @p delta.
    * @details Scans inside the leaf to the left, then climbs to examine left
    * siblings. Returns npos if no such position exists.
    */
-  size_t bwdsearch(const size_t& start_position, const int& delta) const {
+  size_t bwdsearch_impl(const size_t& start_position, const int& delta) const {
     if (start_position > num_bits || start_position == 0) {
       return npos;
     }
@@ -399,15 +393,16 @@ class RmMTree {
     // 1) scan inside the block
     const size_t leaf_block_index = block_of(start_position - 1);
     const size_t block_begin = leaf_block_index * block_bits;
-    int leaf_delta = 0;  // excess(start_position) - excess(block_begin)
+    int leaf_delta =
+        0;  // excess_impl(start_position) - excess_impl(block_begin)
     const size_t leaf_result = leaf_bwd_bp_simd(
         leaf_block_index, block_begin, start_position, delta, leaf_delta);
     if (leaf_result != npos) {
       return leaf_result;
     }
 
-    // need = target - excess(block_begin) = excess(start_position) + delta -
-    // excess(block_begin) = leaf_delta + delta
+    // need = target - excess_impl(block_begin) = excess_impl(start_position) +
+    // delta - excess_impl(block_begin) = leaf_delta + delta
     int remaining_delta = leaf_delta + delta;
     size_t node_index = leaf_index_of(block_begin);
     size_t segment_base = block_begin;
@@ -455,8 +450,8 @@ class RmMTree {
    * (inclusive).
    * @return Position of first occurrence of minimum, or npos on invalid range.
    */
-  size_t range_min_query_pos(const size_t& range_begin,
-                             const size_t& range_end) const {
+  size_t range_min_query_pos_impl(const size_t& range_begin,
+                                  const size_t& range_end) const {
     if (range_begin > range_end || range_end >= num_bits) {
       return npos;
     }
@@ -555,18 +550,18 @@ class RmMTree {
    * @brief Value of the minimum prefix excess on [@p range_begin, @p range_end]
    * relative to @p range_begin.
    * @details Equivalent to min_{t in [@p range_begin..@p range_end]}
-   * (excess(t+1) - excess(@p range_begin)).
+   * (excess_impl(t+1) - excess_impl(@p range_begin)).
    */
-  int range_min_query_val(const size_t& range_begin,
-                          const size_t& range_end) const {
+  int range_min_query_val_impl(const size_t& range_begin,
+                               const size_t& range_end) const {
     if (range_begin > range_end || range_end >= num_bits) {
       return 0;
     }
-    size_t min_position = range_min_query_pos(range_begin, range_end);
+    size_t min_position = range_min_query_pos_impl(range_begin, range_end);
     if (min_position == npos) {
       return 0;
     }
-    return excess(min_position + 1) - excess(range_begin);
+    return excess_impl(min_position + 1) - excess_impl(range_begin);
   }
 
   /**
@@ -575,8 +570,8 @@ class RmMTree {
    * (inclusive).
    * @return Position of first occurrence of maximum, or npos on invalid range.
    */
-  size_t range_max_query_pos(const size_t& range_begin,
-                             const size_t& range_end) const {
+  size_t range_max_query_pos_impl(const size_t& range_begin,
+                                  const size_t& range_end) const {
     if (range_begin > range_end || range_end >= num_bits) {
       return npos;
     }
@@ -675,23 +670,24 @@ class RmMTree {
    * @brief Value of the maximum prefix excess on [@p range_begin, @p
    * range_end] relative to @p range_begin.
    */
-  int range_max_query_val(const size_t& range_begin,
-                          const size_t& range_end) const {
+  int range_max_query_val_impl(const size_t& range_begin,
+                               const size_t& range_end) const {
     if (range_begin > range_end || range_end >= num_bits) {
       return 0;
     }
-    size_t max_position = range_max_query_pos(range_begin, range_end);
+    size_t max_position = range_max_query_pos_impl(range_begin, range_end);
     if (max_position == npos) {
       return 0;
     }
-    return excess(max_position + 1) - excess(range_begin);
+    return excess_impl(max_position + 1) - excess_impl(range_begin);
   }
 
   /**
    * @brief How many times the minimum prefix excess occurs on [@p range_begin,
    * @p range_end].
    */
-  size_t mincount(const size_t& range_begin, const size_t& range_end) const {
+  size_t mincount_impl(const size_t& range_begin,
+                       const size_t& range_end) const {
     if (range_begin > range_end || range_end >= num_bits) {
       return 0;
     }
@@ -774,9 +770,9 @@ class RmMTree {
    * @return Position or npos if @p target_min_rank exceeds the number of
    * minima.
    */
-  size_t minselect(const size_t& range_begin,
-                   const size_t& range_end,
-                   size_t target_min_rank) const {
+  size_t minselect_impl(const size_t& range_begin,
+                        const size_t& range_end,
+                        size_t target_min_rank) const {
     if (range_begin > range_end || range_end >= num_bits ||
         target_min_rank == 0) {
       return npos;
@@ -930,40 +926,55 @@ class RmMTree {
   // ----- parentheses navigation (BP) -----
 
   /**
-   * @brief close(@p open_position): matching ')' for '(' at @p open_position.
+   * @brief close_impl(@p open_position): matching ')' for '(' at @p
+   * open_position.
    * @return Position of matching ')', or npos.
    */
-  inline size_t close(const size_t& open_position) const {
+  inline size_t close_impl(const size_t& open_position) const {
     if (open_position >= num_bits) {
       return npos;
     }
-    return fwdsearch(open_position, -1);
+    if (!bit(open_position)) {
+      return open_position;
+    }
+    return fwdsearch_impl(open_position, 0);
   }
 
   /**
-   * @brief open(@p close_position): matching '(' for ')' at @p close_position.
+   * @brief open_impl(@p close_position): matching '(' for ')' at @p
+   * close_position.
    * @return Position of matching '(', or npos.
    */
-  inline size_t open(const size_t& close_position) const {
-    // bwdsearch allows i in [1..num_bits]
-    if (close_position == 0 || close_position > num_bits) {
+  inline size_t open_impl(const size_t& close_position) const {
+    if (close_position >= num_bits) {
       return npos;
     }
-    const size_t result = bwdsearch(close_position, 0);
-    return (result == npos ? npos : result + 1);
+    if (bit(close_position)) {
+      return close_position;
+    }
+    return bwdsearch_impl(close_position + 1, 0);
   }
 
   /**
-   * @brief enclose(@p position): opening '(' that strictly encloses @p
+   * @brief enclose_impl(@p position): opening '(' that strictly encloses @p
    * position.
    * @return Position of enclosing '(', or npos.
    */
-  inline size_t enclose(const size_t& position) const {
-    if (position == 0 || position > num_bits) {
+  inline size_t enclose_impl(const size_t& position) const {
+    if (position >= num_bits) {
       return npos;
     }
-    const size_t result = bwdsearch(position, -2);
-    return (result == npos ? npos : result + 1);
+    if (!bit(position)) {
+      return open_impl(position);
+    }
+    return bwdsearch_impl(position + 1, -2);
+  }
+
+  /**
+   * @brief Read bit at position @p position (LSB-first across words).
+   */
+  inline int bit(const size_t& position) const noexcept {
+    return (bits[position >> 6] >> (position & 63)) & 1u;
   }
 
  private:
@@ -2179,54 +2190,23 @@ class RmMTree {
   }
 
   /**
-   * @brief Build internal structures from a 0/1 string.
-   * @param leaf_block_bits Desired leaf size (0 = auto).
-   * @param max_overhead Overhead cap (<0 = no cap).
-   */
-  void build_from_string(const std::string& bit_string_input,
-                         const size_t& leaf_block_bits = 0,
-                         const float& max_overhead = -1.0) {
-    num_bits = bit_string_input.size();
-    bits.assign((num_bits + 63) / 64, 0);
-    for (size_t i = 0; i < num_bits; ++i) {
-      if (bit_string_input[i] == '1') {
-        set1(i);
-      }
-    }
-    build(leaf_block_bits, max_overhead);
-  }
-
-  /**
    * @brief Build internal structures from 64-bit words.
    * @param words Words with LSB-first bits.
    * @param bit_count Number of valid bits.
    * @param leaf_block_bits Desired leaf size (0 = auto).
    * @param max_overhead Overhead cap (<0 = no cap).
    */
-  void build_from_words(const std::vector<std::uint64_t>& words,
+  void build_from_words(std::span<const std::uint64_t> words,
                         const size_t& bit_count,
                         const size_t& leaf_block_bits = 0,
                         const float& max_overhead = -1.0) {
     bits = words;
     num_bits = bit_count;
     if (bits.size() * 64 < num_bits) {
-      bits.resize((num_bits + 63) / 64);
+      throw std::invalid_argument(
+          "RmMTree bit_count exceeds the provided word span");
     }
     build(leaf_block_bits, max_overhead);
-  }
-
-  /**
-   * @brief Read bit at position @p position (LSB-first across words).
-   */
-  inline int bit(const size_t& position) const noexcept {
-    return (bits[position >> 6] >> (position & 63)) & 1u;
-  }
-
-  /**
-   * @brief Set bit at position @p position to 1.
-   */
-  inline void set1(const size_t& position) noexcept {
-    bits[position >> 6] |= (std::uint64_t(1) << (position & 63));
   }
 
   /**
@@ -2494,8 +2474,8 @@ class RmMTree {
       return npos;
     }
 
-    // leaf_delta = excess(start_position) - excess(leaf_block_begin)
-    //            = 2*rank1([leaf_begin, start)) - (start - leaf_begin)
+    // leaf_delta = excess_impl(start_position) - excess_impl(leaf_block_begin)
+    //            = 2*rank1_impl([leaf_begin, start)) - (start - leaf_begin)
     const int len = int(start_position - leaf_block_begin);
     const int ones = int(rank1_in_block(leaf_block_begin, start_position));
     leaf_delta = ones * 2 - len;

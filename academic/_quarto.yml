@@ -1,0 +1,23 @@
+project:
+  type: book
+
+book:
+  title: "Pixie: Academic Materials"
+  chapters:
+    - index.qmd
+    - part: "Reports"
+      chapters:
+        - reports/index.qmd
+    - part: "Presentations"
+      chapters:
+        - presentations/index.qmd
+    - part: "Notes"
+      chapters:
+        - notes/index.qmd
+
+bibliography: bibliography/references.bib
+
+format:
+  html:
+    theme: cosmo
+    toc: true

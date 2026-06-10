@@ -11,7 +11,14 @@
 #include <random>
 #include <vector>
 
+/**
+ * In literature bitvector length is usually measured up to 2^35, for simplicity
+ * were measure up to 2^30 where the time is mainly dominated by the main memory
+ * accesses.
+ */
+
 constexpr size_t kBenchmarkRandomCopies = 8;
+constexpr double warmup_time = 0.5;
 
 #ifdef _WIN32
 #include <windows.h>
@@ -89,10 +96,6 @@ static void BM_RankNonInterleaved(benchmark::State& state) {
   auto bits_as_words = bits.As64BitInts();
   PrepareRandomBits50pFill(bits_as_words);
   pixie::BitVector bv(bits_as_words, n);
-#ifdef PIXIE_DIAGNOSTICS
-  bv.memory_report();
-#endif
-
   std::mt19937_64 rng(42);
   for (auto _ : state) {
     uint64_t pos = rng() % n;
@@ -292,90 +295,103 @@ static void BM_SelectZeroNonInterleaved87p5PercentFill(
 BENCHMARK(BM_RankInterleaved)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(8, 1ull << 34)
+    ->Range(1ull << 10, 1ull << 30)
     ->Iterations(10000000)
+    ->MinWarmUpTime(warmup_time)
     ->Repetitions(10);
 
 BENCHMARK(BM_RankNonInterleaved)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(8, 1ull << 34)
+    ->Range(1ull << 10, 1ull << 30)
     ->Iterations(10000000)
+    ->MinWarmUpTime(warmup_time)
     ->Repetitions(10);
 
 BENCHMARK(BM_RankZeroNonInterleaved)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(8, 1ull << 34)
+    ->Range(1ull << 10, 1ull << 30)
     ->Iterations(10000000)
+    ->MinWarmUpTime(warmup_time)
     ->Repetitions(10);
 
 BENCHMARK(BM_SelectNonInterleaved)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(8, 1ull << 34)
+    ->Range(1ull << 10, 1ull << 30)
     ->Iterations(5000000)
+    ->MinWarmUpTime(warmup_time)
     ->Repetitions(10);
 
 BENCHMARK(BM_SelectZeroNonInterleaved)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(8, 1ull << 34)
+    ->Range(1ull << 10, 1ull << 30)
     ->Iterations(5000000)
+    ->MinWarmUpTime(warmup_time)
     ->Repetitions(10);
 
 BENCHMARK(BM_RankNonInterleaved12p5PercentFill)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(8, 1ull << 34)
+    ->Range(1ull << 10, 1ull << 30)
     ->Iterations(10000000)
+    ->MinWarmUpTime(warmup_time)
     ->Repetitions(10);
 
 BENCHMARK(BM_RankZeroNonInterleaved12p5PercentFill)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(8, 1ull << 34)
+    ->Range(1ull << 10, 1ull << 30)
     ->Iterations(10000000)
+    ->MinWarmUpTime(warmup_time)
     ->Repetitions(10);
 
 BENCHMARK(BM_SelectNonInterleaved12p5PercentFill)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(8, 1ull << 34)
+    ->Range(1ull << 10, 1ull << 30)
     ->Iterations(5000000)
+    ->MinWarmUpTime(warmup_time)
     ->Repetitions(10);
 
 BENCHMARK(BM_SelectZeroNonInterleaved12p5PercentFill)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(8, 1ull << 34)
+    ->Range(1ull << 10, 1ull << 30)
     ->Iterations(5000000)
+    ->MinWarmUpTime(warmup_time)
     ->Repetitions(10);
 
 BENCHMARK(BM_RankNonInterleaved87p5PercentFill)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(8, 1ull << 34)
+    ->Range(1ull << 10, 1ull << 30)
     ->Iterations(10000000)
+    ->MinWarmUpTime(warmup_time)
     ->Repetitions(10);
 
 BENCHMARK(BM_RankZeroNonInterleaved87p5PercentFill)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(8, 1ull << 34)
+    ->Range(1ull << 10, 1ull << 30)
     ->Iterations(10000000)
+    ->MinWarmUpTime(warmup_time)
     ->Repetitions(10);
 
 BENCHMARK(BM_SelectNonInterleaved87p5PercentFill)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(8, 1ull << 34)
+    ->Range(1ull << 10, 1ull << 30)
     ->Iterations(5000000)
+    ->MinWarmUpTime(warmup_time)
     ->Repetitions(10);
 
 BENCHMARK(BM_SelectZeroNonInterleaved87p5PercentFill)
     ->ArgNames({"n"})
     ->RangeMultiplier(4)
-    ->Range(8, 1ull << 34)
+    ->Range(1ull << 10, 1ull << 30)
     ->Iterations(5000000)
+    ->MinWarmUpTime(warmup_time)
     ->Repetitions(10);

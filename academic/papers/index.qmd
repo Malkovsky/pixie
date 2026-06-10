@@ -1,0 +1,7 @@
+# Papers
+
+Draft and published research papers related to the Pixie succinct data structures library.
+
+## Current Papers
+
+- [Sample Paper](sample-paper/paper.qmd) -- Template for new papers

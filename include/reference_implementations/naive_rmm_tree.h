@@ -260,20 +260,27 @@ class NaiveRmM {
     if (i >= num_bits) {
       return npos;
     }
-    return fwdsearch(i, -1);
+    if (!bits[i]) {
+      return i;
+    }
+    return fwdsearch(i, 0);
   }
   std::size_t open(std::size_t i) const {
-    if (i == 0 || i > num_bits) {
+    if (i >= num_bits) {
       return npos;
     }
-    auto r = bwdsearch(i, 0);
-    return (r == npos ? npos : r + 1);
+    if (bits[i]) {
+      return i;
+    }
+    return bwdsearch(i + 1, 0);
   }
   std::size_t enclose(std::size_t i) const {
-    if (i == 0 || i > num_bits) {
+    if (i >= num_bits) {
       return npos;
     }
-    auto r = bwdsearch(i, -2);
-    return (r == npos ? npos : r + 1);
+    if (!bits[i]) {
+      return open(i);
+    }
+    return bwdsearch(i + 1, -2);
   }
 };

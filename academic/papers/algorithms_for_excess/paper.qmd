@@ -1,0 +1,101 @@
+---
+title: "SIMD algorithms for excess queries"
+subtitle: "A Subtitle If Needed"
+
+author:
+  - name: Nikolay Malkovsky
+    email: malkovskynv@gmail.com
+    orcid: "0000-0001-8571-6857"
+    affiliation:
+      name: University Name
+      city: City
+      country: Country
+
+acm-metadata:
+  final: true
+  acmart-options: "sigconf"
+  copyright-year: 2026
+  acm-year: 2026
+  copyright: acmcopyright
+  doi: XXXXXXX.XXXXXXX
+  conference-acronym: "Conference '26"
+  conference-name: Conference Name
+  conference-date: June 03--05, 2026
+  conference-location: City, Country
+  price: "0.00"
+  isbn: 978-X-XXXX-XXXX-X/XX/XX
+  keywords:
+    - succinct data structures
+    - wavelet trees
+    - rank/select
+  abstract: |
+    This is a template paper for the Pixie succinct data structures library.
+    Replace this abstract with your actual abstract.
+
+date: today
+bibliography: references.bib
+format:
+  acm-pdf:
+    keep-tex: true
+    biblio-style: ACM-Reference-Format
+---
+
+# Introduction
+
+Introduce the problem and motivate the need for compact data structures.
+Cite foundational work such as @jacobson1989 and @navarro2016.
+
+# Preliminaries
+
+Define notation and background concepts.
+
+## Rank and Select
+
+Given a bitvector $B[1..n]$ with $m$ ones:
+
+- $\text{rank}_1(B, i)$ returns the number of ones in $B[1..i]$
+- $\text{select}_1(B, j)$ returns the position of the $j$-th one
+
+Both operations can be supported in $O(1)$ time with $o(n)$ bits of
+extra space [@clark1996].
+
+## Wavelet Trees
+
+The wavelet tree [@grossi2003] is a compact data structure that supports
+rank, select, and access on sequences over arbitrary alphabets in
+$O(\log \sigma)$ time, where $\sigma$ is the alphabet size.
+
+# Method
+
+Describe your approach here.
+
+## Construction Algorithm
+
+```cpp
+// Example: include a code snippet
+void build(const std::span<const uint64_t>& data) {
+    // Implementation details
+}
+```
+
+## Space Analysis
+
+The total space usage is $n + o(n)$ bits, where $n$ is the input size.
+
+# Experiments
+
+## Setup
+
+Describe experimental methodology.
+
+## Results
+
+# Conclusion
+
+Summarize contributions and future work.
+
+# Acknowledgments
+
+Acknowledgments go here.
+
+# References

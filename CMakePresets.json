@@ -7,44 +7,74 @@
     },
     "configurePresets": [
         {
+            "name": "base",
+            "hidden": true,
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            }
+        },
+        {
             "name": "debug",
             "displayName": "Debug",
+            "inherits": "base",
             "binaryDir": "${sourceDir}/build/debug",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug"
+                "CMAKE_BUILD_TYPE": "Debug",
+                "PIXIE_BENCHMARKS": "OFF",
+                "PIXIE_TESTS": "ON"
             }
         },
         {
             "name": "release",
             "displayName": "Release",
+            "inherits": "base",
             "binaryDir": "${sourceDir}/build/release",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release"
+                "CMAKE_BUILD_TYPE": "Release",
+                "PIXIE_BENCHMARKS": "OFF",
+                "PIXIE_TESTS": "ON"
             }
         },
         {
             "name": "benchmarks-all",
             "displayName": "Benchmarks",
+            "inherits": "base",
             "binaryDir": "${sourceDir}/build/release",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
+                "PIXIE_TESTS": "OFF",
                 "PIXIE_BENCHMARKS": "ON"
+            }
+        },
+        {
+            "name": "benchmarks-third-party",
+            "displayName": "Benchmarks with third-party backends",
+            "inherits": "base",
+            "binaryDir": "${sourceDir}/build/release-third-party",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "PIXIE_BENCHMARKS": "ON",
+                "PIXIE_TESTS": "OFF",
+                "PIXIE_THIRD_PARTY_BACKENDS": "ON"
             }
         },
         {
             "name": "benchmarks-diagnostic",
             "displayName": "Benchmarks diagnostic build",
+            "inherits": "base",
             "binaryDir": "${sourceDir}/build/release-with-deb",
             "cacheVariables": {
                 "BENCHMARK_ENABLE_LIBPFM": "ON",
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo",
                 "PIXIE_DIAGNOSTICS": "ON",
+                "PIXIE_TESTS": "OFF",
                 "PIXIE_BENCHMARKS": "ON"
             }
         },
         {
             "name": "docs",
             "displayName": "Docs",
+            "inherits": "base",
             "binaryDir": "${sourceDir}/build/docs",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
@@ -54,6 +84,7 @@
         {
             "name": "coverage",
             "displayName": "Coverage",
+            "inherits": "base",
             "binaryDir": "${sourceDir}/build/coverage",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
@@ -64,6 +95,7 @@
         {
             "name": "asan",
             "displayName": "AddressSanitizer",
+            "inherits": "base",
             "binaryDir": "${sourceDir}/build/asan",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
@@ -76,17 +108,68 @@
         {
             "name": "debug",
             "displayName": "Build Debug",
-            "configurePreset": "debug"
+            "configurePreset": "debug",
+            "targets": [
+                "unittests",
+                "benchmark_tests",
+                "test_rmm",
+                "louds_tree_tests",
+                "dfuds_tree_tests",
+                "excess_positions_tests"
+            ]
         },
         {
             "name": "release",
             "displayName": "Build Release",
-            "configurePreset": "release"
+            "configurePreset": "release",
+            "targets": [
+                "unittests",
+                "benchmark_tests",
+                "test_rmm",
+                "louds_tree_tests",
+                "dfuds_tree_tests",
+                "excess_positions_tests"
+            ]
+        },
+        {
+            "name": "benchmarks-all",
+            "displayName": "Build Benchmarks",
+            "configurePreset": "benchmarks-all",
+            "targets": [
+                "benchmarks",
+                "bench_rmm",
+                "louds_tree_benchmarks",
+                "dfuds_tree_benchmarks",
+                "alignment_comparison",
+                "excess_positions_benchmarks"
+            ]
+        },
+        {
+            "name": "benchmarks-third-party",
+            "displayName": "Build Benchmarks with third-party backends",
+            "configurePreset": "benchmarks-third-party",
+            "targets": [
+                "benchmarks",
+                "bench_rmm",
+                "bench_rmm_sdsl",
+                "louds_tree_benchmarks",
+                "dfuds_tree_benchmarks",
+                "alignment_comparison",
+                "excess_positions_benchmarks"
+            ]
         },
         {
             "name": "benchmarks-diagnostic",
             "displayName": "Benchmarks diagnostic",
-            "configurePreset": "benchmarks-diagnostic"
+            "configurePreset": "benchmarks-diagnostic",
+            "targets": [
+                "benchmarks",
+                "bench_rmm",
+                "louds_tree_benchmarks",
+                "dfuds_tree_benchmarks",
+                "alignment_comparison",
+                "excess_positions_benchmarks"
+            ]
         },
         {
             "name": "docs",
@@ -99,12 +182,28 @@
         {
             "name": "coverage",
             "displayName": "Build Coverage",
-            "configurePreset": "coverage"
+            "configurePreset": "coverage",
+            "targets": [
+                "unittests",
+                "benchmark_tests",
+                "test_rmm",
+                "louds_tree_tests",
+                "dfuds_tree_tests",
+                "excess_positions_tests"
+            ]
         },
         {
             "name": "asan",
             "displayName": "Build AddressSanitizer",
-            "configurePreset": "asan"
+            "configurePreset": "asan",
+            "targets": [
+                "unittests",
+                "benchmark_tests",
+                "test_rmm",
+                "louds_tree_tests",
+                "dfuds_tree_tests",
+                "excess_positions_tests"
+            ]
         }
     ]
 }

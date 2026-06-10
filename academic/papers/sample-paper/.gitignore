@@ -1,0 +1,11 @@
+/.quarto/
+**/*.quarto_ipynb
+paper.pdf
+paper.tex
+paper.aux
+paper.bbl
+paper.blg
+paper.log
+paper.out
+paper.run.xml
+paper_files/

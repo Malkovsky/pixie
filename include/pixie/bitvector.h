@@ -78,17 +78,91 @@ class BitVector {
   AlignedStorage basic_block_rank_;  // 16-bit local prefix sums
   AlignedStorage select1_samples_;   // 64-bit global positions
   AlignedStorage select0_samples_;   // 64-bit global positions
-  const size_t num_bits_;
-  const size_t padded_size_;
-  size_t max_rank_;
+  size_t num_bits_{};
+  size_t padded_size_{};
+  size_t max_rank_{};
 
   std::span<const uint64_t> bits_;
+
+  size_t logical_word_count() const {
+    return (num_bits_ + kWordSize - 1) / kWordSize;
+  }
+
+  size_t logical_word_bits(size_t word_index) const {
+    const size_t begin = word_index * kWordSize;
+    if (begin >= num_bits_) {
+      return 0;
+    }
+    return std::min(kWordSize, num_bits_ - begin);
+  }
+
+  uint64_t logical_word(size_t word_index) const {
+    if (word_index >= bits_.size()) {
+      return 0;
+    }
+    const size_t bits = logical_word_bits(word_index);
+    if (bits == 0) {
+      return 0;
+    }
+    if (bits == kWordSize) {
+      return bits_[word_index];
+    }
+    return bits_[word_index] & first_bits_mask(bits);
+  }
+
+  uint64_t rank_in_basic_block(size_t basic_block, size_t offset) const {
+    if (offset == 0) {
+      return 0;
+    }
+    const size_t first_word = basic_block * kWordsPerBlock;
+    if (first_word + kWordsPerBlock <= bits_.size()) {
+      return rank_512(&bits_[first_word], offset);
+    }
+
+    uint64_t result = 0;
+    size_t word_index = first_word;
+    while (offset >= kWordSize) {
+      result += std::popcount(logical_word(word_index));
+      offset -= kWordSize;
+      ++word_index;
+    }
+    if (offset != 0) {
+      result +=
+          std::popcount(logical_word(word_index) & first_bits_mask(offset));
+    }
+    return result;
+  }
+
+  uint64_t select_in_words(size_t first_word, size_t rank, bool value) const {
+    const size_t first_bit = first_word * kWordSize;
+    if (first_bit + kBasicBlockSize <= num_bits_ &&
+        first_word + kWordsPerBlock <= bits_.size()) {
+      return value ? first_bit + select_512(&bits_[first_word], rank - 1)
+                   : first_bit + select0_512(&bits_[first_word], rank - 1);
+    }
+
+    for (size_t word_index = first_word; word_index < logical_word_count();
+         ++word_index) {
+      const uint64_t word = logical_word(word_index);
+      const uint64_t candidates =
+          value ? word
+                : (~word & first_bits_mask(logical_word_bits(word_index)));
+      const size_t count = std::popcount(candidates);
+      if (rank > count) {
+        rank -= count;
+        continue;
+      }
+      return word_index * kWordSize + select_64(candidates, rank - 1);
+    }
+    return num_bits_;
+  }
 
   /**
    * @brief Precompute rank for fast queries.
    */
   void build_rank() {
-    size_t num_superblocks = 8 + (padded_size_ - 1) / kSuperBlockSize;
+    size_t num_superblocks =
+        8 + (padded_size_ == 0 ? 0 : (padded_size_ - 1) / kSuperBlockSize);
     // Add more blocks to ease SIMD processing
     // num_basicblocks to fully cover superblock, i.e. 128
     // This reduces branching in select
@@ -101,7 +175,7 @@ class BitVector {
     auto basic_block_rank = basic_block_rank_.As16BitInts();
 
     uint64_t super_block_sum = 0;
-    uint16_t basic_block_sum = 0;
+    uint64_t basic_block_sum = 0;
 
     for (size_t i = 0; i / kBasicBlockSize < basic_block_rank.size();
          i += kWordSize) {
@@ -111,10 +185,11 @@ class BitVector {
         basic_block_sum = 0;
       }
       if (i % kBasicBlockSize == 0) {
-        basic_block_rank[i / kBasicBlockSize] = basic_block_sum;
+        basic_block_rank[i / kBasicBlockSize] =
+            static_cast<uint16_t>(basic_block_sum);
       }
-      if (i / kWordSize < bits_.size()) {
-        basic_block_sum += std::popcount(bits_[i / kWordSize]);
+      if (i / kWordSize < logical_word_count()) {
+        basic_block_sum += std::popcount(logical_word(i / kWordSize));
       }
     }
     max_rank_ = super_block_sum + basic_block_sum;
@@ -145,18 +220,21 @@ class BitVector {
 
     size_t num_zeros = 1, num_ones = 1;
 
-    for (size_t i = 0; i < bits_.size(); ++i) {
-      auto ones = std::popcount(bits_[i]);
-      auto zeros = 64 - ones;
+    for (size_t i = 0; i < logical_word_count(); ++i) {
+      const uint64_t word = logical_word(i);
+      const auto ones = std::popcount(word);
+      const auto zeros = logical_word_bits(i) - ones;
       if (rank + ones >= milestone) {
-        auto pos = select_64(bits_[i], milestone - rank - 1);
+        auto pos = select_64(word, milestone - rank - 1);
         // TODO: try including global rank into select samples to save
         //       a cache miss on global rank scan
         select1_samples[num_ones++] = (64 * i + pos) / kSuperBlockSize;
         milestone += kSelectSampleFrequency;
       }
       if (rank0 + zeros >= milestone0) {
-        auto pos = select_64(~bits_[i], milestone0 - rank0 - 1);
+        const uint64_t zero_word =
+            ~word & first_bits_mask(logical_word_bits(i));
+        auto pos = select_64(zero_word, milestone0 - rank0 - 1);
         select0_samples[num_zeros++] = (64 * i + pos) / kSuperBlockSize;
         milestone0 += kSelectSampleFrequency;
       }
@@ -385,6 +463,12 @@ class BitVector {
   }
 
  public:
+  BitVector() = default;
+  BitVector(const BitVector&) = default;
+  BitVector(BitVector&&) noexcept = default;
+  BitVector& operator=(const BitVector&) = default;
+  BitVector& operator=(BitVector&&) noexcept = default;
+
 #ifdef PIXIE_DIAGNOSTICS
   struct DiagnosticsBytes {
     size_t source_bitvector_bytes = 0;
@@ -472,7 +556,7 @@ class BitVector {
    * @return Number of 1s in [0, pos).
    */
   uint64_t rank(size_t pos) const {
-    if (pos >= bits_.size() * kWordSize) [[unlikely]] {
+    if (pos >= num_bits_) [[unlikely]] {
       return max_rank_;
     }
 
@@ -484,8 +568,7 @@ class BitVector {
     // Precomputed rank
     uint64_t result = super_block_rank[s_block] + basic_block_rank[b_block];
     // Basic block tail
-    result += rank_512(&bits_[b_block * kWordsPerBlock],
-                       pos - (b_block * kBasicBlockSize));
+    result += rank_in_basic_block(b_block, pos - (b_block * kBasicBlockSize));
     return result;
   }
 
@@ -496,8 +579,8 @@ class BitVector {
    * @return Number of 0s in [0, pos).
    */
   uint64_t rank0(size_t pos) const {
-    if (pos >= bits_.size() * kWordSize) [[unlikely]] {
-      return bits_.size() * kWordSize - max_rank_;
+    if (pos >= num_bits_) [[unlikely]] {
+      return num_bits_ - max_rank_;
     }
     return pos - rank(pos);
   }
@@ -523,18 +606,7 @@ class BitVector {
     rank -= super_block_rank[s_block];
     auto pos = find_basicblock_is(rank, s_block);
     rank -= basic_block_rank[pos];
-    pos *= kWordsPerBlock;
-
-    // Final search
-    if (pos + kWordsPerBlock - 1 < kWordsPerBlock) [[unlikely]] {
-      size_t ones = std::popcount(bits_[pos]);
-      while (pos < bits_.size() && ones < rank) {
-        rank -= ones;
-        ones = std::popcount(bits_[++pos]);
-      }
-      return kWordSize * pos + select_64(bits_[pos], rank - 1);
-    }
-    return kWordSize * pos + select_512(&bits_[pos], rank - 1);
+    return select_in_words(pos * kWordsPerBlock, rank, true);
   }
 
   /**
@@ -559,18 +631,7 @@ class BitVector {
     auto pos = find_basicblock_is_zeros(rank0, s_block);
     auto pos_in_super_block = pos & (kBlocksPerSuperBlock - 1);
     rank0 -= kBasicBlockSize * pos_in_super_block - basic_block_rank[pos];
-    pos *= kWordsPerBlock;
-
-    // Final search
-    if (pos + kWordsPerBlock - 1 < kWordsPerBlock) [[unlikely]] {
-      size_t zeros = std::popcount(~bits_[pos]);
-      while (pos < bits_.size() && zeros < rank0) {
-        rank0 -= zeros;
-        zeros = std::popcount(~bits_[++pos]);
-      }
-      return kWordSize * pos + select_64(~bits_[pos], rank0 - 1);
-    }
-    return kWordSize * pos + select0_512(&bits_[pos], rank0 - 1);
+    return select_in_words(pos * kWordsPerBlock, rank0, false);
   }
 
   /**

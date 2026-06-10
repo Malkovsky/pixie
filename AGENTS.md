@@ -8,7 +8,15 @@ Current implementations include BitVector, RmM Tree, and LOUDS Tree. Planned add
 
 ## Skills
 
-./.kilo/skills/ contains several project-specific skills, use them when appropriate
+Shared C++ agent skills live in `agentic/cpp/skills`. Pixie-specific examples
+for those skills live in `agentic/local/cpp/skills`.
+Shared C++ agent commands live in `agentic/cpp/commands`. Pixie-specific
+commands or command notes live in `agentic/local/cpp/commands`.
+
+When a task matches a skill, read:
+
+1. `agentic/cpp/skills/<skill>/SKILL.md`
+2. `agentic/local/cpp/skills/<skill>/EXAMPLES.md`, if present
 
 ## Architecture
 
@@ -19,6 +27,7 @@ Current implementations include BitVector, RmM Tree, and LOUDS Tree. Planned add
 - **`src/*_tests.cpp`**: Unit tests (Google Test)
 - **`src/*_benchmarks.cpp`**: Performance benchmarks (Google Benchmark)
 - **`src/docs/`**: Doxygen configuration
+- **`academic/`**: Academic materials — papers, presentations, reports, bibliography, notes
 
 ### Key Design Decisions
 
