@@ -2,6 +2,7 @@
 #include <pixie/bits.h>
 #include <pixie/rmq.h>
 #include <pixie/rmq/experimental/cartesian_tree_rmm_btree_rmq.h>
+#include <pixie/rmq/experimental/cartesian_tree_segment_btree_xl_rmq.h>
 #include <pixie/rmq/experimental/node_euler_btree_rmq.h>
 #include <pixie/rmq/node_euler_btree_rmq.h>
 
@@ -1148,6 +1149,13 @@ void register_benchmarks() {
             std::int64_t, std::less<std::int64_t>, Index>>)
         ->Arg(static_cast<std::int64_t>(size))
         ->Unit(benchmark::kMillisecond);
+    benchmark::RegisterBenchmark(
+        "rmq_build_cartesian_tree_segment_btree_xl",
+        &run_value_rmq_build<
+            pixie::rmq::experimental::CartesianTreeSegmentBTreeXLRmq<
+                std::int64_t, std::less<std::int64_t>, Index>>)
+        ->Arg(static_cast<std::int64_t>(size))
+        ->Unit(benchmark::kMillisecond);
 #ifdef PIXIE_THIRD_PARTY_BENCHMARKS
     benchmark::RegisterBenchmark(
         "rmq_build_sdsl_sct",
@@ -1255,6 +1263,13 @@ void register_benchmarks() {
       benchmark::RegisterBenchmark(
           "rmq_cartesian_tree_rmm_btree",
           &run_queries<pixie::rmq::experimental::CartesianTreeRmMBTreeRmq<
+              std::int64_t, std::less<std::int64_t>, Index>>)
+          ->Args({static_cast<std::int64_t>(size),
+                  static_cast<std::int64_t>(width)})
+          ->Unit(benchmark::kNanosecond);
+      benchmark::RegisterBenchmark(
+          "rmq_cartesian_tree_segment_btree_xl",
+          &run_queries<pixie::rmq::experimental::CartesianTreeSegmentBTreeXLRmq<
               std::int64_t, std::less<std::int64_t>, Index>>)
           ->Args({static_cast<std::int64_t>(size),
                   static_cast<std::int64_t>(width)})

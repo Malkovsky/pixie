@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <pixie/rmq.h>
 #include <pixie/rmq/experimental/cartesian_tree_rmm_btree_rmq.h>
+#include <pixie/rmq/experimental/cartesian_tree_segment_btree_xl_rmq.h>
 #include <pixie/rmq/experimental/node_euler_btree_rmq.h>
 #include <pixie/rmq/node_euler_btree_rmq.h>
 
@@ -85,6 +86,23 @@ bool packed_bit(std::span<const std::uint64_t> words, std::size_t position) {
   return ((words[position >> 6] >> (position & 63)) & 1u) != 0;
 }
 
+std::size_t naive_select0(std::span<const std::uint64_t> words,
+                          std::size_t bit_count,
+                          std::size_t rank) {
+  if (rank == 0) {
+    return pixie::rmq::BpPlusMinusOneRmq<>::npos;
+  }
+  for (std::size_t position = 0; position < bit_count; ++position) {
+    if (!packed_bit(words, position)) {
+      --rank;
+      if (rank == 0) {
+        return position;
+      }
+    }
+  }
+  return pixie::rmq::BpPlusMinusOneRmq<>::npos;
+}
+
 template <class Rmq>
 void expect_valid_bp_encoding(const Rmq& rmq, std::size_t value_count) {
   const std::size_t bit_count = rmq.bp_bit_count();
@@ -143,6 +161,16 @@ struct ExperimentalCartesianTreeRmMBTreeCase {
   using MaxRmq =
       pixie::rmq::experimental::CartesianTreeRmMBTreeRmq<int,
                                                          std::greater<int>>;
+
+  static Rmq make(std::span<const int> values) { return Rmq(values); }
+
+  static MaxRmq make_max(std::span<const int> values) { return MaxRmq(values); }
+};
+
+struct ExperimentalCartesianTreeSegmentBTreeXLCase {
+  using Rmq = pixie::rmq::experimental::CartesianTreeSegmentBTreeXLRmq<int>;
+  using MaxRmq = pixie::rmq::experimental::
+      CartesianTreeSegmentBTreeXLRmq<int, std::greater<int>>;
 
   static Rmq make(std::span<const int> values) { return Rmq(values); }
 
@@ -221,6 +249,16 @@ struct BpPlusMinusOne64Case {
 struct ExperimentalRmMBTreePlusMinusOneCase {
   using Rmq = pixie::rmq::experimental::RmMBTreePlusMinusOneRmq<>;
   static constexpr std::size_t kBlockSize = Rmq::kBlockSize;
+
+  static Rmq make(std::span<const std::uint64_t> bits,
+                  std::size_t depth_count) {
+    return Rmq(bits, depth_count);
+  }
+};
+
+struct ExperimentalSegmentBTreeXLPlusMinusOneCase {
+  using Rmq = pixie::rmq::experimental::SegmentBTreeXLPlusMinusOneRmq<>;
+  static constexpr std::size_t kBlockSize = Rmq::kLeafSize;
 
   static Rmq make(std::span<const std::uint64_t> bits,
                   std::size_t depth_count) {
@@ -312,14 +350,16 @@ void check_one_interval_btree_ranges(
 template <class Case>
 class ValueRmqContractTest : public ::testing::Test {};
 
-using ValueRmqCases = ::testing::Types<SparseTableCase,
-                                       SegmentTreeCase,
-                                       CartesianTreeCase,
-                                       ExperimentalCartesianTreeRmMBTreeCase,
-                                       NodeEulerBTreeCase,
-                                       ExperimentalNodeEulerBTreeCase,
-                                       ExperimentalNodeEulerBTreeMaskLeafCase,
-                                       SegmentBTreeXlCase>;
+using ValueRmqCases =
+    ::testing::Types<SparseTableCase,
+                     SegmentTreeCase,
+                     CartesianTreeCase,
+                     ExperimentalCartesianTreeRmMBTreeCase,
+                     ExperimentalCartesianTreeSegmentBTreeXLCase,
+                     NodeEulerBTreeCase,
+                     ExperimentalNodeEulerBTreeCase,
+                     ExperimentalNodeEulerBTreeMaskLeafCase,
+                     SegmentBTreeXlCase>;
 TYPED_TEST_SUITE(ValueRmqContractTest, ValueRmqCases);
 
 TYPED_TEST(ValueRmqContractTest, ExhaustiveSmallArray) {
@@ -1099,11 +1139,13 @@ TEST(RmqExperimentalNodeEulerBTree, CopyAndMovePreserveSplitStorage) {
 template <class Case>
 class DepthRmqContractTest : public ::testing::Test {};
 
-using DepthRmqCases = ::testing::Types<BpPlusMinusOne128Case,
-                                       BpPlusMinusOne64Case,
-                                       ExperimentalRmMBTreePlusMinusOneCase,
-                                       OneIntervalBTreeCase,
-                                       OneIntervalBTreeBoundaryRecordsCase>;
+using DepthRmqCases =
+    ::testing::Types<BpPlusMinusOne128Case,
+                     BpPlusMinusOne64Case,
+                     ExperimentalRmMBTreePlusMinusOneCase,
+                     ExperimentalSegmentBTreeXLPlusMinusOneCase,
+                     OneIntervalBTreeCase,
+                     OneIntervalBTreeBoundaryRecordsCase>;
 TYPED_TEST_SUITE(DepthRmqContractTest, DepthRmqCases);
 
 TYPED_TEST(DepthRmqContractTest, EmptyAndSingleDepthInputs) {
@@ -1243,6 +1285,111 @@ TYPED_TEST(DepthRmqContractTest, DifferentialRandomWalks) {
   }
 }
 
+TEST(RmqSegmentBTreeXLPlusMinusOne, DefaultBoundaryRanges) {
+  using Rmq = pixie::rmq::experimental::SegmentBTreeXLPlusMinusOneRmq<>;
+  constexpr std::size_t kLeaf = Rmq::kLeafSize;
+  constexpr std::size_t kFanout = Rmq::kFanout;
+  constexpr std::size_t kHighBoundary = kLeaf * kFanout;
+  const std::vector<std::size_t> sizes = {
+      kLeaf - 1,         kLeaf,         kLeaf + 1,
+      kHighBoundary - 1, kHighBoundary, kHighBoundary + 1,
+  };
+
+  for (const std::size_t size : sizes) {
+    SCOPED_TRACE(size);
+    std::vector<std::int64_t> depths(size);
+    for (std::size_t i = 1; i < depths.size(); ++i) {
+      const bool up = (i % 7 == 0) || (i % 11 == 3) || (i % 19 == 5);
+      depths[i] = depths[i - 1] + (up ? 1 : -1);
+    }
+
+    const std::vector<std::uint64_t> bits = pack_depth_deltas(depths);
+    const Rmq rmq(bits, depths.size());
+    const auto check_range = [&](std::size_t left, std::size_t right) {
+      ASSERT_LT(left, right);
+      ASSERT_LE(right, depths.size());
+      EXPECT_EQ(rmq.arg_min(left, right),
+                naive_arg_min(std::span<const std::int64_t>(depths), left,
+                              right, std::less<std::int64_t>()))
+          << "range=[" << left << "," << right << ")";
+    };
+
+    check_range(0, 1);
+    check_range(0, size);
+    check_range(size - 1, size);
+    for (const std::size_t boundary : {kLeaf, kHighBoundary}) {
+      if (boundary >= size) {
+        continue;
+      }
+      check_range(boundary - 1, boundary + 1);
+      check_range(boundary > 97 ? boundary - 97 : 0,
+                  std::min(size, boundary + 101));
+      check_range(boundary, size);
+    }
+  }
+}
+
+TEST(RmqSegmentBTreeXLPlusMinusOne, Select0MatchesNaiveAcrossHighNodes) {
+  using Rmq = pixie::rmq::experimental::SegmentBTreeXLPlusMinusOneRmq<>;
+  constexpr std::size_t kLeaf = Rmq::kLeafSize;
+  constexpr std::size_t kFanout = Rmq::kFanout;
+  std::vector<std::int64_t> depths(kLeaf * kFanout + 777);
+  for (std::size_t i = 1; i < depths.size(); ++i) {
+    const bool up = (i % 5 == 0) || (i % 17 == 3) || (i % 257 == 11);
+    depths[i] = depths[i - 1] + (up ? 1 : -1);
+  }
+
+  const std::vector<std::uint64_t> bits = pack_depth_deltas(depths);
+  const Rmq rmq(bits, depths.size());
+  const std::size_t bit_count = depths.size() - 1;
+  std::size_t zero_count = 0;
+  for (std::size_t position = 0; position < bit_count; ++position) {
+    zero_count += packed_bit(bits, position) ? 0 : 1;
+  }
+
+  const std::vector<std::size_t> ranks = {
+      1,          2, 63, 64, 65, zero_count / 4, zero_count / 2, zero_count - 1,
+      zero_count,
+  };
+  for (const std::size_t rank : ranks) {
+    ASSERT_GT(rank, 0u);
+    ASSERT_LE(rank, zero_count);
+    EXPECT_EQ(
+        rmq.select0(rank),
+        naive_select0(std::span<const std::uint64_t>(bits), bit_count, rank))
+        << "rank=" << rank;
+  }
+  EXPECT_EQ(rmq.select0(0), Rmq::npos);
+  EXPECT_EQ(rmq.select0(zero_count + 1), Rmq::npos);
+}
+
+TEST(RmqSegmentBTreeXLPlusMinusOne, SmallFanoutExercisesMiddleAndHighLevels) {
+  using Rmq =
+      pixie::rmq::experimental::SegmentBTreeXLPlusMinusOneRmq<std::size_t, 128,
+                                                              4, 4>;
+  constexpr std::size_t kBoundary =
+      Rmq::kLeafSize * Rmq::kFanout * Rmq::kFanout;
+  std::vector<std::int64_t> depths(kBoundary + 3 * Rmq::kLeafSize + 17);
+  for (std::size_t i = 1; i < depths.size(); ++i) {
+    const bool up = (i % 13 == 0) || (i % 17 == 1) || (i % 29 == 7);
+    depths[i] = depths[i - 1] + (up ? 1 : -1);
+  }
+
+  const std::vector<std::uint64_t> bits = pack_depth_deltas(depths);
+  const Rmq rmq(bits, depths.size());
+  const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
+      {0, depths.size()},
+      {kBoundary - 2, kBoundary + 2},
+      {kBoundary - Rmq::kLeafSize - 3, kBoundary + Rmq::kLeafSize + 5},
+      {Rmq::kLeafSize, kBoundary + 17},
+      {kBoundary + 1, depths.size()},
+      {depths.size() - Rmq::kLeafSize, depths.size()},
+  };
+  check_depth_ranges(
+      rmq, std::span<const std::int64_t>(depths),
+      std::span<const std::pair<std::size_t, std::size_t>>(ranges));
+}
+
 TEST(RmqOneIntervalBTree, FusedBoundaryTiesKeepFirstPosition) {
   constexpr std::size_t kBlock = pixie::rmq::OneIntervalBTreeRmq<>::kBlockSize;
   std::vector<std::int64_t> depths(4 * kBlock + 9);
@@ -1335,6 +1482,188 @@ TEST(RmqOneIntervalBTree, HighNodeBoundaryRanges) {
   check_one_interval_btree_ranges(
       std::span<const std::int64_t>(depths),
       std::span<const std::pair<std::size_t, std::size_t>>(ranges));
+}
+
+TEST(RmqCartesianTreeSegmentBTreeXL, BoundarySizesAndBpEncoding) {
+  using Rmq = pixie::rmq::experimental::CartesianTreeSegmentBTreeXLRmq<int>;
+  const std::vector<std::size_t> sizes = {
+      1u, 255u, 256u, 257u, 511u, 512u, 513u, 8191u, 8192u, 8193u,
+  };
+
+  for (const std::size_t size : sizes) {
+    SCOPED_TRACE(size);
+    std::vector<int> values(size);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      values[i] = static_cast<int>((i * 37 + i / 5) % 53);
+      if (i % 17 == 0 || i % 257 == 3) {
+        values[i] = -4;
+      }
+    }
+
+    const Rmq rmq(values);
+    expect_valid_bp_encoding(rmq, values.size());
+
+    const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
+        {0, 1},
+        {0, size},
+        {size - 1, size},
+        {size / 3, std::min(size, size / 3 + 19)},
+        {size / 2, std::min(size, size / 2 + 37)},
+    };
+    for (const auto [left, right] : ranges) {
+      ASSERT_LT(left, right);
+      EXPECT_EQ(rmq.arg_min(left, right),
+                naive_arg_min(std::span<const int>(values), left, right,
+                              std::less<int>()))
+          << "range=[" << left << "," << right << ")";
+    }
+  }
+}
+
+TEST(RmqCartesianTreeSegmentBTreeXL, DuplicateHeavyRandomDifferentialTo8193) {
+  using Rmq = pixie::rmq::experimental::CartesianTreeSegmentBTreeXLRmq<int>;
+  std::mt19937_64 rng(20260610);
+  std::uniform_int_distribution<int> value_dist(-3, 3);
+  const std::vector<std::size_t> sizes = {
+      1, 2, 17, 255, 256, 257, 1024, 4096, 8191, 8192, 8193,
+  };
+
+  for (const std::size_t size : sizes) {
+    SCOPED_TRACE(size);
+    std::vector<int> values(size);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      values[i] = value_dist(rng);
+      if ((i % 11) < 6) {
+        values[i] = 0;
+      }
+    }
+
+    const Rmq rmq(values);
+    std::uniform_int_distribution<std::size_t> width_dist(1, size);
+    for (std::size_t query = 0; query < 2000; ++query) {
+      const std::size_t width = width_dist(rng);
+      std::uniform_int_distribution<std::size_t> left_dist(0, size - width);
+      const std::size_t left = left_dist(rng);
+      const std::size_t right = left + width;
+      const std::size_t expected = naive_arg_min(std::span<const int>(values),
+                                                 left, right, std::less<int>());
+      EXPECT_EQ(rmq.arg_min(left, right), expected)
+          << "range=[" << left << "," << right << ")";
+    }
+  }
+}
+
+TEST(RmqCartesianTreeSegmentBTreeXL, TopSparseOverlayBoundaryRanges) {
+  using Rmq = pixie::rmq::experimental::CartesianTreeSegmentBTreeXLRmq<int>;
+  constexpr std::size_t kTopBlock = 4096;
+  std::vector<int> values(3 * kTopBlock + 77, 1000);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] = 1000 + static_cast<int>((i * 17 + i / 7) % 89);
+  }
+  values[0] = -1000;
+  values[211] = -700;
+  values[kTopBlock + 123] = -900;
+  values[2 * kTopBlock + 300] = -800;
+
+  const Rmq original(values);
+  Rmq copied(original);
+  Rmq assigned;
+  assigned = copied;
+  Rmq moved(std::move(copied));
+
+  const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
+      {0, kTopBlock + 100},
+      {100, 2 * kTopBlock + 100},
+      {kTopBlock - 20, 2 * kTopBlock + 20},
+      {333, kTopBlock + 10},
+      {kTopBlock + 1, kTopBlock + 2000},
+      {2 * kTopBlock + 10, values.size()},
+      {0, values.size()},
+  };
+
+  for (const auto [left, right] : ranges) {
+    ASSERT_LT(left, right);
+    const std::size_t expected = naive_arg_min(std::span<const int>(values),
+                                               left, right, std::less<int>());
+    EXPECT_EQ(original.arg_min(left, right), expected)
+        << "range=[" << left << "," << right << ")";
+    EXPECT_EQ(assigned.arg_min(left, right), expected)
+        << "range=[" << left << "," << right << ")";
+    EXPECT_EQ(moved.arg_min(left, right), expected)
+        << "range=[" << left << "," << right << ")";
+  }
+}
+
+TEST(RmqCartesianTreeSegmentBTreeXL, TopSparseOverlayCapsBlockCount) {
+  using Rmq = pixie::rmq::experimental::CartesianTreeSegmentBTreeXLRmq<int>;
+  constexpr std::size_t kMinBlock = Rmq::kMinTopSparseBlockSize;
+  constexpr std::size_t kMaxBlocks = Rmq::kMaxTopSparseBlocks;
+  constexpr std::size_t kLargestFixedBlockInput = kMinBlock * kMaxBlocks;
+
+  EXPECT_EQ(Rmq::top_sparse_block_size_for(0), kMinBlock);
+  EXPECT_EQ(Rmq::top_sparse_block_count_for(0), 0u);
+  EXPECT_EQ(Rmq::top_sparse_block_size_for(1), kMinBlock);
+  EXPECT_EQ(Rmq::top_sparse_block_count_for(1), 1u);
+  EXPECT_EQ(Rmq::top_sparse_block_size_for(kLargestFixedBlockInput), kMinBlock);
+  EXPECT_EQ(Rmq::top_sparse_block_count_for(kLargestFixedBlockInput),
+            kMaxBlocks);
+  EXPECT_GT(Rmq::top_sparse_block_size_for(kLargestFixedBlockInput + 1),
+            kMinBlock);
+  EXPECT_LE(Rmq::top_sparse_block_count_for(kLargestFixedBlockInput + 1),
+            kMaxBlocks);
+
+  const std::size_t huge = std::numeric_limits<std::size_t>::max() / 4;
+  EXPECT_LE(Rmq::top_sparse_block_count_for(huge), kMaxBlocks);
+
+  std::vector<int> values(3 * kMinBlock + 7, 0);
+  const Rmq rmq(values);
+  EXPECT_EQ(rmq.top_sparse_block_size(), kMinBlock);
+  EXPECT_EQ(rmq.top_sparse_block_count(), 4u);
+}
+
+TEST(RmqCartesianTreeSegmentBTreeXL, TopSparseOverlayComparatorMaximum) {
+  using Rmq = pixie::rmq::experimental::CartesianTreeSegmentBTreeXLRmq<
+      int, std::greater<int>>;
+  constexpr std::size_t kTopBlock = 4096;
+  std::vector<int> values(2 * kTopBlock + 33, -1000);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] = -1000 + static_cast<int>((i * 13 + i / 5) % 71);
+  }
+  values[0] = 1000;
+  values[kTopBlock + 17] = 900;
+  values[kTopBlock + 18] = 900;
+
+  const Rmq rmq(values);
+  const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
+      {1, values.size()},
+      {kTopBlock, kTopBlock + 100},
+      {kTopBlock + 18, values.size()},
+      {0, values.size()},
+  };
+
+  for (const auto [left, right] : ranges) {
+    ASSERT_LT(left, right);
+    EXPECT_EQ(rmq.arg_min(left, right),
+              naive_arg_min(std::span<const int>(values), left, right,
+                            std::greater<int>()))
+        << "range=[" << left << "," << right << ")";
+  }
+}
+
+TEST(RmqCartesianTreeSegmentBTreeXL, ComparatorCopyAndMove) {
+  using MaxRmq = pixie::rmq::experimental::CartesianTreeSegmentBTreeXLRmq<
+      int, std::greater<int>>;
+  const std::vector<int> values = {1, 8, 8, 7, 8, 3, 8, 4, 4, 8};
+  const MaxRmq original(values);
+  MaxRmq copied(original);
+  MaxRmq assigned;
+  assigned = copied;
+  MaxRmq moved(std::move(copied));
+
+  check_all_ranges(original, std::span<const int>(values), std::greater<int>());
+  check_all_ranges(assigned, std::span<const int>(values), std::greater<int>());
+  check_all_ranges(moved, std::span<const int>(values), std::greater<int>());
+  EXPECT_EQ(original.arg_min(0, values.size()), 1u);
 }
 
 TEST(RmqCartesianTree, DuplicateHeavyArrays) {

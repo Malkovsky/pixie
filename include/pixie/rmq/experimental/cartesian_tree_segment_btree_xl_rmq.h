@@ -1,0 +1,1821 @@
+#pragma once
+
+#include <pixie/bits.h>
+#include <pixie/bitvector.h>
+#include <pixie/rmq/rmq_base.h>
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <span>
+#include <stdexcept>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+namespace pixie::rmq::experimental {
+
+/**
+ * @brief SegmentBTreeXL-style RMQ backend for ±1 depth sequences.
+ *
+ * @details The input words encode adjacent depth deltas: bit 1 means +1 and
+ * bit 0 means -1. The indexed sequence has `depth_count` prefix positions, so
+ * the bit sequence has `depth_count - 1` deltas. Public ranges are half-open
+ * over depth positions, and ties return the smaller depth position.
+ *
+ * This backend mirrors the high-level query shape of `SegmentBTreeXL`: depth
+ * positions are split into leaves, leaves are grouped into a B-tree, and every
+ * internal node stores a local Cartesian/BP selector over the minima of its
+ * immediate children. The top one or two levels additionally keep sparse
+ * tables over child-minimum slots. Unlike value `SegmentBTreeXL`, leaves do not
+ * store another local Cartesian selector. A leaf query scans the original BP
+ * delta bits directly with the 128-bit excess primitives from `bits.h`.
+ *
+ * @tparam Index Unsigned integer type used for stored positions.
+ * @tparam LeafSize Number of depth positions per low-level leaf.
+ * @tparam Fanout Fanout used by the top high levels.
+ * @tparam MiddleFanout Fanout used below the high levels.
+ */
+template <class Index = std::size_t,
+          std::size_t LeafSize = 512,
+          std::size_t Fanout = 256,
+          std::size_t MiddleFanout = 192>
+class SegmentBTreeXLPlusMinusOneRmq {
+ public:
+  static_assert(std::is_unsigned_v<Index>,
+                "SegmentBTreeXLPlusMinusOneRmq index type must be unsigned");
+  static_assert(LeafSize != 0 && LeafSize % 128 == 0,
+                "SegmentBTreeXLPlusMinusOneRmq leaf size must be a positive "
+                "multiple of 128");
+  static_assert(Fanout > 1 && Fanout <= 256,
+                "SegmentBTreeXLPlusMinusOneRmq high fanout must be in "
+                "[2, 256]");
+  static_assert(MiddleFanout > 1 && MiddleFanout <= 256,
+                "SegmentBTreeXLPlusMinusOneRmq middle fanout must be in "
+                "[2, 256]");
+
+  static constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
+  static constexpr Index invalid_index = std::numeric_limits<Index>::max();
+  static constexpr std::size_t kLeafSize = LeafSize;
+  static constexpr std::size_t kFanout = Fanout;
+  static constexpr std::size_t kMiddleFanout = MiddleFanout;
+
+  /**
+   * @brief Construct an empty ±1 RMQ index.
+   */
+  SegmentBTreeXLPlusMinusOneRmq() = default;
+
+  /**
+   * @brief Build a ±1 RMQ index over external packed delta bits.
+   *
+   * @param bits Little-endian packed delta bits.
+   * @param depth_count Number of indexed depth positions.
+   * @throws std::length_error if @p Index cannot represent all positions.
+   * @throws std::invalid_argument if @p bits is shorter than required.
+   */
+  SegmentBTreeXLPlusMinusOneRmq(std::span<const std::uint64_t> bits,
+                                std::size_t depth_count) {
+    build(bits, depth_count);
+  }
+
+  /**
+   * @brief Rebuild this index over external packed delta bits.
+   */
+  void build(std::span<const std::uint64_t> bits, std::size_t depth_count) {
+    input_bits_ = bits;
+    depth_count_ = depth_count;
+    build();
+  }
+
+  /**
+   * @brief Return the number of indexed depth positions.
+   */
+  std::size_t size() const { return depth_count_; }
+
+  /**
+   * @brief Whether the indexed depth sequence is empty.
+   */
+  bool empty() const { return depth_count_ == 0; }
+
+  /**
+   * @brief Return the first minimum depth position in [@p left, @p right).
+   *
+   * @details Empty or invalid ranges return `npos`. Equal depths return the
+   * smaller position.
+   */
+  std::size_t arg_min(std::size_t left, std::size_t right) const {
+    if (left >= right || right > depth_count_ || level_sizes_.empty()) {
+      return npos;
+    }
+    if (left + 1 == right) {
+      return left;
+    }
+
+    const std::size_t root_level = level_count() - 1;
+    if (left == 0 && right == depth_count_) {
+      return subtree_min_candidate(root_level, 0).position;
+    }
+
+    const std::size_t left_leaf = leaf_for_position(left);
+    const std::size_t right_leaf = leaf_for_position(right - 1);
+    if (left_leaf == right_leaf) {
+      return leaf_range_min(left_leaf, left, right).position;
+    }
+
+    const auto [level, node] = covering_node(left_leaf, right_leaf);
+    return query_node(level, node, left, right).position;
+  }
+
+  /**
+   * @brief Return the one-based rank-th zero delta bit position.
+   *
+   * @details This is the select operation needed by the Cartesian wrapper to
+   * map value endpoints to close-parenthesis positions. High nodes keep
+   * per-child zero-count prefixes, so top-level descent avoids rescanning the
+   * 256-way high-node fanout. The returned position is a delta-bit position in
+   * `[0, size() - 1)`, or `npos` when @p rank is out of range.
+   */
+  std::size_t select0(std::size_t rank) const {
+    if (rank == 0 || depth_count_ == 0 || level_sizes_.empty()) {
+      return npos;
+    }
+    const std::size_t root_level = level_count() - 1;
+    if (rank > subtree_zero_count(root_level, 0)) {
+      return npos;
+    }
+    return select0_in_node(root_level, 0, rank);
+  }
+
+ private:
+  static constexpr std::size_t kLeafWords = LeafSize / 64;
+  static constexpr std::size_t kLeafChunks = LeafSize / 128;
+  static constexpr std::size_t kSelectorEntries = 256;
+  static constexpr std::size_t kSelectorBits = 2 * kSelectorEntries;
+  static constexpr std::size_t kSelectorWords = kSelectorBits / 64;
+  static constexpr std::size_t kHighSparseLevels =
+      static_cast<std::size_t>(std::bit_width(Fanout));
+  static constexpr std::size_t kHighSparseSlotsPerNode =
+      kHighSparseLevels * Fanout;
+  static constexpr bool kInvalidIndexEqualsNpos =
+      static_cast<std::size_t>(invalid_index) == npos;
+
+  struct DepthCandidate {
+    std::size_t position = npos;
+    std::int64_t depth = std::numeric_limits<std::int64_t>::max();
+  };
+
+  struct LeafSummary {
+    std::int64_t base_depth = 0;
+    std::int64_t min_depth = 0;
+    Index min_offset = 0;
+    Index zero_count = 0;
+  };
+
+  struct HighChildMetadata {
+    std::size_t position_begin = 0;
+    std::size_t position_end = 0;
+    Index min_position = invalid_index;
+    std::int64_t min_depth = std::numeric_limits<std::int64_t>::max();
+  };
+
+  class alignas(64) Bp512Selector {
+   public:
+    /**
+     * @brief Construct an empty packed BP selector.
+     */
+    Bp512Selector() = default;
+
+    /**
+     * @brief Build a stable local Cartesian-tree BP selector over entries.
+     *
+     * @details The comparator must return whether the left slot is strictly
+     * better than the right slot. Equal minima stay stable through the same
+     * right-to-left construction rule used by the value Cartesian tree.
+     */
+    template <class EntryLess>
+    void build(std::size_t entry_count, EntryLess entry_less) {
+      if (entry_count > kSelectorEntries) {
+        throw std::length_error(
+            "SegmentBTreeXLPlusMinusOneRmq local selector too large");
+      }
+
+      bp_bits_.fill(0);
+      if (entry_count == 0) {
+        return;
+      }
+
+      std::array<std::uint16_t, kSelectorEntries> stack{};
+      std::size_t stack_size = 0;
+      std::size_t write_position = 2 * entry_count;
+
+      for (std::size_t i = entry_count; i-- > 0;) {
+        while (stack_size != 0 && !entry_less(stack[stack_size - 1], i)) {
+          --stack_size;
+          prepend_bp_bit(write_position, true);
+        }
+        stack[stack_size++] = static_cast<std::uint16_t>(i);
+        prepend_bp_bit(write_position, false);
+      }
+
+      while (write_position != 0) {
+        prepend_bp_bit(write_position, true);
+      }
+    }
+
+    /**
+     * @brief Return the first minimum slot in a local entry range.
+     */
+    std::size_t arg_min(std::size_t slot_left,
+                        std::size_t slot_right,
+                        std::size_t entry_count) const {
+      if (slot_left >= slot_right || slot_right > entry_count ||
+          entry_count > kSelectorEntries) {
+        return npos;
+      }
+      if (slot_left + 1 == slot_right) {
+        return slot_left;
+      }
+
+      const std::size_t bit_count = 2 * entry_count;
+      const std::size_t first_close = close_position(slot_left);
+      const std::size_t last_close = close_position(slot_right - 1);
+      if (first_close > last_close || last_close >= bit_count) {
+        return npos;
+      }
+
+      const std::size_t shifted_min =
+          depth_arg_min(first_close + 1, last_close + 2, bit_count);
+      if (shifted_min == npos || shifted_min == 0) {
+        return npos;
+      }
+
+      const std::size_t zero_rank = rank0_at(shifted_min, bit_count);
+      if (zero_rank == 0) {
+        return npos;
+      }
+      const std::size_t entry = zero_rank - 1;
+      return entry < entry_count ? entry : npos;
+    }
+
+   private:
+    /**
+     * @brief Prepend one BP bit while building the sequence right-to-left.
+     */
+    void prepend_bp_bit(std::size_t& write_position, bool bit) {
+      --write_position;
+      if (bit) {
+        bp_bits_[write_position >> 6] |= std::uint64_t{1}
+                                         << (write_position & 63);
+      }
+    }
+
+    /**
+     * @brief Return the BP close position for a local entry slot.
+     */
+    std::size_t close_position(std::size_t slot) const {
+      return select0_512(bp_bits_.data(), slot);
+    }
+
+    /**
+     * @brief Count zero bits before @p position in the raw BP sequence.
+     */
+    std::size_t rank0_at(std::size_t position, std::size_t bit_count) const {
+      position = std::min(position, bit_count);
+      return position - rank_512(bp_bits_.data(), position);
+    }
+
+    /**
+     * @brief Return open-minus-close excess before a raw BP position.
+     */
+    int prefix_excess(std::size_t position) const {
+      position = std::min(position, kSelectorBits);
+      const std::size_t ones = rank_512(bp_bits_.data(), position);
+      return static_cast<int>(2 * ones) - static_cast<int>(position);
+    }
+
+    /**
+     * @brief Return the minimum BP-depth position in a selector depth range.
+     */
+    std::size_t depth_arg_min(std::size_t left,
+                              std::size_t right,
+                              std::size_t bit_count) const {
+      const std::size_t depth_count = bit_count + 1;
+      if (left >= right || right > depth_count) {
+        return npos;
+      }
+
+      std::size_t position = left;
+      int best_depth = prefix_excess(position);
+      std::size_t best_position = position;
+
+      while (position < right) {
+        const std::size_t chunk_begin = (position / 128) * 128;
+        const std::size_t local_left = position - chunk_begin;
+        const std::size_t local_right =
+            std::min<std::size_t>(right - 1, chunk_begin + 128) - chunk_begin;
+
+        int candidate_depth;
+        std::size_t candidate_position;
+        if (chunk_begin >= bit_count) {
+          candidate_depth = prefix_excess(bit_count);
+          candidate_position = bit_count;
+        } else {
+          const std::size_t word = chunk_begin >> 6;
+          const ExcessResult result =
+              excess_min_128(bp_bits_.data() + word, local_left, local_right);
+          candidate_depth = prefix_excess(chunk_begin) + result.min_excess;
+          candidate_position = chunk_begin + result.offset;
+        }
+
+        if (candidate_depth < best_depth) {
+          best_depth = candidate_depth;
+          best_position = candidate_position;
+        }
+
+        position = chunk_begin + local_right + 1;
+      }
+
+      return best_position;
+    }
+
+    std::array<std::uint64_t, kSelectorWords> bp_bits_{};
+  };
+
+  static_assert(sizeof(Bp512Selector) == 64);
+
+  /**
+   * @brief Return whether a stored position is one of the missing sentinels.
+   */
+  bool missing_position(std::size_t position) const {
+    if constexpr (kInvalidIndexEqualsNpos) {
+      return position == npos;
+    } else {
+      return position == npos ||
+             position == static_cast<std::size_t>(invalid_index);
+    }
+  }
+
+  /**
+   * @brief Choose the smaller-depth candidate, breaking ties by position.
+   */
+  DepthCandidate better_candidate(DepthCandidate left,
+                                  DepthCandidate right) const {
+    if (missing_position(left.position)) {
+      return right;
+    }
+    if (missing_position(right.position)) {
+      return left;
+    }
+    if (right.depth < left.depth) {
+      return right;
+    }
+    if (left.depth < right.depth) {
+      return left;
+    }
+    return right.position < left.position ? right : left;
+  }
+
+  /**
+   * @brief Return whether @p left is strictly better than @p right.
+   */
+  bool strictly_better_candidate(DepthCandidate left,
+                                 DepthCandidate right) const {
+    if (missing_position(left.position)) {
+      return false;
+    }
+    if (missing_position(right.position)) {
+      return true;
+    }
+    if (left.depth != right.depth) {
+      return left.depth < right.depth;
+    }
+    return left.position < right.position;
+  }
+
+  /**
+   * @brief Build all leaf summaries, internal selectors, and top sparse tables.
+   */
+  void build() {
+    leaf_summaries_.clear();
+    internal_selectors_.clear();
+    internal_min_positions_.clear();
+    internal_min_depths_.clear();
+    high_child_metadata_.clear();
+    high_sparse_min_slots_.clear();
+    high_zero_prefixes_.clear();
+    internal_level_offsets_.clear();
+    high_level_offsets_.clear();
+    level_sizes_.clear();
+    level_position_spans_.clear();
+    level_fanouts_.clear();
+    high_level_begin_ = std::numeric_limits<std::size_t>::max();
+
+    if (depth_count_ == 0) {
+      return;
+    }
+    if (depth_count_ > static_cast<std::size_t>(invalid_index)) {
+      throw std::length_error(
+          "SegmentBTreeXLPlusMinusOneRmq index type is too small");
+    }
+    if (depth_count_ >
+        static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
+      throw std::length_error(
+          "SegmentBTreeXLPlusMinusOneRmq depth range is too large");
+    }
+    if (input_bits_.size() < (depth_count_ - 1 + 63) / 64) {
+      throw std::invalid_argument(
+          "SegmentBTreeXLPlusMinusOneRmq bit span is too small");
+    }
+
+    initialize_layout((depth_count_ + LeafSize - 1) / LeafSize);
+    build_leaves();
+    for (std::size_t level = 1; level < level_count(); ++level) {
+      for (std::size_t node = 0; node < level_sizes_[level]; ++node) {
+        build_internal_node(level, node);
+      }
+    }
+  }
+
+  /**
+   * @brief Compute B-tree level sizes, fanouts, and flat storage offsets.
+   */
+  void initialize_layout(std::size_t leaf_count) {
+    level_sizes_.push_back(leaf_count);
+    level_position_spans_.push_back(LeafSize);
+    level_fanouts_.push_back(0);
+
+    std::size_t current_count = leaf_count;
+    std::size_t current_span = LeafSize;
+    while (current_count > Fanout * Fanout) {
+      level_fanouts_.push_back(MiddleFanout);
+      current_count = ceil_div(current_count, MiddleFanout);
+      current_span = saturating_product(current_span, MiddleFanout);
+      level_sizes_.push_back(current_count);
+      level_position_spans_.push_back(current_span);
+    }
+    while (current_count > 1) {
+      level_fanouts_.push_back(Fanout);
+      current_count = ceil_div(current_count, Fanout);
+      current_span = saturating_product(current_span, Fanout);
+      level_sizes_.push_back(current_count);
+      level_position_spans_.push_back(current_span);
+    }
+
+    leaf_summaries_.resize(level_sizes_[0]);
+
+    internal_level_offsets_.assign(level_count(), 0);
+    high_level_offsets_.assign(level_count(), 0);
+    if (level_count() <= 1) {
+      return;
+    }
+
+    const std::size_t root_level = level_count() - 1;
+    high_level_begin_ = root_level > 1 ? root_level - 1 : 1;
+
+    std::size_t internal_count = 0;
+    for (std::size_t level = 1; level < level_count(); ++level) {
+      internal_level_offsets_[level] = internal_count;
+      internal_count += level_sizes_[level];
+    }
+    internal_selectors_.resize(internal_count);
+    internal_min_positions_.resize(internal_count, invalid_index);
+    internal_min_depths_.resize(internal_count,
+                                std::numeric_limits<std::int64_t>::max());
+    internal_zero_counts_.resize(internal_count, 0);
+
+    std::size_t high_node_count = 0;
+    for (std::size_t level = high_level_begin_; level < level_count();
+         ++level) {
+      high_level_offsets_[level] = high_node_count;
+      high_node_count += level_sizes_[level];
+    }
+    high_child_metadata_.resize(high_node_count * Fanout);
+    high_sparse_min_slots_.resize(high_node_count * kHighSparseSlotsPerNode);
+    high_zero_prefixes_.resize(high_node_count * (Fanout + 1));
+  }
+
+  /**
+   * @brief Build all leaf summaries while carrying the absolute base depth.
+   */
+  void build_leaves() {
+    std::int64_t base_depth = 0;
+    for (std::size_t leaf = 0; leaf < leaf_summaries_.size(); ++leaf) {
+      const std::size_t count = entry_count(0, leaf);
+      DepthCandidate minimum =
+          scan_leaf_range_with_base(leaf, 0, count - 1, base_depth);
+      const std::size_t zero_count =
+          leaf_zero_count(leaf, next_leaf_delta_count(leaf));
+      leaf_summaries_[leaf] = {
+          base_depth,
+          minimum.depth,
+          static_cast<Index>(minimum.position - node_position_begin(0, leaf)),
+          static_cast<Index>(zero_count),
+      };
+      if (leaf + 1 < leaf_summaries_.size()) {
+        base_depth += leaf_excess(leaf, next_leaf_delta_count(leaf));
+      }
+    }
+  }
+
+  /**
+   * @brief Build one internal node selector and cached minimum.
+   */
+  void build_internal_node(std::size_t level, std::size_t node) {
+    const std::size_t count = entry_count(level, node);
+    const std::size_t first_child = node * fanout_at_level(level);
+    const bool high_level = is_high_level(level);
+    const std::size_t high_flat = high_level ? high_flat_index(level, node) : 0;
+
+    if (high_level) {
+      std::size_t zero_prefix = 0;
+      std::size_t* prefixes = mutable_high_zero_prefixes_begin(high_flat);
+      prefixes[0] = 0;
+      for (std::size_t slot = 0; slot < count; ++slot) {
+        const std::size_t child = first_child + slot;
+        const DepthCandidate child_min =
+            subtree_min_candidate(level - 1, child);
+        zero_prefix += subtree_zero_count(level - 1, child);
+        prefixes[slot + 1] = zero_prefix;
+        HighChildMetadata& metadata =
+            mutable_high_child_metadata_at(high_flat, slot);
+        metadata.position_begin = node_position_begin(level - 1, child);
+        metadata.position_end = node_position_end(level - 1, child);
+        metadata.min_position = static_cast<Index>(child_min.position);
+        metadata.min_depth = child_min.depth;
+      }
+      build_high_sparse_min_slots(level, node, count);
+    }
+
+    Bp512Selector& selector = mutable_selector_at(level, node);
+    selector.build(count, [&](std::size_t left, std::size_t right) {
+      return strictly_better_candidate(child_min_candidate(level, node, left),
+                                       child_min_candidate(level, node, right));
+    });
+
+    const std::size_t slot = selector.arg_min(0, count, count);
+    const DepthCandidate minimum = child_min_candidate(level, node, slot);
+    const std::size_t flat = internal_flat_index(level, node);
+    internal_min_positions_[flat] = static_cast<Index>(minimum.position);
+    internal_min_depths_[flat] = minimum.depth;
+    if (high_level) {
+      internal_zero_counts_[flat] = high_zero_prefixes_begin(high_flat)[count];
+    } else {
+      std::size_t zero_count = 0;
+      for (std::size_t slot = 0; slot < count; ++slot) {
+        zero_count += subtree_zero_count(level - 1, first_child + slot);
+      }
+      internal_zero_counts_[flat] = zero_count;
+    }
+  }
+
+  /**
+   * @brief Return `ceil(value / divisor)` for positive divisors.
+   */
+  static std::size_t ceil_div(std::size_t value, std::size_t divisor) {
+    return (value + divisor - 1) / divisor;
+  }
+
+  /**
+   * @brief Multiply two extents, saturating at `std::size_t` maximum.
+   */
+  static std::size_t saturating_product(std::size_t left, std::size_t right) {
+    if (left != 0 && right > std::numeric_limits<std::size_t>::max() / left) {
+      return std::numeric_limits<std::size_t>::max();
+    }
+    return left * right;
+  }
+
+  /**
+   * @brief Read an input word or return zero past the available span.
+   */
+  std::uint64_t word_or_zero(std::size_t word) const {
+    return word < input_bits_.size() ? input_bits_[word] : 0;
+  }
+
+  /**
+   * @brief Load all delta words aligned to a leaf boundary.
+   */
+  std::array<std::uint64_t, kLeafWords> leaf_bits(std::size_t leaf) const {
+    std::array<std::uint64_t, kLeafWords> bits{};
+    const std::size_t first_word = leaf * kLeafWords;
+    for (std::size_t word = 0; word < kLeafWords; ++word) {
+      bits[word] = word_or_zero(first_word + word);
+    }
+    return bits;
+  }
+
+  /**
+   * @brief Return total excess over the first @p delta_count bits of a leaf.
+   */
+  std::int64_t leaf_excess(std::size_t leaf, std::size_t delta_count) const {
+    const auto bits = leaf_bits(leaf);
+    std::int64_t result = 0;
+    std::size_t remaining = std::min(delta_count, LeafSize);
+    for (std::size_t chunk = 0; chunk < kLeafChunks && remaining != 0;
+         ++chunk) {
+      const std::size_t chunk_count = std::min<std::size_t>(128, remaining);
+      result += prefix_excess_128(bits.data() + 2 * chunk, chunk_count);
+      remaining -= chunk_count;
+    }
+    return result;
+  }
+
+  /**
+   * @brief Return the number of zero delta bits in one leaf prefix.
+   */
+  std::size_t leaf_zero_count(std::size_t leaf, std::size_t delta_count) const {
+    const auto bits = leaf_bits(leaf);
+    std::size_t result = 0;
+    std::size_t remaining = std::min(delta_count, LeafSize);
+    for (std::size_t word = 0; word < kLeafWords && remaining != 0; ++word) {
+      const std::size_t word_bits = std::min<std::size_t>(64, remaining);
+      result +=
+          word_bits - std::popcount(bits[word] & first_bits_mask(word_bits));
+      remaining -= word_bits;
+    }
+    return result;
+  }
+
+  /**
+   * @brief Count delta bits from a leaf start to the next leaf base depth.
+   */
+  std::size_t next_leaf_delta_count(std::size_t leaf) const {
+    const std::size_t begin = node_position_begin(0, leaf);
+    const std::size_t next_begin = begin + LeafSize;
+    return std::min(next_begin, depth_count_ - 1) - begin;
+  }
+
+  /**
+   * @brief Return the first minimum candidate inside one leaf local range.
+   */
+  DepthCandidate scan_leaf_range_with_base(std::size_t leaf,
+                                           std::size_t left_offset,
+                                           std::size_t right_offset,
+                                           std::int64_t base_depth) const {
+    const std::size_t begin = node_position_begin(0, leaf);
+    const std::size_t count = entry_count(0, leaf);
+    if (count == 0 || left_offset > right_offset || left_offset >= count) {
+      return {};
+    }
+    right_offset = std::min(right_offset, count - 1);
+
+    const auto bits = leaf_bits(leaf);
+    DepthCandidate answer;
+    std::int64_t chunk_base_excess = 0;
+    for (std::size_t chunk = 0; chunk < kLeafChunks; ++chunk) {
+      const std::size_t chunk_begin = chunk * 128;
+      if (chunk_begin >= count || chunk_begin > right_offset) {
+        break;
+      }
+
+      const std::size_t chunk_end =
+          std::min<std::size_t>(count - 1, chunk_begin + 127);
+      if (left_offset > chunk_end) {
+        chunk_base_excess += prefix_excess_128(bits.data() + 2 * chunk, 128);
+        continue;
+      }
+
+      const std::size_t local_left =
+          std::max(left_offset, chunk_begin) - chunk_begin;
+      const std::size_t local_right =
+          std::min(right_offset, chunk_end) - chunk_begin;
+      const ExcessResult result =
+          excess_min_128(bits.data() + 2 * chunk, local_left, local_right);
+      const std::size_t offset = chunk_begin + result.offset;
+      if (result.offset != npos && offset < count) {
+        answer = better_candidate(
+            answer, {begin + offset,
+                     base_depth + chunk_base_excess + result.min_excess});
+      }
+
+      chunk_base_excess += prefix_excess_128(bits.data() + 2 * chunk, 128);
+    }
+    return answer;
+  }
+
+  /**
+   * @brief Return the minimum candidate in a possibly partial leaf.
+   */
+  DepthCandidate leaf_range_min(std::size_t leaf,
+                                std::size_t left,
+                                std::size_t right) const {
+    if (left >= right) {
+      return {};
+    }
+
+    const std::size_t begin = node_position_begin(0, leaf);
+    const std::size_t end = node_position_end(0, leaf);
+    if (left <= begin && end <= right) {
+      return subtree_min_candidate(0, leaf);
+    }
+
+    const std::size_t slot_left = left - begin;
+    const std::size_t slot_right = right - begin;
+    return scan_leaf_range_with_base(leaf, slot_left, slot_right - 1,
+                                     leaf_summaries_[leaf].base_depth);
+  }
+
+  /**
+   * @brief Find the lowest tree node that contains both endpoint leaves.
+   */
+  std::pair<std::size_t, std::size_t> covering_node(
+      std::size_t left_leaf,
+      std::size_t right_leaf) const {
+    std::size_t level = 0;
+    std::size_t left_node = left_leaf;
+    std::size_t right_node = right_leaf;
+    while (left_node != right_node) {
+      ++level;
+      const std::size_t fanout = fanout_at_level(level);
+      left_node /= fanout;
+      right_node /= fanout;
+    }
+    return {level, left_node};
+  }
+
+  /**
+   * @brief Return the leaf index containing a depth position.
+   */
+  std::size_t leaf_for_position(std::size_t position) const {
+    return position / LeafSize;
+  }
+
+  /**
+   * @brief Return the child index at @p child_level containing a position.
+   */
+  std::size_t child_for_position(std::size_t child_level,
+                                 std::size_t position) const {
+    return position / level_position_spans_[child_level];
+  }
+
+  /**
+   * @brief Query a child-slot range of an internal node.
+   */
+  DepthCandidate query_child_slots(std::size_t level,
+                                   std::size_t node,
+                                   std::size_t slot_left,
+                                   std::size_t slot_right,
+                                   std::size_t left,
+                                   std::size_t right) const {
+    if (slot_left >= slot_right) {
+      return {};
+    }
+
+    const std::size_t count = entry_count(level, node);
+    const std::size_t slot =
+        slot_left + 1 == slot_right
+            ? slot_left
+            : selector_arg_min(level, node, slot_left, slot_right, count);
+    if (slot == npos) {
+      return {};
+    }
+
+    const std::size_t child_level = level - 1;
+    const std::size_t first_child = node * fanout_at_level(level);
+    const std::size_t child = first_child + slot;
+    const HighChildMetadata* high_children =
+        is_high_level(level) ? high_child_metadata_begin(level, node) : nullptr;
+    const DepthCandidate child_min =
+        high_children != nullptr ? high_child_min_candidate(level, node, slot)
+                                 : subtree_min_candidate(child_level, child);
+    const std::size_t child_begin =
+        high_children != nullptr ? high_children[slot].position_begin
+                                 : node_position_begin(child_level, child);
+    const std::size_t child_end = high_children != nullptr
+                                      ? high_children[slot].position_end
+                                      : node_position_end(child_level, child);
+    if ((left <= child_begin && child_end <= right) ||
+        contains_position(left, right, child_min.position)) {
+      return child_min;
+    }
+
+    const std::size_t last_slot = slot_right - 1;
+    const std::size_t left_child_begin =
+        high_children != nullptr
+            ? high_children[slot_left].position_begin
+            : node_position_begin(child_level, first_child + slot_left);
+    const std::size_t left_child_end =
+        high_children != nullptr
+            ? high_children[slot_left].position_end
+            : node_position_end(child_level, first_child + slot_left);
+    DepthCandidate answer = query_node(child_level, first_child + slot_left,
+                                       std::max(left, left_child_begin),
+                                       std::min(right, left_child_end));
+
+    if (slot_left != last_slot) {
+      const std::size_t right_child_begin =
+          high_children != nullptr
+              ? high_children[last_slot].position_begin
+              : node_position_begin(child_level, first_child + last_slot);
+      const std::size_t right_child_end =
+          high_children != nullptr
+              ? high_children[last_slot].position_end
+              : node_position_end(child_level, first_child + last_slot);
+      answer = better_candidate(answer,
+                                query_node(child_level, first_child + last_slot,
+                                           std::max(left, right_child_begin),
+                                           std::min(right, right_child_end)));
+    }
+
+    if (slot_left + 1 < last_slot) {
+      answer = better_candidate(
+          answer,
+          full_child_slot_range_min(level, node, slot_left + 1, last_slot));
+    }
+
+    return answer;
+  }
+
+  /**
+   * @brief Return the best candidate among fully covered child slots.
+   */
+  DepthCandidate full_child_slot_range_min(std::size_t level,
+                                           std::size_t node,
+                                           std::size_t slot_left,
+                                           std::size_t slot_right) const {
+    if (slot_left >= slot_right) {
+      return {};
+    }
+
+    const std::size_t slot =
+        slot_left + 1 == slot_right
+            ? slot_left
+            : selector_arg_min(level, node, slot_left, slot_right,
+                               entry_count(level, node));
+    if (slot == npos) {
+      return {};
+    }
+    return child_min_candidate(level, node, slot);
+  }
+
+  /**
+   * @brief Query a tree node for the minimum candidate in a depth range.
+   */
+  DepthCandidate query_node(std::size_t level,
+                            std::size_t node,
+                            std::size_t left,
+                            std::size_t right) const {
+    if (left >= right) {
+      return {};
+    }
+
+    const std::size_t begin = node_position_begin(level, node);
+    const std::size_t end = node_position_end(level, node);
+    if (left <= begin && end <= right) {
+      return subtree_min_candidate(level, node);
+    }
+    if (level == 0) {
+      return leaf_range_min(node, left, right);
+    }
+
+    const std::size_t child_level = level - 1;
+    const std::size_t left_child = child_for_position(child_level, left);
+    const std::size_t right_child = child_for_position(child_level, right - 1);
+    const std::size_t first_child = node * fanout_at_level(level);
+    const std::size_t left_slot = left_child - first_child;
+    const std::size_t right_slot = right_child - first_child + 1;
+    return query_child_slots(level, node, left_slot, right_slot, left, right);
+  }
+
+  /**
+   * @brief Return whether a position lies inside a half-open range.
+   */
+  bool contains_position(std::size_t left,
+                         std::size_t right,
+                         std::size_t position) const {
+    return !missing_position(position) && left <= position && position < right;
+  }
+
+  /**
+   * @brief Return the number of B-tree levels, including leaves.
+   */
+  std::size_t level_count() const { return level_sizes_.size(); }
+
+  /**
+   * @brief Return the number of entries in a leaf or child slots in a node.
+   */
+  std::size_t entry_count(std::size_t level, std::size_t node) const {
+    if (level == 0) {
+      const std::size_t begin = node_position_begin(0, node);
+      return std::min<std::size_t>(LeafSize, depth_count_ - begin);
+    }
+    const std::size_t first_child = node * fanout_at_level(level);
+    return std::min<std::size_t>(fanout_at_level(level),
+                                 level_sizes_[level - 1] - first_child);
+  }
+
+  /**
+   * @brief Return the first depth position covered by a node.
+   */
+  std::size_t node_position_begin(std::size_t level, std::size_t node) const {
+    return node * level_position_spans_[level];
+  }
+
+  /**
+   * @brief Return one past the last depth position covered by a node.
+   */
+  std::size_t node_position_end(std::size_t level, std::size_t node) const {
+    return std::min(depth_count_, node_position_begin(level, node) +
+                                      level_position_spans_[level]);
+  }
+
+  /**
+   * @brief Return a node's cached subtree-minimum candidate.
+   */
+  DepthCandidate subtree_min_candidate(std::size_t level,
+                                       std::size_t node) const {
+    if (level == 0) {
+      const LeafSummary& summary = leaf_summaries_[node];
+      return {node_position_begin(0, node) + summary.min_offset,
+              summary.min_depth};
+    }
+    const std::size_t flat = internal_flat_index(level, node);
+    return {static_cast<std::size_t>(internal_min_positions_[flat]),
+            internal_min_depths_[flat]};
+  }
+
+  /**
+   * @brief Return a node's cached subtree zero count.
+   */
+  std::size_t subtree_zero_count(std::size_t level, std::size_t node) const {
+    if (level == 0) {
+      return leaf_summaries_[node].zero_count;
+    }
+    return internal_zero_counts_[internal_flat_index(level, node)];
+  }
+
+  /**
+   * @brief Return a child slot's subtree-minimum candidate.
+   */
+  DepthCandidate child_min_candidate(std::size_t level,
+                                     std::size_t node,
+                                     std::size_t slot) const {
+    if (is_high_level(level)) {
+      return high_child_min_candidate(level, node, slot);
+    }
+    return subtree_min_candidate(level - 1,
+                                 node * fanout_at_level(level) + slot);
+  }
+
+  /**
+   * @brief Return a high-node child candidate using cached metadata.
+   */
+  DepthCandidate high_child_min_candidate(std::size_t level,
+                                          std::size_t node,
+                                          std::size_t slot) const {
+    const HighChildMetadata& metadata =
+        high_child_metadata_at(high_flat_index(level, node), slot);
+    return {static_cast<std::size_t>(metadata.min_position),
+            metadata.min_depth};
+  }
+
+  /**
+   * @brief Return an immutable internal-node BP selector.
+   */
+  const Bp512Selector& selector_at(std::size_t level, std::size_t node) const {
+    return internal_selectors_[internal_flat_index(level, node)];
+  }
+
+  /**
+   * @brief Return a mutable internal-node BP selector while building.
+   */
+  Bp512Selector& mutable_selector_at(std::size_t level, std::size_t node) {
+    return internal_selectors_[internal_flat_index(level, node)];
+  }
+
+  /**
+   * @brief Run the appropriate local selector for an internal node.
+   */
+  std::size_t selector_arg_min(std::size_t level,
+                               std::size_t node,
+                               std::size_t slot_left,
+                               std::size_t slot_right,
+                               std::size_t count) const {
+    if (is_high_level(level)) {
+      return high_sparse_arg_min(level, node, slot_left, slot_right, count);
+    }
+    return selector_at(level, node).arg_min(slot_left, slot_right, count);
+  }
+
+  /**
+   * @brief Return whether a level uses the high-node layout.
+   */
+  bool is_high_level(std::size_t level) const {
+    return level > 0 && level >= high_level_begin_ && level < level_count();
+  }
+
+  /**
+   * @brief Map an internal node to its flat storage index.
+   */
+  std::size_t internal_flat_index(std::size_t level, std::size_t node) const {
+    return internal_level_offsets_[level] + node;
+  }
+
+  /**
+   * @brief Return the fanout used to group children at a level.
+   */
+  std::size_t fanout_at_level(std::size_t level) const {
+    return level_fanouts_[level];
+  }
+
+  /**
+   * @brief Map a high-level node to its flat high-node storage index.
+   */
+  std::size_t high_flat_index(std::size_t level, std::size_t node) const {
+    return high_level_offsets_[level] + node;
+  }
+
+  /**
+   * @brief Return the first child-metadata record for a high node.
+   */
+  const HighChildMetadata* high_child_metadata_begin(std::size_t level,
+                                                     std::size_t node) const {
+    return high_child_metadata_.data() + high_flat_index(level, node) * Fanout;
+  }
+
+  /**
+   * @brief Return high-child metadata by flat high-node index and slot.
+   */
+  const HighChildMetadata& high_child_metadata_at(std::size_t high_flat,
+                                                  std::size_t slot) const {
+    return high_child_metadata_[high_flat * Fanout + slot];
+  }
+
+  /**
+   * @brief Return mutable high-child metadata while building.
+   */
+  HighChildMetadata& mutable_high_child_metadata_at(std::size_t high_flat,
+                                                    std::size_t slot) {
+    return high_child_metadata_[high_flat * Fanout + slot];
+  }
+
+  /**
+   * @brief Return mutable sparse-slot storage for one high node.
+   */
+  std::uint8_t* mutable_high_sparse_min_slots_begin(std::size_t high_flat) {
+    return high_sparse_min_slots_.data() + high_flat * kHighSparseSlotsPerNode;
+  }
+
+  /**
+   * @brief Return sparse-slot storage for one high node.
+   */
+  const std::uint8_t* high_sparse_min_slots_begin(std::size_t high_flat) const {
+    return high_sparse_min_slots_.data() + high_flat * kHighSparseSlotsPerNode;
+  }
+
+  /**
+   * @brief Return mutable zero-prefix storage for one high node.
+   */
+  std::size_t* mutable_high_zero_prefixes_begin(std::size_t high_flat) {
+    return high_zero_prefixes_.data() + high_flat * (Fanout + 1);
+  }
+
+  /**
+   * @brief Return zero-prefix storage for one high node.
+   */
+  const std::size_t* high_zero_prefixes_begin(std::size_t high_flat) const {
+    return high_zero_prefixes_.data() + high_flat * (Fanout + 1);
+  }
+
+  /**
+   * @brief Choose the better high-node child slot.
+   */
+  std::size_t better_high_child_slot(std::size_t level,
+                                     std::size_t node,
+                                     std::size_t left_slot,
+                                     std::size_t right_slot) const {
+    const DepthCandidate left =
+        high_child_min_candidate(level, node, left_slot);
+    const DepthCandidate right =
+        high_child_min_candidate(level, node, right_slot);
+    return better_candidate(left, right).position == right.position ? right_slot
+                                                                    : left_slot;
+  }
+
+  /**
+   * @brief Build sparse tables over high-node child minima.
+   */
+  void build_high_sparse_min_slots(std::size_t level,
+                                   std::size_t node,
+                                   std::size_t count) {
+    const std::size_t high_flat = high_flat_index(level, node);
+    std::uint8_t* table = mutable_high_sparse_min_slots_begin(high_flat);
+    for (std::size_t slot = 0; slot < count; ++slot) {
+      table[slot] = static_cast<std::uint8_t>(slot);
+    }
+
+    for (std::size_t table_level = 1; table_level < kHighSparseLevels;
+         ++table_level) {
+      const std::size_t span = std::size_t{1} << table_level;
+      if (span > count) {
+        break;
+      }
+      const std::size_t half_span = span >> 1;
+      const std::uint8_t* previous = table + (table_level - 1) * Fanout;
+      std::uint8_t* current = table + table_level * Fanout;
+      for (std::size_t slot = 0; slot + span <= count; ++slot) {
+        current[slot] = static_cast<std::uint8_t>(better_high_child_slot(
+            level, node, previous[slot], previous[slot + half_span]));
+      }
+    }
+  }
+
+  /**
+   * @brief Return the best high-node child slot in a slot range.
+   */
+  std::size_t high_sparse_arg_min(std::size_t level,
+                                  std::size_t node,
+                                  std::size_t slot_left,
+                                  std::size_t slot_right,
+                                  std::size_t count) const {
+    if (slot_left >= slot_right || slot_right > count) {
+      return npos;
+    }
+    const std::size_t length = slot_right - slot_left;
+    if (length == 1) {
+      return slot_left;
+    }
+
+    const std::size_t high_flat = high_flat_index(level, node);
+    const std::size_t table_level = std::bit_width(length) - 1;
+    const std::size_t span = std::size_t{1} << table_level;
+    const std::uint8_t* table =
+        high_sparse_min_slots_begin(high_flat) + table_level * Fanout;
+    return better_high_child_slot(level, node, table[slot_left],
+                                  table[slot_right - span]);
+  }
+
+  /**
+   * @brief Descend the tree to select the rank-th zero bit.
+   */
+  std::size_t select0_in_node(std::size_t level,
+                              std::size_t node,
+                              std::size_t rank) const {
+    if (level == 0) {
+      return select0_in_leaf(node, rank);
+    }
+
+    const std::size_t count = entry_count(level, node);
+    std::size_t slot = 0;
+    if (is_high_level(level)) {
+      const std::size_t high_flat = high_flat_index(level, node);
+      const std::size_t* prefixes = high_zero_prefixes_begin(high_flat);
+      const std::size_t* first = prefixes + 1;
+      const std::size_t* last = prefixes + count + 1;
+      const std::size_t* selected = std::lower_bound(first, last, rank);
+      if (selected == last) {
+        return npos;
+      }
+      slot = static_cast<std::size_t>(selected - first);
+      rank -= prefixes[slot];
+    } else {
+      const std::size_t first_child = node * fanout_at_level(level);
+      for (; slot < count; ++slot) {
+        const std::size_t child_zeros =
+            subtree_zero_count(level - 1, first_child + slot);
+        if (rank <= child_zeros) {
+          break;
+        }
+        rank -= child_zeros;
+      }
+      if (slot == count) {
+        return npos;
+      }
+    }
+
+    return select0_in_node(level - 1, node * fanout_at_level(level) + slot,
+                           rank);
+  }
+
+  /**
+   * @brief Select the rank-th zero bit inside one leaf.
+   */
+  std::size_t select0_in_leaf(std::size_t leaf, std::size_t rank) const {
+    const std::size_t bit_begin = node_position_begin(0, leaf);
+    const std::size_t delta_count = next_leaf_delta_count(leaf);
+    const auto bits = leaf_bits(leaf);
+    std::size_t remaining = delta_count;
+    for (std::size_t word = 0; word < kLeafWords && remaining != 0; ++word) {
+      const std::size_t word_bits = std::min<std::size_t>(64, remaining);
+      const std::uint64_t candidates =
+          (~bits[word]) & first_bits_mask(word_bits);
+      const std::size_t count = std::popcount(candidates);
+      if (rank <= count) {
+        return bit_begin + word * 64 + select_64(candidates, rank - 1);
+      }
+      rank -= count;
+      remaining -= word_bits;
+    }
+    return npos;
+  }
+
+  std::span<const std::uint64_t> input_bits_;
+  std::size_t depth_count_ = 0;
+  std::vector<LeafSummary> leaf_summaries_;
+  std::vector<Bp512Selector> internal_selectors_;
+  std::vector<Index> internal_min_positions_;
+  std::vector<std::int64_t> internal_min_depths_;
+  std::vector<std::size_t> internal_zero_counts_;
+  std::vector<HighChildMetadata> high_child_metadata_;
+  std::vector<std::uint8_t> high_sparse_min_slots_;
+  std::vector<std::size_t> high_zero_prefixes_;
+  std::vector<std::size_t> internal_level_offsets_;
+  std::vector<std::size_t> high_level_offsets_;
+  std::vector<std::size_t> level_sizes_;
+  std::vector<std::size_t> level_position_spans_;
+  std::vector<std::size_t> level_fanouts_;
+  std::size_t high_level_begin_ = std::numeric_limits<std::size_t>::max();
+};
+
+/**
+ * @brief Experimental Cartesian-tree value RMQ using SegmentBTreeXL-style LCA.
+ *
+ * @details This class keeps the same public value-RMQ contract as
+ * `CartesianTreeRmq`. It builds the same stable Ferrada-Navarro BP
+ * Cartesian-tree encoding, uses `BitVector` for close-parenthesis rank, keeps a
+ * dense close-select sample table for value endpoint mapping, and delegates the
+ * BP-depth minimum query to `SegmentBTreeXLPlusMinusOneRmq`. A single coarse
+ * value-level sparse table is checked first; it uses at least 4096-value blocks
+ * and grows the block width when needed so the top layer has at most 2^14
+ * blocks. Wide queries whose padded block-cover minimum lies inside the
+ * requested range return from this top table without touching the global BP
+ * rank/select path.
+ *
+ * The implementation is intentionally kept in the experimental namespace and
+ * is not included from `pixie/rmq.h`. It is meant to compare the usual
+ * Cartesian-tree reduction against a SegmentBTreeXL-shaped ±1 RMQ backend.
+ */
+template <class T,
+          class Compare = std::less<T>,
+          class Index = std::size_t,
+          std::size_t LeafSize = 512,
+          std::size_t Fanout = 256,
+          std::size_t MiddleFanout = 192>
+class CartesianTreeSegmentBTreeXLRmq
+    : public RmqBase<CartesianTreeSegmentBTreeXLRmq<T,
+                                                    Compare,
+                                                    Index,
+                                                    LeafSize,
+                                                    Fanout,
+                                                    MiddleFanout>,
+                     T> {
+ public:
+  static_assert(std::is_unsigned_v<Index>,
+                "CartesianTreeSegmentBTreeXLRmq index type must be unsigned");
+
+  using Self = CartesianTreeSegmentBTreeXLRmq<T,
+                                              Compare,
+                                              Index,
+                                              LeafSize,
+                                              Fanout,
+                                              MiddleFanout>;
+
+  static constexpr std::size_t npos = RmqBase<Self, T>::npos;
+  static constexpr Index invalid_index = std::numeric_limits<Index>::max();
+  static constexpr std::size_t kMinTopSparseBlockSize = 4096;
+  static constexpr std::size_t kMaxTopSparseBlocks = std::size_t{1} << 14;
+
+  /**
+   * @brief Construct an empty Cartesian-tree RMQ index.
+   */
+  CartesianTreeSegmentBTreeXLRmq() = default;
+
+  /**
+   * @brief Build an experimental Cartesian-tree RMQ index over @p values.
+   *
+   * @details The values are not copied and must outlive this object. Equal
+   * values stay stable: the smaller index remains the first minimum.
+   */
+  explicit CartesianTreeSegmentBTreeXLRmq(std::span<const T> values,
+                                          Compare compare = Compare())
+      : values_(values), compare_(compare) {
+    build();
+  }
+
+  /**
+   * @brief Copy an RMQ index and rebuild internal non-owning views.
+   */
+  CartesianTreeSegmentBTreeXLRmq(const CartesianTreeSegmentBTreeXLRmq& other)
+      : values_(other.values_),
+        compare_(other.compare_),
+        bp_bits_(other.bp_bits_),
+        bp_bit_count_(other.bp_bit_count_),
+        close_select_samples_(other.close_select_samples_),
+        top_sparse_candidates_(other.top_sparse_candidates_),
+        top_block_size_(other.top_block_size_),
+        top_block_count_(other.top_block_count_),
+        top_sparse_levels_(other.top_sparse_levels_) {
+    reset_bp_indexes();
+  }
+
+  /**
+   * @brief Copy-assign an RMQ index and rebuild internal non-owning views.
+   */
+  CartesianTreeSegmentBTreeXLRmq& operator=(
+      const CartesianTreeSegmentBTreeXLRmq& other) {
+    if (this == &other) {
+      return *this;
+    }
+    values_ = other.values_;
+    compare_ = other.compare_;
+    bp_bits_ = other.bp_bits_;
+    bp_bit_count_ = other.bp_bit_count_;
+    close_select_samples_ = other.close_select_samples_;
+    top_sparse_candidates_ = other.top_sparse_candidates_;
+    top_block_size_ = other.top_block_size_;
+    top_block_count_ = other.top_block_count_;
+    top_sparse_levels_ = other.top_sparse_levels_;
+    reset_bp_indexes();
+    return *this;
+  }
+
+  /**
+   * @brief Move an RMQ index and rebuild internal non-owning views.
+   */
+  CartesianTreeSegmentBTreeXLRmq(
+      CartesianTreeSegmentBTreeXLRmq&& other) noexcept
+      : values_(other.values_),
+        compare_(std::move(other.compare_)),
+        bp_bits_(std::move(other.bp_bits_)),
+        bp_bit_count_(other.bp_bit_count_),
+        close_select_samples_(std::move(other.close_select_samples_)),
+        top_sparse_candidates_(std::move(other.top_sparse_candidates_)),
+        top_block_size_(other.top_block_size_),
+        top_block_count_(other.top_block_count_),
+        top_sparse_levels_(other.top_sparse_levels_) {
+    other.values_ = std::span<const T>();
+    other.bp_bit_count_ = 0;
+    other.top_block_size_ = kMinTopSparseBlockSize;
+    other.top_block_count_ = 0;
+    other.top_sparse_levels_ = 0;
+    reset_bp_indexes();
+  }
+
+  /**
+   * @brief Move-assign an RMQ index and rebuild internal non-owning views.
+   */
+  CartesianTreeSegmentBTreeXLRmq& operator=(
+      CartesianTreeSegmentBTreeXLRmq&& other) noexcept {
+    if (this == &other) {
+      return *this;
+    }
+    values_ = other.values_;
+    compare_ = std::move(other.compare_);
+    bp_bits_ = std::move(other.bp_bits_);
+    bp_bit_count_ = other.bp_bit_count_;
+    close_select_samples_ = std::move(other.close_select_samples_);
+    top_sparse_candidates_ = std::move(other.top_sparse_candidates_);
+    top_block_size_ = other.top_block_size_;
+    top_block_count_ = other.top_block_count_;
+    top_sparse_levels_ = other.top_sparse_levels_;
+    other.values_ = std::span<const T>();
+    other.bp_bit_count_ = 0;
+    other.top_block_size_ = kMinTopSparseBlockSize;
+    other.top_block_count_ = 0;
+    other.top_sparse_levels_ = 0;
+    reset_bp_indexes();
+    return *this;
+  }
+
+  /**
+   * @brief Return the number of indexed values.
+   */
+  std::size_t size_impl() const { return values_.size(); }
+
+  /**
+   * @brief Return the value at an indexed position.
+   */
+  T value_at_impl(std::size_t position) const { return values_[position]; }
+
+  /**
+   * @brief Return the first minimum position in [@p left, @p right).
+   */
+  std::size_t arg_min_impl(std::size_t left, std::size_t right) const {
+    if (left >= right || right > values_.size()) {
+      return npos;
+    }
+    if (right - left <= top_block_size_) {
+      return cartesian_arg_min(left, right);
+    }
+    const std::size_t top_answer = top_sparse_arg_min(left, right);
+    if (top_answer != npos) {
+      return top_answer;
+    }
+    return cartesian_arg_min(left, right);
+  }
+
+  /**
+   * @brief Return the number of BP bits in the Cartesian-tree RMQ encoding.
+   */
+  std::size_t bp_bit_count() const { return bp_bit_count_; }
+
+  /**
+   * @brief Return the packed BP words used by the RMQ encoding.
+   */
+  std::span<const std::uint64_t> bp_words() const { return bp_bits_; }
+
+  /**
+   * @brief Return the top sparse-table block width chosen for a value count.
+   */
+  static std::size_t top_sparse_block_size_for(std::size_t value_count) {
+    if (value_count == 0) {
+      return kMinTopSparseBlockSize;
+    }
+    return std::max(kMinTopSparseBlockSize,
+                    ceil_div(value_count, kMaxTopSparseBlocks));
+  }
+
+  /**
+   * @brief Return the number of top sparse-table blocks for a value count.
+   */
+  static std::size_t top_sparse_block_count_for(std::size_t value_count) {
+    if (value_count == 0) {
+      return 0;
+    }
+    return ceil_div(value_count, top_sparse_block_size_for(value_count));
+  }
+
+  /**
+   * @brief Return the current top sparse-table block width.
+   */
+  std::size_t top_sparse_block_size() const { return top_block_size_; }
+
+  /**
+   * @brief Return the current number of top sparse-table blocks.
+   */
+  std::size_t top_sparse_block_count() const { return top_block_count_; }
+
+ private:
+  using BpDepthRmq =
+      SegmentBTreeXLPlusMinusOneRmq<Index, LeafSize, Fanout, MiddleFanout>;
+  static constexpr std::size_t kCloseSelectSampleFrequency = 256;
+
+  struct TopCandidate {
+    Index position = invalid_index;
+    Index close_position = invalid_index;
+  };
+  static_assert(sizeof(TopCandidate) == 2 * sizeof(Index));
+
+  /**
+   * @brief Return the first minimum position through the Cartesian BP
+   * reduction.
+   */
+  std::size_t cartesian_arg_min(std::size_t left, std::size_t right) const {
+    const std::size_t first_close = cached_select0(left + 1);
+    const std::size_t last_close = cached_select0(right);
+    if (first_close == npos || last_close == npos || first_close > last_close) {
+      return npos;
+    }
+
+    const std::size_t shifted_min =
+        bp_depth_rmq_.arg_min(first_close + 1, last_close + 2);
+    if (shifted_min == npos || shifted_min == 0) {
+      return npos;
+    }
+    const BitVector& bp_index = *bp_index_;
+    const std::size_t answer = bp_index.rank0(shifted_min) - 1;
+    return answer < values_.size() ? answer : npos;
+  }
+
+  /**
+   * @brief Rebuild the BP Cartesian-tree representation and support indexes.
+   */
+  void build() {
+    bp_bits_.clear();
+    bp_bit_count_ = 0;
+    close_select_samples_.clear();
+    top_sparse_candidates_.clear();
+    top_block_size_ = kMinTopSparseBlockSize;
+    top_block_count_ = 0;
+    top_sparse_levels_ = 0;
+    reset_bp_indexes();
+
+    if (values_.empty()) {
+      return;
+    }
+    if (values_.size() > (static_cast<std::size_t>(invalid_index) - 1) / 2) {
+      throw std::length_error(
+          "Cartesian SegmentBTreeXL RMQ index type is too small");
+    }
+
+    bp_bit_count_ = 2 * values_.size();
+    bp_bits_.assign((bp_bit_count_ + 63) / 64, 0);
+    build_bp_bits();
+    build_close_select_samples();
+    build_top_sparse_table();
+    reset_bp_indexes();
+  }
+
+  /**
+   * @brief Build the Ferrada-Navarro BP bits with a monotone stack.
+   */
+  void build_bp_bits() {
+    const auto stack = std::make_unique_for_overwrite<Index[]>(values_.size());
+    std::size_t stack_size = 0;
+    std::size_t write_position = bp_bit_count_;
+
+    for (std::size_t i = values_.size(); i-- > 0;) {
+      while (stack_size != 0 &&
+             !compare_(values_[stack[stack_size - 1]], values_[i])) {
+        --stack_size;
+        prepend_bp_bit(write_position, true);
+      }
+      stack[stack_size++] = static_cast<Index>(i);
+      prepend_bp_bit(write_position, false);
+    }
+
+    while (write_position != 0) {
+      prepend_bp_bit(write_position, true);
+    }
+  }
+
+  /**
+   * @brief Prepend one BP bit into the right-to-left construction buffer.
+   */
+  void prepend_bp_bit(std::size_t& write_position, bool bit) {
+    --write_position;
+    if (bit) {
+      bp_bits_[write_position >> 6] |= std::uint64_t{1}
+                                       << (write_position & 63);
+    }
+  }
+
+  /**
+   * @brief Rebuild indexes that store non-owning spans into `bp_bits_`.
+   */
+  void reset_bp_indexes() {
+    bp_index_.reset();
+    bp_depth_rmq_ = BpDepthRmq();
+    if (bp_bit_count_ == 0) {
+      return;
+    }
+    const std::span<const std::uint64_t> words(bp_bits_);
+    bp_index_.emplace(words, bp_bit_count_);
+    bp_depth_rmq_ = BpDepthRmq(words, bp_bit_count_ + 1);
+  }
+
+  /**
+   * @brief Build dense samples for close-parenthesis select queries.
+   */
+  void build_close_select_samples() {
+    close_select_samples_.clear();
+    close_select_samples_.reserve(
+        (values_.size() + kCloseSelectSampleFrequency - 1) /
+        kCloseSelectSampleFrequency);
+
+    std::size_t zero_rank = 0;
+    for (std::size_t word = 0; word < bp_bits_.size(); ++word) {
+      const std::size_t word_begin = word * 64;
+      const std::size_t word_bits =
+          std::min<std::size_t>(64, bp_bit_count_ - word_begin);
+      std::uint64_t zeros = (~bp_bits_[word]) & first_bits_mask(word_bits);
+      while (zeros != 0) {
+        const std::size_t offset = std::countr_zero(zeros);
+        ++zero_rank;
+        if ((zero_rank - 1) % kCloseSelectSampleFrequency == 0) {
+          close_select_samples_.push_back(
+              static_cast<Index>(word_begin + offset));
+        }
+        zeros &= zeros - 1;
+      }
+    }
+  }
+
+  /**
+   * @brief Build a single top sparse table over original-value block minima.
+   */
+  void build_top_sparse_table() {
+    top_sparse_candidates_.clear();
+    top_block_size_ = top_sparse_block_size_for(values_.size());
+    top_block_count_ = ceil_div(values_.size(), top_block_size_);
+    top_sparse_levels_ =
+        top_block_count_ == 0 ? 0 : std::bit_width(top_block_count_);
+    if (top_block_count_ == 0) {
+      return;
+    }
+
+    top_sparse_candidates_.assign(top_sparse_levels_ * top_block_count_,
+                                  TopCandidate{});
+    for (std::size_t block = 0; block < top_block_count_; ++block) {
+      const std::size_t begin = block * top_block_size_;
+      const std::size_t end = std::min(values_.size(), begin + top_block_size_);
+      std::size_t minimum = begin;
+      for (std::size_t position = begin + 1; position < end; ++position) {
+        if (strictly_better_value_position(position, minimum)) {
+          minimum = position;
+        }
+      }
+      top_sparse_candidates_[block] = make_top_candidate(minimum);
+    }
+
+    for (std::size_t level = 1; level < top_sparse_levels_; ++level) {
+      const std::size_t span = std::size_t{1} << level;
+      const std::size_t half_span = span >> 1;
+      TopCandidate* current =
+          top_sparse_candidates_.data() + level * top_block_count_;
+      const TopCandidate* previous =
+          top_sparse_candidates_.data() + (level - 1) * top_block_count_;
+      for (std::size_t block = 0; block + span <= top_block_count_; ++block) {
+        current[block] =
+            better_top_candidate(previous[block], previous[block + half_span]);
+      }
+    }
+  }
+
+  /**
+   * @brief Return `ceil(value / divisor)` for positive divisors.
+   */
+  static std::size_t ceil_div(std::size_t value, std::size_t divisor) {
+    return value == 0 ? 0 : 1 + (value - 1) / divisor;
+  }
+
+  /**
+   * @brief Wrap an original value position with its Cartesian close position.
+   */
+  TopCandidate make_top_candidate(std::size_t position) const {
+    if (position >= values_.size()) {
+      return {};
+    }
+    return {static_cast<Index>(position),
+            static_cast<Index>(cached_select0(position + 1))};
+  }
+
+  /**
+   * @brief Return whether @p position is a valid stored original-value index.
+   */
+  bool valid_value_position(std::size_t position) const {
+    return position != npos &&
+           position != static_cast<std::size_t>(invalid_index) &&
+           position < values_.size();
+  }
+
+  /**
+   * @brief Return whether value position @p left is strictly better than @p
+   * right.
+   */
+  bool strictly_better_value_position(std::size_t left,
+                                      std::size_t right) const {
+    if (!valid_value_position(left)) {
+      return false;
+    }
+    if (!valid_value_position(right)) {
+      return true;
+    }
+    if (compare_(values_[left], values_[right])) {
+      return true;
+    }
+    if (compare_(values_[right], values_[left])) {
+      return false;
+    }
+    return left < right;
+  }
+
+  /**
+   * @brief Choose the better original-value candidate, preserving first ties.
+   */
+  TopCandidate better_top_candidate(TopCandidate left,
+                                    TopCandidate right) const {
+    const std::size_t left_position = static_cast<std::size_t>(left.position);
+    const std::size_t right_position = static_cast<std::size_t>(right.position);
+    return strictly_better_value_position(right_position, left_position) ? right
+                                                                         : left;
+  }
+
+  /**
+   * @brief Return the sparse-table candidate over a top-block range.
+   */
+  TopCandidate top_sparse_block_arg_min(std::size_t block_left,
+                                        std::size_t block_right) const {
+    if (block_left >= block_right || block_right > top_block_count_ ||
+        top_sparse_levels_ == 0) {
+      return {};
+    }
+    const std::size_t length = block_right - block_left;
+    const std::size_t level = std::bit_width(length) - 1;
+    const std::size_t span = std::size_t{1} << level;
+    const TopCandidate* table =
+        top_sparse_candidates_.data() + level * top_block_count_;
+    return better_top_candidate(table[block_left], table[block_right - span]);
+  }
+
+  /**
+   * @brief Return whether a candidate lies inside a half-open value range.
+   */
+  bool top_candidate_inside(TopCandidate candidate,
+                            std::size_t left,
+                            std::size_t right) const {
+    const std::size_t position = static_cast<std::size_t>(candidate.position);
+    return valid_value_position(position) && left <= position &&
+           position < right;
+  }
+
+  /**
+   * @brief Return the top-overlay answer, or `npos` when the BP path should
+   * run.
+   */
+  std::size_t top_sparse_arg_min(std::size_t left, std::size_t right) const {
+    if (top_block_count_ <= 1) {
+      return npos;
+    }
+
+    const std::size_t padded_block_left = left / top_block_size_;
+    const std::size_t padded_block_right = (right - 1) / top_block_size_ + 1;
+    if (padded_block_left + 1 >= padded_block_right) {
+      return npos;
+    }
+
+    const TopCandidate padded =
+        top_sparse_block_arg_min(padded_block_left, padded_block_right);
+    if (top_candidate_inside(padded, left, right)) {
+      return static_cast<std::size_t>(padded.position);
+    }
+
+    const std::size_t first_full_block =
+        (left + top_block_size_ - 1) / top_block_size_;
+    const std::size_t full_block_right = right / top_block_size_;
+    if (first_full_block >= full_block_right) {
+      return npos;
+    }
+
+    TopCandidate answer =
+        top_sparse_block_arg_min(first_full_block, full_block_right);
+
+    const std::size_t left_border_end = first_full_block * top_block_size_;
+    if (left < left_border_end) {
+      answer = better_top_candidate(
+          answer, make_top_candidate(cartesian_arg_min(left, left_border_end)));
+    }
+
+    const std::size_t right_border_begin = full_block_right * top_block_size_;
+    if (right_border_begin < right) {
+      answer = better_top_candidate(
+          answer,
+          make_top_candidate(cartesian_arg_min(right_border_begin, right)));
+    }
+
+    return valid_value_position(static_cast<std::size_t>(answer.position))
+               ? static_cast<std::size_t>(answer.position)
+               : npos;
+  }
+
+  /**
+   * @brief Return the one-based rank-th close from the dense sample table.
+   */
+  std::size_t cached_select0(std::size_t rank) const {
+    if (rank == 0 || rank > values_.size()) {
+      return npos;
+    }
+    const std::size_t sample_index = (rank - 1) / kCloseSelectSampleFrequency;
+    const std::size_t sample_rank =
+        sample_index * kCloseSelectSampleFrequency + 1;
+    if (sample_index >= close_select_samples_.size()) {
+      return npos;
+    }
+    return select0_from_position(close_select_samples_[sample_index],
+                                 rank - sample_rank + 1);
+  }
+
+  /**
+   * @brief Select a zero bit by scanning forward from a sampled zero position.
+   */
+  std::size_t select0_from_position(std::size_t position,
+                                    std::size_t rank) const {
+    std::size_t word = position >> 6;
+    std::size_t offset = position & 63;
+    while (word < bp_bits_.size()) {
+      const std::size_t word_begin = word * 64;
+      const std::size_t word_bits =
+          std::min<std::size_t>(64, bp_bit_count_ - word_begin);
+      std::uint64_t zeros = (~bp_bits_[word]) & first_bits_mask(word_bits);
+      zeros &= ~first_bits_mask(offset);
+      const std::size_t count = std::popcount(zeros);
+      if (rank <= count) {
+        return word_begin + select_64(zeros, rank - 1);
+      }
+      rank -= count;
+      ++word;
+      offset = 0;
+    }
+    return npos;
+  }
+
+  std::span<const T> values_;
+  Compare compare_;
+  std::vector<std::uint64_t> bp_bits_;
+  std::size_t bp_bit_count_ = 0;
+  std::vector<Index> close_select_samples_;
+  std::vector<TopCandidate> top_sparse_candidates_;
+  std::size_t top_block_size_ = kMinTopSparseBlockSize;
+  std::size_t top_block_count_ = 0;
+  std::size_t top_sparse_levels_ = 0;
+  std::optional<BitVector> bp_index_;
+  BpDepthRmq bp_depth_rmq_;
+};
+
+}  // namespace pixie::rmq::experimental
