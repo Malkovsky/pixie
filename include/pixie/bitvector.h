@@ -538,6 +538,19 @@ class BitVector {
   size_t size() const { return num_bits_; }
 
   /**
+   * @brief Return owned auxiliary memory usage in bytes.
+   *
+   * @details Counts this rank/select object and its owned aligned metadata
+   * buffers. The external source bit words are not owned and are excluded.
+   */
+  size_t memory_usage_bytes() const {
+    return sizeof(*this) + super_block_rank_.allocated_bytes() +
+           basic_block_rank_.allocated_bytes() +
+           select1_samples_.allocated_bytes() +
+           select0_samples_.allocated_bytes();
+  }
+
+  /**
    * @brief Returns the bit at the given position.
    * @param pos Bit
    * index in [0, size()).

@@ -65,6 +65,11 @@ class AlignedStorage {
     return data_.size() * kAlignedStorageLineBytes;
   }
 
+  /** @brief Bytes reserved by the underlying aligned cache-line buffer. */
+  std::size_t allocated_bytes() const {
+    return data_.capacity() * kAlignedStorageLineBytes;
+  }
+
   /** @brief Mutable view as cache lines. */
   std::span<CacheLine> AsLines() { return data_; }
   /** @brief Const view as cache lines. */

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <pixie/bits.h>
+#include <pixie/memory_usage.h>
 #include <pixie/rmq/sparse_table.h>
 
 #include <algorithm>
@@ -133,6 +134,18 @@ class BpPlusMinusOneRmq {
    * @return `true` when `size() == 0`.
    */
   bool empty() const { return depth_count_ == 0; }
+
+  /**
+   * @brief Return owned auxiliary memory usage in bytes.
+   *
+   * @details Counts this ±1 RMQ object, block summaries, and the macro sparse
+   * table over those summaries. The external packed delta bits are not owned
+   * and are excluded.
+   */
+  std::size_t memory_usage_bytes() const {
+    return sizeof(*this) + pixie::vector_capacity_bytes(block_summaries_) +
+           pixie::nested_owned_memory_bytes(macro_rmq_);
+  }
 
   /**
    * @brief Return the first minimum depth position in [@p left, @p right).

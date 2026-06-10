@@ -2,6 +2,7 @@
 
 #include <pixie/bits.h>
 #include <pixie/bitvector.h>
+#include <pixie/memory_usage.h>
 #include <pixie/rmq/rmq_base.h>
 
 #include <algorithm>
@@ -34,8 +35,10 @@ namespace pixie::rmq::experimental {
  * internal node stores a local Cartesian/BP selector over the minima of its
  * immediate children. The top one or two levels additionally keep sparse
  * tables over child-minimum slots. Unlike value `SegmentBTreeXL`, leaves do not
- * store another local Cartesian selector. A leaf query scans the original BP
- * delta bits directly with the 128-bit excess primitives from `bits.h`.
+ * store another local Cartesian selector or cached minima. Leaf minima are
+ * recomputed from the original BP delta bits with the 128-bit excess
+ * primitives from `bits.h`, using rank support to recover the absolute base
+ * depth at the leaf start.
  *
  * @tparam Index Unsigned integer type used for stored positions.
  * @tparam LeafSize Number of depth positions per low-level leaf.
@@ -85,11 +88,36 @@ class SegmentBTreeXLPlusMinusOneRmq {
   }
 
   /**
+   * @brief Build a ±1 RMQ index over external packed bits and rank support.
+   *
+   * @details The supplied rank index is non-owning and must outlive this RMQ
+   * object. This is used by Cartesian XL to reuse its BP rank/select index.
+   */
+  SegmentBTreeXLPlusMinusOneRmq(std::span<const std::uint64_t> bits,
+                                std::size_t depth_count,
+                                const BitVector& rank_index) {
+    build(bits, depth_count, rank_index);
+  }
+
+  /**
    * @brief Rebuild this index over external packed delta bits.
    */
   void build(std::span<const std::uint64_t> bits, std::size_t depth_count) {
     input_bits_ = bits;
     depth_count_ = depth_count;
+    external_rank_index_ = nullptr;
+    build();
+  }
+
+  /**
+   * @brief Rebuild this index using non-owning rank support for the same bits.
+   */
+  void build(std::span<const std::uint64_t> bits,
+             std::size_t depth_count,
+             const BitVector& rank_index) {
+    input_bits_ = bits;
+    depth_count_ = depth_count;
+    external_rank_index_ = &rank_index;
     build();
   }
 
@@ -102,6 +130,30 @@ class SegmentBTreeXLPlusMinusOneRmq {
    * @brief Whether the indexed depth sequence is empty.
    */
   bool empty() const { return depth_count_ == 0; }
+
+  /**
+   * @brief Return owned auxiliary memory usage in bytes.
+   *
+   * @details Counts this ±1 RMQ object and all selector/metadata buffers. The
+   * external packed delta bits are not owned and are excluded.
+   */
+  std::size_t memory_usage_bytes() const {
+    std::size_t bytes = sizeof(*this);
+    if (external_rank_index_ == nullptr) {
+      bytes += pixie::optional_nested_owned_memory_bytes(owned_rank_index_);
+    }
+    bytes += pixie::vector_capacity_bytes(internal_selectors_);
+    bytes += pixie::vector_capacity_bytes(internal_min_positions_);
+    bytes += pixie::vector_capacity_bytes(internal_min_depths_);
+    bytes += pixie::vector_capacity_bytes(high_child_metadata_);
+    bytes += pixie::vector_capacity_bytes(high_sparse_min_slots_);
+    bytes += pixie::vector_capacity_bytes(internal_level_offsets_);
+    bytes += pixie::vector_capacity_bytes(high_level_offsets_);
+    bytes += pixie::vector_capacity_bytes(level_sizes_);
+    bytes += pixie::vector_capacity_bytes(level_position_spans_);
+    bytes += pixie::vector_capacity_bytes(level_fanouts_);
+    return bytes;
+  }
 
   /**
    * @brief Return the first minimum depth position in [@p left, @p right).
@@ -136,20 +188,17 @@ class SegmentBTreeXLPlusMinusOneRmq {
    * @brief Return the one-based rank-th zero delta bit position.
    *
    * @details This is the select operation needed by the Cartesian wrapper to
-   * map value endpoints to close-parenthesis positions. High nodes keep
-   * per-child zero-count prefixes, so top-level descent avoids rescanning the
-   * 256-way high-node fanout. The returned position is a delta-bit position in
-   * `[0, size() - 1)`, or `npos` when @p rank is out of range.
+   * map value endpoints to close-parenthesis positions. The returned position
+   * is a delta-bit position in `[0, size() - 1)`, or `npos` when @p rank is out
+   * of range.
    */
   std::size_t select0(std::size_t rank) const {
-    if (rank == 0 || depth_count_ == 0 || level_sizes_.empty()) {
+    if (rank == 0 || depth_count_ == 0 || rank_index_or_null() == nullptr) {
       return npos;
     }
-    const std::size_t root_level = level_count() - 1;
-    if (rank > subtree_zero_count(root_level, 0)) {
-      return npos;
-    }
-    return select0_in_node(root_level, 0, rank);
+    const std::size_t delta_count = depth_count_ - 1;
+    const std::size_t position = rank_index().select0(rank);
+    return position < delta_count ? position : npos;
   }
 
  private:
@@ -168,13 +217,6 @@ class SegmentBTreeXLPlusMinusOneRmq {
   struct DepthCandidate {
     std::size_t position = npos;
     std::int64_t depth = std::numeric_limits<std::int64_t>::max();
-  };
-
-  struct LeafSummary {
-    std::int64_t base_depth = 0;
-    std::int64_t min_depth = 0;
-    Index min_offset = 0;
-    Index zero_count = 0;
   };
 
   struct HighChildMetadata {
@@ -399,16 +441,15 @@ class SegmentBTreeXLPlusMinusOneRmq {
   }
 
   /**
-   * @brief Build all leaf summaries, internal selectors, and top sparse tables.
+   * @brief Build rank support, internal selectors, and top sparse tables.
    */
   void build() {
-    leaf_summaries_.clear();
+    owned_rank_index_.reset();
     internal_selectors_.clear();
     internal_min_positions_.clear();
     internal_min_depths_.clear();
     high_child_metadata_.clear();
     high_sparse_min_slots_.clear();
-    high_zero_prefixes_.clear();
     internal_level_offsets_.clear();
     high_level_offsets_.clear();
     level_sizes_.clear();
@@ -433,8 +474,15 @@ class SegmentBTreeXLPlusMinusOneRmq {
           "SegmentBTreeXLPlusMinusOneRmq bit span is too small");
     }
 
+    const std::size_t delta_count = depth_count_ - 1;
+    if (external_rank_index_ == nullptr) {
+      owned_rank_index_.emplace(input_bits_, delta_count);
+    } else if (external_rank_index_->size() < delta_count) {
+      throw std::invalid_argument(
+          "SegmentBTreeXLPlusMinusOneRmq external rank index is too small");
+    }
+
     initialize_layout((depth_count_ + LeafSize - 1) / LeafSize);
-    build_leaves();
     for (std::size_t level = 1; level < level_count(); ++level) {
       for (std::size_t node = 0; node < level_sizes_[level]; ++node) {
         build_internal_node(level, node);
@@ -466,9 +514,6 @@ class SegmentBTreeXLPlusMinusOneRmq {
       level_sizes_.push_back(current_count);
       level_position_spans_.push_back(current_span);
     }
-
-    leaf_summaries_.resize(level_sizes_[0]);
-
     internal_level_offsets_.assign(level_count(), 0);
     high_level_offsets_.assign(level_count(), 0);
     if (level_count() <= 1) {
@@ -487,7 +532,6 @@ class SegmentBTreeXLPlusMinusOneRmq {
     internal_min_positions_.resize(internal_count, invalid_index);
     internal_min_depths_.resize(internal_count,
                                 std::numeric_limits<std::int64_t>::max());
-    internal_zero_counts_.resize(internal_count, 0);
 
     std::size_t high_node_count = 0;
     for (std::size_t level = high_level_begin_; level < level_count();
@@ -497,30 +541,6 @@ class SegmentBTreeXLPlusMinusOneRmq {
     }
     high_child_metadata_.resize(high_node_count * Fanout);
     high_sparse_min_slots_.resize(high_node_count * kHighSparseSlotsPerNode);
-    high_zero_prefixes_.resize(high_node_count * (Fanout + 1));
-  }
-
-  /**
-   * @brief Build all leaf summaries while carrying the absolute base depth.
-   */
-  void build_leaves() {
-    std::int64_t base_depth = 0;
-    for (std::size_t leaf = 0; leaf < leaf_summaries_.size(); ++leaf) {
-      const std::size_t count = entry_count(0, leaf);
-      DepthCandidate minimum =
-          scan_leaf_range_with_base(leaf, 0, count - 1, base_depth);
-      const std::size_t zero_count =
-          leaf_zero_count(leaf, next_leaf_delta_count(leaf));
-      leaf_summaries_[leaf] = {
-          base_depth,
-          minimum.depth,
-          static_cast<Index>(minimum.position - node_position_begin(0, leaf)),
-          static_cast<Index>(zero_count),
-      };
-      if (leaf + 1 < leaf_summaries_.size()) {
-        base_depth += leaf_excess(leaf, next_leaf_delta_count(leaf));
-      }
-    }
   }
 
   /**
@@ -532,16 +552,16 @@ class SegmentBTreeXLPlusMinusOneRmq {
     const bool high_level = is_high_level(level);
     const std::size_t high_flat = high_level ? high_flat_index(level, node) : 0;
 
+    std::array<DepthCandidate, kSelectorEntries> child_minima{};
+    for (std::size_t slot = 0; slot < count; ++slot) {
+      child_minima[slot] =
+          subtree_min_candidate(level - 1, first_child + slot);
+    }
+
     if (high_level) {
-      std::size_t zero_prefix = 0;
-      std::size_t* prefixes = mutable_high_zero_prefixes_begin(high_flat);
-      prefixes[0] = 0;
       for (std::size_t slot = 0; slot < count; ++slot) {
         const std::size_t child = first_child + slot;
-        const DepthCandidate child_min =
-            subtree_min_candidate(level - 1, child);
-        zero_prefix += subtree_zero_count(level - 1, child);
-        prefixes[slot + 1] = zero_prefix;
+        const DepthCandidate child_min = child_minima[slot];
         HighChildMetadata& metadata =
             mutable_high_child_metadata_at(high_flat, slot);
         metadata.position_begin = node_position_begin(level - 1, child);
@@ -554,24 +574,15 @@ class SegmentBTreeXLPlusMinusOneRmq {
 
     Bp512Selector& selector = mutable_selector_at(level, node);
     selector.build(count, [&](std::size_t left, std::size_t right) {
-      return strictly_better_candidate(child_min_candidate(level, node, left),
-                                       child_min_candidate(level, node, right));
+      return strictly_better_candidate(child_minima[left],
+                                       child_minima[right]);
     });
 
     const std::size_t slot = selector.arg_min(0, count, count);
-    const DepthCandidate minimum = child_min_candidate(level, node, slot);
+    const DepthCandidate minimum = child_minima[slot];
     const std::size_t flat = internal_flat_index(level, node);
     internal_min_positions_[flat] = static_cast<Index>(minimum.position);
     internal_min_depths_[flat] = minimum.depth;
-    if (high_level) {
-      internal_zero_counts_[flat] = high_zero_prefixes_begin(high_flat)[count];
-    } else {
-      std::size_t zero_count = 0;
-      for (std::size_t slot = 0; slot < count; ++slot) {
-        zero_count += subtree_zero_count(level - 1, first_child + slot);
-      }
-      internal_zero_counts_[flat] = zero_count;
-    }
   }
 
   /**
@@ -611,44 +622,28 @@ class SegmentBTreeXLPlusMinusOneRmq {
   }
 
   /**
-   * @brief Return total excess over the first @p delta_count bits of a leaf.
+   * @brief Return the active BP rank/select support, if one exists.
    */
-  std::int64_t leaf_excess(std::size_t leaf, std::size_t delta_count) const {
-    const auto bits = leaf_bits(leaf);
-    std::int64_t result = 0;
-    std::size_t remaining = std::min(delta_count, LeafSize);
-    for (std::size_t chunk = 0; chunk < kLeafChunks && remaining != 0;
-         ++chunk) {
-      const std::size_t chunk_count = std::min<std::size_t>(128, remaining);
-      result += prefix_excess_128(bits.data() + 2 * chunk, chunk_count);
-      remaining -= chunk_count;
-    }
-    return result;
+  const BitVector* rank_index_or_null() const {
+    return external_rank_index_ != nullptr
+               ? external_rank_index_
+               : (owned_rank_index_ ? &*owned_rank_index_ : nullptr);
   }
 
   /**
-   * @brief Return the number of zero delta bits in one leaf prefix.
+   * @brief Return the active BP rank/select support.
    */
-  std::size_t leaf_zero_count(std::size_t leaf, std::size_t delta_count) const {
-    const auto bits = leaf_bits(leaf);
-    std::size_t result = 0;
-    std::size_t remaining = std::min(delta_count, LeafSize);
-    for (std::size_t word = 0; word < kLeafWords && remaining != 0; ++word) {
-      const std::size_t word_bits = std::min<std::size_t>(64, remaining);
-      result +=
-          word_bits - std::popcount(bits[word] & first_bits_mask(word_bits));
-      remaining -= word_bits;
-    }
-    return result;
-  }
+  const BitVector& rank_index() const { return *rank_index_or_null(); }
 
   /**
-   * @brief Count delta bits from a leaf start to the next leaf base depth.
+   * @brief Return the absolute open-minus-close depth at a BP depth position.
    */
-  std::size_t next_leaf_delta_count(std::size_t leaf) const {
-    const std::size_t begin = node_position_begin(0, leaf);
-    const std::size_t next_begin = begin + LeafSize;
-    return std::min(next_begin, depth_count_ - 1) - begin;
+  std::int64_t depth_at_position(std::size_t position) const {
+    const std::size_t delta_count = depth_count_ == 0 ? 0 : depth_count_ - 1;
+    position = std::min(position, delta_count);
+    const std::uint64_t ones = rank_index().rank(position);
+    return static_cast<std::int64_t>(ones) -
+           static_cast<std::int64_t>(position - ones);
   }
 
   /**
@@ -710,15 +705,10 @@ class SegmentBTreeXLPlusMinusOneRmq {
     }
 
     const std::size_t begin = node_position_begin(0, leaf);
-    const std::size_t end = node_position_end(0, leaf);
-    if (left <= begin && end <= right) {
-      return subtree_min_candidate(0, leaf);
-    }
-
     const std::size_t slot_left = left - begin;
     const std::size_t slot_right = right - begin;
     return scan_leaf_range_with_base(leaf, slot_left, slot_right - 1,
-                                     leaf_summaries_[leaf].base_depth);
+                                     depth_at_position(begin));
   }
 
   /**
@@ -931,23 +921,12 @@ class SegmentBTreeXLPlusMinusOneRmq {
   DepthCandidate subtree_min_candidate(std::size_t level,
                                        std::size_t node) const {
     if (level == 0) {
-      const LeafSummary& summary = leaf_summaries_[node];
-      return {node_position_begin(0, node) + summary.min_offset,
-              summary.min_depth};
+      return leaf_range_min(node, node_position_begin(0, node),
+                            node_position_end(0, node));
     }
     const std::size_t flat = internal_flat_index(level, node);
     return {static_cast<std::size_t>(internal_min_positions_[flat]),
             internal_min_depths_[flat]};
-  }
-
-  /**
-   * @brief Return a node's cached subtree zero count.
-   */
-  std::size_t subtree_zero_count(std::size_t level, std::size_t node) const {
-    if (level == 0) {
-      return leaf_summaries_[node].zero_count;
-    }
-    return internal_zero_counts_[internal_flat_index(level, node)];
   }
 
   /**
@@ -1070,20 +1049,6 @@ class SegmentBTreeXLPlusMinusOneRmq {
   }
 
   /**
-   * @brief Return mutable zero-prefix storage for one high node.
-   */
-  std::size_t* mutable_high_zero_prefixes_begin(std::size_t high_flat) {
-    return high_zero_prefixes_.data() + high_flat * (Fanout + 1);
-  }
-
-  /**
-   * @brief Return zero-prefix storage for one high node.
-   */
-  const std::size_t* high_zero_prefixes_begin(std::size_t high_flat) const {
-    return high_zero_prefixes_.data() + high_flat * (Fanout + 1);
-  }
-
-  /**
    * @brief Choose the better high-node child slot.
    */
   std::size_t better_high_child_slot(std::size_t level,
@@ -1151,80 +1116,15 @@ class SegmentBTreeXLPlusMinusOneRmq {
                                   table[slot_right - span]);
   }
 
-  /**
-   * @brief Descend the tree to select the rank-th zero bit.
-   */
-  std::size_t select0_in_node(std::size_t level,
-                              std::size_t node,
-                              std::size_t rank) const {
-    if (level == 0) {
-      return select0_in_leaf(node, rank);
-    }
-
-    const std::size_t count = entry_count(level, node);
-    std::size_t slot = 0;
-    if (is_high_level(level)) {
-      const std::size_t high_flat = high_flat_index(level, node);
-      const std::size_t* prefixes = high_zero_prefixes_begin(high_flat);
-      const std::size_t* first = prefixes + 1;
-      const std::size_t* last = prefixes + count + 1;
-      const std::size_t* selected = std::lower_bound(first, last, rank);
-      if (selected == last) {
-        return npos;
-      }
-      slot = static_cast<std::size_t>(selected - first);
-      rank -= prefixes[slot];
-    } else {
-      const std::size_t first_child = node * fanout_at_level(level);
-      for (; slot < count; ++slot) {
-        const std::size_t child_zeros =
-            subtree_zero_count(level - 1, first_child + slot);
-        if (rank <= child_zeros) {
-          break;
-        }
-        rank -= child_zeros;
-      }
-      if (slot == count) {
-        return npos;
-      }
-    }
-
-    return select0_in_node(level - 1, node * fanout_at_level(level) + slot,
-                           rank);
-  }
-
-  /**
-   * @brief Select the rank-th zero bit inside one leaf.
-   */
-  std::size_t select0_in_leaf(std::size_t leaf, std::size_t rank) const {
-    const std::size_t bit_begin = node_position_begin(0, leaf);
-    const std::size_t delta_count = next_leaf_delta_count(leaf);
-    const auto bits = leaf_bits(leaf);
-    std::size_t remaining = delta_count;
-    for (std::size_t word = 0; word < kLeafWords && remaining != 0; ++word) {
-      const std::size_t word_bits = std::min<std::size_t>(64, remaining);
-      const std::uint64_t candidates =
-          (~bits[word]) & first_bits_mask(word_bits);
-      const std::size_t count = std::popcount(candidates);
-      if (rank <= count) {
-        return bit_begin + word * 64 + select_64(candidates, rank - 1);
-      }
-      rank -= count;
-      remaining -= word_bits;
-    }
-    return npos;
-  }
-
   std::span<const std::uint64_t> input_bits_;
   std::size_t depth_count_ = 0;
-  std::vector<LeafSummary> leaf_summaries_;
+  std::optional<BitVector> owned_rank_index_;
+  const BitVector* external_rank_index_ = nullptr;
   std::vector<Bp512Selector> internal_selectors_;
   std::vector<Index> internal_min_positions_;
   std::vector<std::int64_t> internal_min_depths_;
-  std::vector<std::size_t> internal_zero_counts_;
   std::vector<HighChildMetadata> high_child_metadata_;
   std::vector<std::uint8_t> high_sparse_min_slots_;
-  std::vector<std::size_t> high_zero_prefixes_;
   std::vector<std::size_t> internal_level_offsets_;
   std::vector<std::size_t> high_level_offsets_;
   std::vector<std::size_t> level_sizes_;
@@ -1306,7 +1206,6 @@ class CartesianTreeSegmentBTreeXLRmq
         compare_(other.compare_),
         bp_bits_(other.bp_bits_),
         bp_bit_count_(other.bp_bit_count_),
-        close_select_samples_(other.close_select_samples_),
         top_sparse_candidates_(other.top_sparse_candidates_),
         top_block_size_(other.top_block_size_),
         top_block_count_(other.top_block_count_),
@@ -1326,7 +1225,6 @@ class CartesianTreeSegmentBTreeXLRmq
     compare_ = other.compare_;
     bp_bits_ = other.bp_bits_;
     bp_bit_count_ = other.bp_bit_count_;
-    close_select_samples_ = other.close_select_samples_;
     top_sparse_candidates_ = other.top_sparse_candidates_;
     top_block_size_ = other.top_block_size_;
     top_block_count_ = other.top_block_count_;
@@ -1344,7 +1242,6 @@ class CartesianTreeSegmentBTreeXLRmq
         compare_(std::move(other.compare_)),
         bp_bits_(std::move(other.bp_bits_)),
         bp_bit_count_(other.bp_bit_count_),
-        close_select_samples_(std::move(other.close_select_samples_)),
         top_sparse_candidates_(std::move(other.top_sparse_candidates_)),
         top_block_size_(other.top_block_size_),
         top_block_count_(other.top_block_count_),
@@ -1369,7 +1266,6 @@ class CartesianTreeSegmentBTreeXLRmq
     compare_ = std::move(other.compare_);
     bp_bits_ = std::move(other.bp_bits_);
     bp_bit_count_ = other.bp_bit_count_;
-    close_select_samples_ = std::move(other.close_select_samples_);
     top_sparse_candidates_ = std::move(other.top_sparse_candidates_);
     top_block_size_ = other.top_block_size_;
     top_block_count_ = other.top_block_count_;
@@ -1451,24 +1347,36 @@ class CartesianTreeSegmentBTreeXLRmq
    */
   std::size_t top_sparse_block_count() const { return top_block_count_; }
 
+  /**
+   * @brief Return owned auxiliary memory usage in bytes.
+   *
+   * @details Counts this value-RMQ object, packed Cartesian BP words, the top
+   * sparse overlay, and nested BP rank/select and ±1 RMQ indexes. The external
+   * input values are not owned and are excluded.
+   */
+  std::size_t memory_usage_bytes_impl() const {
+    return sizeof(*this) + pixie::vector_capacity_bytes(bp_bits_) +
+           pixie::vector_capacity_bytes(top_sparse_candidates_) +
+           pixie::optional_nested_owned_memory_bytes(bp_index_) +
+           pixie::nested_owned_memory_bytes(bp_depth_rmq_);
+  }
+
  private:
   using BpDepthRmq =
       SegmentBTreeXLPlusMinusOneRmq<Index, LeafSize, Fanout, MiddleFanout>;
-  static constexpr std::size_t kCloseSelectSampleFrequency = 256;
 
   struct TopCandidate {
     Index position = invalid_index;
-    Index close_position = invalid_index;
   };
-  static_assert(sizeof(TopCandidate) == 2 * sizeof(Index));
+  static_assert(sizeof(TopCandidate) == sizeof(Index));
 
   /**
    * @brief Return the first minimum position through the Cartesian BP
    * reduction.
    */
   std::size_t cartesian_arg_min(std::size_t left, std::size_t right) const {
-    const std::size_t first_close = cached_select0(left + 1);
-    const std::size_t last_close = cached_select0(right);
+    const std::size_t first_close = select_close_position(left + 1);
+    const std::size_t last_close = select_close_position(right);
     if (first_close == npos || last_close == npos || first_close > last_close) {
       return npos;
     }
@@ -1489,7 +1397,6 @@ class CartesianTreeSegmentBTreeXLRmq
   void build() {
     bp_bits_.clear();
     bp_bit_count_ = 0;
-    close_select_samples_.clear();
     top_sparse_candidates_.clear();
     top_block_size_ = kMinTopSparseBlockSize;
     top_block_count_ = 0;
@@ -1507,7 +1414,6 @@ class CartesianTreeSegmentBTreeXLRmq
     bp_bit_count_ = 2 * values_.size();
     bp_bits_.assign((bp_bit_count_ + 63) / 64, 0);
     build_bp_bits();
-    build_close_select_samples();
     build_top_sparse_table();
     reset_bp_indexes();
   }
@@ -1557,34 +1463,7 @@ class CartesianTreeSegmentBTreeXLRmq
     }
     const std::span<const std::uint64_t> words(bp_bits_);
     bp_index_.emplace(words, bp_bit_count_);
-    bp_depth_rmq_ = BpDepthRmq(words, bp_bit_count_ + 1);
-  }
-
-  /**
-   * @brief Build dense samples for close-parenthesis select queries.
-   */
-  void build_close_select_samples() {
-    close_select_samples_.clear();
-    close_select_samples_.reserve(
-        (values_.size() + kCloseSelectSampleFrequency - 1) /
-        kCloseSelectSampleFrequency);
-
-    std::size_t zero_rank = 0;
-    for (std::size_t word = 0; word < bp_bits_.size(); ++word) {
-      const std::size_t word_begin = word * 64;
-      const std::size_t word_bits =
-          std::min<std::size_t>(64, bp_bit_count_ - word_begin);
-      std::uint64_t zeros = (~bp_bits_[word]) & first_bits_mask(word_bits);
-      while (zeros != 0) {
-        const std::size_t offset = std::countr_zero(zeros);
-        ++zero_rank;
-        if ((zero_rank - 1) % kCloseSelectSampleFrequency == 0) {
-          close_select_samples_.push_back(
-              static_cast<Index>(word_begin + offset));
-        }
-        zeros &= zeros - 1;
-      }
-    }
+    bp_depth_rmq_ = BpDepthRmq(words, bp_bit_count_ + 1, *bp_index_);
   }
 
   /**
@@ -1636,14 +1515,13 @@ class CartesianTreeSegmentBTreeXLRmq
   }
 
   /**
-   * @brief Wrap an original value position with its Cartesian close position.
+   * @brief Wrap an original value position as a top sparse-table candidate.
    */
   TopCandidate make_top_candidate(std::size_t position) const {
     if (position >= values_.size()) {
       return {};
     }
-    return {static_cast<Index>(position),
-            static_cast<Index>(cached_select0(position + 1))};
+    return {static_cast<Index>(position)};
   }
 
   /**
@@ -1765,51 +1643,20 @@ class CartesianTreeSegmentBTreeXLRmq
   }
 
   /**
-   * @brief Return the one-based rank-th close from the dense sample table.
+   * @brief Return the one-based rank-th Cartesian close parenthesis.
    */
-  std::size_t cached_select0(std::size_t rank) const {
-    if (rank == 0 || rank > values_.size()) {
+  std::size_t select_close_position(std::size_t rank) const {
+    if (rank == 0 || rank > values_.size() || !bp_index_) {
       return npos;
     }
-    const std::size_t sample_index = (rank - 1) / kCloseSelectSampleFrequency;
-    const std::size_t sample_rank =
-        sample_index * kCloseSelectSampleFrequency + 1;
-    if (sample_index >= close_select_samples_.size()) {
-      return npos;
-    }
-    return select0_from_position(close_select_samples_[sample_index],
-                                 rank - sample_rank + 1);
-  }
-
-  /**
-   * @brief Select a zero bit by scanning forward from a sampled zero position.
-   */
-  std::size_t select0_from_position(std::size_t position,
-                                    std::size_t rank) const {
-    std::size_t word = position >> 6;
-    std::size_t offset = position & 63;
-    while (word < bp_bits_.size()) {
-      const std::size_t word_begin = word * 64;
-      const std::size_t word_bits =
-          std::min<std::size_t>(64, bp_bit_count_ - word_begin);
-      std::uint64_t zeros = (~bp_bits_[word]) & first_bits_mask(word_bits);
-      zeros &= ~first_bits_mask(offset);
-      const std::size_t count = std::popcount(zeros);
-      if (rank <= count) {
-        return word_begin + select_64(zeros, rank - 1);
-      }
-      rank -= count;
-      ++word;
-      offset = 0;
-    }
-    return npos;
+    const std::size_t position = bp_index_->select0(rank);
+    return position < bp_bit_count_ ? position : npos;
   }
 
   std::span<const T> values_;
   Compare compare_;
   std::vector<std::uint64_t> bp_bits_;
   std::size_t bp_bit_count_ = 0;
-  std::vector<Index> close_select_samples_;
   std::vector<TopCandidate> top_sparse_candidates_;
   std::size_t top_block_size_ = kMinTopSparseBlockSize;
   std::size_t top_block_count_ = 0;

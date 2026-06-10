@@ -1,5 +1,6 @@
 #pragma once
 
+#include <pixie/memory_usage.h>
 #include <pixie/rmq/rmq_base.h>
 
 #include <algorithm>
@@ -97,6 +98,16 @@ class SegmentTree : public RmqBase<SegmentTree<T, Compare, Index>, T> {
       right >>= 1;
     }
     return answer;
+  }
+
+  /**
+   * @brief Return owned auxiliary memory usage in bytes.
+   *
+   * @details Counts this segment-tree object and its flat index buffer. The
+   * external input values are not owned and are excluded.
+   */
+  std::size_t memory_usage_bytes_impl() const {
+    return sizeof(*this) + pixie::vector_capacity_bytes(tree_);
   }
 
  private:

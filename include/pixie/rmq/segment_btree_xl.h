@@ -1,6 +1,7 @@
 #pragma once
 
 #include <pixie/bits.h>
+#include <pixie/memory_usage.h>
 #include <pixie/rmq/rmq_base.h>
 
 #include <algorithm>
@@ -213,6 +214,30 @@ class SegmentBTreeXL
 
     const auto [level, node_index] = covering_node(left_leaf, right_leaf);
     return query_node(level, node_index, left, right).position;
+  }
+
+  /**
+   * @brief Return owned auxiliary memory usage in bytes.
+   *
+   * @details Counts this RMQ object and all selector/metadata buffers. The
+   * external input values are not owned and are excluded.
+   */
+  std::size_t memory_usage_bytes_impl() const {
+    std::size_t bytes = sizeof(*this);
+    bytes += pixie::vector_capacity_bytes(leaf_selectors_);
+    bytes += pixie::vector_capacity_bytes(medium_selectors_);
+    bytes += pixie::vector_capacity_bytes(medium_min_values_);
+    bytes += pixie::vector_capacity_bytes(high_selectors_);
+    bytes += pixie::vector_capacity_bytes(high_min_positions_);
+    bytes += pixie::vector_capacity_bytes(high_min_values_);
+    bytes += pixie::vector_capacity_bytes(high_child_metadata_);
+    bytes += pixie::vector_capacity_bytes(high_sparse_min_slots_);
+    bytes += pixie::vector_capacity_bytes(medium_level_offsets_);
+    bytes += pixie::vector_capacity_bytes(high_level_offsets_);
+    bytes += pixie::vector_capacity_bytes(level_sizes_);
+    bytes += pixie::vector_capacity_bytes(level_value_spans_);
+    bytes += pixie::vector_capacity_bytes(level_fanouts_);
+    return bytes;
   }
 
  private:

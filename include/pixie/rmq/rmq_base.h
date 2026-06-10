@@ -1,5 +1,6 @@
 #pragma once
 
+#include <concepts>
 #include <cstddef>
 #include <limits>
 
@@ -64,6 +65,24 @@ class RmqBase {
       return Value{};
     }
     return impl().value_at_impl(position);
+  }
+
+  /**
+   * @brief Return owned auxiliary memory usage in bytes when implemented.
+   *
+   * @details Implementations opt in by exposing
+   * `memory_usage_bytes_impl() const`. The reported value should include the
+   * index object itself and heap buffers owned by the index, but not the
+   * external value array indexed by the RMQ.
+   */
+  std::size_t memory_usage_bytes() const
+    requires requires(const Impl& concrete) {
+      {
+        concrete.memory_usage_bytes_impl()
+      } -> std::convertible_to<std::size_t>;
+    }
+  {
+    return impl().memory_usage_bytes_impl();
   }
 
  private:

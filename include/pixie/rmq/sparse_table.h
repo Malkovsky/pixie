@@ -1,6 +1,7 @@
 #pragma once
 
 #include <pixie/cache_line.h>
+#include <pixie/memory_usage.h>
 #include <pixie/rmq/rmq_base.h>
 
 #include <algorithm>
@@ -96,6 +97,21 @@ class SparseTable
     const std::size_t first = table_[level][left];
     const std::size_t second = table_[level][right - span];
     return better(first, second);
+  }
+
+  /**
+   * @brief Return owned auxiliary memory usage in bytes.
+   *
+   * @details Counts this sparse-table object and all stored index levels.
+   * The external input values are not owned and are excluded.
+   */
+  std::size_t memory_usage_bytes_impl() const {
+    std::size_t bytes = sizeof(*this);
+    bytes += pixie::vector_capacity_bytes(table_);
+    for (const TableLevel& level : table_) {
+      bytes += pixie::vector_capacity_bytes(level);
+    }
+    return bytes;
   }
 
  private:

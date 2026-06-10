@@ -1,6 +1,7 @@
 #pragma once
 
 #include <pixie/bitvector.h>
+#include <pixie/memory_usage.h>
 #include <pixie/rmq/bp_plus_minus_one_rmq.h>
 #include <pixie/rmq/rmq_base.h>
 
@@ -205,6 +206,19 @@ class CartesianTreeRmq
    * @return Non-owning span of little-endian packed BP words.
    */
   std::span<const std::uint64_t> bp_words() const { return bp_bits_; }
+
+  /**
+   * @brief Return owned auxiliary memory usage in bytes.
+   *
+   * @details Counts this Cartesian-tree object, its packed BP words, and the
+   * nested BP rank/select and ±1 RMQ indexes. The external input values are not
+   * owned and are excluded.
+   */
+  std::size_t memory_usage_bytes_impl() const {
+    return sizeof(*this) + pixie::vector_capacity_bytes(bp_bits_) +
+           pixie::optional_nested_owned_memory_bytes(bp_index_) +
+           pixie::nested_owned_memory_bytes(bp_depth_rmq_);
+  }
 
  private:
   /**

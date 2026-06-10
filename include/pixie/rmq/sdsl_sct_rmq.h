@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <sdsl/io.hpp>
 #include <sdsl/rmq_succinct_sct.hpp>
 #include <span>
 #include <type_traits>
@@ -93,6 +94,17 @@ class SdslSctRmq : public RmqBase<SdslSctRmq<T, Compare, Index>, T> {
       return npos;
     }
     return static_cast<std::size_t>(rmq_(left, right - 1));
+  }
+
+  /**
+   * @brief Return owned auxiliary memory usage in bytes.
+   *
+   * @details Counts the wrapper object plus SDSL's serialized SCT byte count.
+   * The external input values are not owned and are excluded.
+   */
+  std::size_t memory_usage_bytes_impl() const {
+    sdsl::nullstream out;
+    return sizeof(*this) + static_cast<std::size_t>(rmq_.serialize(out));
   }
 
  private:
