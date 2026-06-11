@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <concepts>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -53,6 +54,11 @@ using Index = std::size_t;
 
 static_assert(kQueryPoolBytes % sizeof(std::pair<std::size_t, std::size_t>) ==
               0);
+
+template <class Rmq>
+concept HasRmqMemoryUsage = requires(const Rmq& rmq) {
+  { rmq.memory_usage_bytes() } -> std::convertible_to<std::size_t>;
+};
 
 struct Dataset {
   std::size_t size = 0;
@@ -815,6 +821,15 @@ std::vector<BenchBlockSummary> make_block_summaries(
   return summaries;
 }
 
+void set_aux_memory_counters(benchmark::State& state,
+                             std::size_t size,
+                             double aux_bytes);
+
+template <class Rmq>
+void set_query_aux_memory_counters(benchmark::State& state,
+                                   std::size_t size,
+                                   const std::vector<Rmq>& rmqs);
+
 template <class Rmq>
 void run_queries(benchmark::State& state) {
   const std::size_t size = static_cast<std::size_t>(state.range(0));
@@ -855,6 +870,7 @@ void run_queries(benchmark::State& state) {
   state.counters["max_width"] = static_cast<double>(max_width);
   state.counters["index_bytes"] = static_cast<double>(sizeof(Index));
   state.counters["value_arrays"] = static_cast<double>(datasets.size());
+  set_query_aux_memory_counters(state, size, rmqs);
 }
 
 void set_build_counters(benchmark::State& state,
@@ -865,6 +881,29 @@ void set_build_counters(benchmark::State& state,
   state.counters["index_bytes"] = static_cast<double>(sizeof(Index));
   state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()) *
                           static_cast<std::int64_t>(size));
+}
+
+void set_aux_memory_counters(benchmark::State& state,
+                             std::size_t size,
+                             double aux_bytes) {
+  state.counters["aux_bytes"] = aux_bytes;
+  state.counters["aux_mib"] = aux_bytes / (1024.0 * 1024.0);
+  state.counters["aux_bits_per_value"] =
+      size == 0 ? 0.0 : (8.0 * aux_bytes) / static_cast<double>(size);
+}
+
+template <class Rmq>
+void set_query_aux_memory_counters(benchmark::State& state,
+                                   std::size_t size,
+                                   const std::vector<Rmq>& rmqs) {
+  if constexpr (HasRmqMemoryUsage<Rmq>) {
+    double total = 0.0;
+    for (const Rmq& rmq : rmqs) {
+      total += static_cast<double>(rmq.memory_usage_bytes());
+    }
+    const double average = rmqs.empty() ? 0.0 : total / rmqs.size();
+    set_aux_memory_counters(state, size, average);
+  }
 }
 
 template <class Rmq>
@@ -889,6 +928,11 @@ void run_value_rmq_build(benchmark::State& state) {
   set_build_counters(state, size,
                      datasets.front().values.size() * sizeof(std::int64_t));
   state.counters["value_arrays"] = static_cast<double>(datasets.size());
+  if constexpr (HasRmqMemoryUsage<Rmq>) {
+    const Rmq rmq(std::span<const std::int64_t>(datasets.front().values));
+    const std::size_t aux_bytes = rmq.memory_usage_bytes();
+    set_aux_memory_counters(state, size, static_cast<double>(aux_bytes));
+  }
 }
 
 template <class Rmq>
@@ -904,6 +948,11 @@ void run_bp_rmq_build(benchmark::State& state) {
   }
 
   set_build_counters(state, size, dataset.bits.size() * sizeof(std::uint64_t));
+  if constexpr (HasRmqMemoryUsage<Rmq>) {
+    const Rmq rmq(std::span<const std::uint64_t>(dataset.bits), dataset.size);
+    const std::size_t aux_bytes = rmq.memory_usage_bytes();
+    set_aux_memory_counters(state, size, static_cast<double>(aux_bytes));
+  }
 }
 
 void run_sparse_table_footprint(benchmark::State& state) {
@@ -1109,18 +1158,42 @@ void run_depth_queries(benchmark::State& state) {
   }
 
   set_depth_counters(state, dataset, true, BlockSize);
+  if constexpr (HasRmqMemoryUsage<Rmq>) {
+    set_aux_memory_counters(state, size,
+                            static_cast<double>(rmq.memory_usage_bytes()));
+  }
 }
 
 void register_benchmarks() {
+  using CartesianXl = pixie::rmq::experimental::CartesianTreeSegmentBTreeXLRmq<
+      std::int64_t, std::less<std::int64_t>, Index>;
+
   const std::vector<std::size_t> sizes = {1ull << 10, 1ull << 14, 1ull << 18,
                                           1ull << 22, 1ull << 24, 1ull << 26};
   const std::vector<std::size_t> build_sizes = {
-      1ull << 10, 1ull << 14, 1ull << 18, 1ull << 22, 1ull << 24};
+      1ull << 10, 1ull << 14, 1ull << 18, 1ull << 22, 1ull << 24, 1ull << 26};
   const std::vector<std::size_t> widths = {64, 4096, 1ull << 18, 1ull << 22,
                                            1ull << 26};
   // Pure sparse-table rows materialize O(n log n) indexes; above 2^22 they
   // dominate memory/runtime and make large benchmark passes noisy.
   constexpr std::size_t kSparseTableBenchmarkMaxSize = 1ull << 22;
+  constexpr std::size_t kFocusedCartesianXlLargeSize = 1ull << 28;
+
+  auto effective_widths_for = [&](std::size_t size) {
+    std::vector<std::size_t> effective_widths;
+    for (const std::size_t width : widths) {
+      if (width > size) {
+        continue;
+      }
+      effective_widths.push_back(width);
+    }
+    effective_widths.push_back(size);
+    std::sort(effective_widths.begin(), effective_widths.end());
+    effective_widths.erase(
+        std::unique(effective_widths.begin(), effective_widths.end()),
+        effective_widths.end());
+    return effective_widths;
+  };
 
   for (const std::size_t size : build_sizes) {
     if (size <= kSparseTableBenchmarkMaxSize) {
@@ -1149,11 +1222,8 @@ void register_benchmarks() {
             std::int64_t, std::less<std::int64_t>, Index>>)
         ->Arg(static_cast<std::int64_t>(size))
         ->Unit(benchmark::kMillisecond);
-    benchmark::RegisterBenchmark(
-        "rmq_build_cartesian_tree_segment_btree_xl",
-        &run_value_rmq_build<
-            pixie::rmq::experimental::CartesianTreeSegmentBTreeXLRmq<
-                std::int64_t, std::less<std::int64_t>, Index>>)
+    benchmark::RegisterBenchmark("rmq_build_cartesian_tree_segment_btree_xl",
+                                 &run_value_rmq_build<CartesianXl>)
         ->Arg(static_cast<std::int64_t>(size))
         ->Unit(benchmark::kMillisecond);
 #ifdef PIXIE_THIRD_PARTY_BENCHMARKS
@@ -1207,19 +1277,14 @@ void register_benchmarks() {
         ->Unit(benchmark::kMillisecond);
   }
 
+  benchmark::RegisterBenchmark("rmq_build_cartesian_tree_segment_btree_xl",
+                               &run_value_rmq_build<CartesianXl>)
+      ->Arg(static_cast<std::int64_t>(kFocusedCartesianXlLargeSize))
+      ->Unit(benchmark::kMillisecond);
+
   for (const std::size_t size : sizes) {
-    std::vector<std::size_t> effective_widths;
-    for (const std::size_t width : widths) {
-      if (width > size) {
-        continue;
-      }
-      effective_widths.push_back(width);
-    }
-    effective_widths.push_back(size);
-    std::sort(effective_widths.begin(), effective_widths.end());
-    effective_widths.erase(
-        std::unique(effective_widths.begin(), effective_widths.end()),
-        effective_widths.end());
+    const std::vector<std::size_t> effective_widths =
+        effective_widths_for(size);
 
     for (const std::size_t width : effective_widths) {
       if (size <= kSparseTableBenchmarkMaxSize) {
@@ -1267,10 +1332,8 @@ void register_benchmarks() {
           ->Args({static_cast<std::int64_t>(size),
                   static_cast<std::int64_t>(width)})
           ->Unit(benchmark::kNanosecond);
-      benchmark::RegisterBenchmark(
-          "rmq_cartesian_tree_segment_btree_xl",
-          &run_queries<pixie::rmq::experimental::CartesianTreeSegmentBTreeXLRmq<
-              std::int64_t, std::less<std::int64_t>, Index>>)
+      benchmark::RegisterBenchmark("rmq_cartesian_tree_segment_btree_xl",
+                                   &run_queries<CartesianXl>)
           ->Args({static_cast<std::int64_t>(size),
                   static_cast<std::int64_t>(width)})
           ->Unit(benchmark::kNanosecond);
@@ -1444,6 +1507,15 @@ void register_benchmarks() {
                   static_cast<std::int64_t>(width)})
           ->Unit(benchmark::kNanosecond);
     }
+  }
+
+  for (const std::size_t width :
+       effective_widths_for(kFocusedCartesianXlLargeSize)) {
+    benchmark::RegisterBenchmark("rmq_cartesian_tree_segment_btree_xl",
+                                 &run_queries<CartesianXl>)
+        ->Args({static_cast<std::int64_t>(kFocusedCartesianXlLargeSize),
+                static_cast<std::int64_t>(width)})
+        ->Unit(benchmark::kNanosecond);
   }
 }
 
