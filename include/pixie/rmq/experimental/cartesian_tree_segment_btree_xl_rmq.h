@@ -31,19 +31,20 @@ namespace pixie::rmq::experimental {
  * over depth positions, and ties return the smaller depth position.
  *
  * This backend mirrors the high-level query shape of `SegmentBTreeXL`: depth
- * positions are split into leaves, leaves are grouped into a B-tree, and every
- * internal node stores a local Cartesian/BP selector over the minima of its
- * immediate children. A configurable number of top levels additionally keep
- * sparse tables over child-minimum slots. Unlike value `SegmentBTreeXL`, leaves
- * do not store another local Cartesian selector or cached minima. Leaf minima
- * are recomputed from the original BP delta bits with the 128-bit excess
- * primitives from `bits.h`, using rank support to recover the absolute base
- * depth at the leaf start.
+ * positions are split into configurable-size leaves, leaves are grouped into a
+ * B-tree, and every internal node stores a local Cartesian/BP selector over the
+ * minima of its immediate children. Middle levels are fixed at 192 child slots:
+ * their selector uses 384 BP bits and reserves the remaining 128 bits for the
+ * embedded subtree minimum position/depth. A configurable number of top levels
+ * additionally keep sparse tables over child-minimum slots. Unlike value
+ * `SegmentBTreeXL`, leaves do not store another local Cartesian selector or
+ * cached minima. Leaf minima are recomputed from the original BP delta bits
+ * with the 128-bit excess primitives from `bits.h`, using rank support to
+ * recover the absolute base depth at the leaf start.
  *
  * @tparam Index Unsigned integer type used for stored positions.
- * @tparam LeafSize Number of depth positions per low-level leaf.
- * @tparam Fanout Fanout used by the top high levels.
- * @tparam MiddleFanout Fanout used below the high levels.
+ * @tparam LeafSize Number of depth positions per low-level leaf; must be a
+ * multiple of 512.
  * @tparam UseHighSparseLayout Whether top levels use sparse tables instead of
  * local BP selectors.
  * @tparam HighSparseLayoutLevels Number of top tree levels using that sparse
@@ -51,23 +52,15 @@ namespace pixie::rmq::experimental {
  */
 template <class Index = std::size_t,
           std::size_t LeafSize = 512,
-          std::size_t Fanout = 256,
-          std::size_t MiddleFanout = 192,
           bool UseHighSparseLayout = true,
           std::size_t HighSparseLayoutLevels = 2>
 class SegmentBTreeXLPlusMinusOneRmq {
  public:
   static_assert(std::is_unsigned_v<Index>,
                 "SegmentBTreeXLPlusMinusOneRmq index type must be unsigned");
-  static_assert(LeafSize != 0 && LeafSize % 128 == 0,
+  static_assert(LeafSize != 0 && LeafSize % 512 == 0,
                 "SegmentBTreeXLPlusMinusOneRmq leaf size must be a positive "
-                "multiple of 128");
-  static_assert(Fanout > 1 && Fanout <= 256,
-                "SegmentBTreeXLPlusMinusOneRmq high fanout must be in "
-                "[2, 256]");
-  static_assert(MiddleFanout > 1 && MiddleFanout <= 256,
-                "SegmentBTreeXLPlusMinusOneRmq middle fanout must be in "
-                "[2, 256]");
+                "multiple of 512");
   static_assert(!UseHighSparseLayout || HighSparseLayoutLevels > 0,
                 "SegmentBTreeXLPlusMinusOneRmq high sparse layout must cover "
                 "at least one level when enabled");
@@ -75,8 +68,8 @@ class SegmentBTreeXLPlusMinusOneRmq {
   static constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
   static constexpr Index invalid_index = std::numeric_limits<Index>::max();
   static constexpr std::size_t kLeafSize = LeafSize;
-  static constexpr std::size_t kFanout = Fanout;
-  static constexpr std::size_t kMiddleFanout = MiddleFanout;
+  static constexpr std::size_t kHighLevelFanout = 256;
+  static constexpr std::size_t kMiddleFanout = 192;
   static constexpr bool kUseHighSparseLayout = UseHighSparseLayout;
   static constexpr std::size_t kHighSparseLayoutLevels = HighSparseLayoutLevels;
 
@@ -228,12 +221,13 @@ class SegmentBTreeXLPlusMinusOneRmq {
       kSelectorWords - 2;
   static constexpr std::size_t kEmbeddedSummaryDepthWord = kSelectorWords - 1;
   static constexpr std::size_t kHighSparseTableLevels =
-      static_cast<std::size_t>(std::bit_width(Fanout));
+      static_cast<std::size_t>(std::bit_width(kHighLevelFanout));
   static constexpr std::size_t kHighSparseSlotsPerNode =
-      kHighSparseTableLevels * Fanout;
+      kHighSparseTableLevels * kHighLevelFanout;
   static constexpr bool kInvalidIndexEqualsNpos =
       static_cast<std::size_t>(invalid_index) == npos;
   static_assert(kEmbeddedSummaryMaxEntries == 192);
+  static_assert(kMiddleFanout == kEmbeddedSummaryMaxEntries);
   static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t));
 
   struct DepthCandidate {
@@ -551,17 +545,17 @@ class SegmentBTreeXLPlusMinusOneRmq {
 
     std::size_t current_count = leaf_count;
     std::size_t current_span = LeafSize;
-    while (current_count > Fanout * Fanout) {
-      level_fanouts_.push_back(MiddleFanout);
-      current_count = ceil_div(current_count, MiddleFanout);
-      current_span = saturating_product(current_span, MiddleFanout);
+    while (current_count > kHighLevelFanout * kHighLevelFanout) {
+      level_fanouts_.push_back(kMiddleFanout);
+      current_count = ceil_div(current_count, kMiddleFanout);
+      current_span = saturating_product(current_span, kMiddleFanout);
       level_sizes_.push_back(current_count);
       level_position_spans_.push_back(current_span);
     }
     while (current_count > 1) {
-      level_fanouts_.push_back(Fanout);
-      current_count = ceil_div(current_count, Fanout);
-      current_span = saturating_product(current_span, Fanout);
+      level_fanouts_.push_back(kHighLevelFanout);
+      current_count = ceil_div(current_count, kHighLevelFanout);
+      current_span = saturating_product(current_span, kHighLevelFanout);
       level_sizes_.push_back(current_count);
       level_position_spans_.push_back(current_span);
     }
@@ -581,9 +575,16 @@ class SegmentBTreeXLPlusMinusOneRmq {
 
     if constexpr (UseHighSparseLayout) {
       const std::size_t root_level = level_count() - 1;
-      const std::size_t high_layout_levels =
-          std::min(HighSparseLayoutLevels, root_level);
-      high_level_begin_ = root_level + 1 - high_layout_levels;
+      std::size_t high_layout_levels = 0;
+      for (std::size_t level = root_level;
+           level > 0 && high_layout_levels < HighSparseLayoutLevels &&
+           fanout_at_level(level) == kHighLevelFanout;
+           --level) {
+        ++high_layout_levels;
+      }
+      high_level_begin_ = high_layout_levels == 0
+                              ? level_count()
+                              : root_level + 1 - high_layout_levels;
 
       std::size_t high_node_count = 0;
       for (std::size_t level = high_level_begin_; level < level_count();
@@ -591,7 +592,7 @@ class SegmentBTreeXLPlusMinusOneRmq {
         high_level_offsets_[level] = high_node_count;
         high_node_count += level_sizes_[level];
       }
-      high_child_metadata_.resize(high_node_count * Fanout);
+      high_child_metadata_.resize(high_node_count * kHighLevelFanout);
       high_sparse_min_slots_.resize(high_node_count * kHighSparseSlotsPerNode);
     } else {
       high_level_begin_ = level_count();
@@ -1109,7 +1110,8 @@ class SegmentBTreeXLPlusMinusOneRmq {
    */
   const HighChildMetadata* high_child_metadata_begin(std::size_t level,
                                                      std::size_t node) const {
-    return high_child_metadata_.data() + high_flat_index(level, node) * Fanout;
+    return high_child_metadata_.data() +
+           high_flat_index(level, node) * kHighLevelFanout;
   }
 
   /**
@@ -1117,7 +1119,7 @@ class SegmentBTreeXLPlusMinusOneRmq {
    */
   const HighChildMetadata& high_child_metadata_at(std::size_t high_flat,
                                                   std::size_t slot) const {
-    return high_child_metadata_[high_flat * Fanout + slot];
+    return high_child_metadata_[high_flat * kHighLevelFanout + slot];
   }
 
   /**
@@ -1125,7 +1127,7 @@ class SegmentBTreeXLPlusMinusOneRmq {
    */
   HighChildMetadata& mutable_high_child_metadata_at(std::size_t high_flat,
                                                     std::size_t slot) {
-    return high_child_metadata_[high_flat * Fanout + slot];
+    return high_child_metadata_[high_flat * kHighLevelFanout + slot];
   }
 
   /**
@@ -1176,8 +1178,9 @@ class SegmentBTreeXLPlusMinusOneRmq {
         break;
       }
       const std::size_t half_span = span >> 1;
-      const std::uint8_t* previous = table + (table_level - 1) * Fanout;
-      std::uint8_t* current = table + table_level * Fanout;
+      const std::uint8_t* previous =
+          table + (table_level - 1) * kHighLevelFanout;
+      std::uint8_t* current = table + table_level * kHighLevelFanout;
       for (std::size_t slot = 0; slot + span <= count; ++slot) {
         current[slot] = static_cast<std::uint8_t>(better_high_child_slot(
             level, node, previous[slot], previous[slot + half_span]));
@@ -1205,7 +1208,7 @@ class SegmentBTreeXLPlusMinusOneRmq {
     const std::size_t table_level = std::bit_width(length) - 1;
     const std::size_t span = std::size_t{1} << table_level;
     const std::uint8_t* table =
-        high_sparse_min_slots_begin(high_flat) + table_level * Fanout;
+        high_sparse_min_slots_begin(high_flat) + table_level * kHighLevelFanout;
     return better_high_child_slot(level, node, table[slot_left],
                                   table[slot_right - span]);
   }
@@ -1235,7 +1238,9 @@ class SegmentBTreeXLPlusMinusOneRmq {
  * `CartesianTreeRmq`. It builds the same stable Ferrada-Navarro BP
  * Cartesian-tree encoding, uses `BitVector` for close-parenthesis rank/select,
  * and delegates the BP-depth minimum query to
- * `SegmentBTreeXLPlusMinusOneRmq`. A single coarse value-level sparse table is
+ * `SegmentBTreeXLPlusMinusOneRmq`. The BP-depth backend keeps a configurable
+ * low-level leaf size, fixed 192-entry middle nodes with embedded minima, and
+ * fixed 256-entry high nodes. A single coarse value-level sparse table is
  * checked first; it uses at least 4096-value blocks and grows the block width
  * when needed so the top layer has at most 2^14 blocks. Wide queries whose
  * padded block-cover minimum lies inside the requested range return from this
@@ -1248,27 +1253,19 @@ class SegmentBTreeXLPlusMinusOneRmq {
 template <class T,
           class Compare = std::less<T>,
           class Index = std::size_t,
-          std::size_t LeafSize = 512,
-          std::size_t Fanout = 256,
-          std::size_t MiddleFanout = 192>
+          std::size_t LeafSize = 512>
 class CartesianTreeSegmentBTreeXLRmq
-    : public RmqBase<CartesianTreeSegmentBTreeXLRmq<T,
-                                                    Compare,
-                                                    Index,
-                                                    LeafSize,
-                                                    Fanout,
-                                                    MiddleFanout>,
-                     T> {
+    : public RmqBase<
+          CartesianTreeSegmentBTreeXLRmq<T, Compare, Index, LeafSize>,
+          T> {
  public:
   static_assert(std::is_unsigned_v<Index>,
                 "CartesianTreeSegmentBTreeXLRmq index type must be unsigned");
+  static_assert(LeafSize != 0 && LeafSize % 512 == 0,
+                "CartesianTreeSegmentBTreeXLRmq leaf size must be a positive "
+                "multiple of 512");
 
-  using Self = CartesianTreeSegmentBTreeXLRmq<T,
-                                              Compare,
-                                              Index,
-                                              LeafSize,
-                                              Fanout,
-                                              MiddleFanout>;
+  using Self = CartesianTreeSegmentBTreeXLRmq<T, Compare, Index, LeafSize>;
 
   static constexpr std::size_t npos = RmqBase<Self, T>::npos;
   static constexpr Index invalid_index = std::numeric_limits<Index>::max();
@@ -1456,12 +1453,7 @@ class CartesianTreeSegmentBTreeXLRmq
   }
 
  private:
-  using BpDepthRmq = SegmentBTreeXLPlusMinusOneRmq<Index,
-                                                   LeafSize,
-                                                   Fanout,
-                                                   MiddleFanout,
-                                                   true,
-                                                   1>;
+  using BpDepthRmq = SegmentBTreeXLPlusMinusOneRmq<Index, LeafSize, true, 1>;
 
   struct TopCandidate {
     Index position = invalid_index;
