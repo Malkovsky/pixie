@@ -1288,8 +1288,8 @@ TYPED_TEST(DepthRmqContractTest, DifferentialRandomWalks) {
 TEST(RmqSegmentBTreeXLPlusMinusOne, DefaultBoundaryRanges) {
   using Rmq = pixie::rmq::experimental::SegmentBTreeXLPlusMinusOneRmq<>;
   constexpr std::size_t kLeaf = Rmq::kLeafSize;
-  constexpr std::size_t kFanout = Rmq::kFanout;
-  constexpr std::size_t kHighBoundary = kLeaf * kFanout;
+  constexpr std::size_t kHighFanout = Rmq::kHighLevelFanout;
+  constexpr std::size_t kHighBoundary = kLeaf * kHighFanout;
   const std::vector<std::size_t> sizes = {
       kLeaf - 1,         kLeaf,         kLeaf + 1,
       kHighBoundary - 1, kHighBoundary, kHighBoundary + 1,
@@ -1332,8 +1332,8 @@ TEST(RmqSegmentBTreeXLPlusMinusOne, DefaultBoundaryRanges) {
 TEST(RmqSegmentBTreeXLPlusMinusOne, Select0MatchesNaiveAcrossHighNodes) {
   using Rmq = pixie::rmq::experimental::SegmentBTreeXLPlusMinusOneRmq<>;
   constexpr std::size_t kLeaf = Rmq::kLeafSize;
-  constexpr std::size_t kFanout = Rmq::kFanout;
-  std::vector<std::int64_t> depths(kLeaf * kFanout + 777);
+  constexpr std::size_t kHighFanout = Rmq::kHighLevelFanout;
+  std::vector<std::int64_t> depths(kLeaf * kHighFanout + 777);
   for (std::size_t i = 1; i < depths.size(); ++i) {
     const bool up = (i % 5 == 0) || (i % 17 == 3) || (i % 257 == 11);
     depths[i] = depths[i - 1] + (up ? 1 : -1);
@@ -1363,13 +1363,13 @@ TEST(RmqSegmentBTreeXLPlusMinusOne, Select0MatchesNaiveAcrossHighNodes) {
   EXPECT_EQ(rmq.select0(zero_count + 1), Rmq::npos);
 }
 
-TEST(RmqSegmentBTreeXLPlusMinusOne, SmallFanoutExercisesMiddleAndHighLevels) {
+TEST(RmqSegmentBTreeXLPlusMinusOne, FixedFanoutsExerciseHighBoundary) {
   using Rmq =
-      pixie::rmq::experimental::SegmentBTreeXLPlusMinusOneRmq<std::size_t, 128,
-                                                              4, 4>;
-  constexpr std::size_t kBoundary =
-      Rmq::kLeafSize * Rmq::kFanout * Rmq::kFanout;
-  std::vector<std::int64_t> depths(kBoundary + 3 * Rmq::kLeafSize + 17);
+      pixie::rmq::experimental::SegmentBTreeXLPlusMinusOneRmq<std::size_t, 512>;
+  static_assert(Rmq::kMiddleFanout == 192);
+  static_assert(Rmq::kHighLevelFanout == 256);
+  constexpr std::size_t kHighBoundary = Rmq::kLeafSize * Rmq::kHighLevelFanout;
+  std::vector<std::int64_t> depths(kHighBoundary + 3 * Rmq::kLeafSize + 17);
   for (std::size_t i = 1; i < depths.size(); ++i) {
     const bool up = (i % 13 == 0) || (i % 17 == 1) || (i % 29 == 7);
     depths[i] = depths[i - 1] + (up ? 1 : -1);
@@ -1379,10 +1379,10 @@ TEST(RmqSegmentBTreeXLPlusMinusOne, SmallFanoutExercisesMiddleAndHighLevels) {
   const Rmq rmq(bits, depths.size());
   const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
       {0, depths.size()},
-      {kBoundary - 2, kBoundary + 2},
-      {kBoundary - Rmq::kLeafSize - 3, kBoundary + Rmq::kLeafSize + 5},
-      {Rmq::kLeafSize, kBoundary + 17},
-      {kBoundary + 1, depths.size()},
+      {kHighBoundary - 2, kHighBoundary + 2},
+      {kHighBoundary - Rmq::kLeafSize - 3, kHighBoundary + Rmq::kLeafSize + 5},
+      {Rmq::kLeafSize, kHighBoundary + 17},
+      {kHighBoundary + 1, depths.size()},
       {depths.size() - Rmq::kLeafSize, depths.size()},
   };
   check_depth_ranges(
