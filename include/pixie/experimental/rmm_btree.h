@@ -1,36 +1,5 @@
 #pragma once
 
-/**
- * RmMBTree construction-summary experiment, 2026-06-13.
- *
- * Change under test: full aligned 512-bit block summaries use existing 128-bit
- * excess kernels from bits.h instead of scanning every bit.
- *
- * Command shape:
- *   taskset -c 0 ./build/release/bench_rmq
- *     --benchmark_filter='^rmq_build_(cartesian_rmm|cartesian_hybrid_btree|sdsl_sct)/(4194304|67108864)$'
- *     --benchmark_repetitions=5
- *
- * CPU mean, milliseconds.
- *
- * | N    | row                     | CPU ms  |
- * | ---: | ----------------------- | ------: |
- * | 2^22 | CartesianRmM before     |  54.407 |
- * | 2^22 | CartesianRmM after      |  44.731 |
- * | 2^22 | CartesianHybrid control |  47.943 |
- * | 2^22 | SdslSct control         |  39.911 |
- * | ---- | ----------------------- | ------- |
- * | 2^26 | CartesianRmM before     | 915.712 |
- * | 2^26 | CartesianRmM after      | 750.316 |
- * | 2^26 | CartesianHybrid control | 772.157 |
- * | 2^26 | SdslSct control         | 642.540 |
- *
- * Perf profile note: before this change, RmMBTree::summarize_bits()/bit()
- * accounted for about 14% of CartesianRmM build samples. After this change,
- * those source lines disappear from the visible hotspot list; the replacement
- * excess_min_128() work is about 3%.
- */
-
 #include <pixie/bits.h>
 #include <pixie/bitvector.h>
 #include <pixie/rmm_base.h>
