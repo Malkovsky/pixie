@@ -55,24 +55,39 @@ class AlignedStorage {
    */
   void resize(std::size_t bits) { data_.resize(LinesForBits(bits)); }
 
-  /** @brief Padded storage capacity in bits. */
+  /**
+   * @brief Padded storage capacity in bits.
+   */
   std::size_t capacity_bits() const {
     return data_.size() * kAlignedStorageLineBits;
   }
 
-  /** @brief Padded storage capacity in bytes. */
+  /**
+   * @brief Padded storage capacity in bytes.
+   */
   std::size_t capacity_bytes() const {
     return data_.size() * kAlignedStorageLineBytes;
   }
 
-  /** @brief Bytes reserved by the underlying aligned cache-line buffer. */
+  /**
+   * @brief Bytes reserved by the underlying aligned cache-line buffer.
+   */
   std::size_t allocated_bytes() const {
     return data_.capacity() * kAlignedStorageLineBytes;
   }
 
-  /** @brief Mutable view as cache lines. */
+  /**
+   * @brief Request that reserved storage be reduced to the current size.
+   */
+  void shrink_to_fit() { data_.shrink_to_fit(); }
+
+  /**
+   * @brief Mutable view as cache lines.
+   */
   std::span<CacheLine> AsLines() { return data_; }
-  /** @brief Const view as cache lines. */
+  /**
+   * @brief Const view as cache lines.
+   */
   std::span<const CacheLine> AsConstLines() const { return data_; }
 
   /**
@@ -84,7 +99,9 @@ class AlignedStorage {
         data_.size() * kAlignedStorageLineWords64);
   }
 
-  /** @brief Const view as 64-bit words. */
+  /**
+   * @brief Const view as 64-bit words.
+   */
   std::span<const std::uint64_t> AsConst64BitInts() const {
     return std::span<const std::uint64_t>(
         reinterpret_cast<const std::uint64_t*>(data_.data()),
@@ -96,7 +113,9 @@ class AlignedStorage {
    */
   std::span<std::byte> AsBytes() { return std::as_writable_bytes(AsLines()); }
 
-  /** @brief Const view as bytes. */
+  /**
+   *  @brief Const view as bytes.
+   */
   std::span<const std::byte> AsConstBytes() const {
     return std::as_bytes(AsConstLines());
   }
@@ -110,7 +129,9 @@ class AlignedStorage {
         data_.size() * kAlignedStorageLineWords16);
   }
 
-  /** @brief Const view as 16-bit words. */
+  /**
+   *  @brief Const view as 16-bit words.
+   */
   std::span<const std::uint16_t> AsConst16BitInts() const {
     return std::span<const std::uint16_t>(
         reinterpret_cast<const std::uint16_t*>(data_.data()),

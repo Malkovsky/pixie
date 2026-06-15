@@ -1,5 +1,36 @@
 #pragma once
 
+/**
+ * RmMBTree construction-summary experiment, 2026-06-13.
+ *
+ * Change under test: full aligned 512-bit block summaries use existing 128-bit
+ * excess kernels from bits.h instead of scanning every bit.
+ *
+ * Command shape:
+ *   taskset -c 0 ./build/release/bench_rmq
+ *     --benchmark_filter='^rmq_build_(cartesian_rmm|cartesian_hybrid_btree|sdsl_sct)/(4194304|67108864)$'
+ *     --benchmark_repetitions=5
+ *
+ * CPU mean, milliseconds.
+ *
+ * | N    | row                     | CPU ms  |
+ * | ---: | ----------------------- | ------: |
+ * | 2^22 | CartesianRmM before     |  54.407 |
+ * | 2^22 | CartesianRmM after      |  44.731 |
+ * | 2^22 | CartesianHybrid control |  47.943 |
+ * | 2^22 | SdslSct control         |  39.911 |
+ * | ---- | ----------------------- | ------- |
+ * | 2^26 | CartesianRmM before     | 915.712 |
+ * | 2^26 | CartesianRmM after      | 750.316 |
+ * | 2^26 | CartesianHybrid control | 772.157 |
+ * | 2^26 | SdslSct control         | 642.540 |
+ *
+ * Perf profile note: before this change, RmMBTree::summarize_bits()/bit()
+ * accounted for about 14% of CartesianRmM build samples. After this change,
+ * those source lines disappear from the visible hotspot list; the replacement
+ * excess_min_128() work is about 3%.
+ */
+
 #include <pixie/bits.h>
 #include <pixie/bitvector.h>
 #include <pixie/rmm_base.h>
@@ -105,6 +136,14 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
   RmMBTree& operator=(RmMBTree&&) noexcept = default;
 
   /**
+   * @brief Minimum position and value returned by one range-min traversal.
+   */
+  struct RangeMinQueryResult {
+    std::size_t position = npos;
+    int value = 0;
+  };
+
+  /**
    * @brief Construct an RmM btree over an external bit-vector span.
    * @details The tree stores a non-owning view of @p words and builds its
    * rank/select helper plus min-max summaries over the first @p bit_count bits.
@@ -118,6 +157,22 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
                     std::size_t bit_count,
                     std::size_t = kBlockBits) {
     build(words, bit_count);
+  }
+
+  /**
+   * @brief Construct with explicit rank/select support options.
+   *
+   * @details This keeps the normal RmMBTree API full-featured by default while
+   * allowing adapters that only need rank/select0 to skip select1 samples.
+   * @param one_count Optional exact number of 1-bits for exact select-sample
+   * allocation.
+   */
+  RmMBTree(std::span<const std::uint64_t> words,
+           std::size_t bit_count,
+           BitVector::SelectSupport select_support,
+           std::optional<std::size_t> one_count = std::nullopt,
+           std::size_t = kBlockBits) {
+    build(words, bit_count, select_support, one_count);
   }
 
   std::size_t size_impl() const { return bit_count_; }
@@ -274,6 +329,21 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
       return 0;
     }
     return range_extreme_query_val(range_begin, range_end, true);
+  }
+
+  /**
+   * @brief Return the first minimum position and value in one traversal.
+   * @details This is a concrete-type helper for adapters that need to compare
+   * a boundary prefix against the interior range minimum. Invalid ranges return
+   * `{npos, 0}`.
+   */
+  RangeMinQueryResult range_min_query_result(std::size_t range_begin,
+                                             std::size_t range_end) const {
+    if (range_begin > range_end || range_end >= bit_count_) {
+      return {};
+    }
+    const auto result = range_extreme_query(range_begin, range_end, true);
+    return {result.position, static_cast<int>(result.value)};
   }
 
   std::size_t range_max_query_pos_impl(std::size_t range_begin,
@@ -460,6 +530,16 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
    * @p bit_count.
    */
   void build(std::span<const std::uint64_t> words, std::size_t bit_count) {
+    build(words, bit_count, BitVector::SelectSupport::kBoth, std::nullopt);
+  }
+
+  /**
+   * @brief Build with explicit rank/select support options.
+   */
+  void build(std::span<const std::uint64_t> words,
+             std::size_t bit_count,
+             BitVector::SelectSupport select_support,
+             std::optional<std::size_t> one_count = std::nullopt) {
     const std::size_t required_words = (bit_count + 63) / 64;
     if (words.size() < required_words) {
       throw std::invalid_argument(
@@ -468,7 +548,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
 
     bits_ = words;
     bit_count_ = bit_count;
-    rank_index_.emplace(words, bit_count);
+    rank_index_.emplace(words, bit_count, select_support, one_count);
     block_count_ = (bit_count_ + kBlockBits - 1) / kBlockBits;
     std::vector<Summary> block_summaries(block_count_);
 
@@ -586,6 +666,13 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
    * @return Relative summary of `[begin, begin + length)`.
    */
   Summary summarize_bits(std::size_t begin, std::size_t length) const {
+    if (length == kBlockBits && (begin % kBlockBits) == 0) {
+      const std::size_t block_index = begin / kBlockBits;
+      if (full_block_has_words(block_index)) {
+        return summarize_full_block(block_index);
+      }
+    }
+
     Summary summary;
     summary.size_bits = length;
     if (length == 0) {
@@ -611,6 +698,52 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     summary.block_excess = current;
     summary.min_excess = minimum;
     summary.max_excess = maximum;
+    return summary;
+  }
+
+  /**
+   * @brief Summarize one complete 512-bit block with 128-bit excess kernels.
+   * @details Full Cartesian-BP construction blocks are aligned and contain all
+   * eight backing words. This fast path reuses the existing SIMD/minimum
+   * primitives from `bits.h` instead of reading every bit individually.
+   */
+  Summary summarize_full_block(std::size_t block_index) const {
+    const std::uint64_t* block = bits_.data() + block_index * kBlockWords;
+    Summary summary;
+    for (std::size_t chunk = 0; chunk < kSearchChunkCount; ++chunk) {
+      summary = append(summary,
+                       summarize_128_chunk(block + chunk * kSearchChunkWords));
+    }
+    return summary;
+  }
+
+  /**
+   * @brief Summarize one full 128-bit chunk relative to its first bit.
+   * @details Minima are found directly; maxima are minima of the bit-inverted
+   * chunk with the sign flipped. Minimum multiplicity is computed by the
+   * existing SIMD target-position kernel.
+   */
+  static Summary summarize_128_chunk(const std::uint64_t* chunk) {
+    Summary summary;
+    summary.size_bits = kSearchChunkBits;
+    summary.ones = std::popcount(chunk[0]) + std::popcount(chunk[1]);
+    summary.block_excess = 2 * static_cast<std::int64_t>(summary.ones) -
+                           static_cast<std::int64_t>(kSearchChunkBits);
+
+    const ExcessResult minimum = excess_min_128(chunk, 1, kSearchChunkBits);
+    summary.min_excess = minimum.min_excess;
+
+    const std::array<std::uint64_t, kSearchChunkWords> inverted = {~chunk[0],
+                                                                   ~chunk[1]};
+    const ExcessResult inverted_min =
+        excess_min_128(inverted.data(), 1, kSearchChunkBits);
+    summary.max_excess = -static_cast<std::int64_t>(inverted_min.min_excess);
+
+    std::uint64_t minimum_positions[kSearchChunkWords];
+    excess_positions_128(chunk, static_cast<int>(summary.min_excess),
+                         minimum_positions);
+    summary.min_count = std::popcount(minimum_positions[0]) +
+                        std::popcount(minimum_positions[1]);
     return summary;
   }
 
@@ -1413,8 +1546,8 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
   }
 
   struct NodeRef {
-    std::size_t level = 0;
-    std::size_t index = 0;
+    std::size_t level;
+    std::size_t index;
   };
 
   static constexpr std::size_t kMaxCoverNodes = 512;
@@ -1428,6 +1561,12 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     std::size_t max_position = npos;
   };
 
+  struct MinScanResult {
+    std::int64_t block_excess = 0;
+    std::int64_t min_value = std::numeric_limits<std::int64_t>::max();
+    std::size_t min_position = npos;
+  };
+
   struct RangeExtremeResult {
     std::size_t position = npos;
     std::int64_t value = 0;
@@ -1436,23 +1575,6 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
   struct RangeMinStats {
     std::int64_t value = 0;
     std::uint64_t count = 0;
-  };
-
-  struct Cover {
-    std::array<NodeRef, kMaxCoverNodes> nodes{};
-    std::size_t size = 0;
-
-    /**
-     * @brief Append a cover node if the fixed-capacity buffer has room.
-     * @details Cover construction has a conservative fixed upper bound. Extra
-     * pushes are ignored instead of growing storage.
-     * @param node Node reference to append.
-     */
-    void push(NodeRef node) {
-      if (size < nodes.size()) {
-        nodes[size++] = node;
-      }
-    }
   };
 
   /**
@@ -1483,7 +1605,78 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
                               std::size_t range_end,
                               bool find_min) const {
     return static_cast<int>(
-        range_extreme_query(range_begin, range_end, find_min).value);
+        range_extreme_query_value(range_begin, range_end, find_min));
+  }
+
+  /**
+   * @brief Return only the minimum or maximum relative excess in a range.
+   * @details Uses the same decomposition as `range_extreme_query`, but skips
+   * the final descent needed to recover a bit position.
+   * @param range_begin Inclusive range start.
+   * @param range_end Inclusive range end.
+   * @param find_min True for minimum, false for maximum.
+   * @return Extreme relative excess value.
+   */
+  std::int64_t range_extreme_query_value(std::size_t range_begin,
+                                         std::size_t range_end,
+                                         bool find_min) const {
+    std::int64_t value = 0;
+    std::int64_t best = find_min ? std::numeric_limits<std::int64_t>::max()
+                                 : std::numeric_limits<std::int64_t>::min();
+
+    auto consider_value = [&](std::int64_t candidate) {
+      if ((find_min && candidate < best) || (!find_min && candidate > best)) {
+        best = candidate;
+      }
+    };
+
+    const std::size_t range_end_exclusive = range_end + 1;
+    const std::size_t first_full_block =
+        (range_begin + kBlockBits - 1) / kBlockBits;
+    const std::size_t full_begin =
+        std::min(range_end_exclusive, first_full_block * kBlockBits);
+    if (range_begin < full_begin) {
+      if (find_min) {
+        const MinScanResult scan = scan_min_range(range_begin, full_begin);
+        consider_value(scan.min_value);
+        value += scan.block_excess;
+      } else {
+        const ScanResult scan = scan_range(range_begin, full_begin);
+        consider_value(scan.max_value);
+        value += scan.block_excess;
+      }
+    }
+
+    const std::size_t last_full_block_exclusive =
+        range_end_exclusive / kBlockBits;
+    const std::size_t middle_begin = full_begin;
+    const std::size_t middle_end =
+        std::max(middle_begin, last_full_block_exclusive * kBlockBits);
+    if (middle_begin < middle_end) {
+      for_each_cover_node(middle_begin, middle_end, [&](NodeRef node) {
+        const Summary summary = summary_at(node.level, node.index);
+        consider_value(value +
+                       (find_min ? summary.min_excess : summary.max_excess));
+        value += summary.block_excess;
+        return true;
+      });
+    }
+
+    if (middle_end < range_end_exclusive) {
+      if (find_min) {
+        const MinScanResult scan =
+            scan_min_range(middle_end, range_end_exclusive);
+        consider_value(value + scan.min_value);
+      } else {
+        const ScanResult scan = scan_range(middle_end, range_end_exclusive);
+        consider_value(value + scan.max_value);
+      }
+    }
+    if (best == std::numeric_limits<std::int64_t>::max() ||
+        best == std::numeric_limits<std::int64_t>::min()) {
+      return 0;
+    }
+    return best;
   }
 
   /**
@@ -1521,10 +1714,15 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     const std::size_t full_begin =
         std::min(range_end_exclusive, first_full_block * kBlockBits);
     if (range_begin < full_begin) {
-      const ScanResult scan = scan_range(range_begin, full_begin);
-      consider_point(find_min ? scan.min_value : scan.max_value,
-                     find_min ? scan.min_position : scan.max_position);
-      value += scan.block_excess;
+      if (find_min) {
+        const MinScanResult scan = scan_min_range(range_begin, full_begin);
+        consider_point(scan.min_value, scan.min_position);
+        value += scan.block_excess;
+      } else {
+        const ScanResult scan = scan_range(range_begin, full_begin);
+        consider_point(scan.max_value, scan.max_position);
+        value += scan.block_excess;
+      }
     }
 
     const std::size_t last_full_block_exclusive =
@@ -1533,11 +1731,8 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     const std::size_t middle_end =
         std::max(middle_begin, last_full_block_exclusive * kBlockBits);
     if (middle_begin < middle_end) {
-      Cover cover;
-      collect_cover(middle_begin, middle_end, cover);
-      for (std::size_t i = 0; i < cover.size; ++i) {
-        const NodeRef& node = cover.nodes[i];
-        Summary summary = summary_at(node.level, node.index);
+      for_each_cover_node(middle_begin, middle_end, [&](NodeRef node) {
+        const Summary summary = summary_at(node.level, node.index);
         const std::int64_t candidate =
             value + (find_min ? summary.min_excess : summary.max_excess);
         if ((find_min && candidate < best) || (!find_min && candidate > best)) {
@@ -1547,15 +1742,19 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
           best_is_node = true;
         }
         value += summary.block_excess;
-      }
+        return true;
+      });
     }
 
     if (middle_end < range_end_exclusive) {
-      const ScanResult scan = scan_range(middle_end, range_end_exclusive);
-      const std::int64_t candidate =
-          value + (find_min ? scan.min_value : scan.max_value);
-      consider_point(candidate,
-                     find_min ? scan.min_position : scan.max_position);
+      if (find_min) {
+        const MinScanResult scan =
+            scan_min_range(middle_end, range_end_exclusive);
+        consider_point(value + scan.min_value, scan.min_position);
+      } else {
+        const ScanResult scan = scan_range(middle_end, range_end_exclusive);
+        consider_point(value + scan.max_value, scan.max_position);
+      }
     }
 
     if (best_is_node) {
@@ -1610,14 +1809,12 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     const std::size_t middle_end =
         std::max(middle_begin, last_full_block_exclusive * kBlockBits);
     if (middle_begin < middle_end) {
-      Cover cover;
-      collect_cover(middle_begin, middle_end, cover);
-      for (std::size_t i = 0; i < cover.size; ++i) {
-        const NodeRef& node = cover.nodes[i];
-        Summary summary = summary_at(node.level, node.index);
+      for_each_cover_node(middle_begin, middle_end, [&](NodeRef node) {
+        const Summary summary = summary_at(node.level, node.index);
         consider(value + summary.min_excess, summary.min_count);
         value += summary.block_excess;
-      }
+        return true;
+      });
     }
 
     if (middle_end < range_end_exclusive) {
@@ -1665,20 +1862,25 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     const std::size_t middle_end =
         std::max(middle_begin, last_full_block_exclusive * kBlockBits);
     if (middle_begin < middle_end) {
-      Cover cover;
-      collect_cover(middle_begin, middle_end, cover);
-      for (std::size_t i = 0; i < cover.size; ++i) {
-        const NodeRef& node = cover.nodes[i];
-        Summary summary = summary_at(node.level, node.index);
+      bool found_node = false;
+      std::size_t selected = npos;
+      for_each_cover_node(middle_begin, middle_end, [&](NodeRef node) {
+        const Summary summary = summary_at(node.level, node.index);
         const std::int64_t candidate = value + summary.min_excess;
         if (candidate == target) {
           if (rank <= summary.min_count) {
-            return descend_qth_min(node.level, node.index, target - value,
-                                   rank);
+            selected =
+                descend_qth_min(node.level, node.index, target - value, rank);
+            found_node = true;
+            return false;
           }
           rank -= summary.min_count;
         }
         value += summary.block_excess;
+        return true;
+      });
+      if (found_node) {
+        return selected;
       }
     }
 
@@ -1693,49 +1895,74 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
   }
 
   /**
-   * @brief Decompose an aligned block interval into summary nodes.
-   * @details Produces a left-to-right cover of `[begin, end)` using the largest
-   * summary nodes available. Both boundaries must be aligned to block size.
-   * @param begin Inclusive bit start, aligned to `kBlockBits`.
-   * @param end Exclusive bit end, aligned to `kBlockBits`.
-   * @param out Destination fixed-size cover buffer.
+   * @brief Visit an aligned block interval as summary nodes.
+   * @details Produces the same left-to-right cover as the previous materialized
+   * cover helper, but streams nodes into @p callback and only keeps the right
+   * boundary stack needed to preserve bit order. The callback should return
+   * false to stop early.
    */
-  void collect_cover(std::size_t begin, std::size_t end, Cover& out) const {
+  template <class Callback>
+  bool for_each_cover_node(std::size_t begin,
+                           std::size_t end,
+                           Callback&& callback) const {
     if (begin >= end || total_levels() == 0 || (begin % kBlockBits) != 0 ||
         (end % kBlockBits) != 0) {
-      return;
+      return true;
     }
 
-    Cover right_cover;
+    std::array<NodeRef, kMaxCoverNodes> right_nodes;
+    std::size_t right_size = 0;
+    std::size_t emitted = 0;
     std::size_t level = 0;
     std::size_t left = begin / kBlockBits;
     std::size_t right = end / kBlockBits;
 
+    auto emit = [&](NodeRef node) {
+      if (emitted >= kMaxCoverNodes) {
+        return true;
+      }
+      ++emitted;
+      return callback(node);
+    };
+
+    auto push_right = [&](NodeRef node) {
+      if (right_size < right_nodes.size()) {
+        right_nodes[right_size++] = node;
+      }
+    };
+
     while (left < right) {
       if (!has_parent_level(level)) {
         for (std::size_t index = left; index < right; ++index) {
-          out.push({level, index});
+          if (!emit({level, index})) {
+            return false;
+          }
         }
         break;
       }
 
       const std::size_t fanout = fanout_to_parent(level);
       while (left < right && (left % fanout) != 0) {
-        out.push({level, left});
+        if (!emit({level, left})) {
+          return false;
+        }
         ++left;
       }
       while (left < right && (right % fanout) != 0) {
         --right;
-        right_cover.push({level, right});
+        push_right({level, right});
       }
       left /= fanout;
       right /= fanout;
       ++level;
     }
 
-    while (right_cover.size > 0) {
-      out.push(right_cover.nodes[--right_cover.size]);
+    while (right_size > 0) {
+      if (!emit(right_nodes[--right_size])) {
+        return false;
+      }
     }
+    return true;
   }
 
   /**
@@ -1928,6 +2155,35 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
   }
 
   /**
+   * @brief Byte-accelerated minimum-only scan of an arbitrary bit interval.
+   * @details Used by range-min position/value queries that do not need maximum
+   * fields or minimum multiplicity.
+   */
+  MinScanResult scan_min_range(std::size_t begin, std::size_t end) const {
+    MinScanResult result;
+    const auto& lut = byte_lut();
+    while (begin < end && (begin & 7) != 0) {
+      append_scanned_min_bit(result, begin);
+      ++begin;
+    }
+    while (begin + 8 <= end) {
+      const ByteAgg& byte = lut[get_byte(begin)];
+      const std::int64_t min_candidate = result.block_excess + byte.min_excess;
+      if (min_candidate < result.min_value) {
+        result.min_value = min_candidate;
+        result.min_position = begin + byte.pos_first_min;
+      }
+      result.block_excess += byte.block_excess;
+      begin += 8;
+    }
+    while (begin < end) {
+      append_scanned_min_bit(result, begin);
+      ++begin;
+    }
+    return result;
+  }
+
+  /**
    * @brief Append one bit to an incremental range scan.
    * @details Updates total excess, min/max values, first min/max positions, and
    * minimum count after consuming @p position.
@@ -1946,6 +2202,18 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     if (result.block_excess > result.max_value) {
       result.max_value = result.block_excess;
       result.max_position = position;
+    }
+  }
+
+  /**
+   * @brief Append one bit to an incremental minimum-only range scan.
+   */
+  void append_scanned_min_bit(MinScanResult& result,
+                              std::size_t position) const {
+    result.block_excess += bit(position) ? 1 : -1;
+    if (result.block_excess < result.min_value) {
+      result.min_value = result.block_excess;
+      result.min_position = position;
     }
   }
 

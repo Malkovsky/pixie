@@ -2,8 +2,10 @@
 
 #include <pixie/bits.h>
 #include <pixie/bitvector.h>
+#include <pixie/cache_line.h>
 #include <pixie/memory_usage.h>
 #include <pixie/rmq/rmq_base.h>
+#include <pixie/rmq/utils/succinct_monotone_stack.h>
 
 #include <algorithm>
 #include <array>
@@ -12,7 +14,6 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
-#include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -20,24 +21,26 @@
 #include <utility>
 #include <vector>
 
-namespace pixie::rmq::experimental {
+namespace pixie::rmq {
+
+namespace detail {
 
 /**
- * @brief SegmentBTreeXL-style RMQ backend for ±1 depth sequences.
+ * @brief HybridBTree-style RMQ backend for ±1 depth sequences.
  *
  * @details The input words encode adjacent depth deltas: bit 1 means +1 and
  * bit 0 means -1. The indexed sequence has `depth_count` prefix positions, so
  * the bit sequence has `depth_count - 1` deltas. Public ranges are half-open
  * over depth positions, and ties return the smaller depth position.
  *
- * This backend mirrors the high-level query shape of `SegmentBTreeXL`: depth
+ * This backend mirrors the high-level query shape of `HybridBTree`: depth
  * positions are split into configurable-size leaves, leaves are grouped into a
  * B-tree, and every internal node stores a local Cartesian/BP selector over the
  * minima of its immediate children. Middle levels are fixed at 192 child slots:
  * their selector uses 384 BP bits and reserves the remaining 128 bits for the
  * embedded subtree minimum position/depth. A configurable number of top levels
  * additionally keep sparse tables over child-minimum slots. Unlike value
- * `SegmentBTreeXL`, leaves do not store another local Cartesian selector or
+ * `HybridBTree`, leaves do not store another local Cartesian selector or
  * cached minima. Leaf minima are recomputed from the original BP delta bits
  * with the 128-bit excess primitives from `bits.h`, using rank support to
  * recover the absolute base depth at the leaf start.
@@ -54,15 +57,15 @@ template <class Index = std::size_t,
           std::size_t LeafSize = 512,
           bool UseHighSparseLayout = true,
           std::size_t HighSparseLayoutLevels = 2>
-class SegmentBTreeXLPlusMinusOneRmq {
+class HybridBTreePlusMinusOne {
  public:
   static_assert(std::is_unsigned_v<Index>,
-                "SegmentBTreeXLPlusMinusOneRmq index type must be unsigned");
+                "HybridBTreePlusMinusOne index type must be unsigned");
   static_assert(LeafSize != 0 && LeafSize % 512 == 0,
-                "SegmentBTreeXLPlusMinusOneRmq leaf size must be a positive "
+                "HybridBTreePlusMinusOne leaf size must be a positive "
                 "multiple of 512");
   static_assert(!UseHighSparseLayout || HighSparseLayoutLevels > 0,
-                "SegmentBTreeXLPlusMinusOneRmq high sparse layout must cover "
+                "HybridBTreePlusMinusOne high sparse layout must cover "
                 "at least one level when enabled");
 
   static constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
@@ -76,7 +79,7 @@ class SegmentBTreeXLPlusMinusOneRmq {
   /**
    * @brief Construct an empty ±1 RMQ index.
    */
-  SegmentBTreeXLPlusMinusOneRmq() = default;
+  HybridBTreePlusMinusOne() = default;
 
   /**
    * @brief Build a ±1 RMQ index over external packed delta bits.
@@ -86,8 +89,8 @@ class SegmentBTreeXLPlusMinusOneRmq {
    * @throws std::length_error if @p Index cannot represent all positions.
    * @throws std::invalid_argument if @p bits is shorter than required.
    */
-  SegmentBTreeXLPlusMinusOneRmq(std::span<const std::uint64_t> bits,
-                                std::size_t depth_count) {
+  HybridBTreePlusMinusOne(std::span<const std::uint64_t> bits,
+                          std::size_t depth_count) {
     build(bits, depth_count);
   }
 
@@ -95,11 +98,12 @@ class SegmentBTreeXLPlusMinusOneRmq {
    * @brief Build a ±1 RMQ index over external packed bits and rank support.
    *
    * @details The supplied rank index is non-owning and must outlive this RMQ
-   * object. This is used by Cartesian XL to reuse its BP rank/select index.
+   * object. This is used by CartesianHybridBTree to reuse its BP rank/select
+   * index.
    */
-  SegmentBTreeXLPlusMinusOneRmq(std::span<const std::uint64_t> bits,
-                                std::size_t depth_count,
-                                const BitVector& rank_index) {
+  HybridBTreePlusMinusOne(std::span<const std::uint64_t> bits,
+                          std::size_t depth_count,
+                          const BitVector& rank_index) {
     build(bits, depth_count, rank_index);
   }
 
@@ -260,7 +264,7 @@ class SegmentBTreeXLPlusMinusOneRmq {
     void build(std::size_t entry_count, EntryLess entry_less) {
       if (entry_count > kSelectorEntries) {
         throw std::length_error(
-            "SegmentBTreeXLPlusMinusOneRmq local selector too large");
+            "HybridBTreePlusMinusOne local selector too large");
       }
 
       bp_bits_.fill(0);
@@ -507,24 +511,25 @@ class SegmentBTreeXLPlusMinusOneRmq {
     }
     if (depth_count_ > static_cast<std::size_t>(invalid_index)) {
       throw std::length_error(
-          "SegmentBTreeXLPlusMinusOneRmq index type is too small");
+          "HybridBTreePlusMinusOne index type is too small");
     }
     if (depth_count_ >
         static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
       throw std::length_error(
-          "SegmentBTreeXLPlusMinusOneRmq depth range is too large");
+          "HybridBTreePlusMinusOne depth range is too large");
     }
     if (input_bits_.size() < (depth_count_ - 1 + 63) / 64) {
       throw std::invalid_argument(
-          "SegmentBTreeXLPlusMinusOneRmq bit span is too small");
+          "HybridBTreePlusMinusOne bit span is too small");
     }
 
     const std::size_t delta_count = depth_count_ - 1;
     if (external_rank_index_ == nullptr) {
-      owned_rank_index_.emplace(input_bits_, delta_count);
+      owned_rank_index_.emplace(input_bits_, delta_count,
+                                BitVector::SelectSupport::kSelect0);
     } else if (external_rank_index_->size() < delta_count) {
       throw std::invalid_argument(
-          "SegmentBTreeXLPlusMinusOneRmq external rank index is too small");
+          "HybridBTreePlusMinusOne external rank index is too small");
     }
 
     initialize_layout((depth_count_ + LeafSize - 1) / LeafSize);
@@ -1231,41 +1236,42 @@ class SegmentBTreeXLPlusMinusOneRmq {
   std::size_t high_level_begin_ = std::numeric_limits<std::size_t>::max();
 };
 
+}  // namespace detail
+
 /**
- * @brief Experimental Cartesian-tree value RMQ using SegmentBTreeXL-style LCA.
+ * @brief Cartesian-tree value RMQ using HybridBTree-style LCA.
  *
- * @details This class keeps the same public value-RMQ contract as
- * `CartesianTreeRmq`. It builds the same stable Ferrada-Navarro BP
- * Cartesian-tree encoding, uses `BitVector` for close-parenthesis rank/select,
- * and delegates the BP-depth minimum query to
- * `SegmentBTreeXLPlusMinusOneRmq`. The BP-depth backend keeps a configurable
+ * @details This class keeps the same public value-RMQ contract as the other
+ * value RMQ backends. It builds a stable Ferrada-Navarro BP Cartesian-tree
+ * encoding, uses `BitVector` for close-parenthesis rank/select, and delegates
+ * the BP-depth minimum query to
+ * `detail::HybridBTreePlusMinusOne`. The BP-depth backend keeps a configurable
  * low-level leaf size, fixed 192-entry middle nodes with embedded minima, and
  * fixed 256-entry high nodes. A single coarse value-level sparse table is
  * checked first; it uses at least 4096-value blocks and grows the block width
  * when needed so the top layer has at most 2^14 blocks. Wide queries whose
  * padded block-cover minimum lies inside the requested range return from this
- * top table without touching the global BP rank/select path.
+ * top table without touching the global BP rank/select path. BP construction
+ * uses a succinct monotone bit-stack, preserving the same stable Cartesian-tree
+ * shape without an n-entry index stack.
  *
- * The implementation is intentionally kept in the experimental namespace and
- * is not included from `pixie/rmq.h`. It is meant to compare the usual
- * Cartesian-tree reduction against a SegmentBTreeXL-shaped ±1 RMQ backend.
+ * This implementation is included from `pixie/rmq.h` as the compact
+ * Cartesian-tree reduction backed by a HybridBTree-shaped ±1 RMQ index.
  */
 template <class T,
           class Compare = std::less<T>,
           class Index = std::size_t,
           std::size_t LeafSize = 512>
-class CartesianTreeSegmentBTreeXLRmq
-    : public RmqBase<
-          CartesianTreeSegmentBTreeXLRmq<T, Compare, Index, LeafSize>,
-          T> {
+class CartesianHybridBTree
+    : public RmqBase<CartesianHybridBTree<T, Compare, Index, LeafSize>, T> {
  public:
   static_assert(std::is_unsigned_v<Index>,
-                "CartesianTreeSegmentBTreeXLRmq index type must be unsigned");
+                "CartesianHybridBTree index type must be unsigned");
   static_assert(LeafSize != 0 && LeafSize % 512 == 0,
-                "CartesianTreeSegmentBTreeXLRmq leaf size must be a positive "
+                "CartesianHybridBTree leaf size must be a positive "
                 "multiple of 512");
 
-  using Self = CartesianTreeSegmentBTreeXLRmq<T, Compare, Index, LeafSize>;
+  using Self = CartesianHybridBTree<T, Compare, Index, LeafSize>;
 
   static constexpr std::size_t npos = RmqBase<Self, T>::npos;
   static constexpr Index invalid_index = std::numeric_limits<Index>::max();
@@ -1275,16 +1281,16 @@ class CartesianTreeSegmentBTreeXLRmq
   /**
    * @brief Construct an empty Cartesian-tree RMQ index.
    */
-  CartesianTreeSegmentBTreeXLRmq() = default;
+  CartesianHybridBTree() = default;
 
   /**
-   * @brief Build an experimental Cartesian-tree RMQ index over @p values.
+   * @brief Build a Cartesian-tree RMQ index over @p values.
    *
    * @details The values are not copied and must outlive this object. Equal
    * values stay stable: the smaller index remains the first minimum.
    */
-  explicit CartesianTreeSegmentBTreeXLRmq(std::span<const T> values,
-                                          Compare compare = Compare())
+  explicit CartesianHybridBTree(std::span<const T> values,
+                                Compare compare = Compare())
       : values_(values), compare_(compare) {
     build();
   }
@@ -1292,7 +1298,7 @@ class CartesianTreeSegmentBTreeXLRmq
   /**
    * @brief Copy an RMQ index and rebuild internal non-owning views.
    */
-  CartesianTreeSegmentBTreeXLRmq(const CartesianTreeSegmentBTreeXLRmq& other)
+  CartesianHybridBTree(const CartesianHybridBTree& other)
       : values_(other.values_),
         compare_(other.compare_),
         bp_bits_(other.bp_bits_),
@@ -1307,8 +1313,7 @@ class CartesianTreeSegmentBTreeXLRmq
   /**
    * @brief Copy-assign an RMQ index and rebuild internal non-owning views.
    */
-  CartesianTreeSegmentBTreeXLRmq& operator=(
-      const CartesianTreeSegmentBTreeXLRmq& other) {
+  CartesianHybridBTree& operator=(const CartesianHybridBTree& other) {
     if (this == &other) {
       return *this;
     }
@@ -1327,8 +1332,7 @@ class CartesianTreeSegmentBTreeXLRmq
   /**
    * @brief Move an RMQ index and rebuild internal non-owning views.
    */
-  CartesianTreeSegmentBTreeXLRmq(
-      CartesianTreeSegmentBTreeXLRmq&& other) noexcept
+  CartesianHybridBTree(CartesianHybridBTree&& other) noexcept
       : values_(other.values_),
         compare_(std::move(other.compare_)),
         bp_bits_(std::move(other.bp_bits_)),
@@ -1348,8 +1352,7 @@ class CartesianTreeSegmentBTreeXLRmq
   /**
    * @brief Move-assign an RMQ index and rebuild internal non-owning views.
    */
-  CartesianTreeSegmentBTreeXLRmq& operator=(
-      CartesianTreeSegmentBTreeXLRmq&& other) noexcept {
+  CartesianHybridBTree& operator=(CartesianHybridBTree&& other) noexcept {
     if (this == &other) {
       return *this;
     }
@@ -1405,7 +1408,9 @@ class CartesianTreeSegmentBTreeXLRmq
   /**
    * @brief Return the packed BP words used by the RMQ encoding.
    */
-  std::span<const std::uint64_t> bp_words() const { return bp_bits_; }
+  std::span<const std::uint64_t> bp_words() const {
+    return bp_storage_words().first(bp_word_count());
+  }
 
   /**
    * @brief Return the top sparse-table block width chosen for a value count.
@@ -1446,14 +1451,14 @@ class CartesianTreeSegmentBTreeXLRmq
    * input values are not owned and are excluded.
    */
   std::size_t memory_usage_bytes_impl() const {
-    return sizeof(*this) + pixie::vector_capacity_bytes(bp_bits_) +
+    return sizeof(*this) + bp_bits_.allocated_bytes() +
            pixie::vector_capacity_bytes(top_sparse_candidates_) +
            pixie::optional_nested_owned_memory_bytes(bp_index_) +
            pixie::nested_owned_memory_bytes(bp_depth_rmq_);
   }
 
  private:
-  using BpDepthRmq = SegmentBTreeXLPlusMinusOneRmq<Index, LeafSize, true, 1>;
+  using BpDepthRmq = detail::HybridBTreePlusMinusOne<Index, LeafSize, true, 1>;
 
   struct TopCandidate {
     Index position = invalid_index;
@@ -1485,7 +1490,7 @@ class CartesianTreeSegmentBTreeXLRmq
    * @brief Rebuild the BP Cartesian-tree representation and support indexes.
    */
   void build() {
-    bp_bits_.clear();
+    bp_bits_.resize(0);
     bp_bit_count_ = 0;
     top_sparse_candidates_.clear();
     top_block_size_ = kMinTopSparseBlockSize;
@@ -1498,11 +1503,12 @@ class CartesianTreeSegmentBTreeXLRmq
     }
     if (values_.size() > (static_cast<std::size_t>(invalid_index) - 1) / 2) {
       throw std::length_error(
-          "Cartesian SegmentBTreeXL RMQ index type is too small");
+          "CartesianHybridBTree RMQ index type is too small");
     }
 
     bp_bit_count_ = 2 * values_.size();
-    bp_bits_.assign((bp_bit_count_ + 63) / 64, 0);
+    bp_bits_.resize(padded_bp_bit_capacity());
+    std::ranges::fill(bp_storage_words(), std::uint64_t{0});
     build_bp_bits();
     build_top_sparse_table();
     reset_bp_indexes();
@@ -1512,17 +1518,16 @@ class CartesianTreeSegmentBTreeXLRmq
    * @brief Build the Ferrada-Navarro BP bits with a monotone stack.
    */
   void build_bp_bits() {
-    const auto stack = std::make_unique_for_overwrite<Index[]>(values_.size());
-    std::size_t stack_size = 0;
+    utils::SuccinctIncreasingStack stack(values_.size());
     std::size_t write_position = bp_bit_count_;
 
     for (std::size_t i = values_.size(); i-- > 0;) {
-      while (stack_size != 0 &&
-             !compare_(values_[stack[stack_size - 1]], values_[i])) {
-        --stack_size;
+      while (!stack.empty() &&
+             !compare_(values_[stack_index(stack.top())], values_[i])) {
+        stack.pop();
         prepend_bp_bit(write_position, true);
       }
-      stack[stack_size++] = static_cast<Index>(i);
+      stack.push(stack_key(i));
       prepend_bp_bit(write_position, false);
     }
 
@@ -1532,13 +1537,29 @@ class CartesianTreeSegmentBTreeXLRmq
   }
 
   /**
+   * @brief Convert a value position to the increasing key used by the
+   * construction stack.
+   */
+  std::size_t stack_key(std::size_t value_index) const {
+    return values_.size() - 1 - value_index;
+  }
+
+  /**
+   * @brief Convert a construction-stack key back to the original value
+   * position.
+   */
+  std::size_t stack_index(std::size_t key) const {
+    return values_.size() - 1 - key;
+  }
+
+  /**
    * @brief Prepend one BP bit into the right-to-left construction buffer.
    */
   void prepend_bp_bit(std::size_t& write_position, bool bit) {
     --write_position;
     if (bit) {
-      bp_bits_[write_position >> 6] |= std::uint64_t{1}
-                                       << (write_position & 63);
+      bp_storage_words()[write_position >> 6] |= std::uint64_t{1}
+                                                 << (write_position & 63);
     }
   }
 
@@ -1551,9 +1572,40 @@ class CartesianTreeSegmentBTreeXLRmq
     if (bp_bit_count_ == 0) {
       return;
     }
-    const std::span<const std::uint64_t> words(bp_bits_);
-    bp_index_.emplace(words, bp_bit_count_);
-    bp_depth_rmq_ = BpDepthRmq(words, bp_bit_count_ + 1, *bp_index_);
+    const std::span<const std::uint64_t> words = bp_words();
+    const std::span<const std::uint64_t> padded_words = bp_storage_words();
+    // TODO: try incorporating rank/select information into the tree.
+    bp_index_.emplace(words, bp_bit_count_, BitVector::SelectSupport::kSelect0,
+                      values_.size());
+    bp_depth_rmq_ = BpDepthRmq(padded_words, bp_bit_count_ + 1, *bp_index_);
+  }
+
+  /**
+   * @brief Return the exact number of 64-bit words in the BP encoding.
+   */
+  std::size_t bp_word_count() const { return ceil_div(bp_bit_count_, 64); }
+
+  /**
+   * @brief Return BP storage capacity padded to full low-level depth leaves.
+   */
+  std::size_t padded_bp_bit_capacity() const {
+    if (bp_bit_count_ == 0) {
+      return 0;
+    }
+    const std::size_t depth_count = bp_bit_count_ + 1;
+    return ceil_div(depth_count, LeafSize) * LeafSize;
+  }
+
+  /**
+   * @brief Return mutable padded BP storage as 64-bit words.
+   */
+  std::span<std::uint64_t> bp_storage_words() { return bp_bits_.As64BitInts(); }
+
+  /**
+   * @brief Return padded BP storage as 64-bit words.
+   */
+  std::span<const std::uint64_t> bp_storage_words() const {
+    return bp_bits_.AsConst64BitInts();
   }
 
   /**
@@ -1745,7 +1797,7 @@ class CartesianTreeSegmentBTreeXLRmq
 
   std::span<const T> values_;
   Compare compare_;
-  std::vector<std::uint64_t> bp_bits_;
+  pixie::AlignedStorage bp_bits_;
   std::size_t bp_bit_count_ = 0;
   std::vector<TopCandidate> top_sparse_candidates_;
   std::size_t top_block_size_ = kMinTopSparseBlockSize;
@@ -1755,4 +1807,4 @@ class CartesianTreeSegmentBTreeXLRmq
   BpDepthRmq bp_depth_rmq_;
 };
 
-}  // namespace pixie::rmq::experimental
+}  // namespace pixie::rmq

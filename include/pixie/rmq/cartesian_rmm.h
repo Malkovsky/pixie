@@ -1,60 +1,90 @@
 #pragma once
 
 /**
- * Benchmark snapshot: experimental rmM-backed Cartesian/BP RMQ, 2026-06-10.
+ * rmM-backed Cartesian RMQ.
  *
+ * The benchmark harness registers this retained variant as
+ * `rmq_cartesian_rmm` and `rmq_build_cartesian_rmm`.
+ * It is included from `pixie/rmq.h` with the rest of the retained RMQ backends.
+ *
+ * Diagnostic snapshot, 2026-06-13:
+ *
+ * Focused value-RMQ rows, N=2^22 values, CPU mean across 5 repetitions.
  * Command shape:
- * taskset -c 0 ./build/release/bench_rmq
- *   --benchmark_filter='^(rmq_cartesian_tree|rmq_cartesian_tree_rmm_btree|
- *     rmq_bp_plus_minus_one|rmq_bp_rmm_btree)/...|^(rmq_build_...)/...'
- *   --benchmark_min_time=0.30s
- *   --benchmark_out=/tmp/rmq_rmm_btree_20260610.json
+ *   taskset -c 0 ./build/release/bench_rmq
+ *     --benchmark_filter='^rmq_(cartesian_rmm|sdsl_sct)/4194304/'
  *
- * Query CPU time, ns:
- * | N        | width    | cartesian | cartesian+rmm | bp +/-1 | bp+rmm  |
- * |----------|----------|-----------|---------------|---------|---------|
- * | 2^10     | 64       |      80.5 |         155.5 |    42.8 |   107.1 |
- * |----------|----------|-----------|---------------|---------|---------|
- * | 2^14     | 64       |      98.8 |         177.4 |    42.7 |   117.9 |
- * | 2^14     | 4096     |     123.9 |         722.2 |    69.0 |   634.9 |
- * |----------|----------|-----------|---------------|---------|---------|
- * | 2^18     | 64       |     110.8 |         176.7 |    42.5 |   118.1 |
- * | 2^18     | 4096     |     156.0 |         744.6 |    66.6 |   735.1 |
- * | 2^18     | 2^18     |     165.8 |        1222.1 |    67.6 |  1204.5 |
- * |----------|----------|-----------|---------------|---------|---------|
- * | 2^22     | 64       |     199.1 |         328.6 |    46.5 |   131.7 |
- * | 2^22     | 4096     |     327.0 |        1271.9 |    95.8 |   772.3 |
- * | 2^22     | 2^22     |     312.8 |        1601.3 |    88.6 |  1498.6 |
- * |----------|----------|-----------|---------------|---------|---------|
- * | 2^24     | 64       |     272.5 |         396.2 |    77.0 |   202.9 |
- * | 2^24     | 4096     |     500.1 |        1248.3 |   189.6 |  1038.2 |
- * | 2^24     | 2^24     |     483.5 |        1832.2 |   126.7 |  1687.9 |
+ * | max width | CartesianRmM (ns) | SdslSct (ns) |
+ * | --------: | ----------------: | -----------: |
+ * |        64 |             121.0 |        211.0 |
+ * |      4096 |             310.0 |        757.0 |
+ * |      2^18 |             529.0 |       1057.0 |
+ * |      2^22 |             598.0 |        979.0 |
  *
- * Build CPU time, ms:
- * | N        | cartesian | cartesian+rmm | bp +/-1 | bp+rmm |
- * |----------|-----------|---------------|---------|--------|
- * | 2^10     |     0.006 |         0.008 |   0.000 |  0.005 |
- * | 2^14     |     0.053 |         0.074 |   0.002 |  0.026 |
- * | 2^18     |     1.770 |         2.243 |   0.047 |  0.377 |
- * | 2^22     |    43.794 |        35.318 |   1.230 |  6.164 |
- * | 2^24     |   192.036 |       155.852 |  20.232 | 23.921 |
+ * Raw BP rmM rows at 2^23 bits, Q=32768, CPU mean across 5 repetitions.
+ * Command shape:
+ *   ./build/release/bench_rmm_{btree,sdsl}
+ *     --ops=range_min_query_pos,range_min_query_val
+ *     --explicit_sizes=8388608 --Q=32768
+ *
+ * | backend             | range_min_pos (ns) | range_min_val (ns) |
+ * | ------------------- | -----------------: | -----------------: |
+ * | RmMBTree            |              602.0 |              540.0 |
+ * | SdslRmMTree         |              727.0 |              742.0 |
+ *
+ * The 2026-06-13 optimization pass streams cover nodes instead of materializing
+ * a zero-initialized per-query cover, adds a combined min position/value query
+ * for the Cartesian adapter, and uses a minimum-only boundary scanner for
+ * range-min position/value queries. Current perf samples for raw
+ * range_min_query_pos are concentrated in for_each_cover_node(),
+ * scan_min_range(), and summary_at().
+ *
+ * Historical build snapshot after select0-only BP rank/select construction,
+ * 2026-06-13, before the RmMBTree full-block summary fast path.
+ * Command shape:
+ *   taskset -c 0 ./build/release/bench_rmq
+ *     --benchmark_filter='^rmq_build_(cartesian_rmm|cartesian_hybrid_btree|sdsl_sct)/(4194304|67108864)$'
+ *     --benchmark_repetitions=5
+ *
+ * CPU mean, milliseconds.
+ *
+ * | N    | CartesianRmM | CartesianHybrid | SdslSct |
+ * | ---: | -----------: | --------------: | ------: |
+ * | 2^22 |       54.407 |          49.361 |  41.317 |
+ * | 2^26 |      915.712 |         795.562 | 666.048 |
+ *
+ * Historical construction perf profile snapshot, 2026-06-13, before the
+ * RmMBTree full-block summary fast path.
+ * Profiling build: RelWithDebInfo, -O3, debug info, frame pointers. Rows are
+ * N=2^26 build benchmarks sampled with perf at 999 Hz.
+ *
+ * CartesianHybridBTree: 867 ms CPU in the profiled run. BP construction is the
+ * dominant cost: the succinct monotone-stack operations plus BP writes account
+ * for roughly two thirds of samples. Top sparse-table construction is about 6%.
+ * CartesianRmM: 1013 ms CPU in the profiled run. BP construction was still the
+ * dominant cost, while rmM summary construction added a visible second cost:
+ * summarize_bits()/bit() lines accounted for about 14%. Benchmark dataset
+ * generation was about 5% in both rows.
  */
 
 #include <pixie/experimental/rmm_btree.h>
 #include <pixie/rmq/rmq_base.h>
+#include <pixie/rmq/utils/succinct_monotone_stack.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <limits>
-#include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
-namespace pixie::rmq::experimental {
+namespace pixie::rmq {
+
+namespace detail {
 
 /**
  * @brief Depth RMQ adapter over the experimental rmM btree.
@@ -71,17 +101,17 @@ namespace pixie::rmq::experimental {
 template <class Index = std::size_t,
           std::size_t HighCacheLines = 4,
           std::size_t LowFanout = 32>
-class RmMBTreePlusMinusOneRmq {
+class RmMPlusMinusOne {
  public:
   static_assert(std::is_unsigned_v<Index>,
-                "RmMBTreePlusMinusOneRmq index type must be unsigned");
+                "RmMPlusMinusOne index type must be unsigned");
 
   static constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
   static constexpr Index invalid_index = std::numeric_limits<Index>::max();
   static constexpr std::size_t kBlockSize =
       pixie::experimental::RmMBTree<HighCacheLines, LowFanout>::kBlockBits;
 
-  RmMBTreePlusMinusOneRmq() = default;
+  RmMPlusMinusOne() = default;
 
   /**
    * @brief Build an rmM-backed ±1 RMQ over external packed delta bits.
@@ -91,15 +121,36 @@ class RmMBTreePlusMinusOneRmq {
    * @throws std::length_error if @p Index cannot represent all positions.
    * @throws std::invalid_argument if @p bits is shorter than required.
    */
-  RmMBTreePlusMinusOneRmq(std::span<const std::uint64_t> bits,
-                          std::size_t depth_count) {
+  RmMPlusMinusOne(std::span<const std::uint64_t> bits,
+                  std::size_t depth_count) {
     build(bits, depth_count);
+  }
+
+  /**
+   * @brief Build with an exact count of +1 delta bits.
+   *
+   * @details Cartesian BP construction knows this count exactly, which lets the
+   * nested BitVector allocate select samples without a second scan.
+   */
+  RmMPlusMinusOne(std::span<const std::uint64_t> bits,
+                  std::size_t depth_count,
+                  std::size_t one_count) {
+    build(bits, depth_count, one_count);
   }
 
   /**
    * @brief Rebuild this adapter over external packed delta bits.
    */
   void build(std::span<const std::uint64_t> bits, std::size_t depth_count) {
+    build(bits, depth_count, std::nullopt);
+  }
+
+  /**
+   * @brief Rebuild this adapter with an optional exact count of +1 delta bits.
+   */
+  void build(std::span<const std::uint64_t> bits,
+             std::size_t depth_count,
+             std::optional<std::size_t> one_count) {
     words_ = bits;
     depth_count_ = depth_count;
     rmm_ = RmM();
@@ -110,7 +161,8 @@ class RmMBTreePlusMinusOneRmq {
     if (depth_count_ > static_cast<std::size_t>(invalid_index)) {
       throw std::length_error("RMQ rmM btree index type is too small");
     }
-    rmm_ = RmM(words_, depth_count_ - 1);
+    rmm_ = RmM(words_, depth_count_ - 1, BitVector::SelectSupport::kSelect0,
+               one_count);
   }
 
   /**
@@ -139,14 +191,13 @@ class RmMBTreePlusMinusOneRmq {
 
     const std::size_t bit_left = left;
     const std::size_t bit_right = right - 2;
-    const int minimum_after_left =
-        rmm_.range_min_query_val(bit_left, bit_right);
-    if (minimum_after_left >= 0) {
+    const auto minimum_after_left =
+        rmm_.range_min_query_result(bit_left, bit_right);
+    if (minimum_after_left.value >= 0) {
       return left;
     }
 
-    const std::size_t bit_position =
-        rmm_.range_min_query_pos(bit_left, bit_right);
+    const std::size_t bit_position = minimum_after_left.position;
     return bit_position == RmM::npos ? npos : bit_position + 1;
   }
 
@@ -170,54 +221,52 @@ class RmMBTreePlusMinusOneRmq {
   RmM rmm_;
 };
 
+}  // namespace detail
+
 /**
- * @brief Experimental Ferrada-Navarro Cartesian-tree RMQ using rmM support.
+ * @brief Ferrada-Navarro Cartesian-tree RMQ using rmM support.
  *
- * @details This class keeps the same public value-RMQ contract as
- * `CartesianTreeRmq`, but replaces the `BitVector` + `BpPlusMinusOneRmq`
- * support layer with `RmMBTreePlusMinusOneRmq`, which in turn uses the
- * experimental range min-max btree over the BP excess sequence.
+ * @details This class keeps the same public value-RMQ contract as the other
+ * value RMQ backends, but replaces the usual balanced-parentheses rank/select
+ * and depth-RMQ support with `detail::RmMPlusMinusOne`, which in turn uses the
+ * experimental range min-max btree over the BP excess sequence. BP
+ * construction uses a succinct monotone bit-stack, preserving the same stable
+ * Cartesian-tree shape without an n-entry index stack.
  *
- * This is intentionally not included from `pixie/rmq.h`; it exists to benchmark
- * the Ferrada-Navarro BP formula with an rmM-backed `rmq_D` primitive before
- * deciding whether to promote or optimize it.
+ * This implementation is included from `pixie/rmq.h` as the rmM-backed
+ * Cartesian-tree reduction.
  */
 template <class T,
           class Compare = std::less<T>,
           class Index = std::size_t,
           std::size_t HighCacheLines = 4,
           std::size_t LowFanout = 32>
-class CartesianTreeRmMBTreeRmq
-    : public RmqBase<CartesianTreeRmMBTreeRmq<T,
-                                              Compare,
-                                              Index,
-                                              HighCacheLines,
-                                              LowFanout>,
+class CartesianRmM
+    : public RmqBase<CartesianRmM<T, Compare, Index, HighCacheLines, LowFanout>,
                      T> {
  public:
   static_assert(std::is_unsigned_v<Index>,
-                "CartesianTreeRmMBTreeRmq index type must be unsigned");
+                "CartesianRmM index type must be unsigned");
 
-  static constexpr std::size_t npos = RmqBase<
-      CartesianTreeRmMBTreeRmq<T, Compare, Index, HighCacheLines, LowFanout>,
-      T>::npos;
+  static constexpr std::size_t npos =
+      RmqBase<CartesianRmM<T, Compare, Index, HighCacheLines, LowFanout>,
+              T>::npos;
   static constexpr Index invalid_index = std::numeric_limits<Index>::max();
 
-  CartesianTreeRmMBTreeRmq() = default;
+  CartesianRmM() = default;
 
   /**
-   * @brief Build an experimental Cartesian-tree RMQ index over @p values.
+   * @brief Build a Cartesian-tree RMQ index over @p values.
    *
    * @details The values are not copied and must outlive this object. Equal
    * values stay stable: the smaller index remains the first minimum.
    */
-  explicit CartesianTreeRmMBTreeRmq(std::span<const T> values,
-                                    Compare compare = Compare())
+  explicit CartesianRmM(std::span<const T> values, Compare compare = Compare())
       : values_(values), compare_(compare) {
     build();
   }
 
-  CartesianTreeRmMBTreeRmq(const CartesianTreeRmMBTreeRmq& other)
+  CartesianRmM(const CartesianRmM& other)
       : values_(other.values_),
         compare_(other.compare_),
         bp_bits_(other.bp_bits_),
@@ -225,7 +274,7 @@ class CartesianTreeRmMBTreeRmq
     reset_bp_index();
   }
 
-  CartesianTreeRmMBTreeRmq& operator=(const CartesianTreeRmMBTreeRmq& other) {
+  CartesianRmM& operator=(const CartesianRmM& other) {
     if (this == &other) {
       return *this;
     }
@@ -237,7 +286,7 @@ class CartesianTreeRmMBTreeRmq
     return *this;
   }
 
-  CartesianTreeRmMBTreeRmq(CartesianTreeRmMBTreeRmq&& other) noexcept
+  CartesianRmM(CartesianRmM&& other) noexcept
       : values_(other.values_),
         compare_(std::move(other.compare_)),
         bp_bits_(std::move(other.bp_bits_)),
@@ -247,8 +296,7 @@ class CartesianTreeRmMBTreeRmq
     reset_bp_index();
   }
 
-  CartesianTreeRmMBTreeRmq& operator=(
-      CartesianTreeRmMBTreeRmq&& other) noexcept {
+  CartesianRmM& operator=(CartesianRmM&& other) noexcept {
     if (this == &other) {
       return *this;
     }
@@ -306,7 +354,7 @@ class CartesianTreeRmMBTreeRmq
   std::span<const std::uint64_t> bp_words() const { return bp_bits_; }
 
  private:
-  using BpSupport = RmMBTreePlusMinusOneRmq<Index, HighCacheLines, LowFanout>;
+  using BpSupport = detail::RmMPlusMinusOne<Index, HighCacheLines, LowFanout>;
 
   void build() {
     bp_bits_.clear();
@@ -327,23 +375,38 @@ class CartesianTreeRmMBTreeRmq
   }
 
   void build_bp_bits() {
-    const auto stack = std::make_unique_for_overwrite<Index[]>(values_.size());
-    std::size_t stack_size = 0;
+    utils::SuccinctIncreasingStack stack(values_.size());
     std::size_t write_position = bp_bit_count_;
 
     for (std::size_t i = values_.size(); i-- > 0;) {
-      while (stack_size != 0 &&
-             !compare_(values_[stack[stack_size - 1]], values_[i])) {
-        --stack_size;
+      while (!stack.empty() &&
+             !compare_(values_[stack_index(stack.top())], values_[i])) {
+        stack.pop();
         prepend_bp_bit(write_position, true);
       }
-      stack[stack_size++] = static_cast<Index>(i);
+      stack.push(stack_key(i));
       prepend_bp_bit(write_position, false);
     }
 
     while (write_position != 0) {
       prepend_bp_bit(write_position, true);
     }
+  }
+
+  /**
+   * @brief Convert a value position to the increasing key used by the
+   * construction stack.
+   */
+  std::size_t stack_key(std::size_t value_index) const {
+    return values_.size() - 1 - value_index;
+  }
+
+  /**
+   * @brief Convert a construction-stack key back to the original value
+   * position.
+   */
+  std::size_t stack_index(std::size_t key) const {
+    return values_.size() - 1 - key;
   }
 
   void prepend_bp_bit(std::size_t& write_position, bool bit) {
@@ -359,8 +422,8 @@ class CartesianTreeRmMBTreeRmq
     if (bp_bit_count_ == 0) {
       return;
     }
-    bp_support_ =
-        BpSupport(std::span<const std::uint64_t>(bp_bits_), bp_bit_count_ + 1);
+    bp_support_ = BpSupport(std::span<const std::uint64_t>(bp_bits_),
+                            bp_bit_count_ + 1, values_.size());
   }
 
   std::span<const T> values_;
@@ -370,4 +433,4 @@ class CartesianTreeRmMBTreeRmq
   BpSupport bp_support_;
 };
 
-}  // namespace pixie::rmq::experimental
+}  // namespace pixie::rmq

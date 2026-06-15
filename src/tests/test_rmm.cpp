@@ -1084,6 +1084,22 @@ TEST(RmMBTreeExperimental, RankSelectIgnoresDirtyTrailingStorage) {
   EXPECT_EQ(rm.select0(2), pixie::experimental::RmMBTree<>::npos);
 }
 
+TEST(RmMBTreeExperimental, OptionalSelectSupport) {
+  const std::string bits = "101100";
+  auto words = pack_words_lsb_first(bits);
+  pixie::experimental::RmMBTree<> select0_only(
+      std::span<const std::uint64_t>(words), bits.size(),
+      pixie::BitVector::SelectSupport::kSelect0, /*one_count=*/3);
+
+  EXPECT_EQ(select0_only.rank1(bits.size()), 3u);
+  EXPECT_EQ(select0_only.rank0(bits.size()), 3u);
+  EXPECT_EQ(select0_only.select1(1), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(select0_only.select0(1), 1u);
+  EXPECT_EQ(select0_only.select0(2), 4u);
+  EXPECT_EQ(select0_only.select0(3), 5u);
+  EXPECT_EQ(select0_only.select0(4), pixie::experimental::RmMBTree<>::npos);
+}
+
 TEST(RmMBTreeExperimental, ParenthesesOnUnmatchedBoundaryBits) {
   const std::string bits = "1";
   auto words = pack_words_lsb_first(bits);

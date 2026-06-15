@@ -1,7 +1,7 @@
 #pragma once
 
 #ifndef SDSL_SUPPORT
-#error "pixie/rmq/sdsl_sct_rmq.h requires SDSL_SUPPORT"
+#error "pixie/rmq/sdsl_sct.h requires SDSL_SUPPORT"
 #endif
 
 #include <pixie/rmq/rmq_base.h>
@@ -46,18 +46,18 @@ namespace pixie::rmq {
  * @tparam Index Interface compatibility parameter for benchmark templates.
  */
 template <class T, class Compare = std::less<T>, class Index = std::size_t>
-class SdslSctRmq : public RmqBase<SdslSctRmq<T, Compare, Index>, T> {
+class SdslSct : public RmqBase<SdslSct<T, Compare, Index>, T> {
  public:
   static_assert(std::is_same_v<Compare, std::less<T>>,
                 "SDSL SCT RMQ wrapper supports only std::less");
 
   static constexpr std::size_t npos =
-      RmqBase<SdslSctRmq<T, Compare, Index>, T>::npos;
+      RmqBase<SdslSct<T, Compare, Index>, T>::npos;
 
   /**
    * @brief Construct an empty SDSL SCT RMQ adapter.
    */
-  SdslSctRmq() = default;
+  SdslSct() = default;
 
   /**
    * @brief Build the SDSL SCT index over @p values.
@@ -68,7 +68,7 @@ class SdslSctRmq : public RmqBase<SdslSctRmq<T, Compare, Index>, T> {
    * @param values Values to index.
    * @param compare Must be the default `std::less<T>` comparator.
    */
-  explicit SdslSctRmq(std::span<const T> values, Compare compare = Compare())
+  explicit SdslSct(std::span<const T> values, Compare compare = Compare())
       : values_(values), rmq_(&values_) {
     (void)compare;
   }

@@ -20,15 +20,15 @@
 namespace pixie::rmq {
 
 /**
- * @brief Low-level selector implementation used by SegmentBTreeXL leaves.
+ * @brief Low-level selector implementation used by HybridBTree leaves.
  */
-enum class SegmentBTreeXLLeafSelector {
+enum class HybridBTreeLeafSelector {
   PrefixSuffix,
   BP,
 };
 
 /**
- * @brief Segment B-tree RMQ with compact per-level selectors and XL leaves.
+ * @brief Hybrid B-tree RMQ with compact per-level selectors.
  *
  * @details This is a static, non-owning value-RMQ index over an external value
  * array. Values are split into leaves, leaves are grouped into a B-tree, and
@@ -44,18 +44,18 @@ enum class SegmentBTreeXLLeafSelector {
  * values. The same implementation also supports 248-value mask leaves and
  * 252-value BP leaves for controlled experiments.
  *
- * Middle internal nodes use 192-way fanout. Their selector is a 512-bit local
+ * Internal nodes use 192-way fanout. Their selector is a 512-bit local
  * Cartesian-tree balanced-parentheses encoding over child minima: 384 BP bits,
  * a 64-bit absolute subtree-minimum position, and 64 bits of zero-rank prefix
- * metadata. Middle-node minimum values are cached in a side vector so comparing
+ * metadata. Node minimum values are cached in a side vector so comparing
  * candidates does not require repeatedly descending to leaves.
  *
- * High nodes use 256-way fanout and are limited to the root and its child
- * level, so there are at most 257 high nodes. They keep the same local BP
- * selector, cache child value ranges and child subtree minima, and add sparse
- * tables over child-minimum slots. This spends more space at the top of the
- * tree to reduce work on wide queries while keeping the high-level metadata
- * small enough to stay cache-resident.
+ * Wide queries first try a single coarse sparse table over original-value block
+ * minima. The sparse table uses at least 4096-value blocks and grows the block
+ * width when needed so the top layer has at most 2^14 blocks. If the padded
+ * block-cover candidate lies inside the query, it is returned immediately; on
+ * a miss, the sparse table answers the fully covered middle block range and
+ * the B-tree handles the two border ranges.
  *
  * @code
  * value array, n entries
@@ -64,25 +64,21 @@ enum class SegmentBTreeXLLeafSelector {
  * |       ceil(n / 496) nodes by default
  * |       each leaf covers <=496 values and stores one 64-byte selector
  * |
- * +-- L1..Lm: middle levels, only when the frontier is > 256 * 256 nodes
+ * +-- T: value-block sparse overlay
+ * |       block width >=4096 values, at most 2^14 blocks
+ * |       stores one original-value minimum position per sparse-table cell
+ * |
+ * +-- L1..Lm: internal levels
  * |       fanout 192
  * |       each node stores one 512-bit BP selector over child minima
- * |
- * +-- H0: high child level
- * |       fanout 256, <=256 nodes
- * |       BP selector + child ranges + child minima + sparse child table
- * |
- * +-- H1: high root
- *         fanout 256, one node
- *         BP selector + child ranges + child minima + sparse child table
  *
  * Examples with default 496-value leaves:
  *
  * n = 2^24:
- *   33,826 leaves -> 133 high nodes -> 1 high root
+ *   33,826 leaves -> 177 internal nodes -> 1 root
  *
  * n = 2^26:
- *   135,301 leaves -> 705 middle nodes -> 3 high nodes -> 1 high root
+ *   135,301 leaves -> 705 internal nodes -> 4 internal nodes -> 1 root
  * @endcode
  *
  * Querying starts at the lowest node that covers both endpoint leaves. At each
@@ -98,8 +94,8 @@ enum class SegmentBTreeXLLeafSelector {
  * @tparam Index Unsigned integer type used for stored positions.
  * @tparam LeafSize Number of original values per leaf. This backend currently
  * supports 252 with BP leaves and 248 or 496 with mask leaves.
- * @tparam Fanout Number of children per high internal node. This backend
- * currently supports only 256. Middle internal nodes use 192.
+ * @tparam Fanout Template parameter kept fixed at 256 for the current layout;
+ * internal tree nodes use fixed 192-way fanout.
  * @tparam LeafSelectorKind Compile-time low-level selector kind.
  */
 template <class T,
@@ -107,64 +103,67 @@ template <class T,
           class Index = std::size_t,
           std::size_t LeafSize = 496,
           std::size_t Fanout = 256,
-          SegmentBTreeXLLeafSelector LeafSelectorKind =
-              SegmentBTreeXLLeafSelector::PrefixSuffix>
-class SegmentBTreeXL
+          HybridBTreeLeafSelector LeafSelectorKind =
+              HybridBTreeLeafSelector::PrefixSuffix>
+class HybridBTree
     : public RmqBase<
-          SegmentBTreeXL<T, Compare, Index, LeafSize, Fanout, LeafSelectorKind>,
+          HybridBTree<T, Compare, Index, LeafSize, Fanout, LeafSelectorKind>,
           T> {
  public:
   static_assert(std::is_unsigned_v<Index>,
-                "SegmentBTreeXL index type must be unsigned");
+                "HybridBTree index type must be unsigned");
   static constexpr bool kBpLeafSelector =
-      LeafSelectorKind == SegmentBTreeXLLeafSelector::BP;
+      LeafSelectorKind == HybridBTreeLeafSelector::BP;
   static constexpr bool kMaskLeafSelector =
-      LeafSelectorKind == SegmentBTreeXLLeafSelector::PrefixSuffix;
+      LeafSelectorKind == HybridBTreeLeafSelector::PrefixSuffix;
   static_assert((kBpLeafSelector && LeafSize == 252) ||
                     (kMaskLeafSelector && (LeafSize == 248 || LeafSize == 496)),
-                "SegmentBTreeXL requires 252-value BP leaves "
+                "HybridBTree requires 252-value BP leaves "
                 "or 248/496-value prefix/suffix mask leaves");
   static_assert(Fanout == 256,
-                "SegmentBTreeXL currently requires 256-way internal nodes");
+                "HybridBTree currently requires a 256 fanout template "
+                "argument");
   static_assert(kBpLeafSelector || kMaskLeafSelector,
-                "unsupported SegmentBTreeXL low-level selector kind");
+                "unsupported HybridBTree low-level selector kind");
 
   using Self =
-      SegmentBTreeXL<T, Compare, Index, LeafSize, Fanout, LeafSelectorKind>;
+      HybridBTree<T, Compare, Index, LeafSize, Fanout, LeafSelectorKind>;
 
   static constexpr std::size_t npos = RmqBase<Self, T>::npos;
   static constexpr Index invalid_index = std::numeric_limits<Index>::max();
   static constexpr std::size_t kLeafSize = LeafSize;
   static constexpr std::size_t kFanout = Fanout;
   static constexpr std::size_t kMiddleFanout = 192;
+  static constexpr std::size_t kMinTopSparseBlockSize = 4096;
+  static constexpr std::size_t kMaxTopSparseBlocks = std::size_t{1} << 14;
 
   /**
    * @brief Construct an empty RMQ index.
    */
-  SegmentBTreeXL() = default;
+  HybridBTree() = default;
 
   /**
    * @brief Copy an RMQ index while preserving its non-owning value span.
    */
-  SegmentBTreeXL(const SegmentBTreeXL&) = default;
+  HybridBTree(const HybridBTree&) = default;
 
   /**
    * @brief Move an RMQ index while preserving selector and cache storage.
    */
-  SegmentBTreeXL(SegmentBTreeXL&&) noexcept = default;
+  HybridBTree(HybridBTree&&) noexcept = default;
 
   /**
    * @brief Copy-assign an RMQ index and its cached metadata.
    */
-  SegmentBTreeXL& operator=(const SegmentBTreeXL&) = default;
+  HybridBTree& operator=(const HybridBTree&) = default;
 
   /**
    * @brief Move-assign an RMQ index and its cached metadata.
    */
-  SegmentBTreeXL& operator=(SegmentBTreeXL&&) noexcept = default;
+  HybridBTree& operator=(HybridBTree&&) noexcept = default;
 
   /**
-   * @brief Build a segment B-tree RMQ index over @p values.
+   * @brief Build a hybrid B-tree RMQ index over @p values.
    *
    * @details The values are not copied and must outlive this object. Equal
    * values keep the smaller original position as the answer.
@@ -173,8 +172,7 @@ class SegmentBTreeXL
    * @param compare Ordering used to choose minima.
    * @throws std::length_error if @p Index cannot represent all positions.
    */
-  explicit SegmentBTreeXL(std::span<const T> values,
-                          Compare compare = Compare())
+  explicit HybridBTree(std::span<const T> values, Compare compare = Compare())
       : values_(values), compare_(compare) {
     build();
   }
@@ -201,20 +199,44 @@ class SegmentBTreeXL
       return npos;
     }
 
-    const std::size_t root_level = level_count() - 1;
-    if (left == 0 && right == values_.size()) {
-      return subtree_min_position(root_level, 0);
+    if (right - left <= top_block_size_) {
+      return tree_arg_min(left, right);
     }
-
-    const std::size_t left_leaf = leaf_for_value(left);
-    const std::size_t right_leaf = leaf_for_value(right - 1);
-    if (left_leaf == right_leaf) {
-      return leaf_range_min(left_leaf, left, right);
-    }
-
-    const auto [level, node_index] = covering_node(left_leaf, right_leaf);
-    return query_node(level, node_index, left, right).position;
+    const std::size_t top_answer = top_sparse_arg_min(left, right);
+    return top_answer != npos ? top_answer : tree_arg_min(left, right);
   }
+
+  /**
+   * @brief Return the top sparse-table block width chosen for a value count.
+   */
+  static std::size_t top_sparse_block_size_for(std::size_t value_count) {
+    if (value_count == 0) {
+      return kMinTopSparseBlockSize;
+    }
+    return std::max(kMinTopSparseBlockSize,
+                    1 + (value_count - 1) / kMaxTopSparseBlocks);
+  }
+
+  /**
+   * @brief Return the number of top sparse-table blocks for a value count.
+   */
+  static std::size_t top_sparse_block_count_for(std::size_t value_count) {
+    if (value_count == 0) {
+      return 0;
+    }
+    const std::size_t block_size = top_sparse_block_size_for(value_count);
+    return 1 + (value_count - 1) / block_size;
+  }
+
+  /**
+   * @brief Return the current top sparse-table block width.
+   */
+  std::size_t top_sparse_block_size() const { return top_block_size_; }
+
+  /**
+   * @brief Return the current number of top sparse-table blocks.
+   */
+  std::size_t top_sparse_block_count() const { return top_block_count_; }
 
   /**
    * @brief Return owned auxiliary memory usage in bytes.
@@ -227,13 +249,8 @@ class SegmentBTreeXL
     bytes += pixie::vector_capacity_bytes(leaf_selectors_);
     bytes += pixie::vector_capacity_bytes(medium_selectors_);
     bytes += pixie::vector_capacity_bytes(medium_min_values_);
-    bytes += pixie::vector_capacity_bytes(high_selectors_);
-    bytes += pixie::vector_capacity_bytes(high_min_positions_);
-    bytes += pixie::vector_capacity_bytes(high_min_values_);
-    bytes += pixie::vector_capacity_bytes(high_child_metadata_);
-    bytes += pixie::vector_capacity_bytes(high_sparse_min_slots_);
+    bytes += pixie::vector_capacity_bytes(top_sparse_candidates_);
     bytes += pixie::vector_capacity_bytes(medium_level_offsets_);
-    bytes += pixie::vector_capacity_bytes(high_level_offsets_);
     bytes += pixie::vector_capacity_bytes(level_sizes_);
     bytes += pixie::vector_capacity_bytes(level_value_spans_);
     bytes += pixie::vector_capacity_bytes(level_fanouts_);
@@ -250,10 +267,6 @@ class SegmentBTreeXL
   static constexpr std::size_t kEmbeddedPositionBit =
       2 * kEmbeddedPositionEntries;
   static constexpr std::size_t kMiddleZeroPrefixWord = 7;
-  static constexpr std::size_t kHighSparseLevels =
-      static_cast<std::size_t>(std::bit_width(Fanout));
-  static constexpr std::size_t kHighSparseSlotsPerNode =
-      kHighSparseLevels * Fanout;
   static constexpr std::size_t kLeafLinearScanThreshold = 64;
   static constexpr std::size_t kLeafAvx2ScanThreshold = 16;
   static constexpr std::uint64_t kEmbeddedOffsetMask =
@@ -266,16 +279,15 @@ class SegmentBTreeXL
   static_assert(!kBpLeafSelector || LeafSize <= kEmbeddedOffsetEntries);
   static_assert(kMiddleFanout <= kEmbeddedPositionEntries);
 
-  struct HighChildMetadata {
-    std::size_t value_begin = 0;
-    std::size_t value_end = 0;
-    Index min_position = invalid_index;
-  };
-
   struct MinCandidate {
     std::size_t position = npos;
     const T* value = nullptr;
   };
+
+  struct TopCandidate {
+    Index position = invalid_index;
+  };
+  static_assert(sizeof(TopCandidate) == sizeof(Index));
 
   class alignas(64) Bp512Selector {
    public:
@@ -295,7 +307,7 @@ class SegmentBTreeXL
     template <class EntryLess>
     void build(std::size_t entry_count, EntryLess entry_less) {
       if (entry_count > kSelectorEntries) {
-        throw std::length_error("SegmentBTreeXL local selector too large");
+        throw std::length_error("HybridBTree local selector too large");
       }
 
       bp_bits_.fill(0);
@@ -667,7 +679,7 @@ class SegmentBTreeXL
     void build(std::size_t entry_count, EntryLess entry_less) {
       if (entry_count > kMaskEntries) {
         throw std::length_error(
-            "SegmentBTreeXL prefix/suffix leaf selector too large");
+            "HybridBTree prefix/suffix leaf selector too large");
       }
 
       words_.fill(0);
@@ -857,7 +869,7 @@ class SegmentBTreeXL
    * @brief Wrap an original value position as a comparable candidate.
    */
   MinCandidate value_candidate(std::size_t position) const {
-    if (missing_position(position)) {
+    if (missing_position(position) || position >= values_.size()) {
       return {};
     }
     return {position, values_.data() + position};
@@ -884,22 +896,6 @@ class SegmentBTreeXL
     const std::size_t child_level = level - 1;
     return subtree_min_candidate(child_level,
                                  node * fanout_at_level(level) + slot);
-  }
-
-  /**
-   * @brief Return a high-node child candidate using high-child metadata.
-   */
-  MinCandidate high_child_min_candidate(std::size_t level,
-                                        std::size_t node,
-                                        std::size_t slot) const {
-    const std::size_t child_level = level - 1;
-    const std::size_t child = node * fanout_at_level(level) + slot;
-    const std::size_t position =
-        high_child_metadata_at(high_flat_index(level, node), slot).min_position;
-    if (missing_position(position)) {
-      return {};
-    }
-    return {position, &subtree_min_value(child_level, child)};
   }
 
   /**
@@ -947,40 +943,25 @@ class SegmentBTreeXL
   }
 
   /**
-   * @brief Compare two high-node child slots while building high metadata.
-   */
-  bool strictly_better_high_child_slot(std::size_t level,
-                                       std::size_t node,
-                                       std::size_t left_slot,
-                                       std::size_t right_slot) const {
-    return strictly_better_candidate(
-        high_child_min_candidate(level, node, left_slot),
-        high_child_min_candidate(level, node, right_slot));
-  }
-
-  /**
    * @brief Build all levels, selectors, and cached minimum metadata.
    */
   void build() {
     leaf_selectors_.clear();
     medium_selectors_.clear();
     medium_min_values_.clear();
-    high_selectors_.clear();
-    high_min_positions_.clear();
-    high_min_values_.clear();
-    high_child_metadata_.clear();
-    high_sparse_min_slots_.clear();
+    top_sparse_candidates_.clear();
+    top_block_size_ = kMinTopSparseBlockSize;
+    top_block_count_ = 0;
+    top_sparse_levels_ = 0;
     medium_level_offsets_.clear();
-    high_level_offsets_.clear();
     level_sizes_.clear();
     level_value_spans_.clear();
     level_fanouts_.clear();
-    high_level_begin_ = std::numeric_limits<std::size_t>::max();
     if (values_.empty()) {
       return;
     }
     if (values_.size() > static_cast<std::size_t>(invalid_index)) {
-      throw std::length_error("SegmentBTreeXL index type is too small");
+      throw std::length_error("HybridBTree index type is too small");
     }
 
     initialize_layout((values_.size() + LeafSize - 1) / LeafSize);
@@ -993,13 +974,14 @@ class SegmentBTreeXL
         build_internal_node(level, node);
       }
     }
+    build_top_sparse_table();
   }
 
   /**
    * @brief Compute level sizes, fanouts, flat offsets, and cache storage.
    *
-   * @details The top two tree levels are marked as high levels. Levels below
-   * them use the middle-node layout. Level zero always stores leaf selectors.
+   * @details Level zero always stores leaf selectors. Every internal level uses
+   * the fixed 192-way middle-node layout.
    */
   void initialize_layout(std::size_t leaf_count) {
     level_sizes_.push_back(leaf_count);
@@ -1008,17 +990,10 @@ class SegmentBTreeXL
 
     std::size_t current_count = leaf_count;
     std::size_t current_span = LeafSize;
-    while (current_count > Fanout * Fanout) {
+    while (current_count > 1) {
       level_fanouts_.push_back(kMiddleFanout);
       current_count = ceil_div(current_count, kMiddleFanout);
       current_span = saturating_product(current_span, kMiddleFanout);
-      level_sizes_.push_back(current_count);
-      level_value_spans_.push_back(current_span);
-    }
-    while (current_count > 1) {
-      level_fanouts_.push_back(Fanout);
-      current_count = ceil_div(current_count, Fanout);
-      current_span = saturating_product(current_span, Fanout);
       level_sizes_.push_back(current_count);
       level_value_spans_.push_back(current_span);
     }
@@ -1026,34 +1001,17 @@ class SegmentBTreeXL
     leaf_selectors_.resize(level_sizes_[0]);
 
     medium_level_offsets_.assign(level_count(), 0);
-    high_level_offsets_.assign(level_count(), 0);
     if (level_count() <= 1) {
-      high_level_begin_ = std::numeric_limits<std::size_t>::max();
       return;
     }
 
-    const std::size_t root_level = level_count() - 1;
-    high_level_begin_ = root_level > 1 ? root_level - 1 : 1;
-
     std::size_t medium_node_count = 0;
-    for (std::size_t level = 1; level < high_level_begin_; ++level) {
+    for (std::size_t level = 1; level < level_count(); ++level) {
       medium_level_offsets_[level] = medium_node_count;
       medium_node_count += level_sizes_[level];
     }
     medium_selectors_.resize(medium_node_count);
     medium_min_values_.reserve(medium_node_count);
-
-    std::size_t high_node_count = 0;
-    for (std::size_t level = high_level_begin_; level < level_count();
-         ++level) {
-      high_level_offsets_[level] = high_node_count;
-      high_node_count += level_sizes_[level];
-    }
-    high_selectors_.resize(high_node_count);
-    high_min_positions_.resize(high_node_count, invalid_index);
-    high_min_values_.reserve(high_node_count);
-    high_child_metadata_.resize(high_node_count * Fanout);
-    high_sparse_min_slots_.resize(high_node_count * kHighSparseSlotsPerNode);
   }
 
   /**
@@ -1080,40 +1038,17 @@ class SegmentBTreeXL
     Bp512Selector& selector = mutable_selector_at(level, node);
     const std::size_t count = entry_count(level, node);
     const std::size_t first_child = node * fanout_at_level(level);
-    const bool high_level = is_high_level(level);
-    const std::size_t high_flat = high_level ? high_flat_index(level, node) : 0;
-    if (high_level) {
-      for (std::size_t slot = 0; slot < count; ++slot) {
-        const std::size_t child = first_child + slot;
-        HighChildMetadata& metadata =
-            mutable_high_child_metadata_at(high_flat, slot);
-        metadata.value_begin = node_value_begin(level - 1, child);
-        metadata.value_end = node_value_end(level - 1, child);
-        metadata.min_position =
-            static_cast<Index>(subtree_min_position(level - 1, child));
-      }
-      build_high_sparse_min_slots(level, node, count);
-    }
 
     selector.build(count, [&](std::size_t left, std::size_t right) {
-      if (high_level) {
-        return strictly_better_high_child_slot(level, node, left, right);
-      }
       return strictly_better_subtree_child_slot(level, node, left, right);
     });
 
     const std::size_t slot = selector.arg_min(0, count, count);
     const std::size_t min_position =
-        high_level ? high_child_metadata_at(high_flat, slot).min_position
-                   : subtree_min_position(level - 1, first_child + slot);
-    if (high_level) {
-      high_min_positions_[high_flat] = static_cast<Index>(min_position);
-      high_min_values_.push_back(values_[min_position]);
-    } else {
-      selector.set_embedded_min_position(min_position);
-      medium_min_values_.push_back(values_[min_position]);
-      selector.build_zero_prefix_metadata(2 * count);
-    }
+        subtree_min_position(level - 1, first_child + slot);
+    selector.set_embedded_min_position(min_position);
+    medium_min_values_.push_back(values_[min_position]);
+    selector.build_zero_prefix_metadata(2 * count);
   }
 
   /**
@@ -1130,7 +1065,26 @@ class SegmentBTreeXL
    * @brief Return `ceil(value / divisor)` for positive divisors.
    */
   static std::size_t ceil_div(std::size_t value, std::size_t divisor) {
-    return (value + divisor - 1) / divisor;
+    return value == 0 ? 0 : 1 + (value - 1) / divisor;
+  }
+
+  /**
+   * @brief Return the first minimum position through the B-tree fallback.
+   */
+  std::size_t tree_arg_min(std::size_t left, std::size_t right) const {
+    const std::size_t root_level = level_count() - 1;
+    if (left == 0 && right == values_.size()) {
+      return subtree_min_position(root_level, 0);
+    }
+
+    const std::size_t left_leaf = leaf_for_value(left);
+    const std::size_t right_leaf = leaf_for_value(right - 1);
+    if (left_leaf == right_leaf) {
+      return leaf_range_min(left_leaf, left, right);
+    }
+
+    const auto [level, node_index] = covering_node(left_leaf, right_leaf);
+    return query_node(level, node_index, left, right).position;
   }
 
   /**
@@ -1325,17 +1279,9 @@ class SegmentBTreeXL
     const std::size_t child_level = level - 1;
     const std::size_t first_child = node * fanout_at_level(level);
     const std::size_t child = first_child + slot;
-    const HighChildMetadata* high_children =
-        is_high_level(level) ? high_child_metadata_begin(level, node) : nullptr;
-    const MinCandidate child_min =
-        high_children != nullptr ? high_child_min_candidate(level, node, slot)
-                                 : subtree_min_candidate(child_level, child);
-    const std::size_t child_begin = high_children != nullptr
-                                        ? high_children[slot].value_begin
-                                        : node_value_begin(child_level, child);
-    const std::size_t child_end = high_children != nullptr
-                                      ? high_children[slot].value_end
-                                      : node_value_end(child_level, child);
+    const MinCandidate child_min = subtree_min_candidate(child_level, child);
+    const std::size_t child_begin = node_value_begin(child_level, child);
+    const std::size_t child_end = node_value_end(child_level, child);
     if ((left <= child_begin && child_end <= right) ||
         contains_position(left, right, child_min.position)) {
       return child_min;
@@ -1343,26 +1289,18 @@ class SegmentBTreeXL
 
     const std::size_t last_slot = slot_right - 1;
     const std::size_t left_child_begin =
-        high_children != nullptr
-            ? high_children[slot_left].value_begin
-            : node_value_begin(child_level, first_child + slot_left);
+        node_value_begin(child_level, first_child + slot_left);
     const std::size_t left_child_end =
-        high_children != nullptr
-            ? high_children[slot_left].value_end
-            : node_value_end(child_level, first_child + slot_left);
+        node_value_end(child_level, first_child + slot_left);
     MinCandidate answer = query_node(child_level, first_child + slot_left,
                                      std::max(left, left_child_begin),
                                      std::min(right, left_child_end));
 
     if (slot_left != last_slot) {
       const std::size_t right_child_begin =
-          high_children != nullptr
-              ? high_children[last_slot].value_begin
-              : node_value_begin(child_level, first_child + last_slot);
+          node_value_begin(child_level, first_child + last_slot);
       const std::size_t right_child_end =
-          high_children != nullptr
-              ? high_children[last_slot].value_end
-              : node_value_end(child_level, first_child + last_slot);
+          node_value_end(child_level, first_child + last_slot);
       answer = better_candidate(answer,
                                 query_node(child_level, first_child + last_slot,
                                            std::max(left, right_child_begin),
@@ -1398,9 +1336,6 @@ class SegmentBTreeXL
       return {};
     }
 
-    if (is_high_level(level)) {
-      return high_child_min_candidate(level, node, slot);
-    }
     return subtree_child_min_candidate(level, node, slot);
   }
 
@@ -1482,9 +1417,6 @@ class SegmentBTreeXL
       return node_value_begin(0, node) +
              leaf_selectors_[node].embedded_min_offset();
     }
-    if (is_high_level(level)) {
-      return high_min_positions_[high_flat_index(level, node)];
-    }
     return selector_at(level, node).embedded_min_position();
   }
 
@@ -1495,9 +1427,6 @@ class SegmentBTreeXL
     if (level == 0) {
       return values_[subtree_min_position(0, node)];
     }
-    if (is_high_level(level)) {
-      return high_min_values_[high_flat_index(level, node)];
-    }
     return medium_min_values_[medium_flat_index(level, node)];
   }
 
@@ -1505,9 +1434,6 @@ class SegmentBTreeXL
    * @brief Return an immutable internal-node BP selector.
    */
   const Bp512Selector& selector_at(std::size_t level, std::size_t node) const {
-    if (is_high_level(level)) {
-      return high_selectors_[high_flat_index(level, node)];
-    }
     return medium_selectors_[medium_flat_index(level, node)];
   }
 
@@ -1515,9 +1441,6 @@ class SegmentBTreeXL
    * @brief Return a mutable internal-node BP selector while building.
    */
   Bp512Selector& mutable_selector_at(std::size_t level, std::size_t node) {
-    if (is_high_level(level)) {
-      return high_selectors_[high_flat_index(level, node)];
-    }
     return medium_selectors_[medium_flat_index(level, node)];
   }
 
@@ -1529,18 +1452,8 @@ class SegmentBTreeXL
                                std::size_t slot_left,
                                std::size_t slot_right,
                                std::size_t count) const {
-    if (is_high_level(level)) {
-      return high_sparse_arg_min(level, node, slot_left, slot_right, count);
-    }
     const Bp512Selector& selector = selector_at(level, node);
     return selector.arg_min_with_zero_prefix(slot_left, slot_right, count);
-  }
-
-  /**
-   * @brief Return whether a level uses the high-node layout.
-   */
-  bool is_high_level(std::size_t level) const {
-    return level > 0 && level >= high_level_begin_ && level < level_count();
   }
 
   /**
@@ -1558,115 +1471,168 @@ class SegmentBTreeXL
   }
 
   /**
-   * @brief Map a high-level node to its flat storage index.
+   * @brief Build a single top sparse table over original-value block minima.
    */
-  std::size_t high_flat_index(std::size_t level, std::size_t node) const {
-    return high_level_offsets_[level] + node;
-  }
-
-  /**
-   * @brief Return the first child-metadata record for a high node.
-   */
-  const HighChildMetadata* high_child_metadata_begin(std::size_t level,
-                                                     std::size_t node) const {
-    return high_child_metadata_.data() + high_flat_index(level, node) * Fanout;
-  }
-
-  /**
-   * @brief Return mutable sparse-slot storage for one high node.
-   */
-  std::uint8_t* mutable_high_sparse_min_slots_begin(std::size_t high_flat) {
-    return high_sparse_min_slots_.data() + high_flat * kHighSparseSlotsPerNode;
-  }
-
-  /**
-   * @brief Return sparse-slot storage for one high node.
-   */
-  const std::uint8_t* high_sparse_min_slots_begin(std::size_t high_flat) const {
-    return high_sparse_min_slots_.data() + high_flat * kHighSparseSlotsPerNode;
-  }
-
-  /**
-   * @brief Return high-child metadata by flat high-node index and slot.
-   */
-  const HighChildMetadata& high_child_metadata_at(std::size_t high_flat,
-                                                  std::size_t slot) const {
-    return high_child_metadata_[high_flat * Fanout + slot];
-  }
-
-  /**
-   * @brief Return mutable high-child metadata while building.
-   */
-  HighChildMetadata& mutable_high_child_metadata_at(std::size_t high_flat,
-                                                    std::size_t slot) {
-    return high_child_metadata_[high_flat * Fanout + slot];
-  }
-
-  /**
-   * @brief Choose the better high-node child slot.
-   */
-  std::size_t better_high_child_slot(std::size_t level,
-                                     std::size_t node,
-                                     std::size_t left_slot,
-                                     std::size_t right_slot) const {
-    const MinCandidate left = high_child_min_candidate(level, node, left_slot);
-    const MinCandidate right =
-        high_child_min_candidate(level, node, right_slot);
-    return better_candidate(left, right).position == right.position ? right_slot
-                                                                    : left_slot;
-  }
-
-  /**
-   * @brief Build sparse tables over high-node child minima.
-   */
-  void build_high_sparse_min_slots(std::size_t level,
-                                   std::size_t node,
-                                   std::size_t count) {
-    const std::size_t high_flat = high_flat_index(level, node);
-    std::uint8_t* table = mutable_high_sparse_min_slots_begin(high_flat);
-    for (std::size_t slot = 0; slot < count; ++slot) {
-      table[slot] = static_cast<std::uint8_t>(slot);
+  void build_top_sparse_table() {
+    top_sparse_candidates_.clear();
+    top_block_size_ = top_sparse_block_size_for(values_.size());
+    top_block_count_ = top_sparse_block_count_for(values_.size());
+    top_sparse_levels_ =
+        top_block_count_ == 0 ? 0 : std::bit_width(top_block_count_);
+    if (top_block_count_ == 0) {
+      return;
     }
 
-    for (std::size_t table_level = 1; table_level < kHighSparseLevels;
-         ++table_level) {
-      const std::size_t span = std::size_t{1} << table_level;
-      if (span > count) {
-        break;
+    top_sparse_candidates_.assign(top_sparse_levels_ * top_block_count_,
+                                  TopCandidate{});
+    for (std::size_t block = 0; block < top_block_count_; ++block) {
+      const std::size_t begin = block * top_block_size_;
+      const std::size_t end = std::min(values_.size(), begin + top_block_size_);
+      std::size_t minimum = begin;
+      for (std::size_t position = begin + 1; position < end; ++position) {
+        if (strictly_better_value_position(position, minimum)) {
+          minimum = position;
+        }
       }
+      top_sparse_candidates_[block] = make_top_candidate(minimum);
+    }
+
+    for (std::size_t level = 1; level < top_sparse_levels_; ++level) {
+      const std::size_t span = std::size_t{1} << level;
       const std::size_t half_span = span >> 1;
-      const std::uint8_t* previous = table + (table_level - 1) * Fanout;
-      std::uint8_t* current = table + table_level * Fanout;
-      for (std::size_t slot = 0; slot + span <= count; ++slot) {
-        current[slot] = static_cast<std::uint8_t>(better_high_child_slot(
-            level, node, previous[slot], previous[slot + half_span]));
+      TopCandidate* current =
+          top_sparse_candidates_.data() + level * top_block_count_;
+      const TopCandidate* previous =
+          top_sparse_candidates_.data() + (level - 1) * top_block_count_;
+      for (std::size_t block = 0; block + span <= top_block_count_; ++block) {
+        current[block] =
+            better_top_candidate(previous[block], previous[block + half_span]);
       }
     }
   }
 
   /**
-   * @brief Return the best high-node child slot in a slot range.
+   * @brief Wrap an original value position as a top sparse-table candidate.
    */
-  std::size_t high_sparse_arg_min(std::size_t level,
-                                  std::size_t node,
-                                  std::size_t slot_left,
-                                  std::size_t slot_right,
-                                  std::size_t count) const {
-    if (slot_left >= slot_right || slot_right > count) {
+  TopCandidate make_top_candidate(std::size_t position) const {
+    if (!valid_value_position(position)) {
+      return {};
+    }
+    return {static_cast<Index>(position)};
+  }
+
+  /**
+   * @brief Return whether @p position is a valid original-value index.
+   */
+  bool valid_value_position(std::size_t position) const {
+    return !missing_position(position) && position < values_.size();
+  }
+
+  /**
+   * @brief Return whether value position @p left is strictly better than @p
+   * right.
+   */
+  bool strictly_better_value_position(std::size_t left,
+                                      std::size_t right) const {
+    if (!valid_value_position(left)) {
+      return false;
+    }
+    if (!valid_value_position(right)) {
+      return true;
+    }
+    if (compare_(values_[left], values_[right])) {
+      return true;
+    }
+    if (compare_(values_[right], values_[left])) {
+      return false;
+    }
+    return left < right;
+  }
+
+  /**
+   * @brief Choose the better original-value candidate, preserving first ties.
+   */
+  TopCandidate better_top_candidate(TopCandidate left,
+                                    TopCandidate right) const {
+    const std::size_t left_position = static_cast<std::size_t>(left.position);
+    const std::size_t right_position = static_cast<std::size_t>(right.position);
+    return strictly_better_value_position(right_position, left_position) ? right
+                                                                         : left;
+  }
+
+  /**
+   * @brief Return the sparse-table candidate over a top-block range.
+   */
+  TopCandidate top_sparse_block_arg_min(std::size_t block_left,
+                                        std::size_t block_right) const {
+    if (block_left >= block_right || block_right > top_block_count_ ||
+        top_sparse_levels_ == 0) {
+      return {};
+    }
+    const std::size_t length = block_right - block_left;
+    const std::size_t level = std::bit_width(length) - 1;
+    const std::size_t span = std::size_t{1} << level;
+    const TopCandidate* table =
+        top_sparse_candidates_.data() + level * top_block_count_;
+    return better_top_candidate(table[block_left], table[block_right - span]);
+  }
+
+  /**
+   * @brief Return whether a candidate lies inside a half-open value range.
+   */
+  bool top_candidate_inside(TopCandidate candidate,
+                            std::size_t left,
+                            std::size_t right) const {
+    const std::size_t position = static_cast<std::size_t>(candidate.position);
+    return valid_value_position(position) && left <= position &&
+           position < right;
+  }
+
+  /**
+   * @brief Return the top-overlay answer, or `npos` when the tree should run.
+   */
+  std::size_t top_sparse_arg_min(std::size_t left, std::size_t right) const {
+    if (top_block_count_ <= 1) {
       return npos;
     }
-    const std::size_t length = slot_right - slot_left;
-    if (length == 1) {
-      return slot_left;
+
+    const std::size_t padded_block_left = left / top_block_size_;
+    const std::size_t padded_block_right = (right - 1) / top_block_size_ + 1;
+    if (padded_block_left + 1 >= padded_block_right) {
+      return npos;
     }
 
-    const std::size_t high_flat = high_flat_index(level, node);
-    const std::size_t table_level = std::bit_width(length) - 1;
-    const std::size_t span = std::size_t{1} << table_level;
-    const std::uint8_t* table =
-        high_sparse_min_slots_begin(high_flat) + table_level * Fanout;
-    return better_high_child_slot(level, node, table[slot_left],
-                                  table[slot_right - span]);
+    const TopCandidate padded =
+        top_sparse_block_arg_min(padded_block_left, padded_block_right);
+    if (top_candidate_inside(padded, left, right)) {
+      return static_cast<std::size_t>(padded.position);
+    }
+
+    const std::size_t first_full_block =
+        (left + top_block_size_ - 1) / top_block_size_;
+    const std::size_t full_block_right = right / top_block_size_;
+    if (first_full_block >= full_block_right) {
+      return npos;
+    }
+
+    TopCandidate answer =
+        top_sparse_block_arg_min(first_full_block, full_block_right);
+
+    const std::size_t left_border_end = first_full_block * top_block_size_;
+    if (left < left_border_end) {
+      answer = better_top_candidate(
+          answer, make_top_candidate(tree_arg_min(left, left_border_end)));
+    }
+
+    const std::size_t right_border_begin = full_block_right * top_block_size_;
+    if (right_border_begin < right) {
+      answer = better_top_candidate(
+          answer, make_top_candidate(tree_arg_min(right_border_begin, right)));
+    }
+
+    return valid_value_position(static_cast<std::size_t>(answer.position))
+               ? static_cast<std::size_t>(answer.position)
+               : npos;
   }
 
   std::span<const T> values_;
@@ -1674,30 +1640,14 @@ class SegmentBTreeXL
   std::vector<LeafSelector> leaf_selectors_;
   std::vector<Bp512Selector> medium_selectors_;
   std::vector<T> medium_min_values_;
-  std::vector<Bp512Selector> high_selectors_;
-  std::vector<Index> high_min_positions_;
-  std::vector<T> high_min_values_;
-  std::vector<HighChildMetadata> high_child_metadata_;
-  std::vector<std::uint8_t> high_sparse_min_slots_;
+  std::vector<TopCandidate> top_sparse_candidates_;
   std::vector<std::size_t> medium_level_offsets_;
-  std::vector<std::size_t> high_level_offsets_;
   std::vector<std::size_t> level_sizes_;
   std::vector<std::size_t> level_value_spans_;
   std::vector<std::size_t> level_fanouts_;
-  std::size_t high_level_begin_ = std::numeric_limits<std::size_t>::max();
+  std::size_t top_block_size_ = kMinTopSparseBlockSize;
+  std::size_t top_block_count_ = 0;
+  std::size_t top_sparse_levels_ = 0;
 };
-
-/**
- * @brief Compatibility alias for the historical SegmentBTreeXl spelling.
- */
-template <class T,
-          class Compare = std::less<T>,
-          class Index = std::size_t,
-          std::size_t LeafSize = 496,
-          std::size_t Fanout = 256,
-          SegmentBTreeXLLeafSelector LeafSelectorKind =
-              SegmentBTreeXLLeafSelector::PrefixSuffix>
-using SegmentBTreeXl =
-    SegmentBTreeXL<T, Compare, Index, LeafSize, Fanout, LeafSelectorKind>;
 
 }  // namespace pixie::rmq

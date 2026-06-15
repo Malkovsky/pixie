@@ -138,6 +138,7 @@
             "targets": [
                 "benchmarks",
                 "bench_rmm",
+                "bench_rmq",
                 "louds_tree_benchmarks",
                 "dfuds_tree_benchmarks",
                 "alignment_comparison",
@@ -152,6 +153,7 @@
                 "benchmarks",
                 "bench_rmm",
                 "bench_rmm_sdsl",
+                "bench_rmq",
                 "louds_tree_benchmarks",
                 "dfuds_tree_benchmarks",
                 "alignment_comparison",
@@ -165,6 +167,7 @@
             "targets": [
                 "benchmarks",
                 "bench_rmm",
+                "bench_rmq",
                 "louds_tree_benchmarks",
                 "dfuds_tree_benchmarks",
                 "alignment_comparison",
