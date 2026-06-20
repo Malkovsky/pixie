@@ -269,16 +269,50 @@ TYPED_TEST(ValueRmqSpecificationTest, InvalidAndEmptyRanges) {
   EXPECT_EQ(empty_rmq.range_min(0, 0), 0);
 }
 
+TYPED_TEST(ValueRmqSpecificationTest, MemoryUsageCountsOwnedIndexStorage) {
+  using Rmq = typename TypeParam::Rmq;
+  using MaxRmq = typename TypeParam::MaxRmq;
+
+  const Rmq default_rmq;
+  EXPECT_GE(default_rmq.memory_usage_bytes(), sizeof(Rmq));
+
+  std::vector<int> values(1537);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] = static_cast<int>((i * 19 + i / 5) % 127);
+  }
+
+  const Rmq rmq = TypeParam::make(std::span<const int>(values));
+  const MaxRmq max_rmq = TypeParam::make_max(std::span<const int>(values));
+  EXPECT_GE(rmq.memory_usage_bytes(), sizeof(Rmq));
+  EXPECT_GE(max_rmq.memory_usage_bytes(), sizeof(MaxRmq));
+  EXPECT_GT(rmq.memory_usage_bytes(), default_rmq.memory_usage_bytes());
+}
+
 TYPED_TEST(ValueRmqSpecificationTest, ComparatorCanSelectMaximum) {
+  using MaxRmq = typename TypeParam::MaxRmq;
+
   const std::vector<int> values = {1, 8, 3, 8, 4};
-  const typename TypeParam::MaxRmq rmq =
-      TypeParam::make_max(std::span<const int>(values));
+  const MaxRmq rmq = TypeParam::make_max(std::span<const int>(values));
 
   check_all_ranges(rmq, std::span<const int>(values), std::greater<int>());
   EXPECT_EQ(rmq.arg_min(0, 5), 1u);
+  EXPECT_EQ(rmq.arg_min(2, 2), MaxRmq::npos);
+  EXPECT_EQ(rmq.arg_min(4, 3), MaxRmq::npos);
+  EXPECT_EQ(rmq.arg_min(0, values.size() + 1), MaxRmq::npos);
   EXPECT_EQ(rmq.range_min(2, 2), 0);
   EXPECT_EQ(rmq.range_min(4, 3), 0);
   EXPECT_EQ(rmq.range_min(0, values.size() + 1), 0);
+
+  const std::vector<int> empty_values;
+  const MaxRmq default_rmq;
+  const MaxRmq empty_rmq =
+      TypeParam::make_max(std::span<const int>(empty_values));
+  EXPECT_TRUE(default_rmq.empty());
+  EXPECT_TRUE(empty_rmq.empty());
+  EXPECT_EQ(default_rmq.arg_min(0, 0), MaxRmq::npos);
+  EXPECT_EQ(empty_rmq.arg_min(0, 0), MaxRmq::npos);
+  EXPECT_EQ(default_rmq.range_min(0, 0), 0);
+  EXPECT_EQ(empty_rmq.range_min(0, 0), 0);
 }
 
 TYPED_TEST(ValueRmqSpecificationTest, MonotoneArrays) {
@@ -329,6 +363,27 @@ TEST(RmqSparseTable, OverlappingBlockCandidateDirectionsAndTies) {
     const pixie::rmq::SparseTable<int> rmq(values);
     EXPECT_EQ(rmq.arg_min(0, 6), 1u);
     EXPECT_EQ(rmq.range_min(0, 6), 0);
+  }
+
+  {
+    const std::vector<int> values = {1, 2, 3, 4, 9, 10, 0};
+    const pixie::rmq::SparseTable<int, std::greater<int>> rmq(values);
+    EXPECT_EQ(rmq.arg_min(0, 6), 5u);
+    EXPECT_EQ(rmq.range_min(0, 6), 10);
+  }
+
+  {
+    const std::vector<int> values = {10, 9, 8, 7, 6, 5, 20};
+    const pixie::rmq::SparseTable<int, std::greater<int>> rmq(values);
+    EXPECT_EQ(rmq.arg_min(0, 6), 0u);
+    EXPECT_EQ(rmq.range_min(0, 6), 10);
+  }
+
+  {
+    const std::vector<int> values = {10, 1, 2, 3, 10, 4};
+    const pixie::rmq::SparseTable<int, std::greater<int>> rmq(values);
+    EXPECT_EQ(rmq.arg_min(0, 6), 0u);
+    EXPECT_EQ(rmq.range_min(0, 6), 10);
   }
 }
 
@@ -422,6 +477,12 @@ TEST(RmqHybridBTree, LeafSelectorEnumVariants) {
       pixie::rmq::HybridBTree<int, std::less<int>, std::size_t, 252, 256,
                               pixie::rmq::HybridBTreeLeafSelector::BP>;
 
+  EXPECT_EQ(MaskRmq::top_sparse_block_size_for(0),
+            MaskRmq::kMinTopSparseBlockSize);
+  EXPECT_EQ(MaskRmq::top_sparse_block_count_for(0), 0u);
+  EXPECT_EQ(BpRmq::top_sparse_block_size_for(0), BpRmq::kMinTopSparseBlockSize);
+  EXPECT_EQ(BpRmq::top_sparse_block_count_for(0), 0u);
+
   std::vector<int> values(4099, 10000);
   for (std::size_t i = 0; i < values.size(); ++i) {
     values[i] = static_cast<int>((i * 37 + i / 7) % 257);
@@ -435,9 +496,18 @@ TEST(RmqHybridBTree, LeafSelectorEnumVariants) {
 
   const MaskRmq mask_rmq{std::span<const int>(values)};
   const BpRmq bp_rmq{std::span<const int>(values)};
+  const MaskRmq empty_mask_rmq;
+  const BpRmq empty_bp_rmq;
+  EXPECT_EQ(empty_mask_rmq.arg_min(0, 0), MaskRmq::npos);
+  EXPECT_EQ(empty_bp_rmq.arg_min(0, 0), BpRmq::npos);
+  EXPECT_EQ(empty_mask_rmq.range_min(0, 0), 0);
+  EXPECT_EQ(empty_bp_rmq.range_min(0, 0), 0);
+
   const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
-      {0, 1},      {0, 252},     {1, 251},           {248, 253},   {251, 753},
-      {700, 2100}, {2048, 2049}, {0, values.size()}, {3000, 4099},
+      {0, 1},       {0, 13},     {0, 252},     {1, 251},
+      {20, 40},     {100, 200},  {200, 248},   {248, 253},
+      {251, 753},   {700, 2100}, {2048, 2049}, {0, values.size()},
+      {3000, 4099},
   };
 
   for (const auto [left, right] : ranges) {
@@ -446,6 +516,10 @@ TEST(RmqHybridBTree, LeafSelectorEnumVariants) {
     EXPECT_EQ(mask_rmq.arg_min(left, right), expected)
         << "mask range=[" << left << "," << right << ")";
     EXPECT_EQ(bp_rmq.arg_min(left, right), expected)
+        << "bp range=[" << left << "," << right << ")";
+    EXPECT_EQ(mask_rmq.range_min(left, right), values[expected])
+        << "mask range=[" << left << "," << right << ")";
+    EXPECT_EQ(bp_rmq.range_min(left, right), values[expected])
         << "bp range=[" << left << "," << right << ")";
   }
 }
@@ -545,6 +619,8 @@ TEST(RmqHybridBTree, TopSparseOverlayCapsBlockCount) {
 TEST(RmqHybridBTree, TopSparseOverlayComparatorMaximum) {
   using Rmq = pixie::rmq::HybridBTree<int, std::greater<int>>;
   constexpr std::size_t kTopBlock = Rmq::kMinTopSparseBlockSize;
+  EXPECT_EQ(Rmq::top_sparse_block_size_for(0), kTopBlock);
+  EXPECT_EQ(Rmq::top_sparse_block_count_for(0), 0u);
 
   std::vector<int> values(2 * kTopBlock + 33, -1000);
   for (std::size_t i = 0; i < values.size(); ++i) {

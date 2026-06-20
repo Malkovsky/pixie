@@ -68,6 +68,7 @@
  */
 
 #include <pixie/experimental/rmm_btree.h>
+#include <pixie/memory_usage.h>
 #include <pixie/rmq/rmq_base.h>
 #include <pixie/rmq/utils/succinct_monotone_stack.h>
 
@@ -213,6 +214,16 @@ class RmMPlusMinusOne {
     return rmm_.rank0(end_position);
   }
 
+  /**
+   * @brief Return owned auxiliary memory usage in bytes.
+   *
+   * @details Counts this ±1 RMQ adapter and the nested rmM support. The
+   * external packed BP words are not owned and are excluded.
+   */
+  std::size_t memory_usage_bytes() const {
+    return sizeof(*this) + pixie::nested_owned_memory_bytes(rmm_);
+  }
+
  private:
   using RmM = pixie::experimental::RmMBTree<HighCacheLines, LowFanout>;
 
@@ -352,6 +363,18 @@ class CartesianRmM
    * @brief Return the packed BP words used by the RMQ encoding.
    */
   std::span<const std::uint64_t> bp_words() const { return bp_bits_; }
+
+  /**
+   * @brief Return owned auxiliary memory usage in bytes.
+   *
+   * @details Counts this value-RMQ object, packed Cartesian BP words, and
+   * nested BP rmM support. The external input values are not owned and are
+   * excluded.
+   */
+  std::size_t memory_usage_bytes_impl() const {
+    return sizeof(*this) + pixie::vector_capacity_bytes(bp_bits_) +
+           pixie::nested_owned_memory_bytes(bp_support_);
+  }
 
  private:
   using BpSupport = detail::RmMPlusMinusOne<Index, HighCacheLines, LowFanout>;

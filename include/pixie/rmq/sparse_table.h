@@ -118,20 +118,14 @@ class SparseTable
   /**
    * @brief Choose the better of two candidate positions.
    *
-   * @details `npos` is treated as missing. If both values compare equal, the
-   * smaller position wins to preserve first-minimum semantics.
+   * @details Both candidates are valid table entries. If both values compare
+   * equal, the smaller position wins to preserve first-minimum semantics.
    *
-   * @param left First candidate position, or `npos`.
-   * @param right Second candidate position, or `npos`.
+   * @param left First candidate position.
+   * @param right Second candidate position.
    * @return Position of the selected candidate.
    */
   std::size_t better(std::size_t left, std::size_t right) const {
-    if (left == npos) {
-      return right;
-    }
-    if (right == npos) {
-      return left;
-    }
     if (compare_(values_[right], values_[left])) {
       return right;
     }

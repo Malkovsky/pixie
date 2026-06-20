@@ -2,6 +2,7 @@
 
 #include <pixie/bits.h>
 #include <pixie/bitvector.h>
+#include <pixie/memory_usage.h>
 #include <pixie/rmm_base.h>
 
 #include <algorithm>
@@ -329,6 +330,28 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
       return 0;
     }
     return range_extreme_query_val(range_begin, range_end, false);
+  }
+
+  /**
+   * @brief Return owned auxiliary memory usage in bytes.
+   *
+   * @details Counts this rmM object, rank/select support, and summary buffers.
+   * The external bit words indexed by this object are not owned and are
+   * excluded.
+   */
+  std::size_t memory_usage_bytes() const {
+    std::size_t bytes = sizeof(*this);
+    bytes += pixie::optional_nested_owned_memory_bytes(rank_index_);
+    bytes += pixie::vector_capacity_bytes(level_counts_);
+    bytes += pixie::vector_capacity_bytes(low_levels_);
+    bytes += pixie::vector_capacity_bytes(high_levels_);
+    for (const std::vector<LowNode>& level : low_levels_) {
+      bytes += pixie::vector_capacity_bytes(level);
+    }
+    for (const std::vector<HighNode>& level : high_levels_) {
+      bytes += pixie::vector_capacity_bytes(level);
+    }
+    return bytes;
   }
 
   std::size_t mincount_impl(std::size_t range_begin,
