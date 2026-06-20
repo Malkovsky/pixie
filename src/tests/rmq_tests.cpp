@@ -469,6 +469,57 @@ TEST(RmqHybridBTree, BoundaryAndFallbackRanges) {
   }
 }
 
+TEST(RmqHybridBTree, MaskLeafSelectorPrefixSuffixAndInteriorFallback) {
+  using Rmq = pixie::rmq::HybridBTree<int>;
+  constexpr std::size_t kLeaf = Rmq::kLeafSize;
+
+  {
+    std::vector<int> values(kLeaf, 1000);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      values[i] += static_cast<int>(i % 17);
+    }
+    values[0] = -10;
+    values[kLeaf - 1] = -100;
+
+    const Rmq rmq{std::span<const int>(values)};
+    const std::size_t right = kLeaf / 2;
+    EXPECT_EQ(rmq.arg_min(0, right), naive_arg_min(std::span<const int>(values),
+                                                   0, right, std::less<int>()));
+  }
+
+  {
+    std::vector<int> values(kLeaf, 1000);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      values[i] += static_cast<int>((i * 5) % 23);
+    }
+    values[0] = -100;
+    values[kLeaf - 1] = -10;
+
+    const Rmq rmq{std::span<const int>(values)};
+    const std::size_t left = kLeaf / 2;
+    EXPECT_EQ(rmq.arg_min(left, kLeaf),
+              naive_arg_min(std::span<const int>(values), left, kLeaf,
+                            std::less<int>()));
+  }
+
+  {
+    std::vector<int> values(kLeaf, 1000);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      values[i] += static_cast<int>((i * 7) % 31);
+    }
+    values[0] = -100;
+    values[kLeaf / 2] = -50;
+    values[kLeaf - 1] = -80;
+
+    const Rmq rmq{std::span<const int>(values)};
+    const std::size_t left = kLeaf / 2 - 20;
+    const std::size_t right = kLeaf / 2 + 21;
+    EXPECT_EQ(rmq.arg_min(left, right),
+              naive_arg_min(std::span<const int>(values), left, right,
+                            std::less<int>()));
+  }
+}
+
 TEST(RmqHybridBTree, LeafSelectorEnumVariants) {
   using MaskRmq = pixie::rmq::HybridBTree<
       int, std::less<int>, std::size_t, 248, 256,
@@ -522,6 +573,62 @@ TEST(RmqHybridBTree, LeafSelectorEnumVariants) {
     EXPECT_EQ(bp_rmq.range_min(left, right), values[expected])
         << "bp range=[" << left << "," << right << ")";
   }
+}
+
+TEST(RmqHybridBTree, BorderCorrectionForLeafSelectorVariants) {
+  using DefaultRmq = pixie::rmq::HybridBTree<int>;
+  using SmallMaskRmq = pixie::rmq::HybridBTree<
+      int, std::less<int>, std::size_t, 248, 256,
+      pixie::rmq::HybridBTreeLeafSelector::PrefixSuffix>;
+  using BpRmq =
+      pixie::rmq::HybridBTree<int, std::less<int>, std::size_t, 252, 256,
+                              pixie::rmq::HybridBTreeLeafSelector::BP>;
+
+  const auto check = []<class Rmq>() {
+    constexpr std::size_t kLeaf = Rmq::kLeafSize;
+
+    {
+      std::vector<int> values(3 * kLeaf, 100000);
+      for (std::size_t i = 0; i < values.size(); ++i) {
+        values[i] += static_cast<int>((i * 13 + i / 5) % 97);
+      }
+      values[0] = -100000;
+      values[17] = -100;
+      values[kLeaf + 23] = -1000;
+      values[2 * kLeaf + 31] = -500;
+
+      const Rmq rmq{std::span<const int>(values)};
+      const std::size_t left = 1;
+      const std::size_t right = values.size() - 1;
+      EXPECT_EQ(rmq.arg_min(left, right),
+                naive_arg_min(std::span<const int>(values), left, right,
+                              std::less<int>()))
+          << "left-border correction leaf=" << kLeaf;
+    }
+
+    {
+      std::vector<int> values(3 * kLeaf, 100000);
+      for (std::size_t i = 0; i < values.size(); ++i) {
+        values[i] += static_cast<int>((i * 11 + i / 7) % 89);
+      }
+      values[11] = -500;
+      values[kLeaf + 29] = -1000;
+      values[2 * kLeaf + 41] = -100;
+      values[values.size() - 1] = -100000;
+
+      const Rmq rmq{std::span<const int>(values)};
+      const std::size_t left = 1;
+      const std::size_t right = values.size() - 1;
+      EXPECT_EQ(rmq.arg_min(left, right),
+                naive_arg_min(std::span<const int>(values), left, right,
+                              std::less<int>()))
+          << "right-border correction leaf=" << kLeaf;
+    }
+  };
+
+  check.template operator()<DefaultRmq>();
+  check.template operator()<SmallMaskRmq>();
+  check.template operator()<BpRmq>();
 }
 
 TEST(RmqHybridBTree, MiddleFanoutBoundaryRanges) {
@@ -712,6 +819,47 @@ TEST(RmqCartesianHybridBTree, BoundarySizesAndBpEncoding) {
                               std::less<int>()))
           << "range=[" << left << "," << right << ")";
     }
+  }
+}
+
+TEST(RmqCartesianHybridBTree, BorderMinimaOutsideQueryFallBackToMiddle) {
+  using Rmq = pixie::rmq::CartesianHybridBTree<int>;
+  constexpr std::size_t kLeaf = 512;
+
+  {
+    std::vector<int> values(3 * kLeaf, 100000);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      values[i] += static_cast<int>((i * 17 + i / 9) % 101);
+    }
+    values[0] = -100000;
+    values[13] = -100;
+    values[kLeaf + 37] = -1000;
+    values[2 * kLeaf + 53] = -500;
+
+    const Rmq rmq{std::span<const int>(values)};
+    const std::size_t left = 1;
+    const std::size_t right = values.size() - 1;
+    EXPECT_EQ(rmq.arg_min(left, right),
+              naive_arg_min(std::span<const int>(values), left, right,
+                            std::less<int>()));
+  }
+
+  {
+    std::vector<int> values(3 * kLeaf, 100000);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      values[i] += static_cast<int>((i * 19 + i / 11) % 107);
+    }
+    values[17] = -500;
+    values[kLeaf + 41] = -1000;
+    values[2 * kLeaf + 59] = -100;
+    values[values.size() - 1] = -100000;
+
+    const Rmq rmq{std::span<const int>(values)};
+    const std::size_t left = 1;
+    const std::size_t right = values.size() - 1;
+    EXPECT_EQ(rmq.arg_min(left, right),
+              naive_arg_min(std::span<const int>(values), left, right,
+                            std::less<int>()));
   }
 }
 

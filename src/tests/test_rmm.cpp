@@ -1152,6 +1152,62 @@ TEST(RmMBTreeExperimental, InvalidArgumentsGuards) {
   EXPECT_EQ(rm.enclose(bits.size()), pixie::experimental::RmMBTree<>::npos);
 }
 
+TEST(RmMBTreeExperimental, PartialBlockSearchesAndTailMinSelect) {
+  std::string bits;
+  bits.reserve(385);
+  for (size_t i = 0; i < 385; ++i) {
+    bits.push_back((i % 7 == 0 || i % 11 == 3 || i % 29 == 5) ? '1' : '0');
+  }
+
+  auto words = pack_words_lsb_first(bits);
+  pixie::experimental::RmMBTree<> rm(std::span<const std::uint64_t>(words),
+                                     bits.size());
+  NaiveRmM nv(bits);
+
+  const std::array<size_t, 9> positions = {
+      0, 1, 63, 64, 127, 128, 255, 320, bits.size() - 1,
+  };
+  for (size_t position : positions) {
+    for (int delta : {-120, -17, -2, -1, 0, 1, 2, 17, 120}) {
+      SCOPED_TRACE(::testing::Message()
+                   << "position=" << position << " delta=" << delta);
+      EXPECT_EQ(rm.fwdsearch(position, delta), nv.fwdsearch(position, delta));
+      EXPECT_EQ(rm.bwdsearch(position + 1, delta),
+                nv.bwdsearch(position + 1, delta));
+    }
+  }
+
+  const std::array<std::pair<size_t, size_t>, 4> ranges = {
+      std::pair<size_t, size_t>{0, bits.size() - 1},
+      std::pair<size_t, size_t>{3, 97},
+      std::pair<size_t, size_t>{64, 255},
+      std::pair<size_t, size_t>{257, bits.size() - 1},
+  };
+  for (const auto& [left, right] : ranges) {
+    SCOPED_TRACE(::testing::Message()
+                 << "range=[" << left << "," << right << "]");
+    EXPECT_EQ(rm.range_min_query_pos(left, right),
+              nv.range_min_query_pos(left, right));
+    EXPECT_EQ(rm.range_min_query_val(left, right),
+              nv.range_min_query_val(left, right));
+    EXPECT_EQ(rm.range_max_query_pos(left, right),
+              nv.range_max_query_pos(left, right));
+    EXPECT_EQ(rm.range_max_query_val(left, right),
+              nv.range_max_query_val(left, right));
+    EXPECT_EQ(rm.mincount(left, right), nv.mincount(left, right));
+
+    const size_t count = nv.mincount(left, right);
+    for (size_t rank : {size_t{1}, count, count + 1}) {
+      if (rank == 0) {
+        continue;
+      }
+      EXPECT_EQ(rm.minselect(left, right, rank),
+                nv.minselect(left, right, rank))
+          << "rank=" << rank;
+    }
+  }
+}
+
 TEST(RmMBTreeExperimental, FwdBwdSearchAcrossHighLevels) {
   std::mt19937_64 rng(kSeed);
   const size_t n = 512 * 32 * 8 + 4096;
