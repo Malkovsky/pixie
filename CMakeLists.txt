@@ -183,6 +183,28 @@ if(PIXIE_TESTS)
             gtest
             gtest_main
             ${PIXIE_DIAGNOSTICS_LIBS})
+
+    add_executable(excess_record_lows_tests
+        src/tests/excess_record_lows_tests.cpp)
+    target_include_directories(excess_record_lows_tests
+        PUBLIC include)
+    target_link_libraries(excess_record_lows_tests
+        gtest
+        gtest_main
+        ${PIXIE_DIAGNOSTICS_LIBS})
+
+    add_executable(rmq_tests
+        src/tests/rmq_tests.cpp)
+    target_include_directories(rmq_tests
+        PUBLIC include)
+    target_link_libraries(rmq_tests
+        gtest
+        gtest_main
+        ${PIXIE_DIAGNOSTICS_LIBS})
+    if(PIXIE_THIRD_PARTY_BACKENDS)
+        target_include_directories(rmq_tests
+            PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -217,6 +239,20 @@ if(PIXIE_BENCHMARKS)
     target_link_libraries(bench_rmm_btree
         benchmark
         ${PIXIE_DIAGNOSTICS_LIBS})
+
+    add_executable(bench_rmq
+        src/benchmarks/bench_rmq.cpp)
+    target_include_directories(bench_rmq
+        PUBLIC include)
+    target_link_libraries(bench_rmq
+        benchmark
+        ${PIXIE_DIAGNOSTICS_LIBS})
+    if(PIXIE_THIRD_PARTY_BACKENDS)
+        target_include_directories(bench_rmq
+            PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
+        target_compile_definitions(bench_rmq
+            PRIVATE PIXIE_THIRD_PARTY_BENCHMARKS)
+    endif()
 
     if(PIXIE_THIRD_PARTY_BACKENDS)
         add_executable(bench_rmm_sdsl

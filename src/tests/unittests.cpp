@@ -4,6 +4,7 @@
 
 #include <numeric>
 #include <random>
+#include <stdexcept>
 
 using pixie::BitVector;
 using pixie::BitVectorInterleaved;
@@ -367,6 +368,80 @@ TEST(BitVectorTest, ExactShortSpanRankSelect) {
   EXPECT_EQ(bv.select0(9), bv.size());
 }
 
+TEST(BitVectorTest, OptionalSelectSupport) {
+  std::vector<uint64_t> bits = {0b1100010110010110};
+
+  BitVector select0_only(bits, 16, BitVector::SelectSupport::kSelect0);
+  EXPECT_FALSE(select0_only.supports_select1());
+  EXPECT_TRUE(select0_only.supports_select0());
+  EXPECT_EQ(select0_only.rank(16), 8);
+  EXPECT_EQ(select0_only.rank0(16), 8);
+  EXPECT_EQ(select0_only.select(1), select0_only.size());
+  EXPECT_EQ(select0_only.select0(1), 0);
+  EXPECT_EQ(select0_only.select0(8), 13);
+
+  BitVector hinted_both(bits, 16, BitVector::SelectSupport::kBoth, 8);
+  EXPECT_TRUE(hinted_both.supports_select1());
+  EXPECT_TRUE(hinted_both.supports_select0());
+  EXPECT_EQ(hinted_both.select(1), 1);
+  EXPECT_EQ(hinted_both.select(8), 15);
+  EXPECT_EQ(hinted_both.select0(1), 0);
+  EXPECT_EQ(hinted_both.select0(8), 13);
+  EXPECT_THROW((BitVector(bits, 16, BitVector::SelectSupport::kBoth, 17)),
+               std::invalid_argument);
+
+  BitVector select1_only(bits, 16, BitVector::SelectSupport::kSelect1);
+  EXPECT_TRUE(select1_only.supports_select1());
+  EXPECT_FALSE(select1_only.supports_select0());
+  EXPECT_EQ(select1_only.rank(16), 8);
+  EXPECT_EQ(select1_only.rank0(16), 8);
+  EXPECT_EQ(select1_only.select(1), 1);
+  EXPECT_EQ(select1_only.select(8), 15);
+  EXPECT_EQ(select1_only.select0(1), select1_only.size());
+
+  BitVector rank_only(bits, 16, BitVector::SelectSupport::kNone);
+  EXPECT_FALSE(rank_only.supports_select1());
+  EXPECT_FALSE(rank_only.supports_select0());
+  EXPECT_EQ(rank_only.rank(16), 8);
+  EXPECT_EQ(rank_only.rank0(16), 8);
+  EXPECT_EQ(rank_only.select(0), 0);
+  EXPECT_EQ(rank_only.select0(0), 0);
+  EXPECT_EQ(rank_only.select(1), rank_only.size());
+  EXPECT_EQ(rank_only.select0(1), rank_only.size());
+
+  std::vector<uint64_t> zero_words(512, 0);
+  BitVector large_select0_only(zero_words, zero_words.size() * 64,
+                               BitVector::SelectSupport::kSelect0);
+  EXPECT_EQ(large_select0_only.select(1), large_select0_only.size());
+  EXPECT_EQ(large_select0_only.select0(1), 0);
+  EXPECT_EQ(large_select0_only.select0(16384), 16383);
+  EXPECT_EQ(large_select0_only.select0(16385), 16384);
+  EXPECT_EQ(large_select0_only.select0(32768), 32767);
+
+  BitVector large_hinted_select0(zero_words, zero_words.size() * 64,
+                                 BitVector::SelectSupport::kSelect0, 0);
+  EXPECT_EQ(large_hinted_select0.select(1), large_hinted_select0.size());
+  EXPECT_EQ(large_hinted_select0.select0(1), 0);
+  EXPECT_EQ(large_hinted_select0.select0(32768), 32767);
+
+  std::vector<uint64_t> one_words(512, ~uint64_t{0});
+  BitVector large_select1_only(one_words, one_words.size() * 64,
+                               BitVector::SelectSupport::kSelect1);
+  EXPECT_EQ(large_select1_only.select0(1), large_select1_only.size());
+  EXPECT_EQ(large_select1_only.select(1), 0);
+  EXPECT_EQ(large_select1_only.select(16384), 16383);
+  EXPECT_EQ(large_select1_only.select(16385), 16384);
+  EXPECT_EQ(large_select1_only.select(32768), 32767);
+}
+
+TEST(BitVectorTest, ThrowsWhenOneCountHintUnderestimatesSamples) {
+  std::vector<uint64_t> one_words(512, ~uint64_t{0});
+
+  EXPECT_THROW((BitVector(one_words, one_words.size() * 64,
+                          BitVector::SelectSupport::kSelect1, 0)),
+               std::invalid_argument);
+}
+
 TEST(BitVectorTest, ShortSpanUsesScalarRankSelectFallbacks) {
   std::vector<uint64_t> one_in_second_word = {0, 1};
   BitVector ones(std::span<const uint64_t>(one_in_second_word), 65);
@@ -384,6 +459,16 @@ TEST(BitVectorTest, ShortSpanUsesScalarRankSelectFallbacks) {
   EXPECT_EQ(zeros.select0(1), 64u);
 }
 
+TEST(BitVectorTest, ShortSpanScalarRankUsesPartialWordTail) {
+  std::vector<uint64_t> bits = {~uint64_t{0}, 0, 0b101};
+  BitVector bv(std::span<const uint64_t>(bits), 130);
+
+  EXPECT_EQ(bv.rank(128), 64u);
+  EXPECT_EQ(bv.rank(129), 65u);
+  EXPECT_EQ(bv.rank(130), 65u);
+  EXPECT_EQ(bv.rank0(129), 64u);
+}
+
 TEST(BitVectorTest, IgnoresDirtyPaddingAndTrailingWords) {
   std::vector<uint64_t> bits = {~uint64_t{0}, ~uint64_t{0}};
   BitVector bv(bits, 3);
@@ -397,6 +482,24 @@ TEST(BitVectorTest, IgnoresDirtyPaddingAndTrailingWords) {
   EXPECT_EQ(bv.select(3), 2);
   EXPECT_EQ(bv.select(4), bv.size());
   EXPECT_EQ(bv.select0(1), bv.size());
+}
+
+TEST(BitVectorTest, SelectZeroSkewedDistributionFallback) {
+  constexpr size_t kWordsPerBasicBlock = 8;
+  constexpr size_t kBasicBlocksPerSuperBlock = 128;
+  constexpr size_t kZeroBasicBlocks = 40;
+
+  std::vector<uint64_t> bits(kWordsPerBasicBlock * kBasicBlocksPerSuperBlock,
+                             ~uint64_t{0});
+  std::fill(bits.begin(), bits.begin() + kZeroBasicBlocks * kWordsPerBasicBlock,
+            0);
+
+  BitVector bv(std::span<const uint64_t>(bits), bits.size() * 64);
+  EXPECT_EQ(bv.rank0(bv.size()), kZeroBasicBlocks * 512u);
+  EXPECT_EQ(bv.select0(1), 0u);
+  EXPECT_EQ(bv.select0(10000), 9999u);
+  EXPECT_EQ(bv.select0(kZeroBasicBlocks * 512u), kZeroBasicBlocks * 512u - 1);
+  EXPECT_EQ(bv.select0(kZeroBasicBlocks * 512u + 1), bv.size());
 }
 
 TEST(BitVectorTest, MainRankZeroTest) {

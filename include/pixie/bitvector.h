@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <bit>
 #include <cstdint>
+#include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -45,7 +47,8 @@ namespace pixie {
  * overhead).
  * - Basic blocks of 512 bits with 16-bit ranks (~3.125%
  * overhead).
- * - Select samples every 16384 bits (~0.39% overhead).
+ * - Optional select samples every 16384 bits for 1-bits, 0-bits, or both
+ * (~0.39% overhead per enabled direction).
  *
  *
  * Rank: 2 table lookups plus SIMD popcount in the 512-bit block.
@@ -58,9 +61,21 @@ namespace pixie {
  * - SIMD linear scan to find the basic block.
  *
  * This variant does
- * not interleave data and index, favoring simpler scans.
+ * not interleave data and index, favoring simpler scans. Rank metadata and
+ * enabled select samples are built in one scan over the source words.
  */
 class BitVector {
+ public:
+  /**
+   * @brief Select directions to index during construction.
+   */
+  enum class SelectSupport : uint8_t {
+    kNone = 0,
+    kSelect1 = 1,
+    kSelect0 = 2,
+    kBoth = 3,
+  };
+
  private:
   constexpr static size_t kWordSize = 64;
   constexpr static size_t kSuperBlockRankIntSize = 64;
@@ -76,13 +91,28 @@ class BitVector {
 
   AlignedStorage super_block_rank_;  // 64-bit global prefix sums
   AlignedStorage basic_block_rank_;  // 16-bit local prefix sums
-  AlignedStorage select1_samples_;   // 64-bit global positions
-  AlignedStorage select0_samples_;   // 64-bit global positions
+  AlignedStorage select_samples_;    // 64-bit global positions
   size_t num_bits_{};
   size_t padded_size_{};
   size_t max_rank_{};
+  size_t select1_sample_begin_{};
+  size_t select1_sample_count_{};
+  size_t select0_sample_begin_{};
+  size_t select0_sample_count_{};
+  SelectSupport select_support_ = SelectSupport::kNone;
+  bool select0_samples_reversed_ = false;
 
   std::span<const uint64_t> bits_;
+
+  static bool builds_select1(SelectSupport support) {
+    return (static_cast<uint8_t>(support) &
+            static_cast<uint8_t>(SelectSupport::kSelect1)) != 0;
+  }
+
+  static bool builds_select0(SelectSupport support) {
+    return (static_cast<uint8_t>(support) &
+            static_cast<uint8_t>(SelectSupport::kSelect0)) != 0;
+  }
 
   size_t logical_word_count() const {
     return (num_bits_ + kWordSize - 1) / kWordSize;
@@ -157,10 +187,160 @@ class BitVector {
     return num_bits_;
   }
 
+  static size_t select_sample_count_for_rank(size_t rank_count) {
+    return 1 + rank_count / kSelectSampleFrequency;
+  }
+
+  static size_t select_sample_upper_bound(size_t bit_count) {
+    return select_sample_count_for_rank(bit_count);
+  }
+
+  struct SelectSampleWriter {
+    std::span<uint64_t> words;
+    size_t next = 0;
+    size_t count = 0;
+    size_t capacity = 0;
+    bool enabled = false;
+    bool reversed = false;
+
+    SelectSampleWriter() = default;
+
+    SelectSampleWriter(std::span<uint64_t> words,
+                       size_t begin,
+                       size_t capacity,
+                       bool enabled,
+                       bool reversed)
+        : words(words),
+          next(begin),
+          capacity(capacity),
+          enabled(enabled),
+          reversed(reversed) {}
+
+    void append(uint64_t sample) {
+      if (!enabled) {
+        return;
+      }
+      if (count >= capacity) [[unlikely]] {
+        throw std::invalid_argument(
+            "BitVector one_count hint is inconsistent with input bits");
+      }
+      words[next] = sample;
+      ++count;
+      if (reversed) {
+        if (next != 0) {
+          --next;
+        }
+      } else {
+        ++next;
+      }
+    }
+  };
+
+  struct SelectSampleWriters {
+    SelectSampleWriter ones;
+    SelectSampleWriter zeros;
+    bool shrink_after_build = false;
+  };
+
+  SelectSampleWriters initialize_select_sample_writers(
+      bool need_select1,
+      bool need_select0,
+      std::optional<size_t> one_count) {
+    select1_sample_begin_ = 0;
+    select1_sample_count_ = 0;
+    select0_sample_begin_ = 0;
+    select0_sample_count_ = 0;
+    select0_samples_reversed_ = false;
+    select_samples_.resize(0);
+
+    SelectSampleWriters writers;
+    if (!need_select1 && !need_select0) {
+      return writers;
+    }
+
+    const std::optional<size_t> zero_count =
+        one_count ? std::optional<size_t>(num_bits_ - *one_count)
+                  : std::nullopt;
+    if (need_select1 && need_select0) {
+      const size_t one_sample_capacity =
+          one_count ? select_sample_count_for_rank(*one_count)
+                    : 2 + num_bits_ / kSelectSampleFrequency;
+      const size_t zero_sample_capacity =
+          zero_count ? select_sample_count_for_rank(*zero_count)
+                     : 2 + num_bits_ / kSelectSampleFrequency;
+      const size_t total_samples =
+          one_count ? one_sample_capacity + zero_sample_capacity
+                    : 2 + num_bits_ / kSelectSampleFrequency;
+      select_samples_.resize(total_samples * kWordSize);
+      auto samples = select_samples_.As64BitInts();
+      select1_sample_begin_ = 0;
+      select0_samples_reversed_ = true;
+      writers.ones =
+          SelectSampleWriter(samples, 0, one_sample_capacity, true, false);
+      writers.zeros = SelectSampleWriter(samples, total_samples - 1,
+                                         zero_sample_capacity, true, true);
+      writers.ones.append(0);
+      writers.zeros.append(0);
+      return writers;
+    }
+
+    const size_t sample_capacity =
+        need_select1 ? (one_count ? select_sample_count_for_rank(*one_count)
+                                  : select_sample_upper_bound(num_bits_))
+                     : (zero_count ? select_sample_count_for_rank(*zero_count)
+                                   : select_sample_upper_bound(num_bits_));
+    select_samples_.resize(sample_capacity * kWordSize);
+    auto samples = select_samples_.As64BitInts();
+    writers.shrink_after_build = !one_count;
+    if (need_select1) {
+      select1_sample_begin_ = 0;
+      writers.ones =
+          SelectSampleWriter(samples, 0, sample_capacity, true, false);
+      writers.ones.append(0);
+    } else {
+      select0_sample_begin_ = 0;
+      writers.zeros =
+          SelectSampleWriter(samples, 0, sample_capacity, true, false);
+      writers.zeros.append(0);
+    }
+    return writers;
+  }
+
+  void finalize_select_sample_writers(SelectSampleWriters writers) {
+    select1_sample_count_ = writers.ones.count;
+    select0_sample_count_ = writers.zeros.count;
+    if (writers.zeros.reversed) {
+      select0_sample_begin_ = writers.zeros.next + 1;
+    }
+    if (writers.shrink_after_build) {
+      const size_t sample_count = select1_sample_count_ != 0
+                                      ? select1_sample_count_
+                                      : select0_sample_count_;
+      select_samples_.resize(sample_count * kWordSize);
+      select_samples_.shrink_to_fit();
+    }
+  }
+
+  uint64_t select1_sample(size_t sample_index) const {
+    auto samples = select_samples_.AsConst64BitInts();
+    return samples[select1_sample_begin_ + sample_index];
+  }
+
+  uint64_t select0_sample(size_t sample_index) const {
+    auto samples = select_samples_.AsConst64BitInts();
+    if (select0_samples_reversed_) {
+      return samples[select0_sample_begin_ + select0_sample_count_ - 1 -
+                     sample_index];
+    }
+    return samples[select0_sample_begin_ + sample_index];
+  }
+
   /**
-   * @brief Precompute rank for fast queries.
+   * @brief Precompute rank and requested select samples in one word scan.
    */
-  void build_rank() {
+  void build_rank_select(SelectSupport support,
+                         std::optional<size_t> one_count) {
+    select_support_ = support;
     size_t num_superblocks =
         8 + (padded_size_ == 0 ? 0 : (padded_size_ - 1) / kSuperBlockSize);
     // Add more blocks to ease SIMD processing
@@ -174,8 +354,21 @@ class BitVector {
     auto super_block_rank = super_block_rank_.As64BitInts();
     auto basic_block_rank = basic_block_rank_.As16BitInts();
 
+    const bool need_select1 = builds_select1(support);
+    const bool need_select0 = builds_select0(support);
+    if (one_count && *one_count > num_bits_) {
+      throw std::invalid_argument(
+          "BitVector one_count hint cannot exceed num_bits");
+    }
+    auto select_writers =
+        initialize_select_sample_writers(need_select1, need_select0, one_count);
+
     uint64_t super_block_sum = 0;
     uint64_t basic_block_sum = 0;
+    uint64_t milestone = kSelectSampleFrequency;
+    uint64_t milestone0 = kSelectSampleFrequency;
+    uint64_t rank = 0;
+    uint64_t rank0 = 0;
 
     for (size_t i = 0; i / kBasicBlockSize < basic_block_rank.size();
          i += kWordSize) {
@@ -189,58 +382,32 @@ class BitVector {
             static_cast<uint16_t>(basic_block_sum);
       }
       if (i / kWordSize < logical_word_count()) {
-        basic_block_sum += std::popcount(logical_word(i / kWordSize));
+        const size_t word_index = i / kWordSize;
+        const uint64_t word = logical_word(word_index);
+        const size_t word_bits = logical_word_bits(word_index);
+        const uint64_t ones = std::popcount(word);
+        const uint64_t zeros = word_bits - ones;
+        if (need_select1 && rank + ones >= milestone) {
+          const auto pos = select_64(word, milestone - rank - 1);
+          // TODO: try including global rank into select samples to save
+          //       a cache miss on global rank scan
+          select_writers.ones.append((64 * word_index + pos) / kSuperBlockSize);
+          milestone += kSelectSampleFrequency;
+        }
+        if (need_select0 && rank0 + zeros >= milestone0) {
+          const uint64_t zero_word = ~word & first_bits_mask(word_bits);
+          const auto pos = select_64(zero_word, milestone0 - rank0 - 1);
+          select_writers.zeros.append((64 * word_index + pos) /
+                                      kSuperBlockSize);
+          milestone0 += kSelectSampleFrequency;
+        }
+        basic_block_sum += ones;
+        rank += ones;
+        rank0 += zeros;
       }
     }
     max_rank_ = super_block_sum + basic_block_sum;
-  }
-
-  /**
-   * @brief Calculate select samples.
-   */
-  void build_select() {
-    uint64_t milestone = kSelectSampleFrequency;
-    uint64_t milestone0 = kSelectSampleFrequency;
-    uint64_t rank = 0;
-    uint64_t rank0 = 0;
-
-    size_t num_one_samples =
-        1 + (max_rank_ + kSelectSampleFrequency - 1) / kSelectSampleFrequency;
-    size_t num_zero_samples =
-        1 + (num_bits_ - max_rank_ + kSelectSampleFrequency - 1) /
-                kSelectSampleFrequency;
-
-    select1_samples_.resize(num_one_samples * 64);
-    select0_samples_.resize(num_zero_samples * 64);
-    auto select1_samples = select1_samples_.As64BitInts();
-    auto select0_samples = select0_samples_.As64BitInts();
-
-    select1_samples[0] = 0;
-    select0_samples[0] = 0;
-
-    size_t num_zeros = 1, num_ones = 1;
-
-    for (size_t i = 0; i < logical_word_count(); ++i) {
-      const uint64_t word = logical_word(i);
-      const auto ones = std::popcount(word);
-      const auto zeros = logical_word_bits(i) - ones;
-      if (rank + ones >= milestone) {
-        auto pos = select_64(word, milestone - rank - 1);
-        // TODO: try including global rank into select samples to save
-        //       a cache miss on global rank scan
-        select1_samples[num_ones++] = (64 * i + pos) / kSuperBlockSize;
-        milestone += kSelectSampleFrequency;
-      }
-      if (rank0 + zeros >= milestone0) {
-        const uint64_t zero_word =
-            ~word & first_bits_mask(logical_word_bits(i));
-        auto pos = select_64(zero_word, milestone0 - rank0 - 1);
-        select0_samples[num_zeros++] = (64 * i + pos) / kSuperBlockSize;
-        milestone0 += kSelectSampleFrequency;
-      }
-      rank += ones;
-      rank0 += zeros;
-    }
+    finalize_select_sample_writers(select_writers);
 
     for (size_t i = 0; i < 8; ++i) {
       delta_super[i] = i * kSuperBlockSize;
@@ -256,10 +423,9 @@ class BitVector {
    * rank of the 1-bit to locate.
    */
   uint64_t find_superblock(uint64_t rank) const {
-    auto select1_samples = select1_samples_.AsConst64BitInts();
     auto super_block_rank = super_block_rank_.AsConst64BitInts();
 
-    uint64_t left = select1_samples[rank / kSelectSampleFrequency];
+    uint64_t left = select1_sample(rank / kSelectSampleFrequency);
 
     while (left + 7 < super_block_rank.size()) {
       auto len = lower_bound_8x64(&super_block_rank[left], rank);
@@ -287,10 +453,9 @@ class BitVector {
    * rank of the 0-bit to locate.
    */
   uint64_t find_superblock_zeros(uint64_t rank0) const {
-    auto select0_samples = select0_samples_.AsConst64BitInts();
     auto super_block_rank = super_block_rank_.AsConst64BitInts();
 
-    uint64_t left = select0_samples[rank0 / kSelectSampleFrequency];
+    uint64_t left = select0_sample(rank0 / kSelectSampleFrequency);
 
     while (left + 7 < super_block_rank.size()) {
       auto len = lower_bound_delta_8x64(&super_block_rank[left], rank0,
@@ -487,11 +652,11 @@ class BitVector {
     result.source_bitvector_bytes = (num_bits_ + 7) / 8;
     result.super_block_rank_bytes = super_block_rank_.AsConstBytes().size();
     result.basic_block_rank_bytes = basic_block_rank_.AsConstBytes().size();
-    result.select1_samples_bytes = select1_samples_.AsConstBytes().size();
-    result.select0_samples_bytes = select0_samples_.AsConstBytes().size();
-    result.total_bytes =
-        result.super_block_rank_bytes + result.basic_block_rank_bytes +
-        result.select1_samples_bytes + result.select0_samples_bytes;
+    result.select1_samples_bytes = select1_sample_count_ * sizeof(uint64_t);
+    result.select0_samples_bytes = select0_sample_count_ * sizeof(uint64_t);
+    result.total_bytes = result.super_block_rank_bytes +
+                         result.basic_block_rank_bytes +
+                         select_samples_.AsConstBytes().size();
     return result;
   }
 
@@ -523,19 +688,47 @@ class BitVector {
    * bit_vector Backing data, not owned.
    * @param num_bits Number of valid
    * bits in the vector.
+   * @param select_support Which select sample tables to build. Rank and rank0
+   * remain available in all modes.
+   * @param one_count Optional exact number of 1-bits. When supplied,
+   * construction can allocate select sample storage exactly.
    */
-  explicit BitVector(std::span<const uint64_t> bit_vector, size_t num_bits)
+  explicit BitVector(std::span<const uint64_t> bit_vector,
+                     size_t num_bits,
+                     SelectSupport select_support = SelectSupport::kBoth,
+                     std::optional<size_t> one_count = std::nullopt)
       : num_bits_(std::min(num_bits, bit_vector.size() * kWordSize)),
         padded_size_(((num_bits_ + kWordSize - 1) / kWordSize) * kWordSize),
         bits_(bit_vector) {
-    build_rank();
-    build_select();
+    build_rank_select(select_support, one_count);
   }
 
   /**
    * @brief Returns the number of valid bits.
    */
   size_t size() const { return num_bits_; }
+
+  /**
+   * @brief Whether this index stores samples for select1 queries.
+   */
+  bool supports_select1() const { return builds_select1(select_support_); }
+
+  /**
+   * @brief Whether this index stores samples for select0 queries.
+   */
+  bool supports_select0() const { return builds_select0(select_support_); }
+
+  /**
+   * @brief Return owned auxiliary memory usage in bytes.
+   *
+   * @details Counts this rank/select object and its owned aligned metadata
+   * buffers. The external source bit words are not owned and are excluded.
+   */
+  size_t memory_usage_bytes() const {
+    return sizeof(*this) + super_block_rank_.allocated_bytes() +
+           basic_block_rank_.allocated_bytes() +
+           select_samples_.allocated_bytes();
+  }
 
   /**
    * @brief Returns the bit at the given position.
@@ -593,11 +786,14 @@ class BitVector {
    * size() if rank is out of range.
    */
   uint64_t select(size_t rank) const {
-    if (rank > max_rank_) [[unlikely]] {
-      return num_bits_;
-    }
     if (rank == 0) [[unlikely]] {
       return 0;
+    }
+    if (!supports_select1()) [[unlikely]] {
+      return num_bits_;
+    }
+    if (rank > max_rank_) [[unlikely]] {
+      return num_bits_;
     }
     auto super_block_rank = super_block_rank_.AsConst64BitInts();
     auto basic_block_rank = basic_block_rank_.AsConst16BitInts();
@@ -617,11 +813,14 @@ class BitVector {
    * or size() if rank0 is out of range.
    */
   uint64_t select0(size_t rank0) const {
-    if (rank0 > num_bits_ - max_rank_) [[unlikely]] {
-      return num_bits_;
-    }
     if (rank0 == 0) [[unlikely]] {
       return 0;
+    }
+    if (!supports_select0()) [[unlikely]] {
+      return num_bits_;
+    }
+    if (rank0 > num_bits_ - max_rank_) [[unlikely]] {
+      return num_bits_;
     }
     auto super_block_rank = super_block_rank_.AsConst64BitInts();
     auto basic_block_rank = basic_block_rank_.AsConst16BitInts();
