@@ -19,6 +19,9 @@ using pixie::experimental::excess_positions_512_expand8;
 using pixie::experimental::excess_positions_512_expand_avx512;
 using pixie::experimental::excess_positions_512_lut_avx512;
 #ifdef PIXIE_AVX2_SUPPORT
+using pixie::experimental::excess_min_128_deinterleaved_byte16_sse;
+using pixie::experimental::excess_min_128_deinterleaved_full_sse;
+using pixie::experimental::excess_min_128_deinterleaved_sse;
 using pixie::experimental::excess_min_128_expand16_avx2;
 using pixie::experimental::excess_min_128_lane64_sse;
 using pixie::experimental::excess_min_128_short_skip;
@@ -639,6 +642,15 @@ TEST(ExcessPositions128Experimental, MinVariantsMatchNaive) {
 #ifdef PIXIE_AVX2_SUPPORT
       check_min_matches_naive(excess_min_128_expand16_avx2, "expand16_avx2",
                               s.data(), left, right, case_id);
+      check_min_matches_naive(excess_min_128_deinterleaved_sse,
+                              "deinterleaved_sse", s.data(), left, right,
+                              case_id);
+      check_min_matches_naive(excess_min_128_deinterleaved_full_sse,
+                              "deinterleaved_full_sse", s.data(), left, right,
+                              case_id);
+      check_min_matches_naive(excess_min_128_deinterleaved_byte16_sse,
+                              "deinterleaved_byte16_sse", s.data(), left, right,
+                              case_id);
       check_min_matches_naive(excess_min_128_lane64_sse, "lane64_sse", s.data(),
                               left, right, case_id);
       check_min_matches_naive(excess_min_128_split64_sse, "split64_sse",
@@ -671,6 +683,14 @@ TEST(ExcessPositions128Experimental, MinVariantsMatchNaiveRandom) {
 #ifdef PIXIE_AVX2_SUPPORT
       check_min_matches_naive(excess_min_128_expand16_avx2, "expand16_avx2",
                               s.data(), left, right, t);
+      check_min_matches_naive(excess_min_128_deinterleaved_sse,
+                              "deinterleaved_sse", s.data(), left, right, t);
+      check_min_matches_naive(excess_min_128_deinterleaved_full_sse,
+                              "deinterleaved_full_sse", s.data(), left, right,
+                              t);
+      check_min_matches_naive(excess_min_128_deinterleaved_byte16_sse,
+                              "deinterleaved_byte16_sse", s.data(), left, right,
+                              t);
       check_min_matches_naive(excess_min_128_lane64_sse, "lane64_sse", s.data(),
                               left, right, t);
       check_min_matches_naive(excess_min_128_split64_sse, "split64_sse",
@@ -681,6 +701,49 @@ TEST(ExcessPositions128Experimental, MinVariantsMatchNaiveRandom) {
     }
   }
 }
+
+#ifdef PIXIE_AVX2_SUPPORT
+TEST(ExcessPositions128Experimental, DeinterleavedSseBoundaryAndTieCases) {
+  const std::array<std::array<uint64_t, 2>, 5> cases = {{
+      {0x0F0F0F0F0F0F0F0Full, 0xF0F0F0F0F0F0F0F0ull},
+      {0x3333333333333333ull, 0xCCCCCCCCCCCCCCCCull},
+      {0x6666666666666666ull, 0x9999999999999999ull},
+      {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull},
+      {0x1111111111111111ull, 0xEEEEEEEEEEEEEEEEull},
+  }};
+  const std::array<std::pair<size_t, size_t>, 13> ranges = {{
+      {0, 5},
+      {4, 7},
+      {4, 11},
+      {8, 15},
+      {12, 19},
+      {1, 17},
+      {3, 35},
+      {5, 37},
+      {33, 65},
+      {61, 93},
+      {124, 127},
+      {125, 128},
+      {0, 127},
+  }};
+
+  int case_id = 0;
+  for (const auto& s : cases) {
+    for (const auto [left, right] : ranges) {
+      check_min_matches_naive(excess_min_128_deinterleaved_sse,
+                              "deinterleaved_sse", s.data(), left, right,
+                              case_id);
+      check_min_matches_naive(excess_min_128_deinterleaved_full_sse,
+                              "deinterleaved_full_sse", s.data(), left, right,
+                              case_id);
+      check_min_matches_naive(excess_min_128_deinterleaved_byte16_sse,
+                              "deinterleaved_byte16_sse", s.data(), left, right,
+                              case_id);
+      ++case_id;
+    }
+  }
+}
+#endif
 
 TEST(ExcessPositions128, ForwardAndBackwardSearchMatchNaive) {
   std::mt19937_64 rng(42);

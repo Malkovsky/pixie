@@ -31,9 +31,9 @@ namespace pixie::rmq {
  * Johannes Fischer, "Optimal Succinctness for Range Minimum Queries",
  * LATIN 2010; arXiv:0812.2775.
  *
- * This adapter exposes the Pixie value-RMQ contract: half-open ranges
- * `[left, right)`, invalid ranges returning `npos`, and first-minimum tie
- * semantics.
+ * This adapter exposes the Pixie value-RMQ interface specification: half-open
+ * ranges `[left, right)`, invalid ranges returning `npos`, and first-minimum
+ * tie semantics.
  *
  * The SDSL structure does not retain values after construction, so this adapter
  * keeps a non-owning span for `range_min()`. The indexed values must outlive

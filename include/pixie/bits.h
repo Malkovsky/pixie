@@ -83,6 +83,16 @@ static inline const __m128i excess_lut_nibble_index_sse = _mm_setr_epi8(
      4,  5,  6,  7,
      8,  9, 10, 11,
     12, 13, 14, 15);
+static inline const __m128i excess_lut_low_nibble_index_sse = _mm_setr_epi8(
+     0,  2,  4,  6,
+     8, 10, 12, 14,
+    16, 18, 20, 22,
+    24, 26, 28, 30);
+static inline const __m128i excess_lut_high_nibble_index_sse = _mm_setr_epi8(
+     1,  3,  5,  7,
+     9, 11, 13, 15,
+    17, 19, 21, 23,
+    25, 27, 29, 31);
 static inline const __m128i excess_lut_nibble_mask_sse = _mm_set1_epi8(0x0F);
 // clang-format on
 #endif
@@ -95,6 +105,26 @@ static inline __m128i excess_nibbles_64_sse(const uint64_t* s) noexcept {
   const __m128i hi_nibbles =
       _mm_and_si128(_mm_srli_epi16(word_vec, 4), excess_lut_nibble_mask_sse);
   return _mm_unpacklo_epi8(lo_nibbles, hi_nibbles);
+}
+
+static inline __m128i excess_prefix_sum_16x_i8(__m128i v) noexcept {
+  __m128i x = v;
+  __m128i t = _mm_slli_si128(x, 1);
+  x = _mm_add_epi8(x, t);
+  t = _mm_slli_si128(x, 2);
+  x = _mm_add_epi8(x, t);
+  t = _mm_slli_si128(x, 4);
+  x = _mm_add_epi8(x, t);
+  t = _mm_slli_si128(x, 8);
+  return _mm_add_epi8(x, t);
+}
+
+static inline int excess_horizontal_min_i8(__m128i v) noexcept {
+  v = _mm_min_epi8(v, _mm_alignr_epi8(v, v, 8));
+  v = _mm_min_epi8(v, _mm_alignr_epi8(v, v, 4));
+  v = _mm_min_epi8(v, _mm_alignr_epi8(v, v, 2));
+  v = _mm_min_epi8(v, _mm_alignr_epi8(v, v, 1));
+  return static_cast<int>(static_cast<int8_t>(_mm_extract_epi8(v, 0)));
 }
 #endif
 
@@ -972,6 +1002,20 @@ constexpr int8_t excess_byte_min_prefix_offset_value(uint8_t x) {
   return static_cast<int8_t>(best_offset);
 }
 
+constexpr int8_t excess_nibble_min_prefix_offset_value(uint8_t x, int bits) {
+  int cur = 0;
+  int best = 0;
+  int best_offset = 1;
+  for (int bit = 0; bit < bits; ++bit) {
+    cur += ((x >> bit) & 1u) != 0 ? 1 : -1;
+    if (bit == 0 || cur < best) {
+      best = cur;
+      best_offset = bit + 1;
+    }
+  }
+  return static_cast<int8_t>(best_offset);
+}
+
 template <typename Fn>
 constexpr std::array<int8_t, 256> excess_make_byte_lut(Fn fn) {
   std::array<int8_t, 256> out{};
@@ -989,6 +1033,17 @@ static inline constexpr std::array<int8_t, 256> excess_byte_min_lut =
 static inline constexpr std::array<int8_t, 256> excess_byte_min_offset_lut =
     excess_make_byte_lut(
         [](uint8_t x) { return excess_byte_min_prefix_offset_value(x); });
+static inline constexpr std::array<std::array<int8_t, 16>, 4>
+    excess_partial_nibble_min_offset_lut = [] {
+      std::array<std::array<int8_t, 16>, 4> out{};
+      for (size_t width = 1; width < out.size(); ++width) {
+        for (size_t nibble = 0; nibble < out[width].size(); ++nibble) {
+          out[width][nibble] = excess_nibble_min_prefix_offset_value(
+              static_cast<uint8_t>(nibble), static_cast<int>(width));
+        }
+      }
+      return out;
+    }();
 
 /**
  * @brief Compute record-low mask for a single byte relative to a threshold.
@@ -1395,106 +1450,103 @@ static inline ExcessResult excess_min_128(const uint64_t* s,
     }
   }
 
-  const size_t first_full_nibble = bit >> 2;
+  const size_t first_nibble = bit >> 2;
   const size_t last_full_nibble = right >> 2;
   const size_t right_partial_width = bit < right ? (right & 3u) : 0;
   const size_t end_nibble =
       last_full_nibble + (right_partial_width == 0 ? 0 : 1);
-  if (first_full_nibble < end_nibble) {
-    const __m256i nibbles = excess_nibbles_128_avx2(s);
+  if (first_nibble < end_nibble) {
+    const __m128i bytes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s));
+    const __m128i lo_nibbles = _mm_and_si128(bytes, excess_lut_nibble_mask_sse);
+    const __m128i hi_nibbles =
+        _mm_and_si128(_mm_srli_epi16(bytes, 4), excess_lut_nibble_mask_sse);
+    const __m128i lo_delta = _mm_shuffle_epi8(excess_lut_delta_sse, lo_nibbles);
+    const __m128i hi_delta = _mm_shuffle_epi8(excess_lut_delta_sse, hi_nibbles);
+    const __m128i byte_delta = _mm_add_epi8(lo_delta, hi_delta);
+    const __m128i byte_prefix = excess_prefix_sum_16x_i8(byte_delta);
+    const __m128i byte_prefix_before = _mm_slli_si128(byte_prefix, 1);
 
-    __m256i ps = _mm256_shuffle_epi8(excess_lut_delta, nibbles);
-    ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 1));
-    ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 2));
-    ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 4));
-    ps = _mm256_add_epi8(ps, _mm256_slli_si256(ps, 8));
+    __m128i lo_local_min = _mm_shuffle_epi8(excess_lut_min_sse, lo_nibbles);
+    __m128i hi_local_min = _mm_shuffle_epi8(excess_lut_min_sse, hi_nibbles);
 
-    __m128i ps_lo = _mm256_castsi256_si128(ps);
-    __m128i ps_hi = _mm256_extracti128_si256(ps, 1);
-    __m128i carry =
-        _mm_set1_epi8(static_cast<int8_t>(_mm_extract_epi8(ps_lo, 15)));
-    ps_hi = _mm_add_epi8(ps_hi, carry);
-    ps = _mm256_inserti128_si256(_mm256_castsi128_si256(ps_lo), ps_hi, 1);
-
-    __m256i b = _mm256_permute2x128_si256(ps, ps, 0x08);
-    const __m256i excl_ps = _mm256_alignr_epi8(ps, b, 15);
-    __m256i local_min = _mm256_shuffle_epi8(excess_lut_min, nibbles);
+    const __m128i byte_index = excess_lut_nibble_index_sse;
     if (right_partial_width != 0) {
-      __m256i partial_min = _mm256_shuffle_epi8(excess_lut_pos0, nibbles);
+      const bool partial_is_high = (last_full_nibble & 1u) != 0;
+      const size_t partial_byte = last_full_nibble >> 1;
+      const __m128i partial_source = partial_is_high ? hi_nibbles : lo_nibbles;
+      __m128i partial_min =
+          _mm_shuffle_epi8(excess_lut_pos0_sse, partial_source);
       if (right_partial_width >= 2) {
-        partial_min = _mm256_min_epi8(
-            partial_min, _mm256_shuffle_epi8(excess_lut_pos1, nibbles));
+        partial_min = _mm_min_epi8(
+            partial_min, _mm_shuffle_epi8(excess_lut_pos1_sse, partial_source));
       }
       if (right_partial_width >= 3) {
-        partial_min = _mm256_min_epi8(
-            partial_min, _mm256_shuffle_epi8(excess_lut_pos2, nibbles));
+        partial_min = _mm_min_epi8(
+            partial_min, _mm_shuffle_epi8(excess_lut_pos2_sse, partial_source));
       }
-      local_min = _mm256_blendv_epi8(
-          local_min, partial_min,
-          _mm256_cmpeq_epi8(
-              excess_lut_nibble_index,
-              _mm256_set1_epi8(static_cast<int8_t>(last_full_nibble))));
+      const __m128i partial_lane = _mm_cmpeq_epi8(
+          byte_index, _mm_set1_epi8(static_cast<int8_t>(partial_byte)));
+      if (partial_is_high) {
+        hi_local_min = _mm_blendv_epi8(hi_local_min, partial_min, partial_lane);
+      } else {
+        lo_local_min = _mm_blendv_epi8(lo_local_min, partial_min, partial_lane);
+      }
     }
-    const __m256i partial_candidates = _mm256_add_epi8(excl_ps, local_min);
 
-    const __m256i idx = excess_lut_nibble_index;
-    const int first_minus_one_value = static_cast<int>(first_full_nibble) - 1;
-    const __m256i first_minus_one =
-        _mm256_set1_epi8(static_cast<int8_t>(first_minus_one_value));
-    const __m256i last = _mm256_set1_epi8(static_cast<int8_t>(end_nibble));
-    const __m256i active = _mm256_and_si256(
-        _mm256_cmpgt_epi8(idx, first_minus_one), _mm256_cmpgt_epi8(last, idx));
-    const __m256i masked_candidates =
-        _mm256_blendv_epi8(_mm256_set1_epi8(127), partial_candidates, active);
+    const __m128i lo_candidates =
+        _mm_add_epi8(byte_prefix_before, lo_local_min);
+    const __m128i hi_candidates =
+        _mm_add_epi8(_mm_add_epi8(byte_prefix_before, lo_delta), hi_local_min);
 
-    __m128i min128 =
-        _mm_min_epi8(_mm256_castsi256_si128(masked_candidates),
-                     _mm256_extracti128_si256(masked_candidates, 1));
-    min128 = _mm_min_epi8(min128, _mm_alignr_epi8(min128, min128, 8));
-    min128 = _mm_min_epi8(min128, _mm_alignr_epi8(min128, min128, 4));
-    min128 = _mm_min_epi8(min128, _mm_alignr_epi8(min128, min128, 2));
-    min128 = _mm_min_epi8(min128, _mm_alignr_epi8(min128, min128, 1));
+    __m128i masked_lo = lo_candidates;
+    __m128i masked_hi = hi_candidates;
+    if (first_nibble != 0 || end_nibble != 32) {
+      const __m128i first_minus_one = _mm_set1_epi8(
+          static_cast<int8_t>(static_cast<int>(first_nibble) - 1));
+      const __m128i last = _mm_set1_epi8(static_cast<int8_t>(end_nibble));
+      const __m128i lo_active = _mm_and_si128(
+          _mm_cmpgt_epi8(excess_lut_low_nibble_index_sse, first_minus_one),
+          _mm_cmpgt_epi8(last, excess_lut_low_nibble_index_sse));
+      const __m128i hi_active = _mm_and_si128(
+          _mm_cmpgt_epi8(excess_lut_high_nibble_index_sse, first_minus_one),
+          _mm_cmpgt_epi8(last, excess_lut_high_nibble_index_sse));
+      masked_lo = _mm_blendv_epi8(_mm_set1_epi8(127), lo_candidates, lo_active);
+      masked_hi = _mm_blendv_epi8(_mm_set1_epi8(127), hi_candidates, hi_active);
+    }
 
     const int candidate_min =
-        static_cast<int>(static_cast<int8_t>(_mm_extract_epi8(min128, 0)));
+        excess_horizontal_min_i8(_mm_min_epi8(masked_lo, masked_hi));
     if (candidate_min < best) {
-      const __m256i equal_min = _mm256_cmpeq_epi8(
-          masked_candidates,
-          _mm256_set1_epi8(static_cast<int8_t>(candidate_min)));
-      const uint32_t equal_mask =
-          static_cast<uint32_t>(_mm256_movemask_epi8(equal_min));
-      const uint32_t nibble_index = std::countr_zero(equal_mask);
-      const uint64_t word = s[nibble_index >> 4];
-      const uint8_t nibble =
-          static_cast<uint8_t>((word >> ((nibble_index & 15u) * 4u)) & 0xFu);
+      const __m128i min_vec = _mm_set1_epi8(static_cast<int8_t>(candidate_min));
+      const uint32_t lo_equal_mask = static_cast<uint32_t>(
+          _mm_movemask_epi8(_mm_cmpeq_epi8(masked_lo, min_vec)));
+      const uint32_t hi_equal_mask = static_cast<uint32_t>(
+          _mm_movemask_epi8(_mm_cmpeq_epi8(masked_hi, min_vec)));
+      const uint32_t lo_nibble_index =
+          lo_equal_mask == 0
+              ? 32u
+              : static_cast<uint32_t>(std::countr_zero(lo_equal_mask)) * 2u;
+      const uint32_t hi_nibble_index =
+          hi_equal_mask == 0
+              ? 32u
+              : static_cast<uint32_t>(std::countr_zero(hi_equal_mask)) * 2u +
+                    1u;
+      const uint32_t nibble_index = std::min(lo_nibble_index, hi_nibble_index);
+      const uint32_t byte_offset = nibble_index >> 1u;
+      const uint64_t byte_word = s[byte_offset >> 3u];
+      const uint8_t byte = static_cast<uint8_t>(
+          (byte_word >> ((byte_offset & 7u) * 8u)) & 0xFFu);
+      const uint8_t nibble = (nibble_index & 1u) == 0
+                                 ? static_cast<uint8_t>(byte & 0xFu)
+                                 : static_cast<uint8_t>((byte >> 4u) & 0xFu);
+      const size_t local_offset =
+          right_partial_width != 0 && nibble_index == last_full_nibble
+              ? static_cast<size_t>(
+                    excess_partial_nibble_min_offset_lut[right_partial_width]
+                                                        [nibble])
+              : static_cast<size_t>(excess_lut_min_offset[nibble]);
       best = candidate_min;
-      if (right_partial_width != 0 && nibble_index == last_full_nibble) {
-        int local = 0;
-        int local_best = 0;
-        size_t local_offset = 1;
-        for (size_t i = 0; i < right_partial_width; ++i) {
-          local += ((nibble >> i) & 1u) != 0 ? 1 : -1;
-          if (i == 0 || local < local_best) {
-            local_best = local;
-            local_offset = i + 1;
-          }
-        }
-        best_offset = static_cast<size_t>(nibble_index) * 4u + local_offset;
-      } else {
-        best_offset = static_cast<size_t>(nibble_index) * 4u +
-                      static_cast<size_t>(excess_lut_min_offset[nibble]);
-      }
-    }
-
-    bit = end_nibble * 4;
-  }
-
-  for (; bit < right; ++bit) {
-    current += ((s[bit >> 6] >> (bit & 63)) & 1ull) != 0 ? 1 : -1;
-    const size_t offset = bit + 1;
-    if (current < best) {
-      best = current;
-      best_offset = offset;
+      best_offset = static_cast<size_t>(nibble_index) * 4u + local_offset;
     }
   }
 #else
@@ -1884,7 +1936,8 @@ static inline void excess_record_lows_128_byte_lut(const uint64_t* s,
   int best = 0;
   for (size_t byte_idx = 0; byte_idx < 16; ++byte_idx) {
     const size_t bit_base = byte_idx * 8;
-    const uint8_t byte = static_cast<uint8_t>((s[bit_base >> 6] >> (bit_base & 63)) & 0xFFu);
+    const uint8_t byte =
+        static_cast<uint8_t>((s[bit_base >> 6] >> (bit_base & 63)) & 0xFFu);
     const int byte_min = excess_byte_min_lut[byte];
     if (cur + byte_min < best) {
       for (size_t i = 0; i < 8; ++i) {
@@ -1921,7 +1974,8 @@ static inline void excess_record_lows_128_lut(const uint64_t* s,
         static_cast<uint8_t>((s[bit_base >> 6] >> (bit_base & 63)) & 0xFFu);
     const int gap = cur - best;
     const int idx = gap > 7 ? 7 : (gap < 0 ? 0 : gap);
-    const uint8_t mask = excess_byte_record_lows_lut[byte][static_cast<size_t>(idx)];
+    const uint8_t mask =
+        excess_byte_record_lows_lut[byte][static_cast<size_t>(idx)];
     if (mask != 0) {
       // Recompute absolute excesses for masked positions to update cur/best.
       int local = 0;
@@ -1945,7 +1999,8 @@ static inline void excess_record_lows_128_lut(const uint64_t* s,
         }
       }
       if (out_mask != 0) {
-        const uint64_t word = static_cast<uint64_t>(out_mask) << (bit_base & 63);
+        const uint64_t word = static_cast<uint64_t>(out_mask)
+                              << (bit_base & 63);
         out[bit_base >> 6] |= word;
       }
     }
@@ -1984,8 +2039,8 @@ static inline void excess_record_lows_128_avx2(const uint64_t* s,
     const __m256i is_zero = _mm256_cmpeq_epi16(m, zero);
     const __m256i steps = _mm256_blendv_epi8(pos, neg, is_zero);
     const __m256i pref_rel = excess_prefix_sum_16x_i16(steps);
-    const __m256i pref_abs =
-        _mm256_add_epi16(pref_rel, _mm256_set1_epi16(static_cast<int16_t>(cur)));
+    const __m256i pref_abs = _mm256_add_epi16(
+        pref_rel, _mm256_set1_epi16(static_cast<int16_t>(cur)));
 
     alignas(32) int16_t vals[16];
     _mm256_store_si256(reinterpret_cast<__m256i*>(vals), pref_abs);

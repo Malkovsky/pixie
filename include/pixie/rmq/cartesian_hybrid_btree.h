@@ -1241,10 +1241,10 @@ class HybridBTreePlusMinusOne {
 /**
  * @brief Cartesian-tree value RMQ using HybridBTree-style LCA.
  *
- * @details This class keeps the same public value-RMQ contract as the other
- * value RMQ backends. It builds a stable Ferrada-Navarro BP Cartesian-tree
- * encoding, uses `BitVector` for close-parenthesis rank/select, and delegates
- * the BP-depth minimum query to
+ * @details This class follows the same public value-RMQ specification as the
+ * other value RMQ backends. It builds a stable Ferrada-Navarro BP
+ * Cartesian-tree encoding, uses `BitVector` for close-parenthesis rank/select,
+ * and delegates the BP-depth minimum query to
  * `detail::HybridBTreePlusMinusOne`. The BP-depth backend keeps a configurable
  * low-level leaf size, fixed 192-entry middle nodes with embedded minima, and
  * fixed 256-entry high nodes. A single coarse value-level sparse table is

@@ -17,6 +17,9 @@ using pixie::experimental::excess_positions_512_expand8;
 using pixie::experimental::excess_positions_512_expand_avx512;
 using pixie::experimental::excess_positions_512_lut_avx512;
 #ifdef PIXIE_AVX2_SUPPORT
+using pixie::experimental::excess_min_128_deinterleaved_byte16_sse;
+using pixie::experimental::excess_min_128_deinterleaved_full_sse;
+using pixie::experimental::excess_min_128_deinterleaved_sse;
 using pixie::experimental::excess_min_128_expand16_avx2;
 using pixie::experimental::excess_min_128_lane64_sse;
 using pixie::experimental::excess_min_128_short_skip;
@@ -383,6 +386,12 @@ PIXIE_BENCH_EXCESS_MIN_VARIANT("BM_ExcessMin128_HybridLUT",
 #ifdef PIXIE_AVX2_SUPPORT
 PIXIE_BENCH_EXCESS_MIN_VARIANT("BM_ExcessMin128_Expand16AVX2",
                                excess_min_128_expand16_avx2);
+PIXIE_BENCH_EXCESS_MIN_VARIANT("BM_ExcessMin128_DeinterleavedSSE",
+                               excess_min_128_deinterleaved_sse);
+PIXIE_BENCH_EXCESS_MIN_VARIANT("BM_ExcessMin128_DeinterleavedFullSSE",
+                               excess_min_128_deinterleaved_full_sse);
+PIXIE_BENCH_EXCESS_MIN_VARIANT("BM_ExcessMin128_DeinterleavedByte16SSE",
+                               excess_min_128_deinterleaved_byte16_sse);
 PIXIE_BENCH_EXCESS_MIN_VARIANT("BM_ExcessMin128_Lane64SSE",
                                excess_min_128_lane64_sse);
 PIXIE_BENCH_EXCESS_MIN_VARIANT("BM_ExcessMin128_Split64SSE",
@@ -451,6 +460,15 @@ PIXIE_BENCH_EXCESS_MIN_RANDOM_VARIANT("BM_ExcessMin128_HybridLUT_RandomRange",
 PIXIE_BENCH_EXCESS_MIN_RANDOM_VARIANT(
     "BM_ExcessMin128_Expand16AVX2_RandomRange",
     excess_min_128_expand16_avx2);
+PIXIE_BENCH_EXCESS_MIN_RANDOM_VARIANT(
+    "BM_ExcessMin128_DeinterleavedSSE_RandomRange",
+    excess_min_128_deinterleaved_sse);
+PIXIE_BENCH_EXCESS_MIN_RANDOM_VARIANT(
+    "BM_ExcessMin128_DeinterleavedFullSSE_RandomRange",
+    excess_min_128_deinterleaved_full_sse);
+PIXIE_BENCH_EXCESS_MIN_RANDOM_VARIANT(
+    "BM_ExcessMin128_DeinterleavedByte16SSE_RandomRange",
+    excess_min_128_deinterleaved_byte16_sse);
 PIXIE_BENCH_EXCESS_MIN_RANDOM_VARIANT("BM_ExcessMin128_Lane64SSE_RandomRange",
                                       excess_min_128_lane64_sse);
 PIXIE_BENCH_EXCESS_MIN_RANDOM_VARIANT("BM_ExcessMin128_Split64SSE_RandomRange",

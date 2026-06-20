@@ -166,16 +166,16 @@ struct HybridBTreeCase {
 }  // namespace
 
 template <class Case>
-class ValueRmqContractTest : public ::testing::Test {};
+class ValueRmqSpecificationTest : public ::testing::Test {};
 
 using ValueRmqCases = ::testing::Types<SparseTableCase,
                                        SegmentTreeCase,
                                        CartesianRmMCase,
                                        CartesianHybridBTreeCase,
                                        HybridBTreeCase>;
-TYPED_TEST_SUITE(ValueRmqContractTest, ValueRmqCases);
+TYPED_TEST_SUITE(ValueRmqSpecificationTest, ValueRmqCases);
 
-TYPED_TEST(ValueRmqContractTest, ExhaustiveSmallArray) {
+TYPED_TEST(ValueRmqSpecificationTest, ExhaustiveSmallArray) {
   const std::vector<int> values = {4, 1, 3, 1, 5, 0, 0, 2};
   const typename TypeParam::Rmq rmq =
       TypeParam::make(std::span<const int>(values));
@@ -237,7 +237,7 @@ TEST(RmqSuccinctIncreasingStack, PopsAcrossEmptyBlocks) {
   EXPECT_TRUE(stack.empty());
 }
 
-TYPED_TEST(ValueRmqContractTest, FirstMinimumTieBreaking) {
+TYPED_TEST(ValueRmqSpecificationTest, FirstMinimumTieBreaking) {
   const std::vector<int> values = {7, 2, 2, 3, 2};
   const typename TypeParam::Rmq rmq =
       TypeParam::make(std::span<const int>(values));
@@ -246,7 +246,7 @@ TYPED_TEST(ValueRmqContractTest, FirstMinimumTieBreaking) {
   EXPECT_EQ(rmq.arg_min(2, 5), 2u);
 }
 
-TYPED_TEST(ValueRmqContractTest, InvalidAndEmptyRanges) {
+TYPED_TEST(ValueRmqSpecificationTest, InvalidAndEmptyRanges) {
   using Rmq = typename TypeParam::Rmq;
 
   const std::vector<int> values = {3, 1, 2};
@@ -265,18 +265,23 @@ TYPED_TEST(ValueRmqContractTest, InvalidAndEmptyRanges) {
   EXPECT_TRUE(empty_rmq.empty());
   EXPECT_EQ(default_rmq.arg_min(0, 0), Rmq::npos);
   EXPECT_EQ(empty_rmq.arg_min(0, 0), Rmq::npos);
+  EXPECT_EQ(default_rmq.range_min(0, 0), 0);
+  EXPECT_EQ(empty_rmq.range_min(0, 0), 0);
 }
 
-TYPED_TEST(ValueRmqContractTest, ComparatorCanSelectMaximum) {
+TYPED_TEST(ValueRmqSpecificationTest, ComparatorCanSelectMaximum) {
   const std::vector<int> values = {1, 8, 3, 8, 4};
   const typename TypeParam::MaxRmq rmq =
       TypeParam::make_max(std::span<const int>(values));
 
   check_all_ranges(rmq, std::span<const int>(values), std::greater<int>());
   EXPECT_EQ(rmq.arg_min(0, 5), 1u);
+  EXPECT_EQ(rmq.range_min(2, 2), 0);
+  EXPECT_EQ(rmq.range_min(4, 3), 0);
+  EXPECT_EQ(rmq.range_min(0, values.size() + 1), 0);
 }
 
-TYPED_TEST(ValueRmqContractTest, MonotoneArrays) {
+TYPED_TEST(ValueRmqSpecificationTest, MonotoneArrays) {
   const std::vector<int> increasing = {1, 2, 3, 4, 5, 6};
   const std::vector<int> decreasing = {6, 5, 4, 3, 2, 1};
   const typename TypeParam::Rmq increasing_rmq =
@@ -290,7 +295,7 @@ TYPED_TEST(ValueRmqContractTest, MonotoneArrays) {
                    std::less<int>());
 }
 
-TYPED_TEST(ValueRmqContractTest, DifferentialRandom) {
+TYPED_TEST(ValueRmqSpecificationTest, DifferentialRandom) {
   std::mt19937_64 rng(42);
   std::uniform_int_distribution<int> value_dist(-50, 50);
   for (std::size_t size = 1; size <= 257; size += 17) {
@@ -304,8 +309,38 @@ TYPED_TEST(ValueRmqContractTest, DifferentialRandom) {
   }
 }
 
+TEST(RmqSparseTable, OverlappingBlockCandidateDirectionsAndTies) {
+  {
+    const std::vector<int> values = {5, 4, 3, 2, 1, 0, 9};
+    const pixie::rmq::SparseTable<int> rmq(values);
+    EXPECT_EQ(rmq.arg_min(0, 6), 5u);
+    EXPECT_EQ(rmq.range_min(0, 6), 0);
+  }
+
+  {
+    const std::vector<int> values = {0, 5, 6, 7, 8, 9, 1};
+    const pixie::rmq::SparseTable<int> rmq(values);
+    EXPECT_EQ(rmq.arg_min(0, 6), 0u);
+    EXPECT_EQ(rmq.range_min(0, 6), 0);
+  }
+
+  {
+    const std::vector<int> values = {1, 0, 9, 9, 0, 2};
+    const pixie::rmq::SparseTable<int> rmq(values);
+    EXPECT_EQ(rmq.arg_min(0, 6), 1u);
+    EXPECT_EQ(rmq.range_min(0, 6), 0);
+  }
+}
+
+TEST(RmqSegmentTree, NonPowerOfTwoTailRanges) {
+  const std::vector<int> values = {6, 5, 4, 3, 2};
+  const pixie::rmq::SegmentTree<int> rmq(values);
+  check_all_ranges(rmq, std::span<const int>(values), std::less<int>());
+}
+
 #ifdef SDSL_SUPPORT
-TEST(RmqSdslSct, MatchesPixieMinContractForSignedValuesAndDuplicates) {
+TEST(RmqSdslSct,
+     MatchesPixieValueRmqSpecificationForSignedValuesAndDuplicates) {
   const std::vector<int> values = {4, -3, 7, -3, 0, -8, -8, 2, 2};
   const pixie::rmq::SdslSct<int> rmq{std::span<const int>(values)};
 

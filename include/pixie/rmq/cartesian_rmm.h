@@ -226,12 +226,12 @@ class RmMPlusMinusOne {
 /**
  * @brief Ferrada-Navarro Cartesian-tree RMQ using rmM support.
  *
- * @details This class keeps the same public value-RMQ contract as the other
- * value RMQ backends, but replaces the usual balanced-parentheses rank/select
- * and depth-RMQ support with `detail::RmMPlusMinusOne`, which in turn uses the
- * experimental range min-max btree over the BP excess sequence. BP
- * construction uses a succinct monotone bit-stack, preserving the same stable
- * Cartesian-tree shape without an n-entry index stack.
+ * @details This class follows the same public value-RMQ specification as the
+ * other value RMQ backends, but replaces the usual balanced-parentheses
+ * rank/select and depth-RMQ support with `detail::RmMPlusMinusOne`, which in
+ * turn uses the experimental range min-max btree over the BP excess sequence.
+ * BP construction uses a succinct monotone bit-stack, preserving the same
+ * stable Cartesian-tree shape without an n-entry index stack.
  *
  * This implementation is included from `pixie/rmq.h` as the rmM-backed
  * Cartesian-tree reduction.
