@@ -16,6 +16,7 @@
 #include <limits>
 #include <random>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -71,6 +72,43 @@ void check_all_arg_min_ranges(const Rmq& rmq,
 
 bool packed_bit(std::span<const std::uint64_t> words, std::size_t position) {
   return ((words[position >> 6] >> (position & 63)) & 1u) != 0;
+}
+
+std::vector<std::uint64_t> make_packed_delta_bits(std::size_t bit_count) {
+  std::vector<std::uint64_t> words((bit_count + 63) / 64);
+  for (std::size_t position = 0; position < bit_count; ++position) {
+    const bool bit = ((position * 11 + position / 3) % 17) < 8;
+    if (bit) {
+      words[position >> 6] |= std::uint64_t{1} << (position & 63);
+    }
+  }
+  return words;
+}
+
+std::vector<std::int64_t> depths_from_delta_bits(
+    std::span<const std::uint64_t> words,
+    std::size_t depth_count) {
+  std::vector<std::int64_t> depths(depth_count);
+  for (std::size_t position = 1; position < depth_count; ++position) {
+    depths[position] =
+        depths[position - 1] + (packed_bit(words, position - 1) ? 1 : -1);
+  }
+  return depths;
+}
+
+std::size_t naive_depth_arg_min(std::span<const std::int64_t> depths,
+                                std::size_t left,
+                                std::size_t right) {
+  if (left >= right || right > depths.size()) {
+    return std::numeric_limits<std::size_t>::max();
+  }
+  std::size_t best = left;
+  for (std::size_t position = left + 1; position < right; ++position) {
+    if (depths[position] < depths[best]) {
+      best = position;
+    }
+  }
+  return best;
 }
 
 template <class Rmq>
@@ -547,12 +585,19 @@ TEST(RmqHybridBTree, LeafSelectorEnumVariants) {
 
   const MaskRmq mask_rmq{std::span<const int>(values)};
   const BpRmq bp_rmq{std::span<const int>(values)};
+  const std::vector<int> empty_values;
   const MaskRmq empty_mask_rmq;
   const BpRmq empty_bp_rmq;
+  const MaskRmq empty_mask_span_rmq{std::span<const int>(empty_values)};
+  const BpRmq empty_bp_span_rmq{std::span<const int>(empty_values)};
   EXPECT_EQ(empty_mask_rmq.arg_min(0, 0), MaskRmq::npos);
   EXPECT_EQ(empty_bp_rmq.arg_min(0, 0), BpRmq::npos);
+  EXPECT_EQ(empty_mask_span_rmq.arg_min(0, 0), MaskRmq::npos);
+  EXPECT_EQ(empty_bp_span_rmq.arg_min(0, 0), BpRmq::npos);
   EXPECT_EQ(empty_mask_rmq.range_min(0, 0), 0);
   EXPECT_EQ(empty_bp_rmq.range_min(0, 0), 0);
+  EXPECT_EQ(empty_mask_span_rmq.range_min(0, 0), 0);
+  EXPECT_EQ(empty_bp_span_rmq.range_min(0, 0), 0);
 
   const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
       {0, 1},       {0, 13},     {0, 252},     {1, 251},
@@ -573,6 +618,44 @@ TEST(RmqHybridBTree, LeafSelectorEnumVariants) {
     EXPECT_EQ(bp_rmq.range_min(left, right), values[expected])
         << "bp range=[" << left << "," << right << ")";
   }
+
+  const auto check_small_tree_paths = []<class Rmq>() {
+    constexpr std::size_t kLeaf = Rmq::kLeafSize;
+    std::vector<int> one_leaf_values(kLeaf / 2 + 3, 1000);
+    for (std::size_t i = 0; i < one_leaf_values.size(); ++i) {
+      one_leaf_values[i] += static_cast<int>((i * 17 + i / 5) % 71);
+    }
+    one_leaf_values[one_leaf_values.size() / 2] = -20;
+    const Rmq one_leaf_rmq{std::span<const int>(one_leaf_values)};
+    EXPECT_EQ(one_leaf_rmq.arg_min(0, one_leaf_values.size()),
+              naive_arg_min(std::span<const int>(one_leaf_values), 0,
+                            one_leaf_values.size(), std::less<int>()))
+        << "one leaf path leaf=" << kLeaf;
+
+    std::vector<int> small_values(3 * kLeaf + 5, 10000);
+    for (std::size_t i = 0; i < small_values.size(); ++i) {
+      small_values[i] += static_cast<int>((i * 41 + i / 9) % 263);
+    }
+    small_values[7] = -100;
+    small_values[kLeaf + 3] = -500;
+    small_values[2 * kLeaf + 11] = -300;
+
+    const Rmq rmq{std::span<const int>(small_values)};
+    const std::vector<std::pair<std::size_t, std::size_t>> small_ranges = {
+        {0, small_values.size()},     {0, kLeaf},
+        {kLeaf, 2 * kLeaf},           {2 * kLeaf, 3 * kLeaf},
+        {1, small_values.size() - 1}, {kLeaf + 1, kLeaf + 2},
+    };
+    for (const auto [left, right] : small_ranges) {
+      const std::size_t expected = naive_arg_min(
+          std::span<const int>(small_values), left, right, std::less<int>());
+      EXPECT_EQ(rmq.arg_min(left, right), expected)
+          << "small tree range=[" << left << "," << right << ") leaf=" << kLeaf;
+    }
+  };
+
+  check_small_tree_paths.template operator()<MaskRmq>();
+  check_small_tree_paths.template operator()<BpRmq>();
 }
 
 TEST(RmqHybridBTree, BorderCorrectionForLeafSelectorVariants) {
@@ -753,6 +836,28 @@ TEST(RmqHybridBTree, TopSparseOverlayComparatorMaximum) {
   }
 }
 
+TEST(RmqHybridBTree, InternalRootFullRangeShortcut) {
+  using Rmq = pixie::rmq::HybridBTree<int>;
+  constexpr std::size_t kLeaf = Rmq::kLeafSize;
+
+  std::vector<int> values(7 * kLeaf + 19, 10000);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] += static_cast<int>((i * 29 + i / 13) % 257);
+  }
+  values[17] = -100;
+  values[3 * kLeaf + 11] = -700;
+  values[values.size() - 3] = -200;
+
+  const Rmq rmq{std::span<const int>(values)};
+  EXPECT_EQ(rmq.arg_min(0, values.size()), 3 * kLeaf + 11);
+  EXPECT_EQ(rmq.range_min(0, values.size()), -700);
+  EXPECT_EQ(rmq.arg_min(0, kLeaf), naive_arg_min(std::span<const int>(values),
+                                                 0, kLeaf, std::less<int>()));
+  EXPECT_EQ(rmq.arg_min(kLeaf - 3, 2 * kLeaf + 5),
+            naive_arg_min(std::span<const int>(values), kLeaf - 3,
+                          2 * kLeaf + 5, std::less<int>()));
+}
+
 TEST(RmqHybridBTree, DuplicateHeavyRandomTo8193) {
   using Rmq = pixie::rmq::HybridBTree<int>;
   std::mt19937_64 rng(901496);
@@ -894,6 +999,42 @@ TEST(RmqCartesianHybridBTree, DuplicateHeavyRandomDifferentialTo8193) {
           << "range=[" << left << "," << right << ")";
     }
   }
+}
+
+TEST(RmqCartesianHybridBTree, DepthBackendDirectPaths) {
+  using HighSparseBackend =
+      pixie::rmq::detail::HybridBTreePlusMinusOne<std::size_t, 512, true, 1>;
+  constexpr std::size_t kDepthCount = 3 * 512 + 17;
+
+  const std::vector<std::uint64_t> words =
+      make_packed_delta_bits(kDepthCount - 1);
+  const std::vector<std::int64_t> depths = depths_from_delta_bits(
+      std::span<const std::uint64_t>(words), kDepthCount);
+  const HighSparseBackend high_sparse(std::span<const std::uint64_t>(words),
+                                      kDepthCount);
+
+  EXPECT_EQ(high_sparse.arg_min(kDepthCount, kDepthCount),
+            HighSparseBackend::npos);
+  EXPECT_EQ(high_sparse.arg_min(37, 38), 37u);
+  EXPECT_GT(high_sparse.memory_usage_bytes(), sizeof(HighSparseBackend));
+
+  const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
+      {0, kDepthCount},
+      {0, 512},
+      {511, 1027},
+      {9, 1400},
+      {700, kDepthCount - 3},
+      {kDepthCount - 65, kDepthCount},
+  };
+  for (const auto [left, right] : ranges) {
+    const std::size_t expected =
+        naive_depth_arg_min(std::span<const std::int64_t>(depths), left, right);
+    EXPECT_EQ(high_sparse.arg_min(left, right), expected)
+        << "high sparse depth range=[" << left << "," << right << ")";
+  }
+
+  EXPECT_THROW(HighSparseBackend(std::span<const std::uint64_t>(), 65),
+               std::invalid_argument);
 }
 
 TEST(RmqCartesianHybridBTree, BpStorageIsCacheLineAligned) {

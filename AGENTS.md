@@ -23,7 +23,7 @@ When a task matches a skill, read:
 ### Project Layout Conventions
 
 - **`include/`**: Header-only library API (all implementations here, no `.cpp` files)
-- **`include/misc/`**: Naive reference implementations for differential testing
+- **`include/reference_implementations/`**: Naive reference implementations for differential testing
 - **`src/*_tests.cpp`**: Unit tests (Google Test)
 - **`src/*_benchmarks.cpp`**: Performance benchmarks (Google Benchmark)
 - **`src/docs/`**: Doxygen configuration
@@ -118,9 +118,10 @@ cmake --build build/release -j
 ### Running Tests
 
 ```bash
-cmake-build/release/unittests           # BitVector tests
-cmake-build/release/test_rmm            # RmM Tree tests
-cmake-build/release/louds_tree_tests    # LOUDS Tree tests
+./build/release/unittests               # BitVector tests
+./build/release/test_rmm                # RmM Tree tests
+./build/release/rmq_tests               # RMQ tests
+./build/release/louds_tree_tests        # LOUDS Tree tests
 ```
 
 ### Test Configuration via Environment Variables
@@ -133,9 +134,51 @@ For `test_rmm.cpp`:
 
 ### Testing Patterns
 
-- **Differential testing**: Compare against naive reference implementations in `include/misc/`
+- **Differential testing**: Compare against naive reference implementations in `include/reference_implementations/`
 - **Randomized testing**: Random bit vectors and balanced parentheses sequences
 - **Exhaustive short inputs**: Test all patterns for small sizes
+- **Shape-forcing tests**: For RMQ/RmM trees, deterministic tests that force
+  a specific traversal path are often more valuable than adding more random
+  cases. Target border correction, same-leaf paths, prefix/suffix leaf
+  selectors, top sparse-table hit/miss paths, partial last blocks, and
+  first-min tie cases.
+
+### Coverage and Codecov
+
+Use the repository script for local coverage:
+
+```bash
+./scripts/coverage_report.sh
+```
+
+This script configures the `coverage` preset, builds coverage targets, deletes
+old `.gcda`/`.gcov` files, runs the test binaries, and writes
+`build/coverage/coverage.txt`.
+
+Coverage interpretation notes:
+
+- The report is generated with `gcov -pb`, so Codecov receives branch
+  probabilities in addition to line hits. Codecov "partial" lines are lines
+  that executed but did not cover all branch paths, for example short-circuit
+  conditions, ternaries, loop exits, or exception edges.
+- Do not compare Codecov's branch-aware percentage directly with a plain
+  line-only local summary. Codecov effectively penalizes partially covered
+  branch lines.
+- After recompiling an instrumented target, stale `.gcda` files can produce
+  `overwriting an existing profile data with a different checksum`. Run
+  `./scripts/coverage_report.sh` or delete the coverage `.gcda` files before
+  trusting a local coverage run.
+- Header-only templates can appear in multiple gcov translation-unit reports.
+  For headers such as `experimental/rmm_btree.h`, inspect the generated
+  `.gcov` file or Codecov aggregate rather than trusting the first `File ...`
+  block in `coverage.txt`.
+- For RMQ/RmM coverage work, prioritize public behavior paths over artificial
+  internal coverage. Useful tests cover HybridBTree leaf selector variants,
+  internal border correction, top sparse-overlay hit/miss behavior,
+  CartesianHybridBTree BP-depth query paths, and RmMBTree forward/backward
+  search/minselect edge cases. Low-value gaps include allocator failure paths,
+  `length_error` paths that require impossible index sizes, and private
+  defensive `npos` branches that cannot be reached through a valid public API.
 
 ## Code Style Guidelines
 
