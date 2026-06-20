@@ -434,6 +434,14 @@ TEST(BitVectorTest, OptionalSelectSupport) {
   EXPECT_EQ(large_select1_only.select(32768), 32767);
 }
 
+TEST(BitVectorTest, ThrowsWhenOneCountHintUnderestimatesSamples) {
+  std::vector<uint64_t> one_words(512, ~uint64_t{0});
+
+  EXPECT_THROW((BitVector(one_words, one_words.size() * 64,
+                          BitVector::SelectSupport::kSelect1, 0)),
+               std::invalid_argument);
+}
+
 TEST(BitVectorTest, ShortSpanUsesScalarRankSelectFallbacks) {
   std::vector<uint64_t> one_in_second_word = {0, 1};
   BitVector ones(std::span<const uint64_t>(one_in_second_word), 65);
@@ -451,6 +459,16 @@ TEST(BitVectorTest, ShortSpanUsesScalarRankSelectFallbacks) {
   EXPECT_EQ(zeros.select0(1), 64u);
 }
 
+TEST(BitVectorTest, ShortSpanScalarRankUsesPartialWordTail) {
+  std::vector<uint64_t> bits = {~uint64_t{0}, 0, 0b101};
+  BitVector bv(std::span<const uint64_t>(bits), 130);
+
+  EXPECT_EQ(bv.rank(128), 64u);
+  EXPECT_EQ(bv.rank(129), 65u);
+  EXPECT_EQ(bv.rank(130), 65u);
+  EXPECT_EQ(bv.rank0(129), 64u);
+}
+
 TEST(BitVectorTest, IgnoresDirtyPaddingAndTrailingWords) {
   std::vector<uint64_t> bits = {~uint64_t{0}, ~uint64_t{0}};
   BitVector bv(bits, 3);
@@ -464,6 +482,24 @@ TEST(BitVectorTest, IgnoresDirtyPaddingAndTrailingWords) {
   EXPECT_EQ(bv.select(3), 2);
   EXPECT_EQ(bv.select(4), bv.size());
   EXPECT_EQ(bv.select0(1), bv.size());
+}
+
+TEST(BitVectorTest, SelectZeroSkewedDistributionFallback) {
+  constexpr size_t kWordsPerBasicBlock = 8;
+  constexpr size_t kBasicBlocksPerSuperBlock = 128;
+  constexpr size_t kZeroBasicBlocks = 40;
+
+  std::vector<uint64_t> bits(kWordsPerBasicBlock * kBasicBlocksPerSuperBlock,
+                             ~uint64_t{0});
+  std::fill(bits.begin(), bits.begin() + kZeroBasicBlocks * kWordsPerBasicBlock,
+            0);
+
+  BitVector bv(std::span<const uint64_t>(bits), bits.size() * 64);
+  EXPECT_EQ(bv.rank0(bv.size()), kZeroBasicBlocks * 512u);
+  EXPECT_EQ(bv.select0(1), 0u);
+  EXPECT_EQ(bv.select0(10000), 9999u);
+  EXPECT_EQ(bv.select0(kZeroBasicBlocks * 512u), kZeroBasicBlocks * 512u - 1);
+  EXPECT_EQ(bv.select0(kZeroBasicBlocks * 512u + 1), bv.size());
 }
 
 TEST(BitVectorTest, MainRankZeroTest) {

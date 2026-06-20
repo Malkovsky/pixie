@@ -1090,6 +1090,12 @@ TEST(RmMBTreeExperimental, OptionalSelectSupport) {
   pixie::experimental::RmMBTree<> select0_only(
       std::span<const std::uint64_t>(words), bits.size(),
       pixie::BitVector::SelectSupport::kSelect0, /*one_count=*/3);
+  pixie::experimental::RmMBTree<> select1_only(
+      std::span<const std::uint64_t>(words), bits.size(),
+      pixie::BitVector::SelectSupport::kSelect1, /*one_count=*/3);
+  pixie::experimental::RmMBTree<> rank_only(
+      std::span<const std::uint64_t>(words), bits.size(),
+      pixie::BitVector::SelectSupport::kNone, /*one_count=*/3);
 
   EXPECT_EQ(select0_only.rank1(bits.size()), 3u);
   EXPECT_EQ(select0_only.rank0(bits.size()), 3u);
@@ -1098,6 +1104,75 @@ TEST(RmMBTreeExperimental, OptionalSelectSupport) {
   EXPECT_EQ(select0_only.select0(2), 4u);
   EXPECT_EQ(select0_only.select0(3), 5u);
   EXPECT_EQ(select0_only.select0(4), pixie::experimental::RmMBTree<>::npos);
+
+  EXPECT_EQ(select1_only.rank1(bits.size()), 3u);
+  EXPECT_EQ(select1_only.rank0(bits.size()), 3u);
+  EXPECT_EQ(select1_only.select1(1), 0u);
+  EXPECT_EQ(select1_only.select1(2), 2u);
+  EXPECT_EQ(select1_only.select1(3), 3u);
+  EXPECT_EQ(select1_only.select1(4), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(select1_only.select0(1), pixie::experimental::RmMBTree<>::npos);
+
+  EXPECT_EQ(rank_only.rank1(bits.size()), 3u);
+  EXPECT_EQ(rank_only.rank0(bits.size()), 3u);
+  EXPECT_EQ(rank_only.select1(1), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rank_only.select0(1), pixie::experimental::RmMBTree<>::npos);
+}
+
+TEST(RmMBTreeExperimental, RangeMinResultAndMemoryUsage) {
+  using Tree = pixie::experimental::RmMBTree<>;
+
+  Tree empty;
+  EXPECT_GE(empty.memory_usage_bytes(), sizeof(Tree));
+  EXPECT_EQ(empty.size(), 0u);
+  EXPECT_EQ(empty.rank1(7), 0u);
+  EXPECT_EQ(empty.rank0(7), 0u);
+  EXPECT_EQ(empty.select1(1), Tree::npos);
+  EXPECT_EQ(empty.select0(1), Tree::npos);
+  EXPECT_EQ(empty.excess(7), 0);
+  EXPECT_EQ(empty.range_min_query_pos(0, 0), Tree::npos);
+  EXPECT_EQ(empty.range_min_query_val(0, 0), 0);
+  EXPECT_EQ(empty.range_max_query_pos(0, 0), Tree::npos);
+  EXPECT_EQ(empty.range_max_query_val(0, 0), 0);
+  EXPECT_EQ(empty.mincount(0, 0), 0u);
+  EXPECT_EQ(empty.minselect(0, 0, 1), Tree::npos);
+
+  std::string bits;
+  bits.reserve(512 * 40 + 37);
+  for (size_t i = 0; i < 512 * 40 + 37; ++i) {
+    bits.push_back(((i * 19 + i / 13) % 9) < 4 ? '1' : '0');
+  }
+
+  auto words = pack_words_lsb_first(bits);
+  Tree rm(std::span<const std::uint64_t>(words), bits.size());
+  NaiveRmM nv(bits);
+
+  EXPECT_GT(rm.memory_usage_bytes(), empty.memory_usage_bytes());
+
+  const std::array<std::pair<size_t, size_t>, 6> ranges = {
+      std::pair<size_t, size_t>{0, bits.size() - 1},
+      std::pair<size_t, size_t>{3, 97},
+      std::pair<size_t, size_t>{511, 512 * 3 + 7},
+      std::pair<size_t, size_t>{512, 512 * 32 + 11},
+      std::pair<size_t, size_t>{512 * 31 - 5, 512 * 40 + 7},
+      std::pair<size_t, size_t>{bits.size() - 19, bits.size() - 1},
+  };
+
+  for (const auto& [left, right] : ranges) {
+    SCOPED_TRACE(::testing::Message()
+                 << "range=[" << left << "," << right << "]");
+    const auto result = rm.range_min_query_result(left, right);
+    EXPECT_EQ(result.position, nv.range_min_query_pos(left, right));
+    EXPECT_EQ(result.value, nv.range_min_query_val(left, right));
+  }
+
+  const auto reversed = rm.range_min_query_result(3, 2);
+  EXPECT_EQ(reversed.position, Tree::npos);
+  EXPECT_EQ(reversed.value, 0);
+
+  const auto out_of_bounds = rm.range_min_query_result(0, bits.size());
+  EXPECT_EQ(out_of_bounds.position, Tree::npos);
+  EXPECT_EQ(out_of_bounds.value, 0);
 }
 
 TEST(RmMBTreeExperimental, ParenthesesOnUnmatchedBoundaryBits) {
