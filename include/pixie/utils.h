@@ -30,7 +30,7 @@ std::vector<std::vector<size_t>> bfs_order(
   std::queue<std::pair<size_t, size_t>> q;
   bfs_adj[0].push_back(0);
   q.push({0, 0});
-  int cnt = 1;
+  size_t cnt = 1;
   while (!q.empty()) {
     size_t old_v = q.front().first;
     size_t cur_v = q.front().second;

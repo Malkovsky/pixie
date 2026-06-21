@@ -1,5 +1,5 @@
 #include <benchmark/benchmark.h>
-#include <pixie/dfuds_tree.h>
+#include <pixie/bp_tree.h>
 #include <pixie/utils.h>
 
 #include <random>
@@ -7,29 +7,26 @@
 #ifdef SDSL_SUPPORT
 #pragma message("SDSL_SUPPORT enabled")
 #include "pixie/rmm_tree_sdsl.h"
-using DFUDSTree = pixie::DFUDSTree<pixie::SdslRmMTree>;
+using BPTree = pixie::BPTree<pixie::SdslRmMTree>;
 #else
 #pragma message("SDSL_SUPPORT disabled")
-using DFUDSTree = pixie::DFUDSTree<pixie::RmMTree>;
+using BPTree = pixie::BPTree<pixie::RmMTree>;
 #endif
-
-using Node = DFUDSTree::Node;
-using pixie::adj_to_dfuds;
+using Node = BPTree::Node;
 
 /**
  * DFS with O(1) extra memory
  */
-static void BM_DfudsTreeDFS(benchmark::State& state) {
+static void BM_BpTreeDFS(benchmark::State& state) {
   size_t tree_size = state.range(0);
   std::mt19937_64 rng(42);
 
   for (auto _ : state) {
     state.PauseTiming();
-
     std::vector<std::vector<size_t>> adj = generate_random_tree(tree_size, rng);
     adj = dfs_order(tree_size, adj);
-    std::vector<uint64_t> dfuds = adj_to_dfuds(tree_size, adj);
-    DFUDSTree tree(dfuds, tree_size);
+    std::vector<uint64_t> bp = pixie::adj_to_bp(tree_size, adj);
+    BPTree tree(bp, tree_size);
 
     Node cur = tree.root();
     bool above = 1;
@@ -63,13 +60,13 @@ static void BM_DfudsTreeDFS(benchmark::State& state) {
   }
 }
 
-BENCHMARK(BM_DfudsTreeDFS)
+BENCHMARK(BM_BpTreeDFS)
     ->ArgNames({"tree_size"})
     ->RangeMultiplier(2)
     ->Range(1ull << 8, 1ull << 18)
     ->Iterations(100);
 
-BENCHMARK(BM_DfudsTreeDFS)
+BENCHMARK(BM_BpTreeDFS)
     ->ArgNames({"tree_size"})
     ->RangeMultiplier(2)
     ->Range(1ull << 18, 1ull << 26)
