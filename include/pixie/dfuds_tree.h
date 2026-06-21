@@ -12,10 +12,11 @@ namespace pixie {
  * @brief A tree class based on the depth-first unary degree sequence (DFUDS)
  * representation
  */
+template <typename RMMTree>
 class DFUDSTree {
  private:
   const size_t num_bits_;
-  RmMTree rmm_;
+  RMMTree rmm_;
 
  public:
   struct Node {
@@ -150,14 +151,6 @@ std::vector<uint64_t> adj_to_dfuds(
     pos++;
   }
   return dfuds;
-}
-
-bool operator==(const AdjListNode& a, const DFUDSTree::Node& b) {
-  return a.number == b.number;
-}
-
-bool operator==(const DFUDSTree::Node& b, const AdjListNode& a) {
-  return a.number == b.number;
 }
 
 }  // namespace pixie

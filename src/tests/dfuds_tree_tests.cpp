@@ -6,9 +6,17 @@
 #include <random>
 #include <stack>
 
-using Node = pixie::DFUDSTree::Node;
+using DFUDSTree = pixie::DFUDSTree<pixie::RmMTree>;
+using Node = DFUDSTree::Node;
 using pixie::adj_to_dfuds;
-using pixie::DFUDSTree;
+
+bool operator==(const AdjListNode& a, const DFUDSTree::Node& b) {
+  return a.number == b.number;
+}
+
+bool operator==(const DFUDSTree::Node& b, const AdjListNode& a) {
+  return a.number == b.number;
+}
 
 TEST(DfudsTreeTest, Basic) {
   std::vector<std::vector<size_t>> adj = {{0, 1}, {0, 2}, {1, 3}, {2, 4}, {3}};
