@@ -43,7 +43,8 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
                 "PIXIE_TESTS": "OFF",
-                "PIXIE_BENCHMARKS": "ON"
+                "PIXIE_BENCHMARKS": "ON",
+                "PIXIE_THIRD_PARTY_BACKENDS": "OFF"
             }
         },
         {
@@ -115,6 +116,7 @@
                 "rmq_tests",
                 "test_rmm",
                 "louds_tree_tests",
+                "bp_tree_tests",
                 "dfuds_tree_tests",
                 "excess_positions_tests"
             ]
@@ -129,6 +131,7 @@
                 "rmq_tests",
                 "test_rmm",
                 "louds_tree_tests",
+                "bp_tree_tests",
                 "dfuds_tree_tests",
                 "excess_positions_tests"
             ]
@@ -142,6 +145,7 @@
                 "bench_rmm",
                 "bench_rmq",
                 "louds_tree_benchmarks",
+                "bp_tree_benchmarks",
                 "dfuds_tree_benchmarks",
                 "alignment_comparison",
                 "excess_positions_benchmarks"
@@ -157,6 +161,7 @@
                 "bench_rmm_sdsl",
                 "bench_rmq",
                 "louds_tree_benchmarks",
+                "bp_tree_benchmarks",
                 "dfuds_tree_benchmarks",
                 "alignment_comparison",
                 "excess_positions_benchmarks"
@@ -171,6 +176,7 @@
                 "bench_rmm",
                 "bench_rmq",
                 "louds_tree_benchmarks",
+                "bp_tree_benchmarks",
                 "dfuds_tree_benchmarks",
                 "alignment_comparison",
                 "excess_positions_benchmarks"
@@ -194,6 +200,7 @@
                 "rmq_tests",
                 "test_rmm",
                 "louds_tree_tests",
+                "bp_tree_tests",
                 "dfuds_tree_tests",
                 "excess_positions_tests"
             ]
@@ -208,6 +215,7 @@
                 "rmq_tests",
                 "test_rmm",
                 "louds_tree_tests",
+                "bp_tree_tests",
                 "dfuds_tree_tests",
                 "excess_positions_tests"
             ]
