@@ -142,10 +142,10 @@ class AlignedStorage {
 
   /** @brief Writes bit representation of data to OutputBitStream */
   void serialize(pixie::OutputBitStream& bs) const {
-    bs<<data_.size()*sizeof(CacheLine);
-    for (const CacheLine& line: data_) {
-      for (const std::byte& byte: line.data) {
-        bs<<static_cast<uint8_t>(byte);
+    bs << data_.size() * sizeof(CacheLine);
+    for (const CacheLine& line : data_) {
+      for (const std::byte& byte : line.data) {
+        bs << static_cast<uint8_t>(byte);
       }
     }
   }

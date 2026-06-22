@@ -94,7 +94,8 @@ static void BM_WaveletTreeMmapSelect(benchmark::State& state) {
 
     state.ResumeTiming();
 
-    auto mmap_tree = pixie::WaveletTreeBase<pixie::MmapViewStorage>::deserialize(byte_span);
+    auto mmap_tree =
+        pixie::WaveletTreeBase<pixie::MmapViewStorage>::deserialize(byte_span);
     benchmark::DoNotOptimize(mmap_tree);
 
     for (size_t i = 0; i < query; i++) {
@@ -128,7 +129,8 @@ static void BM_WaveletTreeMmapRank(benchmark::State& state) {
 
     state.ResumeTiming();
 
-    auto mmap_tree = pixie::WaveletTreeBase<pixie::MmapViewStorage>::deserialize(byte_span);
+    auto mmap_tree =
+        pixie::WaveletTreeBase<pixie::MmapViewStorage>::deserialize(byte_span);
     benchmark::DoNotOptimize(mmap_tree);
 
     for (size_t i = 0; i < query; i++) {

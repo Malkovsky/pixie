@@ -77,7 +77,7 @@ class MmapViewStorage {
     size_t size;
     std::memcpy(&size, data.data(), length);
     result.data_ = data.subspan(length, size);
-    data = data.subspan(length+size);
+    data = data.subspan(length + size);
     return result;
   };
 };

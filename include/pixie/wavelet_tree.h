@@ -429,15 +429,15 @@ class WaveletTreeBase {
     size_t size;
     read(size);
     result.nodes_.resize(size);
-    for (auto& node: result.nodes_) {
+    for (auto& node : result.nodes_) {
       node = WaveletNode::deserialize(data);
     }
     result.leaves_.resize(result.alphabet_size_);
-    for (node_index_t& leaf: result.leaves_) {
+    for (node_index_t& leaf : result.leaves_) {
       read(leaf);
     }
     result.permutation_.resize(result.alphabet_size_);
-    for (size_t& index: result.permutation_) {
+    for (size_t& index : result.permutation_) {
       read(index);
     }
     result.inverse_permutation_.resize(result.alphabet_size_);
