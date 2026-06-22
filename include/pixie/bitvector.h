@@ -1,7 +1,9 @@
 #pragma once
 
+#include <pixie/bit_stream.h>
 #include <pixie/bits.h>
 #include <pixie/cache_line.h>
+#include <pixie/mmap_storage.h>
 
 #include <algorithm>
 #include <bit>
@@ -64,7 +66,8 @@ namespace pixie {
  * not interleave data and index, favoring simpler scans. Rank metadata and
  * enabled select samples are built in one scan over the source words.
  */
-class BitVector {
+template <typename Storage = AlignedStorage>
+class BitVectorBase {
  public:
   /**
    * @brief Select directions to index during construction.
@@ -86,8 +89,8 @@ class BitVector {
   constexpr static size_t kBlocksPerSuperBlock = 128;
   constexpr static size_t kSelectSampleFrequency = 16384;
 
-  alignas(64) uint64_t delta_super[8];
-  alignas(64) uint16_t delta_basic[32];
+  alignas(64) uint64_t delta_super[8]{};
+  alignas(64) uint16_t delta_basic[32]{};
 
   AlignedStorage super_block_rank_;  // 64-bit global prefix sums
   AlignedStorage basic_block_rank_;  // 16-bit local prefix sums
@@ -628,11 +631,11 @@ class BitVector {
   }
 
  public:
-  BitVector() = default;
-  BitVector(const BitVector&) = default;
-  BitVector(BitVector&&) noexcept = default;
-  BitVector& operator=(const BitVector&) = default;
-  BitVector& operator=(BitVector&&) noexcept = default;
+  BitVectorBase() = default;
+  BitVectorBase(const BitVectorBase&) = default;
+  BitVectorBase(BitVectorBase&&) noexcept = default;
+  BitVectorBase& operator=(const BitVectorBase&) = default;
+  BitVectorBase& operator=(BitVectorBase&&) noexcept = default;
 
 #ifdef PIXIE_DIAGNOSTICS
   struct DiagnosticsBytes {
@@ -693,7 +696,7 @@ class BitVector {
    * @param one_count Optional exact number of 1-bits. When supplied,
    * construction can allocate select sample storage exactly.
    */
-  explicit BitVector(std::span<const uint64_t> bit_vector,
+  explicit BitVectorBase(std::span<const uint64_t> bit_vector,
                      size_t num_bits,
                      SelectSupport select_support = SelectSupport::kBoth,
                      std::optional<size_t> one_count = std::nullopt)
@@ -846,7 +849,49 @@ class BitVector {
 
     return result;
   }
+
+  void serialize(pixie::OutputBitStream& bs) const {
+    bs << num_bits_ << padded_size_ << max_rank_;
+    for (const uint64_t delta : delta_super) {
+      bs << delta;
+    }
+    for (const uint16_t delta : delta_basic) {
+      bs << delta;
+    }
+    super_block_rank_.serialize(bs);
+    basic_block_rank_.serialize(bs);
+    select1_samples_.serialize(bs);
+    select0_samples_.serialize(bs);
+  }
+
+  static BitVectorBase<MmapViewStorage> deserialize(
+      std::span<const uint64_t> source_bits,
+      std::span<const std::byte>& data) {
+    BitVectorBase result;
+    result.bits_ = source_bits;
+    auto read = [&data](auto& value) {
+      constexpr size_t length = sizeof(value);
+      std::memcpy(&value, data.data(), length);
+      data = data.subspan(length);
+    };
+    read(result.num_bits_);
+    read(result.padded_size_);
+    read(result.max_rank_);
+    for (uint64_t& delta : result.delta_super) {
+      read(delta);
+    }
+    for (uint16_t& delta : result.delta_basic) {
+      read(delta);
+    }
+    result.super_block_rank_ = MmapViewStorage::deserialize(data);
+    result.basic_block_rank_ = MmapViewStorage::deserialize(data);
+    result.select1_samples_ = MmapViewStorage::deserialize(data);
+    result.select0_samples_ = MmapViewStorage::deserialize(data);
+    return result;
+  }
 };
+
+typedef BitVectorBase<AlignedStorage> BitVector;
 
 /**
  * @brief Interleaved, owning bit vector with rank and select.

@@ -6,6 +6,8 @@
 #include <span>
 #include <vector>
 
+#include "bit_stream.h"
+
 namespace pixie {
 
 inline constexpr std::size_t kAlignedStorageLineBytes = 64;
@@ -136,6 +138,16 @@ class AlignedStorage {
     return std::span<const std::uint16_t>(
         reinterpret_cast<const std::uint16_t*>(data_.data()),
         data_.size() * kAlignedStorageLineWords16);
+  }
+
+  /** @brief Writes bit representation of data to OutputBitStream */
+  void serialize(pixie::OutputBitStream& bs) const {
+    bs<<data_.size()*sizeof(CacheLine);
+    for (const CacheLine& line: data_) {
+      for (const std::byte& byte: line.data) {
+        bs<<static_cast<uint8_t>(byte);
+      }
+    }
   }
 };
 

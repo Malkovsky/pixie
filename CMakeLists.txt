@@ -119,6 +119,13 @@ if(PIXIE_TESTS)
     include(GoogleTest)
 endif()
 
+FetchContent_Declare(
+    mio
+    GIT_REPOSITORY https://github.com/vimpunk/mio.git
+    GIT_TAG master
+)
+FetchContent_MakeAvailable(mio)
+
 # ---------------------------------------------------------------------------
 # Unit tests
 # ---------------------------------------------------------------------------
@@ -132,6 +139,7 @@ if(PIXIE_TESTS)
     target_link_libraries(unittests
         gtest
         gtest_main
+        mio
         ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(benchmark_tests
@@ -141,6 +149,7 @@ if(PIXIE_TESTS)
     target_link_libraries(benchmark_tests
         gtest
         gtest_main
+        mio
         ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(test_rmm
@@ -151,6 +160,7 @@ if(PIXIE_TESTS)
     target_link_libraries(test_rmm
         gtest
         gtest_main
+        mio
         ${PIXIE_DIAGNOSTICS_LIBS})
     if(PIXIE_THIRD_PARTY_BACKENDS)
         target_include_directories(test_rmm
@@ -164,6 +174,7 @@ if(PIXIE_TESTS)
     target_link_libraries(louds_tree_tests
         gtest
         gtest_main
+        mio
         ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(wavelet_tree_tests
@@ -182,6 +193,7 @@ if(PIXIE_TESTS)
     target_link_libraries(excess_positions_tests
         gtest
         gtest_main
+        mio
         ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(bp_tree_tests
@@ -200,6 +212,7 @@ if(PIXIE_TESTS)
     target_link_libraries(dfuds_tree_tests
             gtest
             gtest_main
+            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(excess_record_lows_tests
@@ -236,10 +249,13 @@ if(PIXIE_BENCHMARKS)
     target_link_libraries(benchmarks
         benchmark
         benchmark_main
+        mio
         ${PIXIE_DIAGNOSTICS_LIBS})
     if(PIXIE_THIRD_PARTY_BACKENDS)
         target_link_libraries(benchmarks pasta_bit_vector)
         target_compile_definitions(benchmarks PRIVATE PIXIE_THIRD_PARTY_BENCHMARKS)
+    else()
+        target_link_libraries(mio)
     endif()
 
     add_executable(bench_rmm
@@ -248,6 +264,7 @@ if(PIXIE_BENCHMARKS)
         PUBLIC include)
     target_link_libraries(bench_rmm
         benchmark
+        mio
         ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(bench_rmm_btree
@@ -256,6 +273,7 @@ if(PIXIE_BENCHMARKS)
         PUBLIC include)
     target_link_libraries(bench_rmm_btree
         benchmark
+        mio
         ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(bench_rmq
@@ -291,6 +309,7 @@ if(PIXIE_BENCHMARKS)
     target_link_libraries(louds_tree_benchmarks
         benchmark
         benchmark_main
+        mio
         ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(wavelet_tree_benchmarks
@@ -322,6 +341,7 @@ if(PIXIE_BENCHMARKS)
     target_link_libraries(dfuds_tree_benchmarks
             benchmark
             benchmark_main
+            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
     if(PIXIE_THIRD_PARTY_BACKENDS)
         target_include_directories(dfuds_tree_benchmarks
@@ -335,6 +355,7 @@ if(PIXIE_BENCHMARKS)
     target_link_libraries(alignment_comparison
         benchmark
         benchmark_main
+        mio
         ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(excess_positions_benchmarks
@@ -344,6 +365,7 @@ if(PIXIE_BENCHMARKS)
     target_link_libraries(excess_positions_benchmarks
         benchmark
         benchmark_main
+        mio
         ${PIXIE_DIAGNOSTICS_LIBS})
 endif()
 
