@@ -319,6 +319,7 @@ if(PIXIE_BENCHMARKS)
     target_link_libraries(wavelet_tree_benchmarks
             benchmark
             benchmark_main
+            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(bp_tree_benchmarks
@@ -328,6 +329,7 @@ if(PIXIE_BENCHMARKS)
     target_link_libraries(bp_tree_benchmarks
             benchmark
             benchmark_main
+            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
     if(PIXIE_THIRD_PARTY_BACKENDS)
         target_include_directories(bp_tree_benchmarks

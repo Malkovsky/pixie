@@ -55,7 +55,7 @@ TEST(WaveletTreeTest, BasicSegment) {
 
   for (size_t begin = 0; begin <= data_size; begin++) {
     for (size_t end = begin; end <= data_size; end++) {
-      auto segment = wavelet_tree.getSegment(begin, end);
+      auto segment = wavelet_tree.get_segment(begin, end);
       EXPECT_EQ(segment.size(), end - begin);
       for (size_t i = 0; i < end - begin; i++) {
         EXPECT_EQ(segment[i], data[begin + i]);
@@ -135,7 +135,7 @@ TEST(WaveletTreeTest, SmokeSegment) {
 
     for (size_t begin = 0; begin <= data_size; begin++) {
       for (size_t end = begin; end <= data_size; end++) {
-        auto segment = wavelet_tree.getSegment(begin, end);
+        auto segment = wavelet_tree.get_segment(begin, end);
         EXPECT_EQ(segment.size(), end - begin);
         for (size_t i = 0; i < end - begin; i++) {
           EXPECT_EQ(segment[i], data[begin + i]);

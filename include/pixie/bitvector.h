@@ -92,9 +92,9 @@ class BitVectorBase {
   alignas(64) uint64_t delta_super[8]{};
   alignas(64) uint16_t delta_basic[32]{};
 
-  AlignedStorage super_block_rank_;  // 64-bit global prefix sums
-  AlignedStorage basic_block_rank_;  // 16-bit local prefix sums
-  AlignedStorage select_samples_;    // 64-bit global positions
+  Storage super_block_rank_;  // 64-bit global prefix sums
+  Storage basic_block_rank_;  // 16-bit local prefix sums
+  Storage select_samples_;    // 64-bit global positions
   size_t num_bits_{};
   size_t padded_size_{};
   size_t max_rank_{};
@@ -697,9 +697,9 @@ class BitVectorBase {
    * construction can allocate select sample storage exactly.
    */
   explicit BitVectorBase(std::span<const uint64_t> bit_vector,
-                     size_t num_bits,
-                     SelectSupport select_support = SelectSupport::kBoth,
-                     std::optional<size_t> one_count = std::nullopt)
+                         size_t num_bits,
+                         SelectSupport select_support = SelectSupport::kBoth,
+                         std::optional<size_t> one_count = std::nullopt)
       : num_bits_(std::min(num_bits, bit_vector.size() * kWordSize)),
         padded_size_(((num_bits_ + kWordSize - 1) / kWordSize) * kWordSize),
         bits_(bit_vector) {
@@ -851,7 +851,10 @@ class BitVectorBase {
   }
 
   void serialize(pixie::OutputBitStream& bs) const {
-    bs << num_bits_ << padded_size_ << max_rank_;
+    bs << num_bits_ << padded_size_ << max_rank_ << select1_sample_begin_
+       << select1_sample_count_ << select0_sample_begin_
+       << select0_sample_count_ << static_cast<uint32_t>(select_support_)
+       << static_cast<uint32_t>(select0_samples_reversed_);
     for (const uint64_t delta : delta_super) {
       bs << delta;
     }
@@ -860,8 +863,7 @@ class BitVectorBase {
     }
     super_block_rank_.serialize(bs);
     basic_block_rank_.serialize(bs);
-    select1_samples_.serialize(bs);
-    select0_samples_.serialize(bs);
+    select_samples_.serialize(bs);
   }
 
   static BitVectorBase<MmapViewStorage> deserialize(
@@ -877,6 +879,16 @@ class BitVectorBase {
     read(result.num_bits_);
     read(result.padded_size_);
     read(result.max_rank_);
+    read(result.select1_sample_begin_);
+    read(result.select1_sample_count_);
+    read(result.select0_sample_begin_);
+    read(result.select0_sample_count_);
+    read(result.select0_sample_count_);
+    uint32_t buf;
+    read(buf);
+    result.select_support_ = static_cast<uint8_t>(buf);
+    read(buf);
+    result.select0_samples_reversed_ = static_cast<bool>(buf);
     for (uint64_t& delta : result.delta_super) {
       read(delta);
     }
@@ -885,8 +897,7 @@ class BitVectorBase {
     }
     result.super_block_rank_ = MmapViewStorage::deserialize(data);
     result.basic_block_rank_ = MmapViewStorage::deserialize(data);
-    result.select1_samples_ = MmapViewStorage::deserialize(data);
-    result.select0_samples_ = MmapViewStorage::deserialize(data);
+    result.select_samples_ = MmapViewStorage::deserialize(data);
     return result;
   }
 };
