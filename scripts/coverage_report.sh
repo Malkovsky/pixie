@@ -17,6 +17,7 @@ rm -f "${BUILD_DIR}/coverage.txt" "${BUILD_DIR}/gcov_files.txt"
 "${BUILD_DIR}/bp_tree_tests"
 "${BUILD_DIR}/dfuds_tree_tests"
 "${BUILD_DIR}/test_rmm"
+"${BUILD_DIR}/wavelet_tree_tests"
 "${BUILD_DIR}/rmq_tests"
 
 cd "${BUILD_DIR}"

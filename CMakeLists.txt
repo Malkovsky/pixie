@@ -166,6 +166,15 @@ if(PIXIE_TESTS)
         gtest_main
         ${PIXIE_DIAGNOSTICS_LIBS})
 
+    add_executable(wavelet_tree_tests
+            src/tests/wavelet_tree_tests.cpp)
+    target_include_directories(wavelet_tree_tests
+            PUBLIC include)
+    target_link_libraries(wavelet_tree_tests
+        gtest
+        gtest_main
+        ${PIXIE_DIAGNOSTICS_LIBS})
+
     add_executable(excess_positions_tests
         src/tests/excess_positions_tests.cpp)
     target_include_directories(excess_positions_tests
@@ -283,6 +292,15 @@ if(PIXIE_BENCHMARKS)
         benchmark
         benchmark_main
         ${PIXIE_DIAGNOSTICS_LIBS})
+
+    add_executable(wavelet_tree_benchmarks
+            src/benchmarks/wavelet_tree_benchmarks.cpp)
+    target_include_directories(wavelet_tree_benchmarks
+            PUBLIC include)
+    target_link_libraries(wavelet_tree_benchmarks
+            benchmark
+            benchmark_main
+            ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(bp_tree_benchmarks
             src/benchmarks/bp_tree_benchmarks.cpp)
