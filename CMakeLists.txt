@@ -184,6 +184,7 @@ if(PIXIE_TESTS)
     target_link_libraries(wavelet_tree_tests
         gtest
         gtest_main
+        mio
         ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(excess_positions_tests
@@ -203,6 +204,7 @@ if(PIXIE_TESTS)
     target_link_libraries(bp_tree_tests
             gtest
             gtest_main
+            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(dfuds_tree_tests
@@ -231,6 +233,7 @@ if(PIXIE_TESTS)
     target_link_libraries(rmq_tests
         gtest
         gtest_main
+        mio
         ${PIXIE_DIAGNOSTICS_LIBS})
     if(PIXIE_THIRD_PARTY_BACKENDS)
         target_include_directories(rmq_tests
@@ -282,6 +285,7 @@ if(PIXIE_BENCHMARKS)
         PUBLIC include)
     target_link_libraries(bench_rmq
         benchmark
+        mio
         ${PIXIE_DIAGNOSTICS_LIBS})
     if(PIXIE_THIRD_PARTY_BACKENDS)
         target_include_directories(bench_rmq

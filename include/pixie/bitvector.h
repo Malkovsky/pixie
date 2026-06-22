@@ -883,10 +883,9 @@ class BitVectorBase {
     read(result.select1_sample_count_);
     read(result.select0_sample_begin_);
     read(result.select0_sample_count_);
-    read(result.select0_sample_count_);
     uint32_t buf;
     read(buf);
-    result.select_support_ = static_cast<uint8_t>(buf);
+    result.select_support_ = static_cast<SelectSupport>(buf);
     read(buf);
     result.select0_samples_reversed_ = static_cast<bool>(buf);
     for (uint64_t& delta : result.delta_super) {

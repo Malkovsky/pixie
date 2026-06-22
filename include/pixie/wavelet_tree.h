@@ -52,6 +52,8 @@ class WaveletTreeBase {
       return std::move(result);
     }
 
+    WaveletNode() = default;
+
     WaveletNode(PreWaveletNode&& node)
       requires(std::same_as<Storage, AlignedStorage>)
         : parent(node.parent),
@@ -61,16 +63,14 @@ class WaveletTreeBase {
           bit_vector_data(std::move(align(node.stream.extract()))),
           data(bit_vector_data.AsConst64BitInts(), node.stream.size()) {}
 
-    /**
-     * @brief Writes a node serialization to the bit stream
-     *
-     */
+    /** @brief Writes a node serialization to the bit stream */
     void serialize(pixie::OutputBitStream& bs) const {
       bs << parent << left_child << right_child << middle;
       bit_vector_data.serialize(bs);
       data.serialize(bs);
     }
 
+    /** @brief Constructs wavelet node out of the raw bytes */
     static WaveletNode deserialize(std::span<const std::byte>& data)
       requires(std::same_as<Storage, MmapViewStorage>)
     {
