@@ -141,7 +141,8 @@ static void BM_WaveletTreeMmapRank(benchmark::State& state) {
 }
 
 static void BM_WaveletTreeMmapSegment(benchmark::State& state) {
-  size_t data_size = state.range(0), alphabet_size = 1024, query = data_size/128, length = 128;
+  size_t data_size = state.range(0), alphabet_size = 1024,
+         query = data_size / 128, length = 128;
   std::mt19937_64 rng(239);
 
   for (auto _ : state) {
@@ -150,7 +151,7 @@ static void BM_WaveletTreeMmapSegment(benchmark::State& state) {
     std::vector<uint64_t> data =
         generate_random_data(data_size, alphabet_size, rng);
     std::vector<uint64_t> query_pos =
-                              generate_random_data(query, data_size + 1 - length, rng);
+        generate_random_data(query, data_size + 1 - length, rng);
 
     WaveletTree orig_tree(alphabet_size, data);
     pixie::OutputBitStream bs;
