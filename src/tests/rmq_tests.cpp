@@ -192,6 +192,15 @@ struct CartesianHybridBTreeCase {
   static MaxRmq make_max(std::span<const int> values) { return MaxRmq(values); }
 };
 
+struct CartesianBTreeCase {
+  using Rmq = pixie::rmq::CartesianBTree<int>;
+  using MaxRmq = pixie::rmq::CartesianBTree<int, std::greater<int>>;
+
+  static Rmq make(std::span<const int> values) { return Rmq(values); }
+
+  static MaxRmq make_max(std::span<const int> values) { return MaxRmq(values); }
+};
+
 struct HybridBTreeCase {
   using Rmq = pixie::rmq::HybridBTree<int>;
   using MaxRmq = pixie::rmq::HybridBTree<int, std::greater<int>>;
@@ -210,6 +219,7 @@ using ValueRmqCases = ::testing::Types<SparseTableCase,
                                        SegmentTreeCase,
                                        CartesianRmMCase,
                                        CartesianHybridBTreeCase,
+                                       CartesianBTreeCase,
                                        HybridBTreeCase>;
 TYPED_TEST_SUITE(ValueRmqSpecificationTest, ValueRmqCases);
 
@@ -1021,6 +1031,9 @@ TEST(RmqCartesianHybridBTree, DepthBackendDirectPaths) {
   const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
       {0, kDepthCount},
       {0, 512},
+      {9, 80},
+      {120, 260},
+      {384, 511},
       {511, 1027},
       {9, 1400},
       {700, kDepthCount - 3},

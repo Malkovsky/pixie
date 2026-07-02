@@ -1,0 +1,253 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1200" height="720" viewBox="0 0 1200 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>Sparse Table RMQ Demonstration</title>
+  <desc>Hand-drawn style sparse table diagram. Rows store arg-min positions for intervals of length 2^k. A query is answered by two overlapping intervals.</desc>
+
+  <defs>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#ea580c"/>
+    </marker>
+    <style>
+      .title {
+        font-family: "Virgil", "Segoe Print", "Comic Sans MS", "Chalkboard SE", cursive;
+        font-size: 30px;
+        font-weight: bold;
+        fill: #1e1e1e;
+        text-anchor: middle;
+      }
+      .label {
+        font-family: "Virgil", "Segoe Print", "Comic Sans MS", "Chalkboard SE", cursive;
+        font-size: 18px;
+        font-weight: bold;
+        fill: #1e1e1e;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .small {
+        font-family: "Virgil", "Segoe Print", "Comic Sans MS", "Chalkboard SE", cursive;
+        font-size: 14px;
+        font-weight: bold;
+        fill: #52525b;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .tiny {
+        font-family: "Virgil", "Segoe Print", "Comic Sans MS", "Chalkboard SE", cursive;
+        font-size: 12px;
+        fill: #71717a;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .code {
+        font-family: Consolas, "Fira Code", Monaco, monospace;
+        font-size: 17px;
+        font-weight: bold;
+        fill: #27272a;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .hand {
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .cell {
+        fill: #f8fafc;
+        stroke: #94a3b8;
+        stroke-width: 1.8;
+      }
+      .head-cell {
+        fill: #e0f2fe;
+        stroke: #0369a1;
+        stroke-width: 1.8;
+      }
+      .array-cell {
+        fill: #fef3c7;
+        stroke: #a16207;
+        stroke-width: 1.8;
+      }
+      .blank-cell {
+        fill: #f4f4f5;
+        stroke: #d4d4d8;
+        stroke-width: 1.4;
+      }
+      .hit-left {
+        fill: #dbeafe;
+        stroke: #2563eb;
+        stroke-width: 3;
+      }
+      .hit-right {
+        fill: #ffedd5;
+        stroke: #ea580c;
+        stroke-width: 3;
+      }
+      .query-fill {
+        fill: #dcfce7;
+        stroke: #16a34a;
+        stroke-width: 2.5;
+      }
+      .left-fill {
+        fill: #dbeafe;
+        stroke: #2563eb;
+        stroke-width: 2.5;
+      }
+      .right-fill {
+        fill: #ffedd5;
+        stroke: #ea580c;
+        stroke-width: 2.5;
+      }
+      .result {
+        fill: #fee2e2;
+        stroke: #dc2626;
+        stroke-width: 3;
+      }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="720" fill="#ffffff"/>
+  <text class="title" x="600" y="42">Sparse table RMQ</text>
+
+  <text class="small" x="600" y="76">Each entry ST[k][i] stores the position of the minimum on [i, i + 2^k)</text>
+
+  <!-- Table geometry: first data column starts at x=202, column width=52. -->
+  <g class="hand">
+    <!-- Row labels. -->
+    <text class="label" x="110" y="126">i</text>
+    <text class="label" x="110" y="170">A[i]</text>
+    <text class="label" x="110" y="222">k = 0</text>
+    <text class="label" x="110" y="266">k = 1</text>
+    <text class="label" x="110" y="310">k = 2</text>
+    <text class="label" x="110" y="354">k = 3</text>
+
+    <!-- Header row. -->
+    <rect class="head-cell" x="202" y="106" width="52" height="34" rx="4"/><text class="code" x="228" y="123">0</text>
+    <rect class="head-cell" x="254" y="106" width="52" height="34" rx="4"/><text class="code" x="280" y="123">1</text>
+    <rect class="head-cell" x="306" y="106" width="52" height="34" rx="4"/><text class="code" x="332" y="123">2</text>
+    <rect class="head-cell" x="358" y="106" width="52" height="34" rx="4"/><text class="code" x="384" y="123">3</text>
+    <rect class="head-cell" x="410" y="106" width="52" height="34" rx="4"/><text class="code" x="436" y="123">4</text>
+    <rect class="head-cell" x="462" y="106" width="52" height="34" rx="4"/><text class="code" x="488" y="123">5</text>
+    <rect class="head-cell" x="514" y="106" width="52" height="34" rx="4"/><text class="code" x="540" y="123">6</text>
+    <rect class="head-cell" x="566" y="106" width="52" height="34" rx="4"/><text class="code" x="592" y="123">7</text>
+    <rect class="head-cell" x="618" y="106" width="52" height="34" rx="4"/><text class="code" x="644" y="123">8</text>
+    <rect class="head-cell" x="670" y="106" width="52" height="34" rx="4"/><text class="code" x="696" y="123">9</text>
+    <rect class="head-cell" x="722" y="106" width="52" height="34" rx="4"/><text class="code" x="748" y="123">10</text>
+    <rect class="head-cell" x="774" y="106" width="52" height="34" rx="4"/><text class="code" x="800" y="123">11</text>
+    <rect class="head-cell" x="826" y="106" width="52" height="34" rx="4"/><text class="code" x="852" y="123">12</text>
+    <rect class="head-cell" x="878" y="106" width="52" height="34" rx="4"/><text class="code" x="904" y="123">13</text>
+    <rect class="head-cell" x="930" y="106" width="52" height="34" rx="4"/><text class="code" x="956" y="123">14</text>
+    <rect class="head-cell" x="982" y="106" width="52" height="34" rx="4"/><text class="code" x="1008" y="123">15</text>
+
+    <!-- Array row. -->
+    <rect class="array-cell" x="202" y="150" width="52" height="34" rx="4"/><text class="code" x="228" y="167">7</text>
+    <rect class="array-cell" x="254" y="150" width="52" height="34" rx="4"/><text class="code" x="280" y="167">5</text>
+    <rect class="array-cell" x="306" y="150" width="52" height="34" rx="4"/><text class="code" x="332" y="167">8</text>
+    <rect class="array-cell" x="358" y="150" width="52" height="34" rx="4"/><text class="code" x="384" y="167">6</text>
+    <rect class="array-cell" x="410" y="150" width="52" height="34" rx="4"/><text class="code" x="436" y="167">9</text>
+    <rect class="array-cell" x="462" y="150" width="52" height="34" rx="4"/><text class="code" x="488" y="167">4</text>
+    <rect class="array-cell" x="514" y="150" width="52" height="34" rx="4"/><text class="code" x="540" y="167">2</text>
+    <rect class="array-cell" x="566" y="150" width="52" height="34" rx="4"/><text class="code" x="592" y="167">10</text>
+    <rect class="array-cell" x="618" y="150" width="52" height="34" rx="4"/><text class="code" x="644" y="167">1</text>
+    <rect class="array-cell" x="670" y="150" width="52" height="34" rx="4"/><text class="code" x="696" y="167">3</text>
+    <rect class="array-cell" x="722" y="150" width="52" height="34" rx="4"/><text class="code" x="748" y="167">11</text>
+    <rect class="array-cell" x="774" y="150" width="52" height="34" rx="4"/><text class="code" x="800" y="167">12</text>
+    <rect class="result" x="826" y="150" width="52" height="34" rx="4"/><text class="code" x="852" y="167">0</text>
+    <rect class="array-cell" x="878" y="150" width="52" height="34" rx="4"/><text class="code" x="904" y="167">14</text>
+    <rect class="array-cell" x="930" y="150" width="52" height="34" rx="4"/><text class="code" x="956" y="167">13</text>
+    <rect class="array-cell" x="982" y="150" width="52" height="34" rx="4"/><text class="code" x="1008" y="167">15</text>
+
+    <!-- Sparse table rows. -->
+    <text class="tiny" x="160" y="222">len 1</text>
+    <rect class="cell" x="202" y="206" width="52" height="34" rx="4"/><text class="code" x="228" y="223">0</text>
+    <rect class="cell" x="254" y="206" width="52" height="34" rx="4"/><text class="code" x="280" y="223">1</text>
+    <rect class="cell" x="306" y="206" width="52" height="34" rx="4"/><text class="code" x="332" y="223">2</text>
+    <rect class="cell" x="358" y="206" width="52" height="34" rx="4"/><text class="code" x="384" y="223">3</text>
+    <rect class="cell" x="410" y="206" width="52" height="34" rx="4"/><text class="code" x="436" y="223">4</text>
+    <rect class="cell" x="462" y="206" width="52" height="34" rx="4"/><text class="code" x="488" y="223">5</text>
+    <rect class="cell" x="514" y="206" width="52" height="34" rx="4"/><text class="code" x="540" y="223">6</text>
+    <rect class="cell" x="566" y="206" width="52" height="34" rx="4"/><text class="code" x="592" y="223">7</text>
+    <rect class="cell" x="618" y="206" width="52" height="34" rx="4"/><text class="code" x="644" y="223">8</text>
+    <rect class="cell" x="670" y="206" width="52" height="34" rx="4"/><text class="code" x="696" y="223">9</text>
+    <rect class="cell" x="722" y="206" width="52" height="34" rx="4"/><text class="code" x="748" y="223">10</text>
+    <rect class="cell" x="774" y="206" width="52" height="34" rx="4"/><text class="code" x="800" y="223">11</text>
+    <rect class="cell" x="826" y="206" width="52" height="34" rx="4"/><text class="code" x="852" y="223">12</text>
+    <rect class="cell" x="878" y="206" width="52" height="34" rx="4"/><text class="code" x="904" y="223">13</text>
+    <rect class="cell" x="930" y="206" width="52" height="34" rx="4"/><text class="code" x="956" y="223">14</text>
+    <rect class="cell" x="982" y="206" width="52" height="34" rx="4"/><text class="code" x="1008" y="223">15</text>
+
+    <text class="tiny" x="160" y="266">len 2</text>
+    <rect class="cell" x="202" y="250" width="52" height="34" rx="4"/><text class="code" x="228" y="267">1</text>
+    <rect class="cell" x="254" y="250" width="52" height="34" rx="4"/><text class="code" x="280" y="267">1</text>
+    <rect class="cell" x="306" y="250" width="52" height="34" rx="4"/><text class="code" x="332" y="267">3</text>
+    <rect class="cell" x="358" y="250" width="52" height="34" rx="4"/><text class="code" x="384" y="267">3</text>
+    <rect class="cell" x="410" y="250" width="52" height="34" rx="4"/><text class="code" x="436" y="267">5</text>
+    <rect class="cell" x="462" y="250" width="52" height="34" rx="4"/><text class="code" x="488" y="267">6</text>
+    <rect class="cell" x="514" y="250" width="52" height="34" rx="4"/><text class="code" x="540" y="267">6</text>
+    <rect class="cell" x="566" y="250" width="52" height="34" rx="4"/><text class="code" x="592" y="267">8</text>
+    <rect class="cell" x="618" y="250" width="52" height="34" rx="4"/><text class="code" x="644" y="267">8</text>
+    <rect class="cell" x="670" y="250" width="52" height="34" rx="4"/><text class="code" x="696" y="267">9</text>
+    <rect class="cell" x="722" y="250" width="52" height="34" rx="4"/><text class="code" x="748" y="267">10</text>
+    <rect class="cell" x="774" y="250" width="52" height="34" rx="4"/><text class="code" x="800" y="267">12</text>
+    <rect class="cell" x="826" y="250" width="52" height="34" rx="4"/><text class="code" x="852" y="267">12</text>
+    <rect class="cell" x="878" y="250" width="52" height="34" rx="4"/><text class="code" x="904" y="267">14</text>
+    <rect class="cell" x="930" y="250" width="52" height="34" rx="4"/><text class="code" x="956" y="267">14</text>
+    <rect class="blank-cell" x="982" y="250" width="52" height="34" rx="4"/>
+
+    <text class="tiny" x="160" y="310">len 4</text>
+    <rect class="cell" x="202" y="294" width="52" height="34" rx="4"/><text class="code" x="228" y="311">1</text>
+    <rect class="cell" x="254" y="294" width="52" height="34" rx="4"/><text class="code" x="280" y="311">1</text>
+    <rect class="cell" x="306" y="294" width="52" height="34" rx="4"/><text class="code" x="332" y="311">5</text>
+    <rect class="cell" x="358" y="294" width="52" height="34" rx="4"/><text class="code" x="384" y="311">6</text>
+    <rect class="cell" x="410" y="294" width="52" height="34" rx="4"/><text class="code" x="436" y="311">6</text>
+    <rect class="cell" x="462" y="294" width="52" height="34" rx="4"/><text class="code" x="488" y="311">8</text>
+    <rect class="cell" x="514" y="294" width="52" height="34" rx="4"/><text class="code" x="540" y="311">8</text>
+    <rect class="cell" x="566" y="294" width="52" height="34" rx="4"/><text class="code" x="592" y="311">8</text>
+    <rect class="cell" x="618" y="294" width="52" height="34" rx="4"/><text class="code" x="644" y="311">8</text>
+    <rect class="cell" x="670" y="294" width="52" height="34" rx="4"/><text class="code" x="696" y="311">12</text>
+    <rect class="cell" x="722" y="294" width="52" height="34" rx="4"/><text class="code" x="748" y="311">12</text>
+    <rect class="cell" x="774" y="294" width="52" height="34" rx="4"/><text class="code" x="800" y="311">12</text>
+    <rect class="cell" x="826" y="294" width="52" height="34" rx="4"/><text class="code" x="852" y="311">12</text>
+    <rect class="blank-cell" x="878" y="294" width="52" height="34" rx="4"/>
+    <rect class="blank-cell" x="930" y="294" width="52" height="34" rx="4"/>
+    <rect class="blank-cell" x="982" y="294" width="52" height="34" rx="4"/>
+
+    <text class="tiny" x="160" y="354">len 8</text>
+    <rect class="cell" x="202" y="338" width="52" height="34" rx="4"/><text class="code" x="228" y="355">6</text>
+    <rect class="hit-left" x="254" y="338" width="52" height="34" rx="4"/><text class="code" x="280" y="355">8</text>
+    <rect class="cell" x="306" y="338" width="52" height="34" rx="4"/><text class="code" x="332" y="355">8</text>
+    <rect class="cell" x="358" y="338" width="52" height="34" rx="4"/><text class="code" x="384" y="355">8</text>
+    <rect class="cell" x="410" y="338" width="52" height="34" rx="4"/><text class="code" x="436" y="355">8</text>
+    <rect class="cell" x="462" y="338" width="52" height="34" rx="4"/><text class="code" x="488" y="355">12</text>
+    <rect class="hit-right" x="514" y="338" width="52" height="34" rx="4"/><text class="code" x="540" y="355">12</text>
+    <rect class="cell" x="566" y="338" width="52" height="34" rx="4"/><text class="code" x="592" y="355">12</text>
+    <rect class="cell" x="618" y="338" width="52" height="34" rx="4"/><text class="code" x="644" y="355">12</text>
+    <rect class="blank-cell" x="670" y="338" width="52" height="34" rx="4"/>
+    <rect class="blank-cell" x="722" y="338" width="52" height="34" rx="4"/>
+    <rect class="blank-cell" x="774" y="338" width="52" height="34" rx="4"/>
+    <rect class="blank-cell" x="826" y="338" width="52" height="34" rx="4"/>
+    <rect class="blank-cell" x="878" y="338" width="52" height="34" rx="4"/>
+    <rect class="blank-cell" x="930" y="338" width="52" height="34" rx="4"/>
+    <rect class="blank-cell" x="982" y="338" width="52" height="34" rx="4"/>
+  </g>
+
+  <!-- Query demonstration. -->
+  <g class="hand">
+    <text class="label" x="600" y="416">Query RMQ(1, 14): length = 13, k = floor(log2 13) = 3</text>
+
+    <rect class="query-fill" x="254" y="446" width="676" height="38" rx="7" fill-opacity="0.45"/>
+    <text class="small" x="592" y="466" fill="#15803d">query [1, 14)</text>
+
+    <rect class="left-fill" x="254" y="510" width="416" height="42" rx="7" fill-opacity="0.65"/>
+    <text class="small" x="462" y="532" fill="#1d4ed8">left block [1, 9) = ST[3][1] -> position 8</text>
+
+    <rect class="right-fill" x="514" y="570" width="416" height="42" rx="7" fill-opacity="0.72"/>
+    <text class="small" x="722" y="592" fill="#c2410c">right block [6, 14) = ST[3][6] -> position 12</text>
+
+    <path d="M280 374 C310 406 370 430 462 510" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow-blue)" fill="none"/>
+    <path d="M540 374 C580 428 650 494 722 570" stroke="#ea580c" stroke-width="2.5" marker-end="url(#arrow-orange)" fill="none"/>
+
+    <rect x="230" y="636" width="740" height="54" rx="8" fill="#f4f4f5" stroke="#71717a" stroke-width="2.2"/>
+    <text class="label" x="600" y="662">compare A[8] = 1 and A[12] = 0; answer is position 12</text>
+  </g>
+</svg>

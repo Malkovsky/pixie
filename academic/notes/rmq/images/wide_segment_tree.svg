@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1200" height="760" viewBox="0 0 1200 760" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>WideSegmentTree</title>
+  <desc>Hand-drawn style wide segment tree with a large-fanout root, internal nodes, leaves, and node local min selectors.</desc>
+
+  <defs>
+    <style>
+      .title {
+        font-family: "Virgil", "Segoe Print", "Comic Sans MS", "Chalkboard SE", cursive;
+        font-size: 30px;
+        font-weight: bold;
+        fill: #1e1e1e;
+        text-anchor: middle;
+      }
+      .label {
+        font-family: "Virgil", "Segoe Print", "Comic Sans MS", "Chalkboard SE", cursive;
+        font-size: 22px;
+        font-weight: bold;
+        fill: #1e1e1e;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .small {
+        font-family: "Virgil", "Segoe Print", "Comic Sans MS", "Chalkboard SE", cursive;
+        font-size: 18px;
+        fill: #52525b;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .tiny {
+        font-family: "Virgil", "Segoe Print", "Comic Sans MS", "Chalkboard SE", cursive;
+        font-size: 11px;
+        fill: #52525b;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .math-label {
+        font-family: "Latin Modern Roman", "STIX Two Text", "Times New Roman", serif;
+        font-size: 23px;
+        font-style: italic;
+        fill: #52525b;
+        text-anchor: middle;
+        dominant-baseline: alphabetic;
+      }
+      .math-sub {
+        font-size: 14px;
+      }
+      .note {
+        font-family: "Virgil", "Segoe Print", "Comic Sans MS", "Chalkboard SE", cursive;
+        font-size: 20px;
+        font-weight: bold;
+        fill: #1d4ed8;
+        text-anchor: middle;
+      }
+      .edge {
+        stroke: #555555;
+        stroke-width: 3;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .edge-shadow {
+        stroke: #555555;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        opacity: 0.45;
+      }
+      .node {
+        fill: #dbe4ff;
+        stroke: #315f8c;
+        stroke-width: 3;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .node-rough {
+        fill: none;
+        stroke: #315f8c;
+        stroke-width: 1.2;
+        opacity: 0.55;
+      }
+      .selector {
+        fill: #fff3bf;
+        stroke: #946200;
+        stroke-width: 2.4;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .leaf {
+        fill: #f4f4f5;
+        stroke: #71717a;
+        stroke-width: 2.2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .band {
+        fill: #e6fffa;
+        stroke: #0d9488;
+        stroke-width: 2.2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        opacity: 0.9;
+      }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="760" fill="#ffffff"/>
+  <text class="title" x="600" y="50">Wide segment tree for block RMQ</text>
+
+  <!-- Leaves / original blocks. -->
+  <rect class="band" x="92" y="600" width="1016" height="86" rx="8"/>
+
+  <rect class="leaf" x="124" y="620" width="94" height="48" rx="5"/>
+  <text class="math-label" x="171" y="640">L<tspan class="math-sub" dx="1" dy="5">0</tspan></text>
+  <text class="tiny" x="171" y="657">leaf min selector</text>
+  <rect class="leaf" x="232" y="620" width="94" height="48" rx="5"/>
+  <text class="math-label" x="279" y="640">L<tspan class="math-sub" dx="1" dy="5">1</tspan></text>
+  <text class="tiny" x="279" y="657">leaf min selector</text>
+  <rect class="leaf" x="340" y="620" width="94" height="48" rx="5"/>
+  <text class="math-label" x="387" y="640">L<tspan class="math-sub" dx="1" dy="5">2</tspan></text>
+  <text class="tiny" x="387" y="657">leaf min selector</text>
+  <rect class="leaf" x="448" y="620" width="94" height="48" rx="5"/>
+  <text class="math-label" x="495" y="640">L<tspan class="math-sub" dx="1" dy="5">3</tspan></text>
+  <text class="tiny" x="495" y="657">leaf min selector</text>
+  <rect class="leaf" x="658" y="620" width="94" height="48" rx="5"/>
+  <text class="math-label" x="705" y="640">L<tspan class="math-sub" dx="1" dy="5">k-3</tspan></text>
+  <text class="tiny" x="705" y="657">leaf min selector</text>
+  <rect class="leaf" x="766" y="620" width="94" height="48" rx="5"/>
+  <text class="math-label" x="813" y="640">L<tspan class="math-sub" dx="1" dy="5">k-2</tspan></text>
+  <text class="tiny" x="813" y="657">leaf min selector</text>
+  <rect class="leaf" x="874" y="620" width="94" height="48" rx="5"/>
+  <text class="math-label" x="921" y="640">L<tspan class="math-sub" dx="1" dy="5">k-1</tspan></text>
+  <text class="tiny" x="921" y="657">leaf min selector</text>
+  <rect class="leaf" x="982" y="620" width="94" height="48" rx="5"/>
+  <text class="math-label" x="1029" y="640">L<tspan class="math-sub" dx="1" dy="5">k</tspan></text>
+  <text class="tiny" x="1029" y="657">leaf min selector</text>
+  <text class="small" x="600" y="645">...</text>
+
+  <!-- Internal nodes. -->
+  <path class="edge-shadow" d="M600 218 C455 278 305 344 220 432"/>
+  <path class="edge" d="M600 220 C455 280 305 346 220 434"/>
+  <path class="edge-shadow" d="M600 218 C545 286 505 350 470 432"/>
+  <path class="edge" d="M600 220 C545 288 505 352 470 434"/>
+  <path class="edge-shadow" d="M600 218 C655 286 695 350 730 432"/>
+  <path class="edge" d="M600 220 C655 288 695 352 730 434"/>
+  <path class="edge-shadow" d="M600 218 C745 278 895 344 980 432"/>
+  <path class="edge" d="M600 220 C745 280 895 346 980 434"/>
+
+  <path class="edge-shadow" d="M220 500 C202 532 184 566 171 620"/>
+  <path class="edge" d="M220 502 C202 534 184 568 171 620"/>
+  <path class="edge-shadow" d="M220 500 C248 532 270 566 279 620"/>
+  <path class="edge" d="M220 502 C248 534 270 568 279 620"/>
+  <path class="edge-shadow" d="M220 500 C278 534 330 574 387 620"/>
+  <path class="edge" d="M220 502 C278 536 330 576 387 620"/>
+  <path class="edge-shadow" d="M220 500 C335 536 425 580 495 620"/>
+  <path class="edge" d="M220 502 C335 538 425 582 495 620"/>
+  <path class="edge-shadow" d="M220 500 C420 530 575 582 705 620"/>
+  <path class="edge" d="M220 502 C420 532 575 584 705 620"/>
+  <path class="edge-shadow" d="M220 500 C470 528 660 582 813 620"/>
+  <path class="edge" d="M220 502 C470 530 660 584 813 620"/>
+  <path class="edge-shadow" d="M220 500 C520 526 745 582 921 620"/>
+  <path class="edge" d="M220 502 C520 528 745 584 921 620"/>
+  <path class="edge-shadow" d="M220 500 C570 524 830 582 1029 620"/>
+  <path class="edge" d="M220 502 C570 526 830 584 1029 620"/>
+
+  <!-- Root. -->
+  <rect class="node" x="440" y="108" width="320" height="112" rx="8"/>
+  <rect class="node-rough" x="442" y="106" width="316" height="114" rx="8"/>
+  <text class="label" x="600" y="145">root node</text>
+  <rect class="selector" x="482" y="168" width="236" height="30" rx="6"/>
+  <text class="small" x="600" y="184">node local min selector</text>
+
+  <!-- Middle fanout nodes. -->
+  <rect class="node" x="110" y="434" width="220" height="68" rx="8"/>
+  <rect class="node-rough" x="112" y="432" width="216" height="70" rx="8"/>
+  <text class="label" x="220" y="456">node 0</text>
+  <text class="small" x="220" y="482">local min selector</text>
+
+  <rect class="node" x="360" y="434" width="220" height="68" rx="8"/>
+  <rect class="node-rough" x="362" y="432" width="216" height="70" rx="8"/>
+  <text class="label" x="470" y="456">node 1</text>
+  <text class="small" x="470" y="482">local min selector</text>
+
+  <rect class="node" x="620" y="434" width="220" height="68" rx="8"/>
+  <rect class="node-rough" x="622" y="432" width="216" height="70" rx="8"/>
+  <text class="label" x="730" y="456">node k - 1</text>
+  <text class="small" x="730" y="482">local min selector</text>
+
+  <rect class="node" x="870" y="434" width="220" height="68" rx="8"/>
+  <rect class="node-rough" x="872" y="432" width="216" height="70" rx="8"/>
+  <text class="label" x="980" y="456">node k</text>
+  <text class="small" x="980" y="482">local min selector</text>
+
+</svg>
