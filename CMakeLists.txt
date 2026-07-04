@@ -10,25 +10,25 @@ set(CMAKE_CXX_FLAGS "-march=${MARCH}")
 message(STATUS "MARCH is '${MARCH}'")
 
 option(DISABLE_AVX512 "Disable AVX512 instructions" OFF)
-if(DISABLE_AVX512)
+if (DISABLE_AVX512)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mno-avx512f")
     message(STATUS "DISABLE_AVX512 is ON")
-endif()
+endif ()
 
 option(ENABLE_ADDRESS_SANITIZER "Enable AddressSanitizer" OFF)
-if(ENABLE_ADDRESS_SANITIZER)
+if (ENABLE_ADDRESS_SANITIZER)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
     set(CMAKE_LINKER_FLAGS "${CMAKE_LINKER_FLAGS} -fsanitize=address")
     message(STATUS "AddressSanitizer is ON")
-endif()
+endif ()
 
 option(PIXIE_COVERAGE "Enable coverage instrumentation" OFF)
-if(PIXIE_COVERAGE)
+if (PIXIE_COVERAGE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g --coverage")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --coverage")
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} --coverage")
     message(STATUS "Coverage instrumentation is ON")
-endif()
+endif ()
 
 # ---------------------------------------------------------------------------
 # Build options
@@ -39,53 +39,53 @@ option(PIXIE_THIRD_PARTY_BACKENDS "Build optional third-party backend integratio
 option(PIXIE_DIAGNOSTICS "Include diagnostic logs" OFF)
 option(PIXIE_DOCS "Build Doxygen documentation" OFF)
 
-if(PIXIE_THIRD_PARTY_BACKENDS)
+if (PIXIE_THIRD_PARTY_BACKENDS)
     add_compile_definitions(SDSL_SUPPORT)
-endif()
+endif ()
 
-if(PIXIE_DIAGNOSTICS)
+if (PIXIE_DIAGNOSTICS)
     add_compile_definitions(PIXIE_DIAGNOSTICS)
     set(PIXIE_DIAGNOSTICS_LIBS spdlog::spdlog_header_only)
-endif()
+endif ()
 
 # ---------------------------------------------------------------------------
 # Dependencies (fetched only when needed)
 # ---------------------------------------------------------------------------
 include(FetchContent)
 
-if(PIXIE_DIAGNOSTICS)
+if (PIXIE_DIAGNOSTICS)
     set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
     set(SPDLOG_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
     set(SPDLOG_BUILD_TESTING OFF CACHE BOOL "" FORCE)
     set(SPDLOG_INSTALL OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(
-        spdlog
-        GIT_REPOSITORY https://github.com/gabime/spdlog.git
-        GIT_TAG v1.14.1
+            spdlog
+            GIT_REPOSITORY https://github.com/gabime/spdlog.git
+            GIT_TAG v1.14.1
     )
     FetchContent_MakeAvailable(spdlog)
-endif()
+endif ()
 
-if(PIXIE_BENCHMARKS)
+if (PIXIE_BENCHMARKS)
     FetchContent_Declare(
-        googlebenchmark
-        GIT_REPOSITORY https://github.com/google/benchmark.git
-        GIT_TAG v1.9.4
+            googlebenchmark
+            GIT_REPOSITORY https://github.com/google/benchmark.git
+            GIT_TAG v1.9.4
     )
     set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "Disable Google Benchmark tests" FORCE)
     set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "Disable Google Benchmark tests" FORCE)
     set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "Disable Google Benchmark install targets" FORCE)
     set(BENCHMARK_INSTALL_DOCS OFF CACHE BOOL "Disable Google Benchmark install docs" FORCE)
     FetchContent_MakeAvailable(googlebenchmark)
-endif()
+endif ()
 
-if(PIXIE_THIRD_PARTY_BACKENDS)
+if (PIXIE_THIRD_PARTY_BACKENDS)
     set(PASTA_BIT_VECTOR_BUILD_TESTS OFF CACHE BOOL "Disable pasta::bit_vector tests" FORCE)
     set(PASTA_BIT_VECTOR_BUILD_BENCHMARKS OFF CACHE BOOL "Disable pasta::bit_vector benchmarks" FORCE)
     FetchContent_Declare(
-        pasta_bit_vector
-        GIT_REPOSITORY https://github.com/pasta-toolbox/bit_vector.git
-        GIT_TAG origin/main
+            pasta_bit_vector
+            GIT_REPOSITORY https://github.com/pasta-toolbox/bit_vector.git
+            GIT_TAG origin/main
     )
     FetchContent_MakeAvailable(pasta_bit_vector)
 
@@ -94,95 +94,108 @@ if(PIXIE_THIRD_PARTY_BACKENDS)
     set(SDSL_BUILD_TUTORIAL OFF CACHE BOOL "" FORCE)
     set(SDSL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(
-        sdsl_lite
-        GIT_REPOSITORY https://github.com/xxsds/sdsl-lite.git
-        GIT_TAG v3.0.3
-        PATCH_COMMAND ${CMAKE_COMMAND}
+            sdsl_lite
+            GIT_REPOSITORY https://github.com/xxsds/sdsl-lite.git
+            GIT_TAG v3.0.3
+            PATCH_COMMAND ${CMAKE_COMMAND}
             -DROOT_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -DSDSL_SOURCE_DIR=<SOURCE_DIR>
             -P ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sdsl-lite/patch.cmake
     )
     FetchContent_MakeAvailable(sdsl_lite)
-endif()
+endif ()
 
-if(PIXIE_TESTS)
-    if(NOT TARGET gtest_main)
+if (PIXIE_TESTS)
+    if (NOT TARGET gtest_main)
         set(BUILD_GMOCK OFF CACHE BOOL "Disable GoogleMock" FORCE)
         set(INSTALL_GTEST OFF CACHE BOOL "Disable GoogleTest install targets" FORCE)
         FetchContent_Declare(
-            googletest
-            GIT_REPOSITORY https://github.com/google/googletest.git
-            GIT_TAG v1.17.0
+                googletest
+                GIT_REPOSITORY https://github.com/google/googletest.git
+                GIT_TAG v1.17.0
         )
         FetchContent_MakeAvailable(googletest)
-    endif()
+    endif ()
     include(GoogleTest)
-endif()
+endif ()
+
+FetchContent_Declare(
+        mio
+        GIT_REPOSITORY https://github.com/vimpunk/mio.git
+        GIT_TAG master
+)
+FetchContent_MakeAvailable(mio)
 
 # ---------------------------------------------------------------------------
 # Unit tests
 # ---------------------------------------------------------------------------
-if(PIXIE_TESTS)
+if (PIXIE_TESTS)
     enable_testing()
 
     add_executable(unittests
-        src/tests/unittests.cpp)
+            src/tests/unittests.cpp)
     target_include_directories(unittests
-        PUBLIC include)
+            PUBLIC include)
     target_link_libraries(unittests
-        gtest
-        gtest_main
-        ${PIXIE_DIAGNOSTICS_LIBS})
+            gtest
+            gtest_main
+            mio
+            ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(benchmark_tests
-        src/tests/benchmark_tests.cpp)
+            src/tests/benchmark_tests.cpp)
     target_include_directories(benchmark_tests
-        PUBLIC include)
+            PUBLIC include)
     target_link_libraries(benchmark_tests
-        gtest
-        gtest_main
-        ${PIXIE_DIAGNOSTICS_LIBS})
+            gtest
+            gtest_main
+            mio
+            ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(test_rmm
-        src/tests/test_rmm.cpp)
+            src/tests/test_rmm.cpp)
     target_include_directories(test_rmm
-        PUBLIC include
-        PUBLIC include/misc)
+            PUBLIC include
+            PUBLIC include/misc)
     target_link_libraries(test_rmm
-        gtest
-        gtest_main
-        ${PIXIE_DIAGNOSTICS_LIBS})
-    if(PIXIE_THIRD_PARTY_BACKENDS)
+            gtest
+            gtest_main
+            mio
+            ${PIXIE_DIAGNOSTICS_LIBS})
+    if (PIXIE_THIRD_PARTY_BACKENDS)
         target_include_directories(test_rmm
-            PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
-    endif()
+                PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
+    endif ()
 
     add_executable(louds_tree_tests
-        src/tests/louds_tree_tests.cpp)
+            src/tests/louds_tree_tests.cpp)
     target_include_directories(louds_tree_tests
-        PUBLIC include)
+            PUBLIC include)
     target_link_libraries(louds_tree_tests
-        gtest
-        gtest_main
-        ${PIXIE_DIAGNOSTICS_LIBS})
+            gtest
+            gtest_main
+            mio
+            ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(wavelet_tree_tests
             src/tests/wavelet_tree_tests.cpp)
     target_include_directories(wavelet_tree_tests
             PUBLIC include)
     target_link_libraries(wavelet_tree_tests
-        gtest
-        gtest_main
-        ${PIXIE_DIAGNOSTICS_LIBS})
+            gtest
+            gtest_main
+            mio
+            ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(excess_positions_tests
-        src/tests/excess_positions_tests.cpp)
+            src/tests/excess_positions_tests.cpp)
     target_include_directories(excess_positions_tests
-        PUBLIC include)
+            PUBLIC include)
     target_link_libraries(excess_positions_tests
-        gtest
-        gtest_main
-        ${PIXIE_DIAGNOSTICS_LIBS})
+            gtest
+            gtest_main
+            mio
+            ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(bp_tree_tests
             src/tests/bp_tree_tests.cpp)
@@ -191,6 +204,7 @@ if(PIXIE_TESTS)
     target_link_libraries(bp_tree_tests
             gtest
             gtest_main
+            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(dfuds_tree_tests
@@ -200,98 +214,107 @@ if(PIXIE_TESTS)
     target_link_libraries(dfuds_tree_tests
             gtest
             gtest_main
+            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(excess_record_lows_tests
-        src/tests/excess_record_lows_tests.cpp)
+            src/tests/excess_record_lows_tests.cpp)
     target_include_directories(excess_record_lows_tests
-        PUBLIC include)
+            PUBLIC include)
     target_link_libraries(excess_record_lows_tests
-        gtest
-        gtest_main
-        ${PIXIE_DIAGNOSTICS_LIBS})
+            gtest
+            gtest_main
+            ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(rmq_tests
-        src/tests/rmq_tests.cpp)
+            src/tests/rmq_tests.cpp)
     target_include_directories(rmq_tests
-        PUBLIC include)
+            PUBLIC include)
     target_link_libraries(rmq_tests
-        gtest
-        gtest_main
-        ${PIXIE_DIAGNOSTICS_LIBS})
-    if(PIXIE_THIRD_PARTY_BACKENDS)
+            gtest
+            gtest_main
+            mio
+            ${PIXIE_DIAGNOSTICS_LIBS})
+    if (PIXIE_THIRD_PARTY_BACKENDS)
         target_include_directories(rmq_tests
-            PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
-    endif()
-endif()
+                PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
+    endif ()
+endif ()
 
 # ---------------------------------------------------------------------------
 # Benchmarks (Pixie-only and comparison benchmarks)
 # ---------------------------------------------------------------------------
-if(PIXIE_BENCHMARKS)
+if (PIXIE_BENCHMARKS)
     add_executable(benchmarks
-        src/benchmarks/benchmarks.cpp)
+            src/benchmarks/benchmarks.cpp)
     target_include_directories(benchmarks
-        PUBLIC include)
+            PUBLIC include)
     target_link_libraries(benchmarks
-        benchmark
-        benchmark_main
-        ${PIXIE_DIAGNOSTICS_LIBS})
-    if(PIXIE_THIRD_PARTY_BACKENDS)
+            benchmark
+            benchmark_main
+            mio
+            ${PIXIE_DIAGNOSTICS_LIBS})
+    if (PIXIE_THIRD_PARTY_BACKENDS)
         target_link_libraries(benchmarks pasta_bit_vector)
         target_compile_definitions(benchmarks PRIVATE PIXIE_THIRD_PARTY_BENCHMARKS)
-    endif()
+    else ()
+        target_link_libraries(mio)
+    endif ()
 
     add_executable(bench_rmm
-        src/benchmarks/bench_rmm.cpp)
+            src/benchmarks/bench_rmm.cpp)
     target_include_directories(bench_rmm
-        PUBLIC include)
+            PUBLIC include)
     target_link_libraries(bench_rmm
-        benchmark
-        ${PIXIE_DIAGNOSTICS_LIBS})
+            benchmark
+            mio
+            ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(bench_rmm_btree
-        src/benchmarks/bench_rmm_btree.cpp)
+            src/benchmarks/bench_rmm_btree.cpp)
     target_include_directories(bench_rmm_btree
-        PUBLIC include)
+            PUBLIC include)
     target_link_libraries(bench_rmm_btree
-        benchmark
-        ${PIXIE_DIAGNOSTICS_LIBS})
+            benchmark
+            mio
+            ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(bench_rmq
-        src/benchmarks/bench_rmq.cpp)
+            src/benchmarks/bench_rmq.cpp)
     target_include_directories(bench_rmq
-        PUBLIC include)
+            PUBLIC include)
     target_link_libraries(bench_rmq
-        benchmark
-        ${PIXIE_DIAGNOSTICS_LIBS})
-    if(PIXIE_THIRD_PARTY_BACKENDS)
+            benchmark
+            mio
+            ${PIXIE_DIAGNOSTICS_LIBS})
+    if (PIXIE_THIRD_PARTY_BACKENDS)
         target_include_directories(bench_rmq
-            PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
+                PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
         target_compile_definitions(bench_rmq
-            PRIVATE PIXIE_THIRD_PARTY_BENCHMARKS)
-    endif()
+                PRIVATE PIXIE_THIRD_PARTY_BENCHMARKS)
+    endif ()
 
-    if(PIXIE_THIRD_PARTY_BACKENDS)
+    if (PIXIE_THIRD_PARTY_BACKENDS)
         add_executable(bench_rmm_sdsl
-            src/benchmarks/bench_rmm_sdsl.cpp)
+                src/benchmarks/bench_rmm_sdsl.cpp)
         target_include_directories(bench_rmm_sdsl
-            PUBLIC include
-            PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
+                PUBLIC include
+                PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
         target_link_libraries(bench_rmm_sdsl
-            PRIVATE
+                PRIVATE
                 benchmark
                 ${PIXIE_DIAGNOSTICS_LIBS})
-    endif()
+    endif ()
 
     add_executable(louds_tree_benchmarks
-        src/benchmarks/louds_tree_benchmarks.cpp)
+            src/benchmarks/louds_tree_benchmarks.cpp)
     target_include_directories(louds_tree_benchmarks
-        PUBLIC include)
+            PUBLIC include)
     target_link_libraries(louds_tree_benchmarks
-        benchmark
-        benchmark_main
-        ${PIXIE_DIAGNOSTICS_LIBS})
+            benchmark
+            benchmark_main
+            mio
+            ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(wavelet_tree_benchmarks
             src/benchmarks/wavelet_tree_benchmarks.cpp)
@@ -300,6 +323,7 @@ if(PIXIE_BENCHMARKS)
     target_link_libraries(wavelet_tree_benchmarks
             benchmark
             benchmark_main
+            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(bp_tree_benchmarks
@@ -309,11 +333,12 @@ if(PIXIE_BENCHMARKS)
     target_link_libraries(bp_tree_benchmarks
             benchmark
             benchmark_main
+            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
-    if(PIXIE_THIRD_PARTY_BACKENDS)
+    if (PIXIE_THIRD_PARTY_BACKENDS)
         target_include_directories(bp_tree_benchmarks
                 PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
-    endif()
+    endif ()
 
     add_executable(dfuds_tree_benchmarks
             src/benchmarks/dfuds_tree_benchmarks.cpp)
@@ -322,62 +347,65 @@ if(PIXIE_BENCHMARKS)
     target_link_libraries(dfuds_tree_benchmarks
             benchmark
             benchmark_main
+            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
-    if(PIXIE_THIRD_PARTY_BACKENDS)
+    if (PIXIE_THIRD_PARTY_BACKENDS)
         target_include_directories(dfuds_tree_benchmarks
                 PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
-    endif()
+    endif ()
 
     add_executable(alignment_comparison
-        src/benchmarks/alignment_comparison.cpp)
+            src/benchmarks/alignment_comparison.cpp)
     target_include_directories(alignment_comparison
-        PUBLIC include)
+            PUBLIC include)
     target_link_libraries(alignment_comparison
-        benchmark
-        benchmark_main
-        ${PIXIE_DIAGNOSTICS_LIBS})
+            benchmark
+            benchmark_main
+            mio
+            ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(excess_positions_benchmarks
-        src/benchmarks/excess_positions_benchmarks.cpp)
+            src/benchmarks/excess_positions_benchmarks.cpp)
     target_include_directories(excess_positions_benchmarks
-        PUBLIC include)
+            PUBLIC include)
     target_link_libraries(excess_positions_benchmarks
-        benchmark
-        benchmark_main
-        ${PIXIE_DIAGNOSTICS_LIBS})
-endif()
+            benchmark
+            benchmark_main
+            mio
+            ${PIXIE_DIAGNOSTICS_LIBS})
+endif ()
 
 # ---------------------------------------------------------------------------
 # Documentation (Doxygen)
 # ---------------------------------------------------------------------------
-if(PIXIE_DOCS)
+if (PIXIE_DOCS)
     find_package(Doxygen REQUIRED)
 
     FetchContent_Declare(
-        doxygen-awesome-css
-        URL https://github.com/jothepro/doxygen-awesome-css/archive/refs/heads/main.zip
+            doxygen-awesome-css
+            URL https://github.com/jothepro/doxygen-awesome-css/archive/refs/heads/main.zip
     )
     FetchContent_MakeAvailable(doxygen-awesome-css)
 
     FetchContent_GetProperties(doxygen-awesome-css SOURCE_DIR AWESOME_CSS_DIR)
 
     set(PIXIE_DOC_INPUT
-        "${CMAKE_CURRENT_SOURCE_DIR}/include"
-        "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmark_results.md")
+            "${CMAKE_CURRENT_SOURCE_DIR}/include"
+            "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
+    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmark_results.md")
         list(APPEND PIXIE_DOC_INPUT
-             "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmark_results.md")
-    endif()
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmark_results.md")
+    endif ()
     string(JOIN " \\\n                         " PIXIE_DOC_INPUT
-           ${PIXIE_DOC_INPUT})
+            ${PIXIE_DOC_INPUT})
 
     set(DOXYFILE_IN ${CMAKE_CURRENT_SOURCE_DIR}/src/docs/Doxyfile.in)
     set(DOXYFILE_OUT ${CMAKE_CURRENT_BINARY_DIR}/docs/Doxyfile)
     configure_file(${DOXYFILE_IN} ${DOXYFILE_OUT} @ONLY)
 
     add_custom_target(docs
-        COMMAND ${DOXYGEN_EXECUTABLE} ${DOXYFILE_OUT}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-        COMMENT "Generating API documentation with Doxygen"
-        VERBATIM)
-endif()
+            COMMAND ${DOXYGEN_EXECUTABLE} ${DOXYFILE_OUT}
+            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+            COMMENT "Generating API documentation with Doxygen"
+            VERBATIM)
+endif ()

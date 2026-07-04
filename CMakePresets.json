@@ -118,7 +118,8 @@
                 "louds_tree_tests",
                 "bp_tree_tests",
                 "dfuds_tree_tests",
-                "excess_positions_tests"
+                "excess_positions_tests",
+                "wavelet_tree_tests"
             ]
         },
         {
@@ -133,7 +134,8 @@
                 "louds_tree_tests",
                 "bp_tree_tests",
                 "dfuds_tree_tests",
-                "excess_positions_tests"
+                "excess_positions_tests",
+                "wavelet_tree_tests"
             ]
         },
         {
@@ -148,7 +150,8 @@
                 "bp_tree_benchmarks",
                 "dfuds_tree_benchmarks",
                 "alignment_comparison",
-                "excess_positions_benchmarks"
+                "excess_positions_benchmarks",
+                "wavelet_tree_benchmarks"
             ]
         },
         {
@@ -164,7 +167,8 @@
                 "bp_tree_benchmarks",
                 "dfuds_tree_benchmarks",
                 "alignment_comparison",
-                "excess_positions_benchmarks"
+                "excess_positions_benchmarks",
+                "wavelet_tree_benchmarks"
             ]
         },
         {
@@ -179,7 +183,8 @@
                 "bp_tree_benchmarks",
                 "dfuds_tree_benchmarks",
                 "alignment_comparison",
-                "excess_positions_benchmarks"
+                "excess_positions_benchmarks",
+                "wavelet_tree_benchmarks"
             ]
         },
         {
@@ -202,7 +207,8 @@
                 "louds_tree_tests",
                 "bp_tree_tests",
                 "dfuds_tree_tests",
-                "excess_positions_tests"
+                "excess_positions_tests",
+                "wavelet_tree_tests"
             ]
         },
         {
@@ -217,7 +223,8 @@
                 "louds_tree_tests",
                 "bp_tree_tests",
                 "dfuds_tree_tests",
-                "excess_positions_tests"
+                "excess_positions_tests",
+                "wavelet_tree_tests"
             ]
         }
     ]

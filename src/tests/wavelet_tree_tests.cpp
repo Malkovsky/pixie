@@ -55,7 +55,7 @@ TEST(WaveletTreeTest, BasicSegment) {
 
   for (size_t begin = 0; begin <= data_size; begin++) {
     for (size_t end = begin; end <= data_size; end++) {
-      auto segment = wavelet_tree.getSegment(begin, end);
+      auto segment = wavelet_tree.get_segment(begin, end);
       EXPECT_EQ(segment.size(), end - begin);
       for (size_t i = 0; i < end - begin; i++) {
         EXPECT_EQ(segment[i], data[begin + i]);
@@ -135,12 +135,56 @@ TEST(WaveletTreeTest, SmokeSegment) {
 
     for (size_t begin = 0; begin <= data_size; begin++) {
       for (size_t end = begin; end <= data_size; end++) {
-        auto segment = wavelet_tree.getSegment(begin, end);
+        auto segment = wavelet_tree.get_segment(begin, end);
         EXPECT_EQ(segment.size(), end - begin);
         for (size_t i = 0; i < end - begin; i++) {
           EXPECT_EQ(segment[i], data[begin + i]);
         }
       }
     }
+  }
+}
+
+TEST(WaveletTreeTest, SerializationSmoke) {
+  size_t data_size = 4096, alphabet_size = 100;
+
+  std::mt19937_64 rng(239);
+  std::vector<uint64_t> data =
+      generate_random_data(data_size, alphabet_size, rng);
+
+  for (auto build_type : {pixie::WaveletTreeBuildType::Standard,
+                          pixie::WaveletTreeBuildType::Huffman}) {
+    WaveletTree orig_tree(alphabet_size, data, build_type);
+
+    pixie::OutputBitStream bs;
+    orig_tree.serialize(bs);
+    std::vector<uint64_t> serialized_data = bs.extract();
+
+    std::span<const std::byte> byte_span(
+        reinterpret_cast<const std::byte*>(serialized_data.data()),
+        serialized_data.size() * sizeof(uint64_t));
+
+    auto mmap_tree =
+        pixie::WaveletTreeBase<pixie::MmapViewStorage>::deserialize(byte_span);
+
+    for (size_t i = 0; i <= data_size; i += 16) {
+      uint64_t symb = data[i == data_size ? 0 : i];
+      EXPECT_EQ(orig_tree.rank(symb, i), mmap_tree.rank(symb, i));
+    }
+
+    std::vector<size_t> count(alphabet_size, 0);
+    for (auto symb : data) {
+      count[symb]++;
+    }
+
+    for (uint64_t symb = 0; symb < alphabet_size; symb++) {
+      for (uint64_t rank = 1; rank <= count[symb]; rank++) {
+        EXPECT_EQ(orig_tree.select(symb, rank), mmap_tree.select(symb, rank));
+      }
+    }
+
+    auto orig_segment = orig_tree.get_segment(0, data_size);
+    auto mmap_segment = mmap_tree.get_segment(0, data_size);
+    EXPECT_EQ(orig_segment, mmap_segment);
   }
 }
