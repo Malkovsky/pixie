@@ -24,12 +24,13 @@ The `excess_min_128` experiment is a good template for future hot-path work:
    of applied to every short range.
 6. **Mark unlikely cold dispatches**: if a promoted optimization is for a narrow
    special case, mark the branch unlikely when that matches expected workload.
-7. **Persist benchmark evidence in the repository**: add a top-of-file
-   benchmark note in `/** ... */` or `/* ... */` form to the experimental
-   header, production header, benchmark file, or experiment log. Include metric
-   units, fixed decimal precision, and visible separators between logical
-   result blocks. Do not include machine-local JSON paths such as `/tmp/...` in
-   source comments.
+7. **Persist only accepted benchmark evidence in the repository**: add or update
+   a top-of-file benchmark note when the measurement is the current production
+   state, an accepted baseline, or the final comparison for a kept experimental
+   variant. Include metric units, fixed decimal precision, and visible
+   separators between logical result blocks. Do not include machine-local JSON
+   paths such as `/tmp/...` in source comments, and do not accumulate every
+   discarded probe in production headers.
 
 ## Benchmark Pattern
 
@@ -180,8 +181,10 @@ For experimental algorithms, use Doxygen block comments:
 ```
 
 Keep long benchmark tables as a top-level `/** ... */` note when they describe
-the whole experimental header rather than one symbol. Do not leave measurements
-only in chat or `/tmp`; persist a top-of-file snapshot before finishing.
+the whole experimental header rather than one symbol. For final or accepted
+results, do not leave measurements only in chat or `/tmp`; persist a
+top-of-file snapshot before finishing. For short-lived diagnostics, summarize
+the finding without adding source-file churn.
 
 ## Non-Obvious Lessons From This Session
 
