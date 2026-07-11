@@ -310,6 +310,8 @@ void register_benchmarks() {
   using CartesianHybrid =
       pixie::rmq::CartesianHybridBTree<std::int64_t, std::less<std::int64_t>,
                                        Index>;
+  using CartesianBTree =
+      pixie::rmq::CartesianBTree<std::int64_t, std::less<std::int64_t>, Index>;
 
   const std::vector<std::size_t> sizes = {1ull << 10, 1ull << 14, 1ull << 18,
                                           1ull << 22, 1ull << 24, 1ull << 26};
@@ -322,6 +324,7 @@ void register_benchmarks() {
   constexpr std::size_t kSparseTableBenchmarkMaxSize = 1ull << 22;
   constexpr std::size_t kFocusedCartesianRmMLargeSize = 1ull << 28;
   constexpr std::size_t kFocusedCartesianHybridLargeSize = 1ull << 28;
+  constexpr std::size_t kFocusedCartesianBTreeLargeSize = 1ull << 28;
   constexpr std::size_t kFocusedHybridBTreeLargeSize = 1ull << 28;
   // Focused 2^28/2^30 rows are intentionally limited to the RMQ variants whose
   // construction and query memory stay bounded at those sizes. CartesianRmM is
@@ -376,6 +379,12 @@ void register_benchmarks() {
         ->Unit(benchmark::kMillisecond)
         ->MinWarmUpTime(kBenchmarkWarmupSeconds)
         ->MinTime(kBenchmarkMinSeconds);
+    benchmark::RegisterBenchmark("rmq_build_cartesian_btree",
+                                 &run_value_rmq_build<CartesianBTree>)
+        ->Arg(static_cast<std::int64_t>(size))
+        ->Unit(benchmark::kMillisecond)
+        ->MinWarmUpTime(kBenchmarkWarmupSeconds)
+        ->MinTime(kBenchmarkMinSeconds);
 #ifdef PIXIE_THIRD_PARTY_BENCHMARKS
     benchmark::RegisterBenchmark(
         "rmq_build_sdsl_sct",
@@ -416,6 +425,18 @@ void register_benchmarks() {
       ->MinTime(kBenchmarkMinSeconds);
   benchmark::RegisterBenchmark("rmq_build_cartesian_hybrid_btree",
                                &run_value_rmq_build<CartesianHybrid>)
+      ->Arg(static_cast<std::int64_t>(kVeryLargeHybridSize))
+      ->Unit(benchmark::kMillisecond)
+      ->MinWarmUpTime(kBenchmarkWarmupSeconds)
+      ->MinTime(kBenchmarkMinSeconds);
+  benchmark::RegisterBenchmark("rmq_build_cartesian_btree",
+                               &run_value_rmq_build<CartesianBTree>)
+      ->Arg(static_cast<std::int64_t>(kFocusedCartesianBTreeLargeSize))
+      ->Unit(benchmark::kMillisecond)
+      ->MinWarmUpTime(kBenchmarkWarmupSeconds)
+      ->MinTime(kBenchmarkMinSeconds);
+  benchmark::RegisterBenchmark("rmq_build_cartesian_btree",
+                               &run_value_rmq_build<CartesianBTree>)
       ->Arg(static_cast<std::int64_t>(kVeryLargeHybridSize))
       ->Unit(benchmark::kMillisecond)
       ->MinWarmUpTime(kBenchmarkWarmupSeconds)
@@ -486,6 +507,13 @@ void register_benchmarks() {
           ->Unit(benchmark::kNanosecond)
           ->MinWarmUpTime(kBenchmarkWarmupSeconds)
           ->MinTime(kBenchmarkMinSeconds);
+      benchmark::RegisterBenchmark("rmq_cartesian_btree",
+                                   &run_queries<CartesianBTree>)
+          ->Args({static_cast<std::int64_t>(size),
+                  static_cast<std::int64_t>(width)})
+          ->Unit(benchmark::kNanosecond)
+          ->MinWarmUpTime(kBenchmarkWarmupSeconds)
+          ->MinTime(kBenchmarkMinSeconds);
 #ifdef PIXIE_THIRD_PARTY_BENCHMARKS
       benchmark::RegisterBenchmark(
           "rmq_sdsl_sct",
@@ -541,6 +569,25 @@ void register_benchmarks() {
   for (const std::size_t width : effective_widths_for(kVeryLargeHybridSize)) {
     benchmark::RegisterBenchmark("rmq_cartesian_hybrid_btree",
                                  &run_queries<CartesianHybrid>)
+        ->Args({static_cast<std::int64_t>(kVeryLargeHybridSize),
+                static_cast<std::int64_t>(width)})
+        ->Unit(benchmark::kNanosecond)
+        ->MinWarmUpTime(kBenchmarkWarmupSeconds)
+        ->MinTime(kBenchmarkMinSeconds);
+  }
+  for (const std::size_t width :
+       effective_widths_for(kFocusedCartesianBTreeLargeSize)) {
+    benchmark::RegisterBenchmark("rmq_cartesian_btree",
+                                 &run_queries<CartesianBTree>)
+        ->Args({static_cast<std::int64_t>(kFocusedCartesianBTreeLargeSize),
+                static_cast<std::int64_t>(width)})
+        ->Unit(benchmark::kNanosecond)
+        ->MinWarmUpTime(kBenchmarkWarmupSeconds)
+        ->MinTime(kBenchmarkMinSeconds);
+  }
+  for (const std::size_t width : effective_widths_for(kVeryLargeHybridSize)) {
+    benchmark::RegisterBenchmark("rmq_cartesian_btree",
+                                 &run_queries<CartesianBTree>)
         ->Args({static_cast<std::int64_t>(kVeryLargeHybridSize),
                 static_cast<std::int64_t>(width)})
         ->Unit(benchmark::kNanosecond)

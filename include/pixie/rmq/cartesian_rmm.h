@@ -48,7 +48,7 @@
  *
  * CPU mean, milliseconds.
  *
- * | N    | CartesianRmM | CartesianHybrid | SdslSct |
+ * | N    | CartesianRmM | CartesianHybridBTree | SdslSct |
  * | ---: | -----------: | --------------: | ------: |
  * | 2^22 |       54.407 |          49.361 |  41.317 |
  * | 2^26 |      915.712 |         795.562 | 666.048 |
@@ -400,19 +400,24 @@ class CartesianRmM
   void build_bp_bits() {
     utils::SuccinctIncreasingStack stack(values_.size());
     std::size_t write_position = bp_bit_count_;
+    std::vector<std::uint64_t>& words = bp_bits_;
+    const auto prepend_open = [&]() {
+      --write_position;
+      words[write_position >> 6] |= std::uint64_t{1} << (write_position & 63);
+    };
 
     for (std::size_t i = values_.size(); i-- > 0;) {
       while (!stack.empty() &&
              !compare_(values_[stack_index(stack.top())], values_[i])) {
         stack.pop();
-        prepend_bp_bit(write_position, true);
+        prepend_open();
       }
       stack.push(stack_key(i));
-      prepend_bp_bit(write_position, false);
+      --write_position;
     }
 
     while (write_position != 0) {
-      prepend_bp_bit(write_position, true);
+      prepend_open();
     }
   }
 
@@ -430,14 +435,6 @@ class CartesianRmM
    */
   std::size_t stack_index(std::size_t key) const {
     return values_.size() - 1 - key;
-  }
-
-  void prepend_bp_bit(std::size_t& write_position, bool bit) {
-    --write_position;
-    if (bit) {
-      bp_bits_[write_position >> 6] |= std::uint64_t{1}
-                                       << (write_position & 63);
-    }
   }
 
   void reset_bp_index() {

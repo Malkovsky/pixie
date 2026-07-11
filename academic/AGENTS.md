@@ -10,8 +10,6 @@ Materials are authored in [Quarto](https://quarto.org) for rich rendering (math,
 
 ```
 academic/
-├── _quarto.yml              # Book project (reports, presentations, notes)
-├── index.qmd                # Project landing page
 ├── _extensions/             # Shared Quarto extensions (ACM journal format)
 │   └── quarto-journals/acm/ # ACM acm-pdf extension
 ├── papers/                  # Research papers (standalone Quarto projects)
@@ -30,14 +28,14 @@ academic/
 
 ## Architecture
 
-### Two Quarto Project Types
+Academic materials are standalone documents or standalone Quarto projects.
+There is intentionally no root `academic/_quarto.yml` book project and no global
+academic landing page. Render each note, report, presentation, or paper from its
+own directory. The shared bibliography lives at `academic/bibliography/references.bib`.
 
-The `academic/` directory contains **two kinds** of Quarto projects:
-
-1. **Book project** (`academic/_quarto.yml`, `type: book`): Covers reports, presentations, and notes. Rendered from the `academic/` root.
-2. **Standalone paper projects** (`papers/<name>/_quarto.yml`, `type: default`): Each paper is its own Quarto project. Rendered from the paper's directory.
-
-Papers are standalone because Quarto book projects cannot resolve journal extensions (like `quarto-journals/acm`). Each paper directory has its own `_quarto.yml` and symlinks `_extensions/` to the shared extensions at `academic/_extensions/`.
+Each paper directory has its own `_quarto.yml` and may symlink `_extensions/` to
+the shared extension directory at `academic/_extensions/` when it needs the ACM
+format.
 
 ### ACM Extension
 
@@ -69,12 +67,12 @@ quarto render                # Produces paper.pdf + paper.tex
 quarto preview               # Live preview with reload
 ```
 
-### Book (reports, presentations, notes)
+### Notes, Reports, and Presentations
 
 ```bash
-cd academic/
-quarto render                # Produces _book/ directory
-quarto preview               # Live preview
+cd notes/rmq/
+quarto render index.qmd --to pdf
+quarto preview index.qmd
 ```
 
 ## Conventions
@@ -130,5 +128,5 @@ The following works are foundational to Pixie's design:
 - Use `@AuthorYear` citation syntax in `.qmd` files
 - LaTeX code blocks should use `{cpp}` or `{latex}` language tags
 - Do not commit large binary files (>10MB) without explicit approval; consider using Git LFS
-- Render papers from their own directory, NOT from the `academic/` book project root
+- Render each material from its own directory, not from the `academic/` root
 - Do NOT put `@` symbols in BibTeX comments — BibTeX tries to parse them as entries

@@ -1,0 +1,312 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1200" height="980" viewBox="0 0 1200 980" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>8-element Cartesian tree</title>
+  <desc>Min-Cartesian tree for A = [5, 2, 7, 1, 6, 3, 4, 8]; below are the balanced-parentheses sequences for the standard Euler BP and FNBP encodings.</desc>
+
+  <defs>
+    <style>
+      .label {
+        font-family: "Virgil", "Segoe Print", "Comic Sans MS", "Chalkboard SE", cursive;
+        font-size: 25px;
+        fill: #1e1e1e;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .edge {
+        stroke: #555555;
+        stroke-width: 3.2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .edge-shadow {
+        stroke: #555555;
+        stroke-width: 2.2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        opacity: 0.55;
+      }
+      .node-outline {
+        stroke-width: 3;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .node-rough {
+        fill: none;
+        stroke-width: 1.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        opacity: 0.65;
+      }
+      .bp-title {
+        font-family: "Virgil", "Segoe Print", "Comic Sans MS", "Chalkboard SE", cursive;
+        font-size: 25px;
+        fill: #1e1e1e;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .bp-pos {
+        font-family: "Virgil", "Segoe Print", "Comic Sans MS", "Chalkboard SE", cursive;
+        font-size: 16px;
+        fill: #666666;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .bp-paren {
+        font-family: "Virgil", "Segoe Print", "Comic Sans MS", "Chalkboard SE", cursive;
+        font-size: 31px;
+        font-weight: bold;
+        fill: #1e1e1e;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .bp-node {
+        font-family: "Virgil", "Segoe Print", "Comic Sans MS", "Chalkboard SE", cursive;
+        font-size: 14px;
+        font-weight: bold;
+        fill: #1e1e1e;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .bp-row-label {
+        font-family: "Virgil", "Segoe Print", "Comic Sans MS", "Chalkboard SE", cursive;
+        font-size: 22px;
+        fill: #1e1e1e;
+        text-anchor: end;
+        dominant-baseline: central;
+      }
+      .bp-note {
+        font-family: "Virgil", "Segoe Print", "Comic Sans MS", "Chalkboard SE", cursive;
+        font-size: 18px;
+        fill: #666666;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .bp-open {
+        fill: #dbe4ff;
+        stroke: #315f8c;
+        stroke-width: 2.4;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .bp-close {
+        fill: #fff3bf;
+        stroke: #946200;
+        stroke-width: 2.4;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .bp-rough {
+        fill: none;
+        stroke-width: 1.1;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        opacity: 0.55;
+      }
+
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="980" fill="#ffffff"/>
+
+  <g transform="translate(0,-110)">
+
+  <!-- Edges are drawn twice with slight offsets to mimic Excalidraw roughness. -->
+  <path class="edge-shadow" d="M514 275 C469 305 381 338 300 364"/>
+  <path class="edge" d="M516 277 C466 304 380 340 302 366"/>
+
+  <path class="edge-shadow" d="M586 275 C632 306 716 338 780 364"/>
+  <path class="edge" d="M584 277 C632 304 718 340 782 366"/>
+
+  <path class="edge-shadow" d="M230 426 C202 458 169 485 144 517"/>
+  <path class="edge" d="M232 428 C200 458 170 486 146 518"/>
+
+  <path class="edge-shadow" d="M310 426 C332 458 358 485 376 517"/>
+  <path class="edge" d="M308 428 C334 458 360 486 378 518"/>
+
+  <path class="edge-shadow" d="M790 426 C762 458 729 485 704 517"/>
+  <path class="edge" d="M792 428 C760 458 730 486 706 518"/>
+
+  <path class="edge-shadow" d="M870 426 C892 458 918 485 936 517"/>
+  <path class="edge" d="M868 428 C894 458 920 486 938 518"/>
+
+  <path class="edge-shadow" d="M1010 578 C1032 610 1058 638 1076 669"/>
+  <path class="edge" d="M1008 580 C1034 610 1060 639 1078 670"/>
+
+  <!-- Root. -->
+  <ellipse cx="540" cy="244" rx="64" ry="32" fill="#dbe4ff" stroke="#315f8c" class="node-outline"/>
+  <path d="M477 242 C480 222 506 211 539 211 C576 211 602 224 604 246 C605 265 579 277 540 277 C503 277 476 265 477 242Z"
+        stroke="#315f8c" class="node-rough"/>
+  <text class="label" x="540" y="244">3</text>
+
+  <!-- Level 1. -->
+  <ellipse cx="260" cy="396" rx="64" ry="32" fill="#dbe4ff" stroke="#315f8c" class="node-outline"/>
+  <path d="M198 394 C199 375 225 362 260 363 C295 363 323 376 324 398 C323 416 296 429 260 429 C224 429 197 415 198 394Z"
+        stroke="#315f8c" class="node-rough"/>
+  <text class="label" x="260" y="396">1</text>
+
+  <ellipse cx="820" cy="396" rx="64" ry="32" fill="#dbe4ff" stroke="#315f8c" class="node-outline"/>
+  <path d="M758 394 C759 375 785 362 820 363 C855 363 883 376 884 398 C883 416 856 429 820 429 C784 429 757 415 758 394Z"
+        stroke="#315f8c" class="node-rough"/>
+  <text class="label" x="820" y="396">5</text>
+
+  <!-- Level 2. -->
+  <ellipse cx="120" cy="548" rx="64" ry="32" fill="#dbe4ff" stroke="#315f8c" class="node-outline"/>
+  <path d="M58 546 C59 527 85 514 120 515 C155 515 183 528 184 550 C183 568 156 581 120 581 C84 581 57 567 58 546Z"
+        stroke="#315f8c" class="node-rough"/>
+  <text class="label" x="120" y="548">0</text>
+
+  <ellipse cx="400" cy="548" rx="64" ry="32" fill="#dbe4ff" stroke="#315f8c" class="node-outline"/>
+  <path d="M338 546 C339 527 365 514 400 515 C435 515 463 528 464 550 C463 568 436 581 400 581 C364 581 337 567 338 546Z"
+        stroke="#315f8c" class="node-rough"/>
+  <text class="label" x="400" y="548">2</text>
+
+  <ellipse cx="680" cy="548" rx="64" ry="32" fill="#dbe4ff" stroke="#315f8c" class="node-outline"/>
+  <path d="M618 546 C619 527 645 514 680 515 C715 515 743 528 744 550 C743 568 716 581 680 581 C644 581 617 567 618 546Z"
+        stroke="#315f8c" class="node-rough"/>
+  <text class="label" x="680" y="548">4</text>
+
+  <ellipse cx="960" cy="548" rx="64" ry="32" fill="#dbe4ff" stroke="#315f8c" class="node-outline"/>
+  <path d="M898 546 C899 527 925 514 960 515 C995 515 1023 528 1024 550 C1023 568 996 581 960 581 C924 581 897 567 898 546Z"
+        stroke="#315f8c" class="node-rough"/>
+  <text class="label" x="960" y="548">6</text>
+
+  <!-- Level 3. -->
+  <ellipse cx="1100" cy="700" rx="64" ry="32" fill="#dbe4ff" stroke="#315f8c" class="node-outline"/>
+  <path d="M1038 698 C1039 679 1065 666 1100 667 C1135 667 1163 680 1164 702 C1163 720 1136 733 1100 733 C1064 733 1037 719 1038 698Z"
+        stroke="#315f8c" class="node-rough"/>
+  <text class="label" x="1100" y="700">7</text>
+  <!-- Colored balanced-parentheses sequences. Matching pairs share node colors. -->
+  <text class="bp-title" x="600" y="782">Balanced-parentheses encodings</text>
+  <text class="bp-row-label" x="160" y="887">Euler BP</text>
+  <text class="bp-node" x="208" y="850">3</text>
+  <rect x="184" y="863" width="48" height="48" rx="7" fill="#d0bfff" stroke="#5f3dc4" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="185" y="862" width="46" height="49" rx="7" class="bp-rough" stroke="#5f3dc4"/>
+  <text class="bp-paren" x="208" y="888">(</text>
+  <text class="bp-node" x="262" y="850">1</text>
+  <rect x="238" y="863" width="48" height="48" rx="7" fill="#dbe4ff" stroke="#315f8c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="239" y="862" width="46" height="49" rx="7" class="bp-rough" stroke="#315f8c"/>
+  <text class="bp-paren" x="262" y="888">(</text>
+  <text class="bp-node" x="316" y="850">0</text>
+  <rect x="292" y="863" width="48" height="48" rx="7" fill="#fff3bf" stroke="#946200" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="293" y="862" width="46" height="49" rx="7" class="bp-rough" stroke="#946200"/>
+  <text class="bp-paren" x="316" y="888">(</text>
+  <text class="bp-node" x="370" y="850">0</text>
+  <rect x="346" y="863" width="48" height="48" rx="7" fill="#fff3bf" stroke="#946200" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="347" y="862" width="46" height="49" rx="7" class="bp-rough" stroke="#946200"/>
+  <text class="bp-paren" x="370" y="888">)</text>
+  <text class="bp-node" x="424" y="850">2</text>
+  <rect x="400" y="863" width="48" height="48" rx="7" fill="#c3fae8" stroke="#087f5b" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="401" y="862" width="46" height="49" rx="7" class="bp-rough" stroke="#087f5b"/>
+  <text class="bp-paren" x="424" y="888">(</text>
+  <text class="bp-node" x="478" y="850">2</text>
+  <rect x="454" y="863" width="48" height="48" rx="7" fill="#c3fae8" stroke="#087f5b" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="455" y="862" width="46" height="49" rx="7" class="bp-rough" stroke="#087f5b"/>
+  <text class="bp-paren" x="478" y="888">)</text>
+  <text class="bp-node" x="532" y="850">1</text>
+  <rect x="508" y="863" width="48" height="48" rx="7" fill="#dbe4ff" stroke="#315f8c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="509" y="862" width="46" height="49" rx="7" class="bp-rough" stroke="#315f8c"/>
+  <text class="bp-paren" x="532" y="888">)</text>
+  <text class="bp-node" x="586" y="850">5</text>
+  <rect x="562" y="863" width="48" height="48" rx="7" fill="#b2f2bb" stroke="#2b8a3e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="563" y="862" width="46" height="49" rx="7" class="bp-rough" stroke="#2b8a3e"/>
+  <text class="bp-paren" x="586" y="888">(</text>
+  <text class="bp-node" x="640" y="850">4</text>
+  <rect x="616" y="863" width="48" height="48" rx="7" fill="#ffd8a8" stroke="#9a5030" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="617" y="862" width="46" height="49" rx="7" class="bp-rough" stroke="#9a5030"/>
+  <text class="bp-paren" x="640" y="888">(</text>
+  <text class="bp-node" x="694" y="850">4</text>
+  <rect x="670" y="863" width="48" height="48" rx="7" fill="#ffd8a8" stroke="#9a5030" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="671" y="862" width="46" height="49" rx="7" class="bp-rough" stroke="#9a5030"/>
+  <text class="bp-paren" x="694" y="888">)</text>
+  <text class="bp-node" x="748" y="850">6</text>
+  <rect x="724" y="863" width="48" height="48" rx="7" fill="#eebefa" stroke="#862e9c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="725" y="862" width="46" height="49" rx="7" class="bp-rough" stroke="#862e9c"/>
+  <text class="bp-paren" x="748" y="888">(</text>
+  <text class="bp-node" x="802" y="850">7</text>
+  <rect x="778" y="863" width="48" height="48" rx="7" fill="#ffc9c9" stroke="#c92a2a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="779" y="862" width="46" height="49" rx="7" class="bp-rough" stroke="#c92a2a"/>
+  <text class="bp-paren" x="802" y="888">(</text>
+  <text class="bp-node" x="856" y="850">7</text>
+  <rect x="832" y="863" width="48" height="48" rx="7" fill="#ffc9c9" stroke="#c92a2a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="833" y="862" width="46" height="49" rx="7" class="bp-rough" stroke="#c92a2a"/>
+  <text class="bp-paren" x="856" y="888">)</text>
+  <text class="bp-node" x="910" y="850">6</text>
+  <rect x="886" y="863" width="48" height="48" rx="7" fill="#eebefa" stroke="#862e9c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="887" y="862" width="46" height="49" rx="7" class="bp-rough" stroke="#862e9c"/>
+  <text class="bp-paren" x="910" y="888">)</text>
+  <text class="bp-node" x="964" y="850">5</text>
+  <rect x="940" y="863" width="48" height="48" rx="7" fill="#b2f2bb" stroke="#2b8a3e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="941" y="862" width="46" height="49" rx="7" class="bp-rough" stroke="#2b8a3e"/>
+  <text class="bp-paren" x="964" y="888">)</text>
+  <text class="bp-node" x="1018" y="850">3</text>
+  <rect x="994" y="863" width="48" height="48" rx="7" fill="#d0bfff" stroke="#5f3dc4" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="995" y="862" width="46" height="49" rx="7" class="bp-rough" stroke="#5f3dc4"/>
+  <text class="bp-paren" x="1018" y="888">)</text>
+  <text class="bp-row-label" x="160" y="1027">FNBP</text>
+  <text class="bp-node" x="208" y="990">3</text>
+  <rect x="184" y="1003" width="48" height="48" rx="7" fill="#d0bfff" stroke="#5f3dc4" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="185" y="1002" width="46" height="49" rx="7" class="bp-rough" stroke="#5f3dc4"/>
+  <text class="bp-paren" x="208" y="1028">(</text>
+  <text class="bp-node" x="262" y="990">1</text>
+  <rect x="238" y="1003" width="48" height="48" rx="7" fill="#dbe4ff" stroke="#315f8c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="239" y="1002" width="46" height="49" rx="7" class="bp-rough" stroke="#315f8c"/>
+  <text class="bp-paren" x="262" y="1028">(</text>
+  <text class="bp-node" x="316" y="990">0</text>
+  <rect x="292" y="1003" width="48" height="48" rx="7" fill="#fff3bf" stroke="#946200" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="293" y="1002" width="46" height="49" rx="7" class="bp-rough" stroke="#946200"/>
+  <text class="bp-paren" x="316" y="1028">(</text>
+  <text class="bp-node" x="370" y="990">0</text>
+  <rect x="346" y="1003" width="48" height="48" rx="7" fill="#fff3bf" stroke="#946200" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="347" y="1002" width="46" height="49" rx="7" class="bp-rough" stroke="#946200"/>
+  <text class="bp-paren" x="370" y="1028">)</text>
+  <text class="bp-node" x="424" y="990">1</text>
+  <rect x="400" y="1003" width="48" height="48" rx="7" fill="#dbe4ff" stroke="#315f8c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="401" y="1002" width="46" height="49" rx="7" class="bp-rough" stroke="#315f8c"/>
+  <text class="bp-paren" x="424" y="1028">)</text>
+  <text class="bp-node" x="478" y="990">2</text>
+  <rect x="454" y="1003" width="48" height="48" rx="7" fill="#c3fae8" stroke="#087f5b" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="455" y="1002" width="46" height="49" rx="7" class="bp-rough" stroke="#087f5b"/>
+  <text class="bp-paren" x="478" y="1028">(</text>
+  <text class="bp-node" x="532" y="990">2</text>
+  <rect x="508" y="1003" width="48" height="48" rx="7" fill="#c3fae8" stroke="#087f5b" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="509" y="1002" width="46" height="49" rx="7" class="bp-rough" stroke="#087f5b"/>
+  <text class="bp-paren" x="532" y="1028">)</text>
+  <text class="bp-node" x="586" y="990">3</text>
+  <rect x="562" y="1003" width="48" height="48" rx="7" fill="#d0bfff" stroke="#5f3dc4" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="563" y="1002" width="46" height="49" rx="7" class="bp-rough" stroke="#5f3dc4"/>
+  <text class="bp-paren" x="586" y="1028">)</text>
+  <text class="bp-node" x="640" y="990">5</text>
+  <rect x="616" y="1003" width="48" height="48" rx="7" fill="#b2f2bb" stroke="#2b8a3e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="617" y="1002" width="46" height="49" rx="7" class="bp-rough" stroke="#2b8a3e"/>
+  <text class="bp-paren" x="640" y="1028">(</text>
+  <text class="bp-node" x="694" y="990">4</text>
+  <rect x="670" y="1003" width="48" height="48" rx="7" fill="#ffd8a8" stroke="#9a5030" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="671" y="1002" width="46" height="49" rx="7" class="bp-rough" stroke="#9a5030"/>
+  <text class="bp-paren" x="694" y="1028">(</text>
+  <text class="bp-node" x="748" y="990">4</text>
+  <rect x="724" y="1003" width="48" height="48" rx="7" fill="#ffd8a8" stroke="#9a5030" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="725" y="1002" width="46" height="49" rx="7" class="bp-rough" stroke="#9a5030"/>
+  <text class="bp-paren" x="748" y="1028">)</text>
+  <text class="bp-node" x="802" y="990">5</text>
+  <rect x="778" y="1003" width="48" height="48" rx="7" fill="#b2f2bb" stroke="#2b8a3e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="779" y="1002" width="46" height="49" rx="7" class="bp-rough" stroke="#2b8a3e"/>
+  <text class="bp-paren" x="802" y="1028">)</text>
+  <text class="bp-node" x="856" y="990">6</text>
+  <rect x="832" y="1003" width="48" height="48" rx="7" fill="#eebefa" stroke="#862e9c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="833" y="1002" width="46" height="49" rx="7" class="bp-rough" stroke="#862e9c"/>
+  <text class="bp-paren" x="856" y="1028">(</text>
+  <text class="bp-node" x="910" y="990">6</text>
+  <rect x="886" y="1003" width="48" height="48" rx="7" fill="#eebefa" stroke="#862e9c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="887" y="1002" width="46" height="49" rx="7" class="bp-rough" stroke="#862e9c"/>
+  <text class="bp-paren" x="910" y="1028">)</text>
+  <text class="bp-node" x="964" y="990">7</text>
+  <rect x="940" y="1003" width="48" height="48" rx="7" fill="#ffc9c9" stroke="#c92a2a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="941" y="1002" width="46" height="49" rx="7" class="bp-rough" stroke="#c92a2a"/>
+  <text class="bp-paren" x="964" y="1028">(</text>
+  <text class="bp-node" x="1018" y="990">7</text>
+  <rect x="994" y="1003" width="48" height="48" rx="7" fill="#ffc9c9" stroke="#c92a2a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="995" y="1002" width="46" height="49" rx="7" class="bp-rough" stroke="#c92a2a"/>
+  <text class="bp-paren" x="1018" y="1028">)</text>
+
+  </g>
+</svg>

@@ -186,7 +186,7 @@ class HybridBTreePlusMinusOne {
     const std::size_t left_leaf = leaf_for_position(left);
     const std::size_t right_leaf = leaf_for_position(right - 1);
     if (left_leaf == right_leaf) {
-      return leaf_range_min(left_leaf, left, right).position;
+      return leaf_range_arg_min_relative(left_leaf, left, right);
     }
 
     const auto [level, node] = covering_node(left_leaf, right_leaf);
@@ -684,15 +684,21 @@ class HybridBTreePlusMinusOne {
   }
 
   /**
-   * @brief Load all delta words aligned to a leaf boundary.
+   * @brief Return two contiguous words for a 128-bit leaf chunk.
+   *
+   * @details Most Cartesian BP storage is padded, so the returned pointer can
+   * usually address the original input span directly. The temporary storage is
+   * used only for the final partial chunk of standalone depth-RMQ indexes.
    */
-  std::array<std::uint64_t, kLeafWords> leaf_bits(std::size_t leaf) const {
-    std::array<std::uint64_t, kLeafWords> bits{};
-    const std::size_t first_word = leaf * kLeafWords;
-    for (std::size_t word = 0; word < kLeafWords; ++word) {
-      bits[word] = word_or_zero(first_word + word);
+  const std::uint64_t* chunk_words_or_copy(
+      std::size_t first_word,
+      std::array<std::uint64_t, 2>& storage) const {
+    if (first_word + 1 < input_bits_.size()) {
+      return input_bits_.data() + first_word;
     }
-    return bits;
+    storage[0] = word_or_zero(first_word);
+    storage[1] = word_or_zero(first_word + 1);
+    return storage.data();
   }
 
   /**
@@ -734,19 +740,23 @@ class HybridBTreePlusMinusOne {
     }
     right_offset = std::min(right_offset, count - 1);
 
-    const auto bits = leaf_bits(leaf);
     DepthCandidate answer;
     std::int64_t chunk_base_excess = 0;
+    const std::size_t first_word = leaf * kLeafWords;
     for (std::size_t chunk = 0; chunk < kLeafChunks; ++chunk) {
       const std::size_t chunk_begin = chunk * 128;
       if (chunk_begin >= count || chunk_begin > right_offset) {
         break;
       }
 
+      std::array<std::uint64_t, 2> chunk_storage{};
+      const std::uint64_t* chunk_words =
+          chunk_words_or_copy(first_word + 2 * chunk, chunk_storage);
+
       const std::size_t chunk_end =
           std::min<std::size_t>(count - 1, chunk_begin + 127);
       if (left_offset > chunk_end) {
-        chunk_base_excess += prefix_excess_128(bits.data() + 2 * chunk, 128);
+        chunk_base_excess += prefix_excess_128(chunk_words, 128);
         continue;
       }
 
@@ -755,7 +765,7 @@ class HybridBTreePlusMinusOne {
       const std::size_t local_right =
           std::min(right_offset, chunk_end) - chunk_begin;
       const ExcessResult result =
-          excess_min_128(bits.data() + 2 * chunk, local_left, local_right);
+          excess_min_128(chunk_words, local_left, local_right);
       const std::size_t offset = chunk_begin + result.offset;
       if (result.offset != npos && offset < count) {
         answer = better_candidate(
@@ -763,9 +773,84 @@ class HybridBTreePlusMinusOne {
                      base_depth + chunk_base_excess + result.min_excess});
       }
 
-      chunk_base_excess += prefix_excess_128(bits.data() + 2 * chunk, 128);
+      chunk_base_excess += prefix_excess_128(chunk_words, 128);
     }
     return answer;
+  }
+
+  /**
+   * @brief Return the first minimum position in one leaf without global rank.
+   *
+   * @details This is the same-leaf fast path. It compares prefix depths after
+   * subtracting the depth at the query's left endpoint, which preserves the
+   * arg-min position while avoiding an absolute `rank()` query.
+   */
+  std::size_t leaf_range_arg_min_relative(std::size_t leaf,
+                                          std::size_t left,
+                                          std::size_t right) const {
+    if (left >= right) {
+      return npos;
+    }
+
+    const std::size_t begin = node_position_begin(0, leaf);
+    const std::size_t count = entry_count(0, leaf);
+    std::size_t left_offset = left - begin;
+    std::size_t right_offset = right - begin - 1;
+    if (count == 0 || left_offset >= count || left_offset > right_offset) {
+      return npos;
+    }
+    right_offset = std::min(right_offset, count - 1);
+
+    std::size_t best_position = npos;
+    std::int64_t best_depth = std::numeric_limits<std::int64_t>::max();
+    std::int64_t chunk_base_excess = 0;
+    bool first_chunk = true;
+
+    const std::size_t first_word = leaf * kLeafWords;
+    std::size_t chunk = left_offset / 128;
+    for (; chunk < kLeafChunks; ++chunk) {
+      const std::size_t chunk_begin = chunk * 128;
+      if (chunk_begin >= count || chunk_begin > right_offset) {
+        break;
+      }
+
+      std::array<std::uint64_t, 2> chunk_storage{};
+      const std::uint64_t* chunk_words =
+          chunk_words_or_copy(first_word + 2 * chunk, chunk_storage);
+
+      const std::size_t chunk_end =
+          std::min<std::size_t>(count - 1, chunk_begin + 127);
+      const std::size_t local_left =
+          std::max(left_offset, chunk_begin) - chunk_begin;
+      const std::size_t local_right =
+          std::min(right_offset, chunk_end) - chunk_begin;
+      const int left_prefix =
+          first_chunk ? prefix_excess_128(chunk_words, local_left) : 0;
+      const std::int64_t local_base =
+          first_chunk ? -static_cast<std::int64_t>(left_prefix)
+                      : chunk_base_excess;
+      const ExcessResult result =
+          excess_min_128(chunk_words, local_left, local_right);
+      const std::size_t offset = chunk_begin + result.offset;
+      if (result.offset != npos && offset < count) {
+        const std::int64_t candidate_depth = local_base + result.min_excess;
+        if (best_position == npos || candidate_depth < best_depth) {
+          best_position = begin + offset;
+          best_depth = candidate_depth;
+        }
+      }
+
+      const int chunk_excess = prefix_excess_128(chunk_words, 128);
+      if (first_chunk) {
+        chunk_base_excess =
+            static_cast<std::int64_t>(chunk_excess) - left_prefix;
+        first_chunk = false;
+      } else {
+        chunk_base_excess += chunk_excess;
+      }
+    }
+
+    return best_position;
   }
 
   /**
@@ -1261,9 +1346,15 @@ class HybridBTreePlusMinusOne {
 template <class T,
           class Compare = std::less<T>,
           class Index = std::size_t,
-          std::size_t LeafSize = 512>
+          std::size_t LeafSize = 512,
+          bool UseTopSparseOverlay = true>
 class CartesianHybridBTree
-    : public RmqBase<CartesianHybridBTree<T, Compare, Index, LeafSize>, T> {
+    : public RmqBase<CartesianHybridBTree<T,
+                                          Compare,
+                                          Index,
+                                          LeafSize,
+                                          UseTopSparseOverlay>,
+                     T> {
  public:
   static_assert(std::is_unsigned_v<Index>,
                 "CartesianHybridBTree index type must be unsigned");
@@ -1271,12 +1362,14 @@ class CartesianHybridBTree
                 "CartesianHybridBTree leaf size must be a positive "
                 "multiple of 512");
 
-  using Self = CartesianHybridBTree<T, Compare, Index, LeafSize>;
+  using Self =
+      CartesianHybridBTree<T, Compare, Index, LeafSize, UseTopSparseOverlay>;
 
   static constexpr std::size_t npos = RmqBase<Self, T>::npos;
   static constexpr Index invalid_index = std::numeric_limits<Index>::max();
   static constexpr std::size_t kMinTopSparseBlockSize = 4096;
   static constexpr std::size_t kMaxTopSparseBlocks = std::size_t{1} << 14;
+  static constexpr bool kUseTopSparseOverlay = UseTopSparseOverlay;
 
   /**
    * @brief Construct an empty Cartesian-tree RMQ index.
@@ -1389,6 +1482,9 @@ class CartesianHybridBTree
   std::size_t arg_min_impl(std::size_t left, std::size_t right) const {
     if (left >= right || right > values_.size()) {
       return npos;
+    }
+    if constexpr (!UseTopSparseOverlay) {
+      return cartesian_arg_min(left, right);
     }
     if (right - left <= top_block_size_) {
       return cartesian_arg_min(left, right);
@@ -1510,7 +1606,9 @@ class CartesianHybridBTree
     bp_bits_.resize(padded_bp_bit_capacity());
     std::ranges::fill(bp_storage_words(), std::uint64_t{0});
     build_bp_bits();
-    build_top_sparse_table();
+    if constexpr (UseTopSparseOverlay) {
+      build_top_sparse_table();
+    }
     reset_bp_indexes();
   }
 
@@ -1520,19 +1618,24 @@ class CartesianHybridBTree
   void build_bp_bits() {
     utils::SuccinctIncreasingStack stack(values_.size());
     std::size_t write_position = bp_bit_count_;
+    std::span<std::uint64_t> words = bp_storage_words();
+    const auto prepend_open = [&]() {
+      --write_position;
+      words[write_position >> 6] |= std::uint64_t{1} << (write_position & 63);
+    };
 
     for (std::size_t i = values_.size(); i-- > 0;) {
       while (!stack.empty() &&
              !compare_(values_[stack_index(stack.top())], values_[i])) {
         stack.pop();
-        prepend_bp_bit(write_position, true);
+        prepend_open();
       }
       stack.push(stack_key(i));
-      prepend_bp_bit(write_position, false);
+      --write_position;
     }
 
     while (write_position != 0) {
-      prepend_bp_bit(write_position, true);
+      prepend_open();
     }
   }
 
@@ -1550,17 +1653,6 @@ class CartesianHybridBTree
    */
   std::size_t stack_index(std::size_t key) const {
     return values_.size() - 1 - key;
-  }
-
-  /**
-   * @brief Prepend one BP bit into the right-to-left construction buffer.
-   */
-  void prepend_bp_bit(std::size_t& write_position, bool bit) {
-    --write_position;
-    if (bit) {
-      bp_storage_words()[write_position >> 6] |= std::uint64_t{1}
-                                                 << (write_position & 63);
-    }
   }
 
   /**
@@ -1806,5 +1898,19 @@ class CartesianHybridBTree
   std::optional<BitVector> bp_index_;
   BpDepthRmq bp_depth_rmq_;
 };
+
+/**
+ * @brief Cartesian-tree RMQ variant without the value-level top sparse overlay.
+ *
+ * @details This alias keeps the same Cartesian BP encoding and BP-depth B-tree
+ * backend as `CartesianHybridBTree`, but every query goes directly through the
+ * Cartesian-tree reduction. It is useful as a stable benchmark reference for
+ * measuring the value-level top sparse table separately.
+ */
+template <class T,
+          class Compare = std::less<T>,
+          class Index = std::size_t,
+          std::size_t LeafSize = 512>
+using CartesianBTree = CartesianHybridBTree<T, Compare, Index, LeafSize, false>;
 
 }  // namespace pixie::rmq
