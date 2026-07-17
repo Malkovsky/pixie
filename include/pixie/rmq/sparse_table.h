@@ -1,8 +1,8 @@
 #pragma once
 
-#include <pixie/storage/aligned.h>
 #include <pixie/memory_usage.h>
 #include <pixie/rmq.h>
+#include <pixie/storage/aligned.h>
 
 #include <algorithm>
 #include <bit>

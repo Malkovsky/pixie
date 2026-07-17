@@ -11,14 +11,7 @@ find "${BUILD_DIR}" -name "*.gcda" -delete
 find "${BUILD_DIR}" -name "*.gcov" -delete
 rm -f "${BUILD_DIR}/coverage.txt" "${BUILD_DIR}/gcov_files.txt"
 
-"${BUILD_DIR}/unittests"
-"${BUILD_DIR}/excess_positions_tests"
-"${BUILD_DIR}/louds_tree_tests"
-"${BUILD_DIR}/bp_tree_tests"
-"${BUILD_DIR}/dfuds_tree_tests"
-"${BUILD_DIR}/test_rmm"
-"${BUILD_DIR}/wavelet_tree_tests"
-"${BUILD_DIR}/rmq_tests"
+ctest --preset coverage
 
 cd "${BUILD_DIR}"
 find . -name "*.gcda" > gcov_files.txt

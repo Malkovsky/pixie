@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
-#include <pixie/storage/aligned.h>
 #include <pixie/rmq/implementations.h>
 #include <pixie/rmq/utils/succinct_monotone_stack.h>
+#include <pixie/storage/aligned.h>
 
 #include <algorithm>
 #include <cstdint>
