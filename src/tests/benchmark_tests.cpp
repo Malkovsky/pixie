@@ -1,14 +1,11 @@
 #include <gtest/gtest.h>
 #include <pixie/bits.h>
-#include <pixie/bitvector.h>
+#include <pixie/rank_select/implementations.h>
 
 #include <numeric>
 #include <random>
 
-using pixie::BitVector;
-using pixie::BitVectorInterleaved;
-
-TEST(BitVectorBenchmarkTest, SelectNonInterleaved10PercentFill) {
+TEST(RankSelectBenchmarkTest, Select10PercentFill) {
   for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 
@@ -19,7 +16,7 @@ TEST(BitVectorBenchmarkTest, SelectNonInterleaved10PercentFill) {
       bits[pos / 64] |= (1ULL << pos % 64);
     }
 
-    pixie::BitVector bv(bits, n);
+    pixie::RankSelectSupport<> bv(bits, n);
 
     auto max_rank = bv.rank(bv.size()) + 1;
     for (int i = 0; i < 100000; i++) {
@@ -29,7 +26,7 @@ TEST(BitVectorBenchmarkTest, SelectNonInterleaved10PercentFill) {
   }
 }
 
-TEST(BitVectorBenchmarkTest, SelectZeroNonInterleaved10PercentFill) {
+TEST(RankSelectBenchmarkTest, SelectZero10PercentFill) {
   for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 
@@ -40,7 +37,7 @@ TEST(BitVectorBenchmarkTest, SelectZeroNonInterleaved10PercentFill) {
       bits[pos / 64] |= (1ULL << pos % 64);
     }
 
-    pixie::BitVector bv(bits, n);
+    pixie::RankSelectSupport<> bv(bits, n);
 
     auto max_rank0 = bv.rank0(bv.size()) + 1;
     for (int i = 0; i < 100000; i++) {
@@ -50,7 +47,7 @@ TEST(BitVectorBenchmarkTest, SelectZeroNonInterleaved10PercentFill) {
   }
 }
 
-TEST(BitVectorBenchmarkTest, SelectNonInterleaved90PercentFill) {
+TEST(RankSelectBenchmarkTest, Select90PercentFill) {
   for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 
@@ -61,7 +58,7 @@ TEST(BitVectorBenchmarkTest, SelectNonInterleaved90PercentFill) {
       bits[pos / 64] |= (1ULL << pos % 64);
     }
 
-    pixie::BitVector bv(bits, n);
+    pixie::RankSelectSupport<> bv(bits, n);
 
     auto max_rank = bv.rank(bv.size()) + 1;
     for (int i = 0; i < 100000; i++) {
@@ -71,7 +68,7 @@ TEST(BitVectorBenchmarkTest, SelectNonInterleaved90PercentFill) {
   }
 }
 
-TEST(BitVectorBenchmarkTest, SelectZeroNonInterleaved90PercentFill) {
+TEST(RankSelectBenchmarkTest, SelectZero90PercentFill) {
   for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 
@@ -82,7 +79,7 @@ TEST(BitVectorBenchmarkTest, SelectZeroNonInterleaved90PercentFill) {
       bits[pos / 64] |= (1ULL << pos % 64);
     }
 
-    pixie::BitVector bv(bits, n);
+    pixie::RankSelectSupport<> bv(bits, n);
 
     auto max_rank0 = bv.rank0(bv.size()) + 1;
     for (int i = 0; i < 100000; i++) {
@@ -92,7 +89,7 @@ TEST(BitVectorBenchmarkTest, SelectZeroNonInterleaved90PercentFill) {
   }
 }
 
-TEST(BitVectorBenchmarkTest, SelectNonInterleaved) {
+TEST(RankSelectBenchmarkTest, Select) {
   for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 
@@ -100,7 +97,7 @@ TEST(BitVectorBenchmarkTest, SelectNonInterleaved) {
     for (auto& x : bits) {
       x = rng();
     }
-    pixie::BitVector bv(bits, n);
+    pixie::RankSelectSupport<> bv(bits, n);
 
     auto max_rank = bv.rank(bv.size()) + 1;
 
@@ -111,7 +108,7 @@ TEST(BitVectorBenchmarkTest, SelectNonInterleaved) {
   }
 }
 
-TEST(BitVectorBenchmarkTest, SelectZeroNonInterleaved) {
+TEST(RankSelectBenchmarkTest, SelectZero) {
   for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 
@@ -119,7 +116,7 @@ TEST(BitVectorBenchmarkTest, SelectZeroNonInterleaved) {
     for (auto& x : bits) {
       x = rng();
     }
-    pixie::BitVector bv(bits, n);
+    pixie::RankSelectSupport<> bv(bits, n);
 
     auto max_rank0 = bv.rank0(bv.size()) + 1;
 

@@ -1,8 +1,12 @@
 #pragma once
 
-#include <pixie/rmm_tree.h>
+#include <pixie/rmm/tree.h>
+#include <pixie/tree.h>
 
-#include "utils.h"
+#include <cstddef>
+#include <cstdint>
+#include <utility>
+#include <vector>
 
 namespace pixie {
 
@@ -11,7 +15,7 @@ namespace pixie {
  * representation
  */
 template <typename RMMTree>
-class BPTree {
+class BPTree : public TreeBase<BPTree<RMMTree>> {
  private:
   const size_t num_bits_;
   RMMTree rmm_;
@@ -20,16 +24,7 @@ class BPTree {
   /**
    * @brief A node class of BP tree
    */
-  struct Node {
-    size_t number;
-    size_t pos;
-
-    /**
-     * @brief A node class of BP tree
-     */
-    Node(size_t node_number, size_t bp_pos)
-        : number(node_number), pos(bp_pos) {}
-  };
+  using Node = TreeNode;
 
   /**
    * @brief Constructor from an external array of uint64_t
@@ -40,24 +35,24 @@ class BPTree {
   /**
    * @brief Returns the root node
    */
-  Node root() const { return Node(0, 0); }
+  Node root_impl() const { return Node(0, 0); }
 
   /**
    * @brief Returns the size of the tree
    */
-  size_t size() const { return num_bits_ / 2; }
+  size_t size_impl() const { return num_bits_ / 2; }
 
   /**
    * @brief Indicates if @p node is a leaf
    */
-  bool is_leaf(const Node& node) const {
+  bool is_leaf_impl(const Node& node) const {
     return (node.pos + 2 == num_bits_) or rmm_.bit(node.pos + 1) == 0;
   }
 
   /**
    * @brief Indicates if @p node is a root
    */
-  bool is_root(const Node& node) { return node.number == 0; }
+  bool is_root_impl(const Node& node) const { return node.number == 0; }
 
   /**
    * @brief Returns the number of children of a @p node
@@ -65,17 +60,17 @@ class BPTree {
    *
    *    TODO try make this faster
    */
-  size_t degree(const Node& node) const {
-    if (is_leaf(node)) {
+  size_t degree_impl(const Node& node) const {
+    if (is_leaf_impl(node)) {
       return 0;
     }
-    Node child = first_child(node);
+    Node child = first_child_impl(node);
     size_t child_count = 1;
     while (true) {
-      if (is_last_child(child)) {
+      if (is_last_child_impl(child)) {
         return child_count;
       }
-      child = next_sibling(child);
+      child = next_sibling_impl(child);
       child_count++;
     }
   }
@@ -83,7 +78,7 @@ class BPTree {
   /**
    * @brief Returns first child of a @p node
    */
-  Node first_child(const Node& node) const {
+  Node first_child_impl(const Node& node) const {
     size_t pos = node.pos + 1;
     size_t num = node.number + 1;
     return Node(num, pos);
@@ -96,10 +91,10 @@ class BPTree {
    *
    *    TODO try make this faster
    */
-  Node child(const Node& node, size_t i) const {
-    Node child = first_child(node);
+  Node child_impl(const Node& node, size_t i) const {
+    Node child = first_child_impl(node);
     while (i--) {
-      child = next_sibling(child);
+      child = next_sibling_impl(child);
     }
     return child;
   }
@@ -108,9 +103,9 @@ class BPTree {
    * @brief Returns the parent of a @p node if @p node is not root,
    * else returns root
    */
-  Node parent(const Node& node) const {
+  Node parent_impl(const Node& node) const {
     if (node.number == 0) {
-      return root();
+      return root_impl();
     }
     size_t pos = rmm_.enclose(node.pos);
     size_t num = rmm_.rank1(pos);
@@ -120,7 +115,7 @@ class BPTree {
   /**
    * @brief Indicates if @p node is last child
    */
-  bool is_last_child(const Node& node) const {
+  bool is_last_child_impl(const Node& node) const {
     size_t end = rmm_.close(node.pos);
 
     return end + 2 >= num_bits_ or rmm_.bit(end + 1) == 0;
@@ -129,7 +124,7 @@ class BPTree {
   /**
    * @brief Returns next sibling of a @p node
    */
-  Node next_sibling(const Node& node) const {
+  Node next_sibling_impl(const Node& node) const {
     size_t pos = rmm_.close(node.pos) + 1;
     size_t num = rmm_.rank1(pos + 1) - 1;
     return Node(num, pos);

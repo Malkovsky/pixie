@@ -1,5 +1,13 @@
 #pragma once
 
+/**
+ * @file rmm.h
+ * @brief Common interface for rank/select and range min-max indexes.
+ *
+ * Include `<pixie/rmm/implementations.h>` to use Pixie's concrete RmM
+ * implementations and optional adapters.
+ */
+
 #include <cstddef>
 #include <limits>
 
@@ -13,6 +21,9 @@ namespace pixie {
  * query is outside the valid domain. Balanced-parentheses navigation follows
  * SDSL-style zero-based parenthesis indexing: close/open/enclose accept and
  * return bit positions, not prefix-boundary positions.
+ *
+ * @see `<pixie/rmm/implementations.h>` for the available concrete
+ * implementations.
  */
 template <class Impl>
 class RmMBase {

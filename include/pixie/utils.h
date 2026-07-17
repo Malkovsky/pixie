@@ -1,6 +1,6 @@
 #pragma once
 
-#include <pixie/louds_tree.h>
+#include <pixie/tree/louds.h>
 
 #include <queue>
 #include <random>
@@ -178,6 +178,13 @@ class AdjListTree {
    * @brief Returns next sibling of a @p node
    */
   AdjListNode next_sibling(const AdjListNode& node) const {
-    return AdjListNode(node.number + 1);
+    const size_t parent_number = parent(node).number;
+    const auto& siblings = adj[parent_number];
+    for (size_t i = 1; i + 1 < siblings.size(); ++i) {
+      if (siblings[i] == node.number) {
+        return AdjListNode(siblings[i + 1]);
+      }
+    }
+    return node;
   }
 };

@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.18)
 project(pixie)
 
+set(PIXIE_IS_TOP_LEVEL OFF)
+if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+    set(PIXIE_IS_TOP_LEVEL ON)
+endif ()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -33,7 +38,7 @@ endif ()
 # ---------------------------------------------------------------------------
 # Build options
 # ---------------------------------------------------------------------------
-option(PIXIE_TESTS "Build unit tests" ON)
+option(PIXIE_TESTS "Build unit tests" ${PIXIE_IS_TOP_LEVEL})
 option(PIXIE_BENCHMARKS "Build benchmarks" OFF)
 option(PIXIE_THIRD_PARTY_BACKENDS "Build optional third-party backend integrations" OFF)
 option(PIXIE_DIAGNOSTICS "Include diagnostic logs" OFF)
@@ -119,12 +124,23 @@ if (PIXIE_TESTS)
     include(GoogleTest)
 endif ()
 
-FetchContent_Declare(
-        mio
-        GIT_REPOSITORY https://github.com/vimpunk/mio.git
-        GIT_TAG master
-)
-FetchContent_MakeAvailable(mio)
+# Downstream consumers link this target; Pixie itself remains header-only.
+add_library(pixie INTERFACE)
+add_library(pixie::pixie ALIAS pixie)
+target_compile_features(pixie INTERFACE cxx_std_20)
+target_include_directories(pixie INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+
+if (PIXIE_DIAGNOSTICS)
+    target_compile_definitions(pixie INTERFACE PIXIE_DIAGNOSTICS)
+    target_link_libraries(pixie INTERFACE spdlog::spdlog_header_only)
+endif ()
+
+if (PIXIE_THIRD_PARTY_BACKENDS)
+    target_compile_definitions(pixie INTERFACE SDSL_SUPPORT)
+    target_include_directories(pixie INTERFACE
+            $<BUILD_INTERFACE:${sdsl_lite_SOURCE_DIR}/include>)
+endif ()
 
 # ---------------------------------------------------------------------------
 # Unit tests
@@ -132,14 +148,31 @@ FetchContent_MakeAvailable(mio)
 if (PIXIE_TESTS)
     enable_testing()
 
-    add_executable(unittests
-            src/tests/unittests.cpp)
-    target_include_directories(unittests
+    add_executable(bit_algorithms_unittests
+            src/tests/bits_unittests.cc)
+    target_include_directories(bit_algorithms_unittests
             PUBLIC include)
-    target_link_libraries(unittests
+    target_link_libraries(bit_algorithms_unittests
             gtest
             gtest_main
-            mio
+            ${PIXIE_DIAGNOSTICS_LIBS})
+
+    add_executable(rank_select_unittests
+            src/tests/rank_select_unittests.cc)
+    target_include_directories(rank_select_unittests
+            PUBLIC include)
+    target_link_libraries(rank_select_unittests
+            gtest
+            gtest_main
+            ${PIXIE_DIAGNOSTICS_LIBS})
+
+    add_executable(rank_select_tests
+            src/tests/rank_select_tests.cpp)
+    target_include_directories(rank_select_tests
+            PUBLIC include)
+    target_link_libraries(rank_select_tests
+            gtest
+            gtest_main
             ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(benchmark_tests
@@ -149,7 +182,6 @@ if (PIXIE_TESTS)
     target_link_libraries(benchmark_tests
             gtest
             gtest_main
-            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(test_rmm
@@ -160,21 +192,19 @@ if (PIXIE_TESTS)
     target_link_libraries(test_rmm
             gtest
             gtest_main
-            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
     if (PIXIE_THIRD_PARTY_BACKENDS)
         target_include_directories(test_rmm
                 PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
     endif ()
 
-    add_executable(louds_tree_tests
-            src/tests/louds_tree_tests.cpp)
-    target_include_directories(louds_tree_tests
+    add_executable(tree_tests
+            src/tests/tree_tests.cpp)
+    target_include_directories(tree_tests
             PUBLIC include)
-    target_link_libraries(louds_tree_tests
+    target_link_libraries(tree_tests
             gtest
             gtest_main
-            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(wavelet_tree_tests
@@ -184,7 +214,15 @@ if (PIXIE_TESTS)
     target_link_libraries(wavelet_tree_tests
             gtest
             gtest_main
-            mio
+            ${PIXIE_DIAGNOSTICS_LIBS})
+
+    add_executable(storage_tests
+            src/tests/storage_tests.cpp)
+    target_include_directories(storage_tests
+            PUBLIC include)
+    target_link_libraries(storage_tests
+            gtest
+            gtest_main
             ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(excess_positions_tests
@@ -194,27 +232,6 @@ if (PIXIE_TESTS)
     target_link_libraries(excess_positions_tests
             gtest
             gtest_main
-            mio
-            ${PIXIE_DIAGNOSTICS_LIBS})
-
-    add_executable(bp_tree_tests
-            src/tests/bp_tree_tests.cpp)
-    target_include_directories(bp_tree_tests
-            PUBLIC include)
-    target_link_libraries(bp_tree_tests
-            gtest
-            gtest_main
-            mio
-            ${PIXIE_DIAGNOSTICS_LIBS})
-
-    add_executable(dfuds_tree_tests
-            src/tests/dfuds_tree_tests.cpp)
-    target_include_directories(dfuds_tree_tests
-            PUBLIC include)
-    target_link_libraries(dfuds_tree_tests
-            gtest
-            gtest_main
-            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(excess_record_lows_tests
@@ -233,74 +250,89 @@ if (PIXIE_TESTS)
     target_link_libraries(rmq_tests
             gtest
             gtest_main
-            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
     if (PIXIE_THIRD_PARTY_BACKENDS)
         target_include_directories(rmq_tests
                 PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
     endif ()
+
+    set(PIXIE_TEST_TARGETS
+            bit_algorithms_unittests
+            rank_select_unittests
+            rank_select_tests
+            benchmark_tests
+            test_rmm
+            tree_tests
+            wavelet_tree_tests
+            storage_tests
+            excess_positions_tests
+            excess_record_lows_tests
+            rmq_tests)
+    foreach (test_target IN LISTS PIXIE_TEST_TARGETS)
+        gtest_discover_tests(${test_target}
+                DISCOVERY_MODE PRE_TEST
+                TEST_PREFIX "${test_target}."
+                PROPERTIES LABELS "${test_target}")
+    endforeach ()
 endif ()
 
 # ---------------------------------------------------------------------------
 # Benchmarks (Pixie-only and comparison benchmarks)
 # ---------------------------------------------------------------------------
 if (PIXIE_BENCHMARKS)
-    add_executable(benchmarks
-            src/benchmarks/benchmarks.cpp)
-    target_include_directories(benchmarks
+    add_executable(rank_select_benchmarks
+            src/benchmarks/rank_select_benchmarks.cpp)
+    target_include_directories(rank_select_benchmarks
             PUBLIC include)
-    target_link_libraries(benchmarks
+    target_link_libraries(rank_select_benchmarks
             benchmark
-            benchmark_main
-            mio
+            ${PIXIE_DIAGNOSTICS_LIBS})
+
+    add_executable(rmm_benchmarks
+            src/benchmarks/rmm_benchmarks.cpp)
+    target_include_directories(rmm_benchmarks
+            PUBLIC include)
+    target_link_libraries(rmm_benchmarks
+            benchmark
             ${PIXIE_DIAGNOSTICS_LIBS})
     if (PIXIE_THIRD_PARTY_BACKENDS)
-        target_link_libraries(benchmarks pasta_bit_vector)
-        target_compile_definitions(benchmarks PRIVATE PIXIE_THIRD_PARTY_BENCHMARKS)
-    else ()
-        target_link_libraries(mio)
+        target_include_directories(rmm_benchmarks
+                PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
     endif ()
 
-    add_executable(bench_rmm
-            src/benchmarks/bench_rmm.cpp)
-    target_include_directories(bench_rmm
+    add_executable(rmm_btree_benchmarks
+            src/benchmarks/rmm_btree_benchmarks.cpp)
+    target_include_directories(rmm_btree_benchmarks
             PUBLIC include)
-    target_link_libraries(bench_rmm
+    target_link_libraries(rmm_btree_benchmarks
             benchmark
-            mio
-            ${PIXIE_DIAGNOSTICS_LIBS})
-
-    add_executable(bench_rmm_btree
-            src/benchmarks/bench_rmm_btree.cpp)
-    target_include_directories(bench_rmm_btree
-            PUBLIC include)
-    target_link_libraries(bench_rmm_btree
-            benchmark
-            mio
-            ${PIXIE_DIAGNOSTICS_LIBS})
-
-    add_executable(bench_rmq
-            src/benchmarks/bench_rmq.cpp)
-    target_include_directories(bench_rmq
-            PUBLIC include)
-    target_link_libraries(bench_rmq
-            benchmark
-            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
     if (PIXIE_THIRD_PARTY_BACKENDS)
-        target_include_directories(bench_rmq
+        target_include_directories(rmm_btree_benchmarks
                 PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
-        target_compile_definitions(bench_rmq
+    endif ()
+
+    add_executable(rmq_benchmarks
+            src/benchmarks/rmq_benchmarks.cpp)
+    target_include_directories(rmq_benchmarks
+            PUBLIC include)
+    target_link_libraries(rmq_benchmarks
+            benchmark
+            ${PIXIE_DIAGNOSTICS_LIBS})
+    if (PIXIE_THIRD_PARTY_BACKENDS)
+        target_include_directories(rmq_benchmarks
+                PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
+        target_compile_definitions(rmq_benchmarks
                 PRIVATE PIXIE_THIRD_PARTY_BENCHMARKS)
     endif ()
 
     if (PIXIE_THIRD_PARTY_BACKENDS)
-        add_executable(bench_rmm_sdsl
-                src/benchmarks/bench_rmm_sdsl.cpp)
-        target_include_directories(bench_rmm_sdsl
+        add_executable(rmm_sdsl_benchmarks
+                src/benchmarks/rmm_sdsl_benchmarks.cpp)
+        target_include_directories(rmm_sdsl_benchmarks
                 PUBLIC include
                 PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
-        target_link_libraries(bench_rmm_sdsl
+        target_link_libraries(rmm_sdsl_benchmarks
                 PRIVATE
                 benchmark
                 ${PIXIE_DIAGNOSTICS_LIBS})
@@ -313,7 +345,6 @@ if (PIXIE_BENCHMARKS)
     target_link_libraries(louds_tree_benchmarks
             benchmark
             benchmark_main
-            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(wavelet_tree_benchmarks
@@ -323,7 +354,6 @@ if (PIXIE_BENCHMARKS)
     target_link_libraries(wavelet_tree_benchmarks
             benchmark
             benchmark_main
-            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(bp_tree_benchmarks
@@ -333,7 +363,6 @@ if (PIXIE_BENCHMARKS)
     target_link_libraries(bp_tree_benchmarks
             benchmark
             benchmark_main
-            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
     if (PIXIE_THIRD_PARTY_BACKENDS)
         target_include_directories(bp_tree_benchmarks
@@ -347,21 +376,19 @@ if (PIXIE_BENCHMARKS)
     target_link_libraries(dfuds_tree_benchmarks
             benchmark
             benchmark_main
-            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
     if (PIXIE_THIRD_PARTY_BACKENDS)
         target_include_directories(dfuds_tree_benchmarks
                 PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
     endif ()
 
-    add_executable(alignment_comparison
-            src/benchmarks/alignment_comparison.cpp)
-    target_include_directories(alignment_comparison
+    add_executable(alignment_comparison_benchmarks
+            src/benchmarks/alignment_comparison_benchmarks.cpp)
+    target_include_directories(alignment_comparison_benchmarks
             PUBLIC include)
-    target_link_libraries(alignment_comparison
+    target_link_libraries(alignment_comparison_benchmarks
             benchmark
             benchmark_main
-            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(excess_positions_benchmarks
@@ -371,7 +398,6 @@ if (PIXIE_BENCHMARKS)
     target_link_libraries(excess_positions_benchmarks
             benchmark
             benchmark_main
-            mio
             ${PIXIE_DIAGNOSTICS_LIBS})
 endif ()
 

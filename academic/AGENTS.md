@@ -110,13 +110,9 @@ To create a new paper: copy `papers/sample-paper/` directory and modify. Ensure 
 
 ## Key References
 
-The following works are foundational to Pixie's design:
-
-- **SPIDER** (Williams & Kurlin, 2023): Reference for BitVector implementation
-- **pasta-toolbox**: Reference implementation for comparison benchmarks
-- **sdsl-lite** (Gog et al., 2014): Predecessor succinct data structure library
-- **Navarro (2016)**: "Compact Data Structures" -- comprehensive textbook
-- **Jacobson (1989)**: Original PhD thesis on succinct graph representations
+`bibliography/references.bib` is the canonical bibliography for Pixie. Add and
+update references there rather than embedding paper citations in library
+descriptions or project guidance.
 
 ## Guidelines for AI Agents
 

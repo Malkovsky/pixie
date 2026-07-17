@@ -39,14 +39,14 @@ jobs:
           sudo mv doxygen-1.13.2/bin/doxygen /usr/local/bin/doxygen
         shell: bash
       - name: Cmake configure
-        run: cmake -S ${{github.workspace}} -B ${{github.workspace}}/build -DPIXIE_DOCS=ON -DPIXIE_TESTS=OFF -DPIXIE_BENCHMARKS=OFF
+        run: cmake --preset docs
       - name: Build docs
-        run: cmake --build ${{github.workspace}}/build --target docs
+        run: cmake --build --preset docs
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           # Upload entire repository
-          path: ${{github.workspace}}/build/docs/html
+          path: ${{github.workspace}}/build/docs/docs/html
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

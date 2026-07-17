@@ -1,13 +1,7 @@
 #include <gtest/gtest.h>
-#include <pixie/cache_line.h>
-#include <pixie/rmq.h>
-#include <pixie/rmq/cartesian_hybrid_btree.h>
-#include <pixie/rmq/cartesian_rmm.h>
+#include <pixie/rmq/implementations.h>
 #include <pixie/rmq/utils/succinct_monotone_stack.h>
-
-#ifdef SDSL_SUPPORT
-#include <pixie/rmq/sdsl_sct.h>
-#endif
+#include <pixie/storage/aligned.h>
 
 #include <algorithm>
 #include <cstdint>

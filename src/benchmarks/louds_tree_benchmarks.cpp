@@ -1,5 +1,5 @@
 #include <benchmark/benchmark.h>
-#include <pixie/louds_tree.h>
+#include <pixie/tree/implementations.h>
 #include <pixie/utils.h>
 
 #include <numeric>

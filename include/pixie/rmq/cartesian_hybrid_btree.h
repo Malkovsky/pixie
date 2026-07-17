@@ -1,11 +1,11 @@
 #pragma once
 
 #include <pixie/bits.h>
-#include <pixie/bitvector.h>
-#include <pixie/cache_line.h>
 #include <pixie/memory_usage.h>
-#include <pixie/rmq/rmq_base.h>
+#include <pixie/rank_select/support.h>
+#include <pixie/rmq.h>
 #include <pixie/rmq/utils/succinct_monotone_stack.h>
+#include <pixie/storage/aligned.h>
 
 #include <algorithm>
 #include <array>
@@ -103,7 +103,7 @@ class HybridBTreePlusMinusOne {
    */
   HybridBTreePlusMinusOne(std::span<const std::uint64_t> bits,
                           std::size_t depth_count,
-                          const BitVector& rank_index) {
+                          const RankSelectSupport<>& rank_index) {
     build(bits, depth_count, rank_index);
   }
 
@@ -122,7 +122,7 @@ class HybridBTreePlusMinusOne {
    */
   void build(std::span<const std::uint64_t> bits,
              std::size_t depth_count,
-             const BitVector& rank_index) {
+             const RankSelectSupport<>& rank_index) {
     input_bits_ = bits;
     depth_count_ = depth_count;
     external_rank_index_ = &rank_index;
@@ -526,7 +526,7 @@ class HybridBTreePlusMinusOne {
     const std::size_t delta_count = depth_count_ - 1;
     if (external_rank_index_ == nullptr) {
       owned_rank_index_.emplace(input_bits_, delta_count,
-                                BitVector::SelectSupport::kSelect0);
+                                RankSelectSupport<>::SelectSupport::kSelect0);
     } else if (external_rank_index_->size() < delta_count) {
       throw std::invalid_argument(
           "HybridBTreePlusMinusOne external rank index is too small");
@@ -704,7 +704,7 @@ class HybridBTreePlusMinusOne {
   /**
    * @brief Return the active BP rank/select support, if one exists.
    */
-  const BitVector* rank_index_or_null() const {
+  const RankSelectSupport<>* rank_index_or_null() const {
     return external_rank_index_ != nullptr
                ? external_rank_index_
                : (owned_rank_index_ ? &*owned_rank_index_ : nullptr);
@@ -713,7 +713,9 @@ class HybridBTreePlusMinusOne {
   /**
    * @brief Return the active BP rank/select support.
    */
-  const BitVector& rank_index() const { return *rank_index_or_null(); }
+  const RankSelectSupport<>& rank_index() const {
+    return *rank_index_or_null();
+  }
 
   /**
    * @brief Return the absolute open-minus-close depth at a BP depth position.
@@ -1305,8 +1307,8 @@ class HybridBTreePlusMinusOne {
 
   std::span<const std::uint64_t> input_bits_;
   std::size_t depth_count_ = 0;
-  std::optional<BitVector> owned_rank_index_;
-  const BitVector* external_rank_index_ = nullptr;
+  std::optional<RankSelectSupport<>> owned_rank_index_;
+  const RankSelectSupport<>* external_rank_index_ = nullptr;
   std::vector<Bp512Selector> internal_selectors_;
   std::vector<Index> internal_min_positions_;
   std::vector<std::int64_t> internal_min_depths_;
@@ -1328,8 +1330,8 @@ class HybridBTreePlusMinusOne {
  *
  * @details This class follows the same public value-RMQ specification as the
  * other value RMQ backends. It builds a stable Ferrada-Navarro BP
- * Cartesian-tree encoding, uses `BitVector` for close-parenthesis rank/select,
- * and delegates the BP-depth minimum query to
+ * Cartesian-tree encoding, uses `RankSelectSupport<>` for close-parenthesis
+ * rank/select, and delegates the BP-depth minimum query to
  * `detail::HybridBTreePlusMinusOne`. The BP-depth backend keeps a configurable
  * low-level leaf size, fixed 192-entry middle nodes with embedded minima, and
  * fixed 256-entry high nodes. A single coarse value-level sparse table is
@@ -1577,7 +1579,7 @@ class CartesianHybridBTree
     if (shifted_min == npos || shifted_min == 0) {
       return npos;
     }
-    const BitVector& bp_index = *bp_index_;
+    const RankSelectSupport<>& bp_index = *bp_index_;
     const std::size_t answer = bp_index.rank0(shifted_min) - 1;
     return answer < values_.size() ? answer : npos;
   }
@@ -1667,7 +1669,8 @@ class CartesianHybridBTree
     const std::span<const std::uint64_t> words = bp_words();
     const std::span<const std::uint64_t> padded_words = bp_storage_words();
     // TODO: try incorporating rank/select information into the tree.
-    bp_index_.emplace(words, bp_bit_count_, BitVector::SelectSupport::kSelect0,
+    bp_index_.emplace(words, bp_bit_count_,
+                      RankSelectSupport<>::SelectSupport::kSelect0,
                       values_.size());
     bp_depth_rmq_ = BpDepthRmq(padded_words, bp_bit_count_ + 1, *bp_index_);
   }
@@ -1691,13 +1694,15 @@ class CartesianHybridBTree
   /**
    * @brief Return mutable padded BP storage as 64-bit words.
    */
-  std::span<std::uint64_t> bp_storage_words() { return bp_bits_.As64BitInts(); }
+  std::span<std::uint64_t> bp_storage_words() {
+    return bp_bits_.writable_words64();
+  }
 
   /**
    * @brief Return padded BP storage as 64-bit words.
    */
   std::span<const std::uint64_t> bp_storage_words() const {
-    return bp_bits_.AsConst64BitInts();
+    return bp_bits_.as_words64();
   }
 
   /**
@@ -1895,7 +1900,7 @@ class CartesianHybridBTree
   std::size_t top_block_size_ = kMinTopSparseBlockSize;
   std::size_t top_block_count_ = 0;
   std::size_t top_sparse_levels_ = 0;
-  std::optional<BitVector> bp_index_;
+  std::optional<RankSelectSupport<>> bp_index_;
   BpDepthRmq bp_depth_rmq_;
 };
 

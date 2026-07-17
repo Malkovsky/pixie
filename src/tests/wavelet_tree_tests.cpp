@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include <pixie/utils.h>
-#include <pixie/wavelet_tree.h>
+#include <pixie/wavelet_tree/implementations.h>
 
 #include <random>
 
@@ -164,12 +164,11 @@ TEST(WaveletTreeTest, SerializationSmoke) {
         reinterpret_cast<const std::byte*>(serialized_data.data()),
         serialized_data.size() * sizeof(uint64_t));
 
-    auto mmap_tree =
-        pixie::WaveletTreeBase<pixie::MmapViewStorage>::deserialize(byte_span);
+    auto view_tree = pixie::WaveletTreeView::deserialize(byte_span);
 
     for (size_t i = 0; i <= data_size; i += 16) {
       uint64_t symb = data[i == data_size ? 0 : i];
-      EXPECT_EQ(orig_tree.rank(symb, i), mmap_tree.rank(symb, i));
+      EXPECT_EQ(orig_tree.rank(symb, i), view_tree.rank(symb, i));
     }
 
     std::vector<size_t> count(alphabet_size, 0);
@@ -179,12 +178,12 @@ TEST(WaveletTreeTest, SerializationSmoke) {
 
     for (uint64_t symb = 0; symb < alphabet_size; symb++) {
       for (uint64_t rank = 1; rank <= count[symb]; rank++) {
-        EXPECT_EQ(orig_tree.select(symb, rank), mmap_tree.select(symb, rank));
+        EXPECT_EQ(orig_tree.select(symb, rank), view_tree.select(symb, rank));
       }
     }
 
     auto orig_segment = orig_tree.get_segment(0, data_size);
-    auto mmap_segment = mmap_tree.get_segment(0, data_size);
-    EXPECT_EQ(orig_segment, mmap_segment);
+    auto view_segment = view_tree.get_segment(0, data_size);
+    EXPECT_EQ(orig_segment, view_segment);
   }
 }

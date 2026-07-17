@@ -1,11 +1,5 @@
 #include <benchmark/benchmark.h>
-#include <pixie/rmq.h>
-#include <pixie/rmq/cartesian_hybrid_btree.h>
-#include <pixie/rmq/cartesian_rmm.h>
-
-#ifdef PIXIE_THIRD_PARTY_BENCHMARKS
-#include <pixie/rmq/sdsl_sct.h>
-#endif
+#include <pixie/rmq/implementations.h>
 
 #include <algorithm>
 #include <concepts>

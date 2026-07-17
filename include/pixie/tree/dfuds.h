@@ -1,10 +1,11 @@
 #pragma once
 
-#include <pixie/rmm_tree.h>
+#include <pixie/rmm/tree.h>
+#include <pixie/tree.h>
 
+#include <cstddef>
 #include <cstdint>
-
-#include "utils.h"
+#include <vector>
 
 namespace pixie {
 
@@ -13,23 +14,13 @@ namespace pixie {
  * representation
  */
 template <typename RMMTree>
-class DFUDSTree {
+class DFUDSTree : public TreeBase<DFUDSTree<RMMTree>> {
  private:
   const size_t num_bits_;
   RMMTree rmm_;
 
  public:
-  struct Node {
-    size_t number;
-
-    size_t pos;
-
-    /**
-     * @brief A node class of DFUDS tree
-     */
-    Node(size_t node_number, size_t dfuds_pos)
-        : number(node_number), pos(dfuds_pos) {}
-  };
+  using Node = TreeNode;
 
   /**
    * @brief Constructor from an external array of uint64_t
@@ -43,36 +34,36 @@ class DFUDSTree {
   /**
    * @brief Returns the root node
    */
-  static Node root() { return Node(0, 0); }
+  Node root_impl() const { return Node(0, 0); }
 
   /**
    * @brief Returns the size of the tree
    */
-  size_t size() const { return (num_bits_ + 1) / 2; }
+  size_t size_impl() const { return (num_bits_ + 1) / 2; }
 
   /**
    * @brief Indicates if @p node is a leaf
    */
-  bool is_leaf(const Node& node) const {
+  bool is_leaf_impl(const Node& node) const {
     return (node.pos + 1 == num_bits_) or rmm_.bit(node.pos) == 0;
   }
 
   /**
    * @brief Indicates if @p node is a root
    */
-  bool is_root(const Node& node) const { return node.number == 0; }
+  bool is_root_impl(const Node& node) const { return node.number == 0; }
 
   /**
    * @brief Returns the number of children of a @p node
    */
-  size_t degree(const Node& node) const {
+  size_t degree_impl(const Node& node) const {
     return rmm_.select0(node.number + 1) - node.pos;
   }
 
   /**
    * @brief Returns first child of a @p node
    */
-  Node first_child(const Node& node) {
+  Node first_child_impl(const Node& node) const {
     size_t pos = rmm_.select0(node.number + 1);
     size_t num = node.number + 1;
     return Node(num, pos + 1);
@@ -82,16 +73,18 @@ class DFUDSTree {
    * @brief Returns the i-th child of @p node
    * Indexing starts at 0
    */
-  Node child(const Node& node, size_t i) const {
-    size_t pos = rmm_.close(rmm_.select0(node.number + 1) - i) + 1;
-    size_t num = rmm_.rank0(pos);
-    return Node(num, pos);
+  Node child_impl(const Node& node, size_t i) const {
+    Node child = first_child_impl(node);
+    while (i--) {
+      child = next_sibling_impl(child);
+    }
+    return child;
   }
 
   /**
    * @brief Returns next sibling of a @p node
    */
-  Node next_sibling(const Node& node) const {
+  Node next_sibling_impl(const Node& node) const {
     size_t end = rmm_.fwdsearch(node.pos, -1);
     size_t pos = end + 1;
     size_t num = rmm_.rank0(pos);
@@ -102,9 +95,9 @@ class DFUDSTree {
    * @brief Returns the parent of a @p node if @p node is not root,
    * else returns root
    */
-  Node parent(const Node& node) const {
+  Node parent_impl(const Node& node) const {
     if (node.number == 0) {
-      return root();
+      return root_impl();
     }
     size_t open = rmm_.open(
         node.pos -
@@ -122,7 +115,7 @@ class DFUDSTree {
   /**
    * @brief Indicates if @p node is last child
    */
-  bool is_last_child(const Node& node) const {
+  bool is_last_child_impl(const Node& node) const {
     size_t end = rmm_.fwdsearch(node.pos, -1);
     size_t pos = end + 1;
     size_t op = rmm_.open(node.pos - 1);

@@ -1,12 +1,12 @@
 #include <benchmark/benchmark.h>
-#include <pixie/dfuds_tree.h>
+#include <pixie/tree/implementations.h>
 #include <pixie/utils.h>
 
 #include <random>
 
 #ifdef SDSL_SUPPORT
 #pragma message("SDSL_SUPPORT enabled")
-#include "pixie/rmm_tree_sdsl.h"
+#include <pixie/rmm/implementations.h>
 using DFUDSTree = pixie::DFUDSTree<pixie::SdslRmMTree>;
 #else
 #pragma message("SDSL_SUPPORT disabled")

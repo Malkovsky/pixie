@@ -12,7 +12,7 @@
  * summaries replace the old 63-bit data/pointer-word layout.
  *
  * Command shape:
- *   taskset -c 0 ./build/release/bench_rmq
+ *   taskset -c 0 ./build/benchmark-all-backends/rmq_benchmarks
  *     --benchmark_filter='^rmq_build_(cartesian_rmm|cartesian_hybrid_btree|sdsl_sct)/(4194304|67108864)$'
  *     --benchmark_repetitions=5
  *

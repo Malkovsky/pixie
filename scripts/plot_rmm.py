@@ -1,7 +1,7 @@
 """
 Plot RmMTree benchmark results (optionally compared with sdsl-lite).
 
-This script reads a JSON produced by `bench_rmm` and, optionally, a JSON
+This script reads a JSON produced by `rmm_benchmarks` and, optionally, a JSON
 with benchmarks for sdsl-lite. For each operation, it draws a scatter plot
 of individual points and a trend line (optionally median-smoothed) for each
 implementation on the same figure.
@@ -125,7 +125,7 @@ def main():
     ap.add_argument(
         "json",
         metavar="JSON",
-        help="Path to the JSON file with RmMTree results (output of bench_rmm).",
+        help="Path to the JSON file with RmMTree results (output of rmm_benchmarks).",
     )
     ap.add_argument(
         "--sdsl-json",

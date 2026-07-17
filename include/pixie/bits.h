@@ -15,6 +15,10 @@
 #define PIXIE_AVX512_SUPPORT
 #endif
 
+#if defined(__BMI__) && defined(__BMI2__)
+#define PIXIE_BMI_SUPPORT
+#endif
+
 #ifdef __AVX2__
 #define PIXIE_AVX2_SUPPORT
 // Lookup table for 4-bit popcount
@@ -320,9 +324,18 @@ static inline uint64_t rank_512(const uint64_t* x, uint64_t count) {
 
 /**
  * @brief Return position of @p rank 1 bit in @p x
+ * @details Uses BMI/BMI2 when enabled and a portable fallback otherwise.
  */
 static inline uint64_t select_64(uint64_t x, uint64_t rank) {
+#ifdef PIXIE_BMI_SUPPORT
   return _tzcnt_u64(_pdep_u64(1ull << rank, x));
+#else
+  while (rank != 0) {
+    x &= x - 1;
+    --rank;
+  }
+  return std::countr_zero(x);
+#endif
 }
 
 /**
@@ -384,15 +397,10 @@ static inline uint64_t select_512(const uint64_t* x, uint64_t rank) {
 #endif
 }
 
-/**
- * @brief Return position of @p rank0 0 bit in @p x
- * @details select_512 with bit inversion.
- */
-static inline uint64_t select0_512(const uint64_t* x, uint64_t rank0) {
 #ifdef PIXIE_AVX512_SUPPORT
-
-  __m512i res = _mm512_loadu_epi64(x);
-  res = _mm512_xor_epi64(res, _mm512_set1_epi64(-1));
+static inline uint64_t select0_512_from_inverted_words(const uint64_t* x,
+                                                       uint64_t rank0,
+                                                       __m512i res) {
   __m512i counts = _mm512_popcnt_epi64(res);
   __m512i prefix = counts;
 
@@ -417,6 +425,19 @@ static inline uint64_t select0_512(const uint64_t* x, uint64_t rank0) {
         _mm_cvtsi128_si64(_mm512_castsi512_si128(prev_vec)));
   }
   return i * 64 + select_64(~x[i], rank0 - prev);
+}
+#endif
+
+/**
+ * @brief Return position of @p rank0 0 bit in @p x.
+ * @details select_512 with bit inversion.
+ */
+static inline uint64_t select0_512(const uint64_t* x, uint64_t rank0) {
+#ifdef PIXIE_AVX512_SUPPORT
+
+  __m512i res = _mm512_loadu_epi64(x);
+  res = _mm512_ternarylogic_epi64(res, res, res, 0x55);
+  return select0_512_from_inverted_words(x, rank0, res);
 
 #else
 
