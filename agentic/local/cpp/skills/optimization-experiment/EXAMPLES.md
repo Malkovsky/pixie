@@ -34,10 +34,10 @@ The `excess_min_128` experiment is a good template for future hot-path work:
 
 ## Benchmark Pattern
 
-Prefer a diagnostic run that can explain timing changes, not just report them:
+Prefer a profiling run that can explain timing changes, not just report them:
 
 ```bash
-taskset -c 0 build/benchmarks-diagnostic_local/excess_positions_benchmarks \
+taskset -c 0 build/benchmarks-profile_local/excess_positions_benchmarks \
   --benchmark_filter='BM_ExcessMin128(_|/|$)' \
   --benchmark_repetitions=3 \
   --benchmark_perf_counters=CYCLES,INSTRUCTIONS,CACHE-MISSES \
@@ -68,12 +68,12 @@ Keep this kind of report at the top of the relevant header or experiment log:
 RMQ benchmark snapshot, 2026-06-11.
 
 Query command:
-  taskset -c 0 ./build/release/bench_rmq
+  taskset -c 0 ./build/benchmark-all-backends/rmq_benchmarks
     --benchmark_filter='^(rmq_sparse_table|rmq_segment_tree|rmq_hybrid_btree|rmq_cartesian_rmm|rmq_cartesian_hybrid_btree|rmq_sdsl_sct)/'
     --benchmark_min_time=0.25s
 
 Build/memory command:
-  taskset -c 0 ./build/release/bench_rmq
+  taskset -c 0 ./build/benchmark-all-backends/rmq_benchmarks
     --benchmark_filter='^(rmq_build_sparse_table|rmq_build_segment_tree|rmq_build_hybrid_btree|rmq_build_cartesian_rmm|rmq_build_cartesian_hybrid_btree|rmq_build_sdsl_sct)/'
     --benchmark_min_time=0.20s
 

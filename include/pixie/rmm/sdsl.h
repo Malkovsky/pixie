@@ -1,10 +1,10 @@
 #pragma once
 
 #ifndef SDSL_SUPPORT
-#error "pixie/rmm_tree_sdsl.h requires SDSL_SUPPORT"
+#error "pixie/rmm/sdsl.h requires SDSL_SUPPORT"
 #endif
 
-#include <pixie/rmm_base.h>
+#include <pixie/rmm.h>
 
 #include <algorithm>
 #include <bit>

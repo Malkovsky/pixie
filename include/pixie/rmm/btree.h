@@ -1,9 +1,9 @@
 #pragma once
 
 #include <pixie/bits.h>
-#include <pixie/bitvector.h>
 #include <pixie/memory_usage.h>
-#include <pixie/rmm_base.h>
+#include <pixie/rank_select/support.h>
+#include <pixie/rmm.h>
 
 #include <algorithm>
 #include <array>
@@ -139,7 +139,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
    */
   RmMBTree(std::span<const std::uint64_t> words,
            std::size_t bit_count,
-           BitVector::SelectSupport select_support,
+           RankSelectSupport<>::SelectSupport select_support,
            std::optional<std::size_t> one_count = std::nullopt,
            std::size_t = kBlockBits) {
     build(words, bit_count, select_support, one_count);
@@ -522,7 +522,8 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
    * @p bit_count.
    */
   void build(std::span<const std::uint64_t> words, std::size_t bit_count) {
-    build(words, bit_count, BitVector::SelectSupport::kBoth, std::nullopt);
+    build(words, bit_count, RankSelectSupport<>::SelectSupport::kBoth,
+          std::nullopt);
   }
 
   /**
@@ -530,7 +531,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
    */
   void build(std::span<const std::uint64_t> words,
              std::size_t bit_count,
-             BitVector::SelectSupport select_support,
+             RankSelectSupport<>::SelectSupport select_support,
              std::optional<std::size_t> one_count = std::nullopt) {
     const std::size_t required_words = (bit_count + 63) / 64;
     if (words.size() < required_words) {
@@ -2234,7 +2235,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
   }
 
   std::span<const std::uint64_t> bits_;
-  std::optional<BitVector> rank_index_;
+  std::optional<RankSelectSupport<>> rank_index_;
   std::size_t bit_count_ = 0;
   std::size_t block_count_ = 0;
   Summary top_summary_;

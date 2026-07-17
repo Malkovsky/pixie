@@ -4,7 +4,7 @@
 #error "pixie/rmq/sdsl_sct.h requires SDSL_SUPPORT"
 #endif
 
-#include <pixie/rmq/rmq_base.h>
+#include <pixie/rmq.h>
 
 #include <cstddef>
 #include <functional>

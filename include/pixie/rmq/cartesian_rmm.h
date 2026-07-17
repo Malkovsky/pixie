@@ -11,7 +11,7 @@
  *
  * Focused value-RMQ rows, N=2^22 values, CPU mean across 5 repetitions.
  * Command shape:
- *   taskset -c 0 ./build/release/bench_rmq
+ *   taskset -c 0 ./build/benchmark-all-backends/rmq_benchmarks
  *     --benchmark_filter='^rmq_(cartesian_rmm|sdsl_sct)/4194304/'
  *
  * | max width | CartesianRmM (ns) | SdslSct (ns) |
@@ -23,7 +23,7 @@
  *
  * Raw BP rmM rows at 2^23 bits, Q=32768, CPU mean across 5 repetitions.
  * Command shape:
- *   ./build/release/bench_rmm_{btree,sdsl}
+ *   ./build/benchmark-all-backends/rmm_{btree,sdsl}_benchmarks
  *     --ops=range_min_query_pos,range_min_query_val
  *     --explicit_sizes=8388608 --Q=32768
  *
@@ -42,7 +42,7 @@
  * Historical build snapshot after select0-only BP rank/select construction,
  * 2026-06-13, before the RmMBTree full-block summary fast path.
  * Command shape:
- *   taskset -c 0 ./build/release/bench_rmq
+ *   taskset -c 0 ./build/benchmark-all-backends/rmq_benchmarks
  *     --benchmark_filter='^rmq_build_(cartesian_rmm|cartesian_hybrid_btree|sdsl_sct)/(4194304|67108864)$'
  *     --benchmark_repetitions=5
  *
@@ -67,9 +67,9 @@
  * generation was about 5% in both rows.
  */
 
-#include <pixie/experimental/rmm_btree.h>
 #include <pixie/memory_usage.h>
-#include <pixie/rmq/rmq_base.h>
+#include <pixie/rmm/btree.h>
+#include <pixie/rmq.h>
 #include <pixie/rmq/utils/succinct_monotone_stack.h>
 
 #include <cstddef>
@@ -131,7 +131,7 @@ class RmMPlusMinusOne {
    * @brief Build with an exact count of +1 delta bits.
    *
    * @details Cartesian BP construction knows this count exactly, which lets the
-   * nested BitVector allocate select samples without a second scan.
+   * nested RankSelectSupport<> allocate select samples without a second scan.
    */
   RmMPlusMinusOne(std::span<const std::uint64_t> bits,
                   std::size_t depth_count,
@@ -162,8 +162,8 @@ class RmMPlusMinusOne {
     if (depth_count_ > static_cast<std::size_t>(invalid_index)) {
       throw std::length_error("RMQ rmM btree index type is too small");
     }
-    rmm_ = RmM(words_, depth_count_ - 1, BitVector::SelectSupport::kSelect0,
-               one_count);
+    rmm_ = RmM(words_, depth_count_ - 1,
+               RankSelectSupport<>::SelectSupport::kSelect0, one_count);
   }
 
   /**

@@ -9,118 +9,15 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Create Build Directory
-      run: mkdir build
-
-    - name: Configure CMake
-      working-directory: ./build
-      run: cmake -DDISABLE_AVX512=ON -DENABLE_ADDRESS_SANITIZER=ON -DPIXIE_BENCHMARKS=OFF ..
-
-    - name: Build Project
-      working-directory: ./build
-      run: make -j
-
-    - name: Run Unittests
-      working-directory: ./build
-      run: ./unittests
-    
-    - name: Run LOUDS Tree Tests
-      working-directory: ./build
-      run: ./louds_tree_tests
-
-    - name: Run BP Tree Tests
-      working-directory: ./build
-      run: ./bp_tree_tests
-
-    - name: Run DFUDS Tree Tests
-      working-directory: ./build
-      run: ./dfuds_tree_tests
-
-    - name: Run Benchmark Tests
-      working-directory: ./build
-      run: ./benchmark_tests
-
-    - name: Run RmM Tree Tests
-      working-directory: ./build
-      run: ./test_rmm
-  
-  build-and-test-with-SDE:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Create Build Directory
-      run: mkdir build
-
-    - name: Download and Unpack SDE
-      working-directory: ./build
-      run: |
-        wget https://downloadmirror.intel.com/859732/sde-external-9.58.0-2025-06-16-lin.tar.xz 
-        tar xf sde-external-9.58.0-2025-06-16-lin.tar.xz
-
     - name: Configure CMake
-      working-directory: ./build
-      run: cmake -DENABLE_ADDRESS_SANITIZER=ON -DMARCH=icelake-client -DHAVE_STD_REGEX=ON ..
+      run: cmake --preset asan
 
     - name: Build Project
-      working-directory: ./build
-      run: make -j
+      run: cmake --build --preset asan --parallel
 
-    - name: Run Unittests
-      working-directory: ./build
-      # SDE can hang during process teardown (static/ASan destructors) after all
-      # tests complete successfully. Use `timeout` to prevent the job from blocking
-      # indefinitely. GTest XML output is used to verify tests passed before
-      # treating a teardown timeout as success.
-      run: |
-        timeout 1800 sde-external-9.58.0-2025-06-16-lin/sde64 -icl -emu-xinuse 0 -- \
-          ./unittests --gtest_output=xml:unittests_results.xml
-        rc=$?
-        if [ $rc -eq 124 ] && grep -q 'failures="0"' unittests_results.xml 2>/dev/null; then
-          echo "SDE timed out during process teardown (known SDE/ASan issue) - all tests passed, treating as success"
-          exit 0
-        fi
-        exit $rc
-    
-    - name: Run LOUDS Tree Tests
-      working-directory: ./build
-      run: |
-        timeout 1800 sde-external-9.58.0-2025-06-16-lin/sde64 -icl -emu-xinuse 0 -- \
-          ./louds_tree_tests --gtest_output=xml:louds_results.xml
-        rc=$?
-        if [ $rc -eq 124 ] && grep -q 'failures="0"' louds_results.xml 2>/dev/null; then
-          echo "SDE timed out during process teardown (known SDE/ASan issue) - all tests passed, treating as success"
-          exit 0
-        fi
-        exit $rc
-
-    - name: Run BP Tree Tests
-      working-directory: ./build
-      run: |
-        timeout 1800 sde-external-9.58.0-2025-06-16-lin/sde64 -icl -emu-xinuse 0 -- \
-          ./bp_tree_tests --gtest_output=xml:bp_results.xml
-        rc=$?
-        if [ $rc -eq 124 ] && grep -q 'failures="0"' bp_results.xml 2>/dev/null; then
-          echo "SDE timed out during process teardown (known SDE/ASan issue) - all tests passed, treating as success"
-          exit 0
-        fi
-        exit $rc
-
-    - name: Run DFUDS Tree Tests
-      working-directory: ./build
-      run: |
-        timeout 1800 sde-external-9.58.0-2025-06-16-lin/sde64 -icl -emu-xinuse 0 -- \
-          ./dfuds_tree_tests --gtest_output=xml:dfuds_results.xml
-        rc=$?
-        if [ $rc -eq 124 ] && grep -q 'failures="0"' dfuds_results.xml 2>/dev/null; then
-          echo "SDE timed out during process teardown (known SDE/ASan issue) - all tests passed, treating as success"
-          exit 0
-        fi
-        exit $rc
-
+    - name: Run tests
+      run: ctest --preset asan

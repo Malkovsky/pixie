@@ -1,7 +1,7 @@
 #pragma once
 #include <immintrin.h>
 #include <pixie/bits.h>
-#include <pixie/rmm_base.h>
+#include <pixie/rmm.h>
 
 #include <algorithm>
 #include <array>

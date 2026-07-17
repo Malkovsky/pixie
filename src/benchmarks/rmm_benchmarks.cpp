@@ -1,4 +1,4 @@
-#include <pixie/rmm_tree.h>
+#include <pixie/rmm/implementations.h>
 
 #include "rmm_benchmark_base.h"
 

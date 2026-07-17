@@ -1,6 +1,6 @@
 #include <benchmark/benchmark.h>
 #include <pixie/utils.h>
-#include <pixie/wavelet_tree.h>
+#include <pixie/wavelet_tree/implementations.h>
 
 #include <random>
 
@@ -64,7 +64,7 @@ static void BM_WaveletTreeRank(benchmark::State& state) {
   }
 }
 
-static void BM_WaveletTreeMmapSelect(benchmark::State& state) {
+static void BM_WaveletTreeViewSelect(benchmark::State& state) {
   size_t data_size = state.range(0), alphabet_size = 1024, query = data_size;
   std::mt19937_64 rng(239);
 
@@ -94,18 +94,17 @@ static void BM_WaveletTreeMmapSelect(benchmark::State& state) {
 
     state.ResumeTiming();
 
-    auto mmap_tree =
-        pixie::WaveletTreeBase<pixie::MmapViewStorage>::deserialize(byte_span);
-    benchmark::DoNotOptimize(mmap_tree);
+    auto view_tree = pixie::WaveletTreeView::deserialize(byte_span);
+    benchmark::DoNotOptimize(view_tree);
 
     for (size_t i = 0; i < query; i++) {
-      size_t select = mmap_tree.select(query_symbol[i], query_pos[i]);
+      size_t select = view_tree.select(query_symbol[i], query_pos[i]);
       benchmark::DoNotOptimize(select);
     }
   }
 }
 
-static void BM_WaveletTreeMmapRank(benchmark::State& state) {
+static void BM_WaveletTreeViewRank(benchmark::State& state) {
   size_t data_size = state.range(0), alphabet_size = 1024, query = data_size;
   std::mt19937_64 rng(239);
 
@@ -129,18 +128,17 @@ static void BM_WaveletTreeMmapRank(benchmark::State& state) {
 
     state.ResumeTiming();
 
-    auto mmap_tree =
-        pixie::WaveletTreeBase<pixie::MmapViewStorage>::deserialize(byte_span);
-    benchmark::DoNotOptimize(mmap_tree);
+    auto view_tree = pixie::WaveletTreeView::deserialize(byte_span);
+    benchmark::DoNotOptimize(view_tree);
 
     for (size_t i = 0; i < query; i++) {
-      size_t rank = mmap_tree.rank(query_symbol[i], query_pos[i]);
+      size_t rank = view_tree.rank(query_symbol[i], query_pos[i]);
       benchmark::DoNotOptimize(rank);
     }
   }
 }
 
-static void BM_WaveletTreeMmapSegment(benchmark::State& state) {
+static void BM_WaveletTreeViewSegment(benchmark::State& state) {
   size_t data_size = state.range(0), alphabet_size = 1024,
          query = data_size / 128, length = 128;
   std::mt19937_64 rng(239);
@@ -163,12 +161,11 @@ static void BM_WaveletTreeMmapSegment(benchmark::State& state) {
 
     state.ResumeTiming();
 
-    auto mmap_tree =
-        pixie::WaveletTreeBase<pixie::MmapViewStorage>::deserialize(byte_span);
-    benchmark::DoNotOptimize(mmap_tree);
+    auto view_tree = pixie::WaveletTreeView::deserialize(byte_span);
+    benchmark::DoNotOptimize(view_tree);
 
     for (size_t i = 0; i < query; i++) {
-      auto segment = mmap_tree.get_segment(query_pos[i], query_pos[i] + length);
+      auto segment = view_tree.get_segment(query_pos[i], query_pos[i] + length);
       benchmark::DoNotOptimize(segment);
     }
   }
@@ -198,37 +195,37 @@ BENCHMARK(BM_WaveletTreeRank)
     ->Range(1ull << 18, 1ull << 26)
     ->Iterations(10);
 
-BENCHMARK(BM_WaveletTreeMmapSelect)
+BENCHMARK(BM_WaveletTreeViewSelect)
     ->ArgNames({"data_size"})
     ->RangeMultiplier(2)
     ->Range(1ull << 8, 1ull << 18)
     ->Iterations(100);
 
-BENCHMARK(BM_WaveletTreeMmapSelect)
+BENCHMARK(BM_WaveletTreeViewSelect)
     ->ArgNames({"data_size"})
     ->RangeMultiplier(2)
     ->Range(1ull << 18, 1ull << 26)
     ->Iterations(10);
 
-BENCHMARK(BM_WaveletTreeMmapRank)
+BENCHMARK(BM_WaveletTreeViewRank)
     ->ArgNames({"data_size"})
     ->RangeMultiplier(2)
     ->Range(1ull << 8, 1ull << 18)
     ->Iterations(100);
 
-BENCHMARK(BM_WaveletTreeMmapRank)
+BENCHMARK(BM_WaveletTreeViewRank)
     ->ArgNames({"data_size"})
     ->RangeMultiplier(2)
     ->Range(1ull << 18, 1ull << 26)
     ->Iterations(10);
 
-BENCHMARK(BM_WaveletTreeMmapSegment)
+BENCHMARK(BM_WaveletTreeViewSegment)
     ->ArgNames({"data_size"})
     ->RangeMultiplier(2)
     ->Range(1ull << 8, 1ull << 18)
     ->Iterations(100);
 
-BENCHMARK(BM_WaveletTreeMmapSegment)
+BENCHMARK(BM_WaveletTreeViewSegment)
     ->ArgNames({"data_size"})
     ->RangeMultiplier(2)
     ->Range(1ull << 18, 1ull << 26)

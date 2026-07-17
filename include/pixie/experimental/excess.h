@@ -50,7 +50,7 @@
  * | Split64SSE       |  9.86 |  9.75 |  3.17 |  1.55 |  11.02 |
  *
  * Diagnostic run, 2026-05-30:
- *   taskset -c 0 build/benchmarks-diagnostic_local/excess_positions_benchmarks
+ *   taskset -c 0 build/benchmarks-profile_local/excess_positions_benchmarks
  *     --benchmark_filter='BM_ExcessPositions512'
  *     --benchmark_repetitions=3
  *     --benchmark_perf_counters=CYCLES,INSTRUCTIONS,CACHE-MISSES

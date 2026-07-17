@@ -1,4 +1,4 @@
-#include <pixie/rmm_tree_sdsl.h>
+#include <pixie/rmm/implementations.h>
 
 #include <string_view>
 

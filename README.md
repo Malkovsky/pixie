@@ -1,348 +1,146 @@
 # Pixie
 
-<img src="https://raw.githubusercontent.com/Malkovsky/pixie/master/src/docs/images/logo.png" alt="Pixie logo" width="256" align="left" style="float: left; margin-right: 16px; margin-bottom: 8px;" />
+<img src="https://raw.githubusercontent.com/Malkovsky/pixie/main/src/docs/images/logo.png" alt="Pixie logo" width="256" align="left" style="float: left; margin-right: 16px; margin-bottom: 8px;" />
 
 [![Build & Test](https://github.com/Malkovsky/pixie/actions/workflows/build-test.yml/badge.svg?branch=main)](https://github.com/Malkovsky/pixie/actions/workflows/build-test.yml)
 [![codecov](https://codecov.io/github/Malkovsky/pixie/graph/badge.svg?token=413VBX7M2U)](https://codecov.io/github/Malkovsky/pixie)
 [![Documentation](https://img.shields.io/badge/docs-doxygen-green.svg)](https://malkovsky.github.io/pixie/)
 
-`pixie` is a **succinct data structures library**.
+`pixie` is a **succinct data structures library**. A general concept behind this kind of structures is to be very compact yet still processible without total decompression. One might want this kind of structures in a case when storage space is limited and CPU performance is not tight as typically succinct structures are behind in performance compared to traditional data structures.
 
 <br clear="left" />
 
----
+## Outline
 
-## Features
-
-* **BitVector**
-  * Data structure with 3.61% overhead supporting rank and select for 1 bits.
-  * Supports:
-    * `rank(i)`: number of set bits (`1`s) up to position `i`.
-    * `select(k)`: position of the `k`-th set bit.
-    * Similar operations `rank0/select0` for `0`.
-  * Implementation mainly follows [1] with SIMD optimizations similar to [2]
-  * Optimized via AVX-512/AVX-2, for large binary sequences performance is I/O bounded.
-* **RmMTree**
-  * Implementation of a range min-max tree, it supports `rank`, `select` and `excess`-related operations allowing for a fast navigation in DFUDS/BP trees.
-  
----
-
-## Requirements
-
-* C++20
-* [CMake](https://cmake.org/) ≥ 3.18.
+- **Rank/select support**: fundamental primitive to efficiently map bits and their positions in a bit vector.
+- **Range min-max tree**: fundamental primitive for efficient computation of excess queries mainly for navigation in balanced parenthesis sequences.
+- **Succinct trees**: static variants of $2$-bit per entry trees, i.e. LOUDS, DFUDS, BP (Based on Euler tour and Ferrada-Navarro style).
+- **Wavelet tree**, i.e. static structure that supposts rank/select on arbitrary finite alphabets, supports building a Huffman archieve with fast extraction of arbitrary segment.
+- Succinct **cartesian tree** and a state of the art solution to static **RMQ** (array is immutable, queries are not known in advance).
 
 ---
 
-## Build Instructions
+## Getting started
 
-```sh
-git clone https://github.com/Malkovsky/pixie.git
-cd pixie
-cmake --preset release
-cmake --build --preset release
+Pixie requires C++20 and CMake 3.18 or newer. It is a header-only library and
+is intended to be used via CMake FetchContent and the `pixie::pixie` target:
+
+```cmake
+include(FetchContent)
+
+FetchContent_Declare(
+  pixie
+  GIT_REPOSITORY https://github.com/Malkovsky/pixie.git
+  GIT_TAG <release-tag-or-commit>
+)
+FetchContent_MakeAvailable(pixie)
+
+target_link_libraries(my_target PRIVATE pixie::pixie)
 ```
 
-Manual alternative:
-
-```sh
-mkdir -p build/release
-cmake -B build/release -DCMAKE_BUILD_TYPE=Release
-cmake --build build/release -j
-```
-
-Tests are enabled by default (`PIXIE_TESTS=ON`). Benchmarks are opt-in; enable with `-DPIXIE_BENCHMARKS=ON` or configure with the `benchmarks-all` preset. Use `benchmarks-third-party` for comparison backends such as sdsl-lite, and `benchmarks-diagnostic` for performance diagnostics (Release with debug info + performance counters support).
-
----
-
-## Running Tests
-
-After building with presets, binaries are located in `build/release`.
-
-### BitVector
-
-```sh
-./build/release/unittests
-```
-
-### RmM Tree
-
-```sh
-./build/release/test_rmm
-```
-
----
-
-## Coverage
-
-Configure a coverage build with GCC (benchmarks disabled):
-
-```sh
-cmake --preset coverage
-cmake --build --preset coverage
-```
-
-Run tests and generate the gcov text report:
-
-```sh
-./scripts/coverage_report.sh
-```
-
----
-
-## Running Benchmarks
-
-Before running benchmarks, configure with presets:
-
-```sh
-cmake --preset benchmarks-all
-cmake --build --preset release
-```
-
-For a RelWithDebInfo diagnostic build, use:
-
-```sh
-cmake --preset benchmarks-diagnostic
-cmake --build --preset release
-```
-
-### BitVector
-
-Benchmarks are random 50/50 0-1 bitvectors up to $2^{34}$ bits.
-
-```sh
-./build/release/benchmarks
-```
-
-Write JSON and plot size-scaled benchmark curves with a log-scaled x-axis:
-
-```sh
-./build/release/benchmarks --benchmark_out=bitvector_bench.json --benchmark_out_format=json
-python3 scripts/plot_size_benchmarks.py bitvector_bench.json -o graphs/bitvector_size.png --size-key n
-```
-
-### Excess Positions
-
-```sh
-./build/release/excess_positions_benchmarks --benchmark_out=excess_positions.json --benchmark_out_format=json
-python3 scripts/excess_benchmark_table.py excess_positions.json -o src/docs/excess_positions_benchmark_results.md
-```
-
-Generated benchmark documentation can be written to `src/docs/benchmark_results.md`;
-the documentation pipeline does not run benchmarks.
-
-### Adding an RMQ Benchmark
-
-Value RMQ implementations are benchmarked through the common CRTP interface in
-`pixie::rmq::RmqBase`. To add a comparable backend, implement a non-owning index
-that can be constructed from `std::span<const T>` and provides:
-
-* `size_impl()`
-* `arg_min_impl(left, right)` for half-open ranges `[left, right)`
-* `value_at_impl(position)`
-
-The public `size()`, `empty()`, `arg_min()`, and `range_min()` methods are then
-provided by `RmqBase`. Ties should return the smaller original position.
-
-Minimal example:
+Pixie exposes lightweight CRTP contracts and catalogs of concrete
+implementations. For example, check the `pixie/rmq/implementations.h` to see all the available implementations for RMQ and include what you need.
 
 ```cpp
-#include <pixie/rmq/rmq_base.h>
-
-#include <cstddef>
-#include <functional>
+#include <array>
 #include <span>
 
-namespace pixie::rmq {
+#include <pixie/rmq/implementations.h>
 
-template <class T, class Compare = std::less<T>>
-class LinearRmq : public RmqBase<LinearRmq<T, Compare>, T> {
- public:
-  using Self = LinearRmq<T, Compare>;
-  static constexpr std::size_t npos = RmqBase<Self, T>::npos;
+const std::array<int, 6> values = {7, 3, 5, 1, 4, 1};
+const pixie::rmq::HybridBTree<int> rmq{std::span<const int>(values)};
 
-  explicit LinearRmq(std::span<const T> values, Compare compare = Compare())
-      : values_(values), compare_(compare) {}
-
-  std::size_t size_impl() const { return values_.size(); }
-
-  std::size_t arg_min_impl(std::size_t left, std::size_t right) const {
-    if (left >= right || right > values_.size()) {
-      return npos;
-    }
-    std::size_t best = left;
-    for (std::size_t i = left + 1; i < right; ++i) {
-      if (compare_(values_[i], values_[best])) {
-        best = i;
-      }
-    }
-    return best;
-  }
-
-  T value_at_impl(std::size_t position) const { return values_[position]; }
-
- private:
-  std::span<const T> values_;
-  Compare compare_;
-};
-
-}  // namespace pixie::rmq
+const auto position = rmq.arg_min(1, 6);  // 3: first minimum in [1, 6)
+const auto minimum = rmq.range_min(1, 6); // 1
 ```
 
-Then add rows to `src/benchmarks/bench_rmq.cpp` in `register_benchmarks()`.
-Use `run_value_rmq_build` for construction cost and `run_queries` for query
-cost:
+---
+
+## Tests and benchmarks
+
+Pixie uses CTest for its internal suite:
+
+```sh
+cmake --preset release
+cmake --build --preset release
+ctest --preset release
+```
+
+To benchmark another implementation against Pixie, implement the corresponding
+interface and register it in the family benchmark harness.
+
+Here's an example using the optional SDSL RmM available for  comparison through the
+all-backends preset:
+
+```sh
+cmake --preset benchmark-all-backends
+cmake --build --preset benchmark-all-backends
+./build/benchmark-all-backends/rmm_sdsl_benchmarks
+```
+
+`SdslRmMTree` adapts `sdsl::bp_support_sada<>` to the same CRTP facade as
+Pixie's native RmM implementations. The following abridged excerpt shows the
+connection; the full adapter is in `include/pixie/rmm/sdsl.h`.
 
 ```cpp
-benchmark::RegisterBenchmark(
-    "rmq_build_linear",
-    &run_value_rmq_build<pixie::rmq::LinearRmq<
-        std::int64_t, std::less<std::int64_t>>>)
-    ->Arg(static_cast<std::int64_t>(size))
-    ->Unit(benchmark::kMillisecond);
+#ifdef SDSL_SUPPORT
+class SdslRmMTree : public RmMBase<SdslRmMTree> {
+ public:
+  using BpSupport = sdsl::bp_support_sada<>;
+  static constexpr std::size_t npos = RmMBase<SdslRmMTree>::npos;
 
-benchmark::RegisterBenchmark(
-    "rmq_linear",
-    &run_queries<pixie::rmq::LinearRmq<
-        std::int64_t, std::less<std::int64_t>>>)
-    ->Args({static_cast<std::int64_t>(size),
-            static_cast<std::int64_t>(width)})
-    ->Unit(benchmark::kNanosecond);
+  std::size_t size_impl() const { return size_; }
+
+  std::size_t rank1_impl(std::size_t end_position) const {
+    if (size_ == 0 || end_position == 0) {
+      return 0;
+    }
+    return tree_.rank(std::min(end_position, size_) - 1);
+  }
+
+  std::size_t close_impl(std::size_t open_position) const {
+    if (size_ == 0) {
+      return 0;
+    }
+    const std::size_t position = tree_.find_close(open_position);
+    return position < size_ ? position : npos;
+  }
+
+ private:
+  std::size_t size_{};
+  sdsl::bit_vector bits_;
+  BpSupport tree_;
+};
+#endif
 ```
 
-The RMQ benchmark harness rotates through several value arrays so results are
-less dependent on the global-minimum position. The `width` argument is the
-maximum query width, not an exact width.
-
-To compare the new backend with `HybridBTree`, run both benchmark families
-with a Google Benchmark filter. For example, after registering the new backend
-as `rmq_linear` and `rmq_build_linear`:
-
-```sh
-./build/release/bench_rmq \
-  --benchmark_filter='^(rmq_linear|rmq_hybrid_btree)/(4194304|16777216)/(64|4096|262144|4194304|16777216)$'
-
-./build/release/bench_rmq \
-  --benchmark_filter='^(rmq_build_linear|rmq_build_hybrid_btree)/(262144|4194304|16777216)$'
-```
-
-The first command compares query time for `2^22` and `2^24` input sizes across
-the common RMQ widths. The second command compares construction time for the
-same implementations.
-
-For hardware counters, use the diagnostic preset, which builds Google Benchmark
-with libpfm support:
-
-```sh
-cmake --preset benchmarks-diagnostic
-cmake --build --preset benchmarks-diagnostic -j
-
-./build/release-with-deb/bench_rmq \
-  --benchmark_filter='rmq_cartesian_hybrid_btree/67108864/4096' \
-  --benchmark_perf_counters=CYCLES,INSTRUCTIONS,CACHE-MISSES \
-  --benchmark_counters_tabular=true
-```
-
-Counter names are platform/libpfm dependent. Google Benchmark pauses timing and
-perf counters during `state.PauseTiming()`, so RMQ dataset-variant rebuilds are
-excluded from query counter rows.
-
-### RmM Tree
-
-```sh
-./build/release/bench_rmm
-```
-
-For focused runs, `bench_rmm` accepts `--ops` with a comma-separated operation list. The benchmark harness only builds the query pools needed by the selected operations, so subset runs avoid much of the setup cost:
-
-```sh
-./build/release/bench_rmm --ops=rank1,select1 --benchmark_out=rmm_rank_select.json --benchmark_out_format=json
-```
-
-By default, RmM benchmarks step through sizes by powers of two. Use `--per_octave=<n>` for finer sampling between adjacent powers of two, or `--explicit_sizes=<csv>` for an exact size list.
-
-Google Benchmark filters are also used to limit RmM setup when `--ops` is not provided:
-
-```sh
-./build/release/bench_rmm --benchmark_filter='^rank1$' --benchmark_out=rmm_rank1.json --benchmark_out_format=json
-```
-
-For comparison with range min-max tree implementation from [sdsl-lite](https://github.com/simongog/sdsl-lite), use the third-party benchmark preset. This defines `SDSL_SUPPORT` and builds `bench_rmm_sdsl`:
-
-```bash
-cmake --preset benchmarks-third-party
-cmake --build --preset benchmarks-third-party
-sudo cpupower frequency-set --governor performance
-./build/release-third-party/bench_rmm_sdsl --benchmark_out=rmm_bench_sdsl.json
-```
-
-For visualization, write the JSON output to a file using `--benchmark_out=<file>` (e.g. `./build/release/bench_rmm --benchmark_out=rmm_bench.json`) and plot it with `scripts/plot_rmm.py` (add `--sdsl-json rmm_bench_sdsl.json` for per-operation sdsl-lite comparison plots). For size-scaled tree plots, use:
-
-```sh
-python3 scripts/plot_size_benchmarks.py rmm_bench.json -o graphs/rmm_size.png --size-key N
-```
+The remaining `*_impl()` methods complete the `RmMBase` contract; benchmarks
+call the inherited public facade, not SDSL-specific methods.
 
 ---
 
 ## Example Usage
 
 ```cpp
-#include <pixie/bitvector.h>
-#include <vector>
-#include <iostream>
-
-using namespace pixie;
-
-int main() {
-    std::vector<uint64_t> bits = {0b101101}; // 6 bits
-    BitVector bv(bits, 6);
-
-    std::cout << "bv: " << bv.to_string() << "\n";     // "101101"
-    std::cout << "rank(4): " << bv.rank(4) << "\n";    // number of ones in first 4 bits
-    std::cout << "select(2): " << bv.select(2) << "\n"; // position of 2nd one-bit
-}
-```
-
-```cpp
-#include <pixie/rmm_tree.h>
+#include <array>
 #include <cstdint>
-#include <iostream>
-#include <string>
-#include <vector>
+#include <span>
 
-using namespace pixie;
+#include <pixie/wavelet_tree/implementations.h>
 
 int main() {
-    // root
-    // ├─ A
-    // │  ├─ a1
-    // │  └─ a2
-    // ├─ B
-    // └─ C
-    //    └─ c1
-    std::string bits = "11101001011000";
-    std::vector<std::uint64_t> words((bits.size() + 63) / 64);
-    for (std::size_t i = 0; i < bits.size(); ++i) {
-        if (bits[i] == '1') {
-            words[i / 64] |= std::uint64_t{1} << (i % 64);
-        }
-    }
+  const std::array<std::uint64_t, 6> text = {2, 0, 1, 2, 1, 0};
+  pixie::WaveletTree tree(3, std::span<const std::uint64_t>(text));
 
-    // RmMTree is non-owning: keep words alive and immutable while using t.
-    RmMTree t(words, bits.size());
-
-    std::cout << "close(1): " << t.close(1) << "\n";     // expected 6 (A)
-    std::cout << "open(3): " << t.open(3) << "\n";       // expected 2 (a1)
-    std::cout << "enclose(1): " << t.enclose(1) << "\n"; // expected 0 (root)
+  const auto ones_before_five = tree.rank(1, 5);  // 2
+  const auto second_two = tree.select(2, 2);      // 3
+  const auto segment = tree.get_segment(1, 4);    // {0, 1, 2}
 }
 ```
 
----
+## License
 
-## References
+Copyright 2026 Pixie contributors.
 
-  - [1] Laws et al., *SPIDER: Improved Succinct Rank and Select Performance* [SPIDER](https://github.com/williams-cs/spider)
-
-  - [2] Kurpicz, *Engineering compact data structures for rank and select queries on bit vectors* [pasta-toolbox/bit\_vector](https://github.com/pasta-toolbox/bit_vector)
-
----
+Pixie is licensed under the [Apache License 2.0](LICENSE). Optional
+third-party benchmark and backend integrations retain their own licenses.

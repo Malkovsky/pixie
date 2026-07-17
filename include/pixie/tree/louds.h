@@ -1,6 +1,7 @@
 #pragma once
 
-#include <pixie/bitvector.h>
+#include <pixie/rank_select/support.h>
+#include <pixie/tree.h>
 
 #include <cstdint>
 #include <span>
@@ -10,21 +11,15 @@ namespace pixie {
 /**
  * @brief A node class of LOUDS tree
  */
-struct LoudsNode {
-  size_t number;
-  size_t pos;
-
-  LoudsNode(size_t node_number, size_t louds_pos)
-      : number(node_number), pos(louds_pos) {}
-};
+using LoudsNode = TreeNode;
 
 /**
  * @brief A tree class based on the level order unary degree sequence (LOUDS)
  * representation
  */
-class LoudsTree {
+class LoudsTree : public TreeBase<LoudsTree> {
  private:
-  BitVector bv;
+  RankSelectSupport<> bv;
 
  public:
   /**
@@ -36,30 +31,30 @@ class LoudsTree {
   /**
    * @brief Returns the root node
    */
-  LoudsNode root() const { return LoudsNode(0, 0); }
+  LoudsNode root_impl() const { return LoudsNode(0, 0); }
 
   /**
    * @brief Returns the size of the tree
    */
-  size_t size() const { return (bv.size() + 1) / 2; }
+  size_t size_impl() const { return (bv.size() + 1) / 2; }
 
   /**
    * @brief Indicates if @p node is a leaf
    */
-  bool is_leaf(const LoudsNode& node) const {
+  bool is_leaf_impl(const LoudsNode& node) const {
     return (node.pos + 1 == bv.size()) or bv[node.pos + 1];
   }
 
   /**
    * @brief Indicates if @p node is a root
    */
-  bool is_root(const LoudsNode& node) const { return node.number == 0; }
+  bool is_root_impl(const LoudsNode& node) const { return node.number == 0; }
 
   /**
    * @brief Returns the number of children of a @p node
    */
-  size_t degree(const LoudsNode& node) const {
-    if (is_leaf(node)) {
+  size_t degree_impl(const LoudsNode& node) const {
+    if (is_leaf_impl(node)) {
       return 0;
     }
     return bv.select(node.number + 2) - node.pos - 1;
@@ -69,7 +64,7 @@ class LoudsTree {
    * @brief Returns the i-th child of @p node
    * Indexing starts at 0
    */
-  LoudsNode child(const LoudsNode& node, size_t i) const {
+  LoudsNode child_impl(const LoudsNode& node, size_t i) const {
     size_t zeros = node.pos + i + 1 - node.number;
     return LoudsNode(zeros, bv.select(zeros + 1));
   }
@@ -77,7 +72,7 @@ class LoudsTree {
   /**
    * @brief Returns first child of a @p node
    */
-  LoudsNode first_child(const LoudsNode& node) const {
+  LoudsNode first_child_impl(const LoudsNode& node) const {
     size_t zeros = node.pos + 1 - node.number;
     return LoudsNode(zeros, bv.select(zeros + 1));
   }
@@ -86,9 +81,9 @@ class LoudsTree {
    * @brief Returns the parent of a @p node if @p node is not root,
    * else returns root
    */
-  LoudsNode parent(const LoudsNode& node) const {
+  LoudsNode parent_impl(const LoudsNode& node) const {
     if (node.number == 0) {
-      return root();
+      return root_impl();
     }
     size_t zero_pos = bv.select0(node.number);
     size_t parent_number = zero_pos - node.number;
@@ -98,7 +93,7 @@ class LoudsTree {
   /**
    * @brief Indicates if @p node is last child
    */
-  bool is_last_child(const LoudsNode& node) const {
+  bool is_last_child_impl(const LoudsNode& node) const {
     size_t zero_pos = bv.select0(node.number);
     return bv[zero_pos + 1];
   }
@@ -106,7 +101,7 @@ class LoudsTree {
   /**
    * @brief Returns next sibling of a @p node
    */
-  LoudsNode next_sibling(const LoudsNode& node) const {
+  LoudsNode next_sibling_impl(const LoudsNode& node) const {
     size_t sibling_number = node.number + 1;
     return LoudsNode(sibling_number, bv.select(sibling_number + 1));
   }

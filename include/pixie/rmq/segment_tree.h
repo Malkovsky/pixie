@@ -1,7 +1,7 @@
 #pragma once
 
 #include <pixie/memory_usage.h>
-#include <pixie/rmq/rmq_base.h>
+#include <pixie/rmq.h>
 
 #include <algorithm>
 #include <bit>
