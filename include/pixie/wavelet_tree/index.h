@@ -382,6 +382,11 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
     if (alphabet_size_ == 0 || data_size_ == 0 || begin >= end) [[unlikely]] {
       return {};
     }
+    if (root_ == npos) [[unlikely]] {
+      std::vector<uint64_t> result(end - begin,
+                                   inverse_permutation_.front());
+      return result;
+    }
     auto length = static_cast<long long>(end - begin);
     std::vector<uint64_t> result(2 * length);
     copy_segment_content(root_, begin, end,

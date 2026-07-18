@@ -145,6 +145,119 @@ TEST(WaveletTreeTest, SmokeSegment) {
   }
 }
 
+TEST(WaveletTreeTest, AlphabetSizeOne) {
+  // alphabet_size == 1: tree has no internal nodes (root_ == npos).
+  // This previously crashed in get_segment_impl.
+  const std::vector<uint64_t> data = {0, 0, 0, 0, 0};
+  size_t data_size = 5, alphabet_size = 1;
+
+  for (auto build_type : {pixie::WaveletTreeBuildType::Standard,
+                          pixie::WaveletTreeBuildType::Huffman}) {
+    WaveletTree wavelet_tree(alphabet_size, data, build_type);
+
+    // rank: all positions have symbol 0
+    for (size_t pos = 0; pos <= data_size; pos++) {
+      EXPECT_EQ(wavelet_tree.rank(0, pos), pos);
+    }
+    // rank of out-of-range symbol returns 0
+    EXPECT_EQ(wavelet_tree.rank(1, 3), 0);
+
+    // select: the k-th occurrence of symbol 0 is at position k-1
+    for (size_t rank = 1; rank <= data_size; rank++) {
+      EXPECT_EQ(wavelet_tree.select(0, rank), rank - 1);
+    }
+    // out-of-range rank returns data_size
+    EXPECT_EQ(wavelet_tree.select(0, data_size + 1), data_size);
+
+    // get_segment: all elements are 0
+    for (size_t begin = 0; begin <= data_size; begin++) {
+      for (size_t end = begin; end <= data_size; end++) {
+        auto segment = wavelet_tree.get_segment(begin, end);
+        EXPECT_EQ(segment.size(), end - begin);
+        for (size_t i = 0; i < end - begin; i++) {
+          EXPECT_EQ(segment[i], 0);
+        }
+      }
+    }
+  }
+}
+
+TEST(WaveletTreeTest, AlphabetSizeZero) {
+  size_t alphabet_size = 0;
+  const std::vector<uint64_t> data = {};
+  WaveletTree wavelet_tree(alphabet_size, data);
+
+  EXPECT_EQ(wavelet_tree.size(), 0);
+  EXPECT_TRUE(wavelet_tree.empty());
+  EXPECT_EQ(wavelet_tree.rank(0, 0), 0);
+  EXPECT_EQ(wavelet_tree.select(0, 1), 0);
+  EXPECT_EQ(wavelet_tree.get_segment(0, 0).size(), 0);
+}
+
+TEST(WaveletTreeTest, EmptyData) {
+  size_t alphabet_size = 4;
+  const std::vector<uint64_t> data = {};
+  WaveletTree wavelet_tree(alphabet_size, data);
+
+  EXPECT_EQ(wavelet_tree.size(), 0);
+  EXPECT_TRUE(wavelet_tree.empty());
+  for (uint64_t symb = 0; symb < alphabet_size; symb++) {
+    EXPECT_EQ(wavelet_tree.rank(symb, 0), 0);
+    EXPECT_EQ(wavelet_tree.select(symb, 1), 0);
+  }
+}
+
+TEST(WaveletTreeTest, SymbolWithZeroOccurrences) {
+  // alphabet_size = 5, but symbol 4 never appears in the data.
+  const std::vector<uint64_t> data = {0, 1, 2, 3, 0, 1, 2, 3};
+  size_t data_size = 8, alphabet_size = 5;
+
+  WaveletTree wavelet_tree(alphabet_size, data);
+
+  // rank of absent symbol is 0 at every position
+  for (size_t pos = 0; pos <= data_size; pos++) {
+    EXPECT_EQ(wavelet_tree.rank(4, pos), 0);
+  }
+
+  // select of absent symbol returns data_size
+  EXPECT_EQ(wavelet_tree.select(4, 1), data_size);
+  EXPECT_EQ(wavelet_tree.select(4, 2), data_size);
+
+  // get_segment still works correctly
+  for (size_t begin = 0; begin <= data_size; begin++) {
+    for (size_t end = begin; end <= data_size; end++) {
+      auto segment = wavelet_tree.get_segment(begin, end);
+      EXPECT_EQ(segment.size(), end - begin);
+      for (size_t i = 0; i < end - begin; i++) {
+        EXPECT_EQ(segment[i], data[begin + i]);
+      }
+    }
+  }
+}
+
+TEST(WaveletTreeTest, AllSameSymbolLargeAlphabet) {
+  // All data is symbol 0, but alphabet_size is large.
+  // Most symbols have 0 occurrences.
+  const std::vector<uint64_t> data = {0, 0, 0, 0, 0, 0, 0, 0};
+  size_t data_size = 8, alphabet_size = 256;
+
+  for (auto build_type : {pixie::WaveletTreeBuildType::Standard,
+                          pixie::WaveletTreeBuildType::Huffman}) {
+    WaveletTree wavelet_tree(alphabet_size, data, build_type);
+
+    EXPECT_EQ(wavelet_tree.rank(0, data_size), data_size);
+    for (uint64_t symb = 1; symb < alphabet_size; symb++) {
+      EXPECT_EQ(wavelet_tree.rank(symb, data_size), 0);
+      EXPECT_EQ(wavelet_tree.select(symb, 1), data_size);
+    }
+
+    auto segment = wavelet_tree.get_segment(0, data_size);
+    for (auto s : segment) {
+      EXPECT_EQ(s, 0);
+    }
+  }
+}
+
 TEST(WaveletTreeTest, SerializationSmoke) {
   size_t data_size = 4096, alphabet_size = 100;
 
