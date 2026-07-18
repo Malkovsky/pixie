@@ -138,6 +138,16 @@ target_compile_features(pixie INTERFACE cxx_std_20)
 target_include_directories(pixie INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 
+# Keep Pixie's own targets warning-clean without imposing -Werror on consumers.
+function (pixie_enable_project_warnings target)
+    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(${target} PRIVATE
+                -Wall
+                -Wextra
+                -Werror)
+    endif ()
+endfunction ()
+
 if (PIXIE_DIAGNOSTICS)
     target_compile_definitions(pixie INTERFACE PIXIE_DIAGNOSTICS)
     target_link_libraries(pixie INTERFACE spdlog::spdlog_header_only)
@@ -286,6 +296,7 @@ if (PIXIE_TESTS)
             excess_record_lows_tests
             rmq_tests)
     foreach (test_target IN LISTS PIXIE_TEST_TARGETS)
+        pixie_enable_project_warnings(${test_target})
         gtest_discover_tests(${test_target}
                 DISCOVERY_MODE PRE_TEST
                 TEST_PREFIX "${test_target}."
@@ -425,6 +436,26 @@ if (PIXIE_BENCHMARKS)
             benchmark
             benchmark_main
             ${PIXIE_DIAGNOSTICS_LIBS})
+
+    set(PIXIE_BENCHMARK_TARGETS
+            rank_select_benchmarks
+            rmm_benchmarks
+            rmm_btree_benchmarks
+            rmq_benchmarks
+            louds_tree_benchmarks
+            wavelet_tree_benchmarks
+            bp_tree_benchmarks
+            dfuds_tree_benchmarks
+            alignment_comparison_benchmarks
+            excess_positions_benchmarks
+            select512_benchmarks)
+    if (PIXIE_THIRD_PARTY_BACKENDS)
+        list(APPEND PIXIE_BENCHMARK_TARGETS
+                rmm_sdsl_benchmarks)
+    endif ()
+    foreach (benchmark_target IN LISTS PIXIE_BENCHMARK_TARGETS)
+        pixie_enable_project_warnings(${benchmark_target})
+    endforeach ()
 endif ()
 
 # ---------------------------------------------------------------------------

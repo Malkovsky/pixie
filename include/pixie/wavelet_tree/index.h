@@ -48,7 +48,7 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
       AlignedStorage result(data.size() * 64);
       auto view = result.writable_words64();
       std::copy(data.begin(), data.end(), view.begin());
-      return std::move(result);
+      return result;
     }
 
     WaveletNode() = default;

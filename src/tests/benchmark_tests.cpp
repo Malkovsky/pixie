@@ -11,7 +11,7 @@ TEST(RankSelectBenchmarkTest, Select10PercentFill) {
 
     std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
     size_t num_ones = n * 0.1;
-    for (int i = 0; i < num_ones; i++) {
+    for (size_t i = 0; i < num_ones; i++) {
       uint64_t pos = rng() % n;
       bits[pos / 64] |= (1ULL << pos % 64);
     }
@@ -32,7 +32,7 @@ TEST(RankSelectBenchmarkTest, SelectZero10PercentFill) {
 
     std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
     size_t num_ones = n * 0.1;
-    for (int i = 0; i < num_ones; i++) {
+    for (size_t i = 0; i < num_ones; i++) {
       uint64_t pos = rng() % n;
       bits[pos / 64] |= (1ULL << pos % 64);
     }
@@ -53,7 +53,7 @@ TEST(RankSelectBenchmarkTest, Select90PercentFill) {
 
     std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
     size_t num_ones = n * 0.9;
-    for (int i = 0; i < num_ones; i++) {
+    for (size_t i = 0; i < num_ones; i++) {
       uint64_t pos = rng() % n;
       bits[pos / 64] |= (1ULL << pos % 64);
     }
@@ -74,7 +74,7 @@ TEST(RankSelectBenchmarkTest, SelectZero90PercentFill) {
 
     std::vector<uint64_t> bits(((8 + n / 64) / 8) * 8);
     size_t num_ones = n * 0.9;
-    for (int i = 0; i < num_ones; i++) {
+    for (size_t i = 0; i < num_ones; i++) {
       uint64_t pos = rng() % n;
       bits[pos / 64] |= (1ULL << pos % 64);
     }

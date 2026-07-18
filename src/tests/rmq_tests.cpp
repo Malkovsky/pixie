@@ -501,7 +501,7 @@ TEST(RmqHybridBTree, BoundaryAndFallbackRanges) {
       {0, values.size()},
   };
 
-  for (const auto [left, right] : ranges) {
+  for (const auto& [left, right] : ranges) {
     const std::size_t expected = naive_arg_min(std::span<const int>(values),
                                                left, right, std::less<int>());
     EXPECT_EQ(rmq.arg_min(left, right), expected)
@@ -610,7 +610,7 @@ TEST(RmqHybridBTree, LeafSelectorEnumVariants) {
       {3000, 4099},
   };
 
-  for (const auto [left, right] : ranges) {
+  for (const auto& [left, right] : ranges) {
     const std::size_t expected = naive_arg_min(std::span<const int>(values),
                                                left, right, std::less<int>());
     EXPECT_EQ(mask_rmq.arg_min(left, right), expected)
@@ -650,7 +650,7 @@ TEST(RmqHybridBTree, LeafSelectorEnumVariants) {
         {kLeaf, 2 * kLeaf},           {2 * kLeaf, 3 * kLeaf},
         {1, small_values.size() - 1}, {kLeaf + 1, kLeaf + 2},
     };
-    for (const auto [left, right] : small_ranges) {
+    for (const auto& [left, right] : small_ranges) {
       const std::size_t expected = naive_arg_min(
           std::span<const int>(small_values), left, right, std::less<int>());
       EXPECT_EQ(rmq.arg_min(left, right), expected)
@@ -741,7 +741,7 @@ TEST(RmqHybridBTree, MiddleFanoutBoundaryRanges) {
       {values.size() - 3 * kLeaf, values.size()},
   };
 
-  for (const auto [left, right] : ranges) {
+  for (const auto& [left, right] : ranges) {
     const std::size_t expected = naive_arg_min(std::span<const int>(values),
                                                left, right, std::less<int>());
     EXPECT_EQ(rmq.arg_min(left, right), expected)
@@ -775,7 +775,7 @@ TEST(RmqHybridBTree, TopSparseOverlayBoundaryRanges) {
       {0, values.size()},
   };
 
-  for (const auto [left, right] : ranges) {
+  for (const auto& [left, right] : ranges) {
     const std::size_t expected = naive_arg_min(std::span<const int>(values),
                                                left, right, std::less<int>());
     EXPECT_EQ(rmq.arg_min(left, right), expected)
@@ -832,7 +832,7 @@ TEST(RmqHybridBTree, TopSparseOverlayComparatorMaximum) {
       {0, values.size()},
   };
 
-  for (const auto [left, right] : ranges) {
+  for (const auto& [left, right] : ranges) {
     const std::size_t expected = naive_arg_min(
         std::span<const int>(values), left, right, std::greater<int>());
     EXPECT_EQ(rmq.arg_min(left, right), expected)
@@ -921,7 +921,7 @@ TEST(RmqCartesianHybridBTree, BoundarySizesAndBpEncoding) {
         {size / 3, std::min(size, size / 3 + 19)},
         {size / 2, std::min(size, size / 2 + 37)},
     };
-    for (const auto [left, right] : ranges) {
+    for (const auto& [left, right] : ranges) {
       ASSERT_LT(left, right);
       EXPECT_EQ(rmq.arg_min(left, right),
                 naive_arg_min(std::span<const int>(values), left, right,
@@ -1033,7 +1033,7 @@ TEST(RmqCartesianHybridBTree, DepthBackendDirectPaths) {
       {700, kDepthCount - 3},
       {kDepthCount - 65, kDepthCount},
   };
-  for (const auto [left, right] : ranges) {
+  for (const auto& [left, right] : ranges) {
     const std::size_t expected =
         naive_depth_arg_min(std::span<const std::int64_t>(depths), left, right);
     EXPECT_EQ(high_sparse.arg_min(left, right), expected)
@@ -1112,7 +1112,7 @@ TEST(RmqCartesianHybridBTree, TopSparseOverlayBoundaryRanges) {
       {0, values.size()},
   };
 
-  for (const auto [left, right] : ranges) {
+  for (const auto& [left, right] : ranges) {
     ASSERT_LT(left, right);
     const std::size_t expected = naive_arg_min(std::span<const int>(values),
                                                left, right, std::less<int>());
@@ -1171,7 +1171,7 @@ TEST(RmqCartesianHybridBTree, TopSparseOverlayComparatorMaximum) {
       {0, values.size()},
   };
 
-  for (const auto [left, right] : ranges) {
+  for (const auto& [left, right] : ranges) {
     ASSERT_LT(left, right);
     EXPECT_EQ(rmq.arg_min(left, right),
               naive_arg_min(std::span<const int>(values), left, right,

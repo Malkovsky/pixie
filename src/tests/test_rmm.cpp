@@ -24,15 +24,6 @@ static std::string bits_to_parens(const std::string& bits) {
   return s;
 }
 
-static std::string vecbits_to_string(const std::vector<uint8_t>& v) {
-  std::string s;
-  s.resize(v.size());
-  for (size_t i = 0; i < v.size(); ++i) {
-    s[i] = v[i] ? '1' : '0';
-  }
-  return s;
-}
-
 static std::vector<std::uint64_t> pack_words_lsb_first(
     const std::string& bits) {
   const size_t n = bits.size();
