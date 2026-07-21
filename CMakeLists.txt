@@ -256,6 +256,15 @@ if (PIXIE_TESTS)
                 PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
     endif ()
 
+    add_executable(pivco_huffman_tests
+            src/tests/pivco_huffman_tests.cpp)
+    target_include_directories(pivco_huffman_tests
+            PUBLIC include)
+    target_link_libraries(pivco_huffman_tests
+            gtest
+            gtest_main
+            ${PIXIE_DIAGNOSTICS_LIBS})
+
     set(PIXIE_TEST_TARGETS
             bit_algorithms_unittests
             rank_select_unittests
@@ -267,7 +276,8 @@ if (PIXIE_TESTS)
             storage_tests
             excess_positions_tests
             excess_record_lows_tests
-            rmq_tests)
+            rmq_tests
+            pivco_huffman_tests)
     foreach (test_target IN LISTS PIXIE_TEST_TARGETS)
         gtest_discover_tests(${test_target}
                 DISCOVERY_MODE PRE_TEST
@@ -396,6 +406,15 @@ if (PIXIE_BENCHMARKS)
     target_include_directories(excess_positions_benchmarks
             PUBLIC include)
     target_link_libraries(excess_positions_benchmarks
+            benchmark
+            benchmark_main
+            ${PIXIE_DIAGNOSTICS_LIBS})
+
+    add_executable(pivco_huffman_benchmarks
+            src/benchmarks/pivco_huffman_benchmarks.cpp)
+    target_include_directories(pivco_huffman_benchmarks
+            PUBLIC include)
+    target_link_libraries(pivco_huffman_benchmarks
             benchmark
             benchmark_main
             ${PIXIE_DIAGNOSTICS_LIBS})
