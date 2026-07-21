@@ -57,10 +57,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
    * @brief Build a codec by encoding @p input.
    * @param input Symbol sequence to compress.
    */
-  explicit PivCoHuffman(std::span<const symbol_type> input) {
-    build(input);
-    serialize();
-  }
+  explicit PivCoHuffman(std::span<const symbol_type> input) { build(input); }
 
   /**
    * @brief Load a codec from a previously serialized compressed stream.
@@ -83,8 +80,24 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     return compressed_;
   }
 
-  /** @brief Reconstruct the original symbol sequence. */
-  std::vector<symbol_type> decode_impl() const { return decode_from_tree(); }
+  /** @brief Reconstruct the original symbol sequence by decoding each block. */
+  std::vector<symbol_type> decode_impl() const {
+    if (uncompressed_size_ == 0) {
+      return std::vector<symbol_type>();
+    }
+    std::vector<symbol_type> result;
+    result.reserve(uncompressed_size_);
+    // Skip the top-level header (total_size + block_size).
+    std::size_t pos = sizeof(std::size_t) * 2;
+    std::size_t remaining = uncompressed_size_;
+    while (remaining > 0) {
+      deserialize_block(pos);
+      std::vector<symbol_type> block_result = decode_from_tree();
+      result.insert(result.end(), block_result.begin(), block_result.end());
+      remaining -= block_uncompressed_size_;
+    }
+    return result;
+  }
 
  private:
   /// @brief Sentinel node index meaning "no node".
@@ -98,6 +111,13 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
 
   /// @brief Maximum supported Huffman code length (matches common decoders).
   static constexpr std::size_t kMaxCodeLength = 15;
+
+  /// @brief Default block size for block-based processing (64 KiB).
+  /// @details Each block is compressed independently with its own Huffman
+  ///          tree. This keeps the decode workspace (2 × block_size = 128 KiB)
+  ///          within the per-core L2 (256 KiB), eliminating the L2 evictions
+  ///          that hurt decode throughput on whole-input processing.
+  static constexpr std::size_t kBlockSize = 64 * 1024;
 
   /**
    * @brief Lightweight descriptor for a node's routing bitmap.
@@ -132,28 +152,63 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     Bitmap bits;
   };
 
+  /// @brief Total uncompressed size across all blocks (set during
+  ///        build/deserialize, read by `uncompressed_size_impl()`).
   std::size_t uncompressed_size_ = 0;
-  std::size_t root_ = kNpos;
-  std::vector<Node> nodes_;
+  /// @brief Per-block serialized size from the wire (fixed; last block may
+  ///        be smaller). Used by decode to iterate blocks.
+  std::size_t block_size_ = kBlockSize;
+  /// @brief Serialized compressed stream (header + per-block data).
   std::vector<std::byte> compressed_;
+
+  // --- per-block tree state (rebuilt for each block during decode) --------
+  //    Mutable because `decode_impl()` is const but rebuilds the tree
+  //    per-block from the serialized stream.
+  mutable std::size_t root_ = kNpos;
+  mutable std::vector<Node> nodes_;
   /// @brief One contiguous allocation backing every internal node's bitmap
   ///        words. Node `i` owns `nodes_[i].bits.word_count()` words starting
   ///        at `arena_[nodes_[i].bits.offset]`.
-  std::vector<std::uint64_t> arena_;
-  /// @brief Reusable decode scratch: two ping-pong halves of size
-  ///        `uncompressed_size_`. Allocated once and reused across decode
-  ///        calls; `mutable` because `decode_impl()` is const.
+  mutable std::vector<std::uint64_t> arena_;
+  /// @brief Reusable decode/encode scratch: two ping-pong halves of size
+  ///        `block_uncompressed_size_`. Reused across blocks; `mutable`
+  ///        because `decode_impl()` is const.
   mutable std::vector<symbol_type> workspace_;
-  std::array<std::uint8_t, kAlphabet> code_lengths_{};
+  /// @brief Uncompressed size of the current block being processed.
+  mutable std::size_t block_uncompressed_size_ = 0;
+  mutable std::array<std::uint8_t, kAlphabet> code_lengths_{};
 
   // --- construction --------------------------------------------------------
 
-  /** @brief Build the canonical Huffman tree and per-node bitmaps from @p
-   * input.
-   */
+  /** @brief Build and serialize all blocks from @p input.
+   *  @details Splits the input into fixed-size blocks (kBlockSize), builds
+   *           an independent Huffman tree per block, and serializes each
+   *           block into `compressed_`. The wire format is:
+   *           - total_uncompressed_size (8 bytes)
+   *           - block_size (8 bytes)
+   *           - Per block: block_uncompressed_size (8 bytes) + 128 bytes
+   *             nibbles + per-internal-node bitmaps. */
   void build(std::span<const symbol_type> input) {
     uncompressed_size_ = input.size();
-    if (uncompressed_size_ == 0) {
+    compressed_.clear();
+    write(uncompressed_size_);
+    write(block_size_);
+
+    std::size_t offset = 0;
+    while (offset < input.size()) {
+      std::size_t remaining = input.size() - offset;
+      std::size_t this_block = std::min(remaining, block_size_);
+      build_block(input.subspan(offset, this_block));
+      serialize_block();
+      offset += this_block;
+    }
+  }
+
+  /** @brief Build the canonical Huffman tree and per-node bitmaps for one
+   *         block of @p input. */
+  void build_block(std::span<const symbol_type> input) {
+    block_uncompressed_size_ = input.size();
+    if (block_uncompressed_size_ == 0) {
       root_ = kNpos;
       return;
     }
@@ -190,7 +245,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     std::array<std::vector<std::pair<std::size_t, bool>>, kAlphabet> paths;
     std::vector<std::pair<std::size_t, bool>> path;
     assign_paths(root_, path, paths);
-    workspace_.resize(uncompressed_size_ * 2);
+    workspace_.resize(block_uncompressed_size_ * 2);
     std::copy(input.begin(), input.end(), workspace_.data());
     encode_partition(root_, 0, 0, paths, freq);
   }
@@ -331,7 +386,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
    *           Same-length codes are grouped together, which is a prerequisite
    *           for future flat-subtree optimization. */
   void build_canonical_tree(
-      const std::array<std::uint8_t, kAlphabet>& lengths) {
+      const std::array<std::uint8_t, kAlphabet>& lengths) const {
     nodes_.clear();
     nodes_.reserve(2 * kAlphabet);
 
@@ -543,9 +598,10 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
       return std::vector<symbol_type>();
     }
     if (nodes_[root_].is_leaf) {
-      return std::vector<symbol_type>(uncompressed_size_, nodes_[root_].symbol);
+      return std::vector<symbol_type>(block_uncompressed_size_,
+                                      nodes_[root_].symbol);
     }
-    const std::size_t n = uncompressed_size_;
+    const std::size_t n = block_uncompressed_size_;
     workspace_.resize(n * 2);
     decode_node(root_, n, 0, 0);
     return std::vector<symbol_type>(workspace_.begin(), workspace_.begin() + n);
@@ -604,7 +660,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
 
   /** @brief Pointer to the workspace half that holds depth-@p depth outputs. */
   symbol_type* workspace_half(std::size_t depth) const {
-    return workspace_.data() + (depth % 2) * uncompressed_size_;
+    return workspace_.data() + (depth % 2) * block_uncompressed_size_;
   }
 
   /** @brief Number of set bits in a node's arena-backed bitmap. */
@@ -620,17 +676,16 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
 
   // --- serialization -------------------------------------------------------
 
-  /** @brief Write the in-memory tree into the serialized byte buffer.
-   *  @details Wire format:
-   *           - uncompressed_size (8 bytes)
+  /** @brief Append one block's serialized form to `compressed_`.
+   *  @details Per-block wire format:
+   *           - block_uncompressed_size (8 bytes)
    *           - 256 code lengths as 128 bytes of 4-bit nibbles (0 = absent)
    *           - For each internal node (pre-order): bits.count (8 bytes) +
    *             packed words. Leaves are implied by the tree structure
    *             reconstructed from lengths. */
-  void serialize() {
-    compressed_.clear();
-    write(uncompressed_size_);
-    if (uncompressed_size_ == 0) {
+  void serialize_block() {
+    write(block_uncompressed_size_);
+    if (block_uncompressed_size_ == 0) {
       return;
     }
 
@@ -659,26 +714,42 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     }
   }
 
-  /** @brief Rebuild the in-memory tree from a serialized byte buffer. */
+  /** @brief Load the serialized stream and parse the block header.
+   *  @details Copies @p data into `compressed_` and reads the top-level
+   *           header (total_uncompressed_size, block_size). Per-block trees
+   *           are rebuilt on demand during `decode_impl()`. */
   void deserialize(std::span<const std::byte> data) {
     compressed_.assign(data.begin(), data.end());
     nodes_.clear();
     arena_.clear();
+    root_ = kNpos;
     if (data.empty()) {
       uncompressed_size_ = 0;
-      root_ = kNpos;
       return;
     }
     std::size_t pos = 0;
-    uncompressed_size_ = read<std::size_t>(data, pos);
-    if (uncompressed_size_ == 0) {
-      root_ = kNpos;
+    uncompressed_size_ = read<std::size_t>(compressed_, pos);
+    block_size_ = read<std::size_t>(compressed_, pos);
+  }
+
+  /** @brief Rebuild the tree and arena for one block from `compressed_` at
+   *         @p pos. Advances @p pos past the block's serialized data.
+   *  @details Reads the per-block header (uncompressed_size + nibbles),
+   *           rebuilds the canonical tree, and reads arena words via a
+   *           two-pass wire walk. */
+  void deserialize_block(std::size_t& pos) const {
+    nodes_.clear();
+    arena_.clear();
+    root_ = kNpos;
+
+    block_uncompressed_size_ = read<std::size_t>(compressed_, pos);
+    if (block_uncompressed_size_ == 0) {
       return;
     }
 
     // Read 256 code lengths from nibbles.
     for (std::size_t i = 0; i < kAlphabet; i += 2) {
-      std::uint8_t byte = read<std::uint8_t>(data, pos);
+      std::uint8_t byte = read<std::uint8_t>(compressed_, pos);
       code_lengths_[i] = byte & 0x0F;
       code_lengths_[i + 1] = (byte >> 4) & 0x0F;
     }
@@ -693,16 +764,15 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
 
     // Pass 1: read each internal node's `count` (and skip its word bytes on
     // the wire), assign contiguous arena offsets, and size the arena exactly.
-    // `scan_pos` is discarded — pass 2 re-walks the same region to read words.
     const std::size_t bitmap_start = pos;
     std::size_t arena_words = 0;
-    scan_node_counts(root_, data, pos, arena_words);
+    scan_node_counts(root_, compressed_, pos, arena_words);
     arena_.assign(arena_words, 0);
 
     // Pass 2: rewind to the bitmap section and read each node's packed words
     // into its arena slot.
     pos = bitmap_start;
-    read_node_words(root_, data, pos);
+    read_node_words(root_, compressed_, pos);
   }
 
   /** @brief Pass 1: read each internal node's `count` from the wire, assign its
@@ -712,7 +782,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
   void scan_node_counts(std::size_t idx,
                         std::span<const std::byte> data,
                         std::size_t& pos,
-                        std::size_t& arena_words) {
+                        std::size_t& arena_words) const {
     if (idx == kNpos) {
       return;
     }
@@ -732,7 +802,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
    *         its arena slot (pre-order, matching serialization). */
   void read_node_words(std::size_t idx,
                        std::span<const std::byte> data,
-                       std::size_t& pos) {
+                       std::size_t& pos) const {
     if (idx == kNpos) {
       return;
     }
