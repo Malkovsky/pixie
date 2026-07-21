@@ -418,6 +418,15 @@ if (PIXIE_BENCHMARKS)
             benchmark
             benchmark_main
             ${PIXIE_DIAGNOSTICS_LIBS})
+
+    add_executable(pivco_huffman_file_benchmarks
+            src/benchmarks/pivco_huffman_file_benchmarks.cpp)
+    target_include_directories(pivco_huffman_file_benchmarks
+            PUBLIC include)
+    target_link_libraries(pivco_huffman_file_benchmarks
+            benchmark
+            benchmark_main
+            ${PIXIE_DIAGNOSTICS_LIBS})
 endif ()
 
 # ---------------------------------------------------------------------------
