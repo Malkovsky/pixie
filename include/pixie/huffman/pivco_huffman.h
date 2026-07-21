@@ -7,8 +7,8 @@
  * Stores a Huffman-shaped tree of per-node routing bitmaps (the "tree of
  * bitmaps" layout shared with wavelet trees). Encoding walks each input symbol
  * from the root, appending one direction bit to every internal node on its
- * path. Decoding walks each output position from the root down to a leaf,
- * consuming one bit per internal node.
+ * path. Decoding merges child symbol streams bottom-up from leaves to root,
+ * using the node bitmap as a selector.
  *
  * This is a deliberately simple, unoptimized reference implementation: node
  * bitmaps are stored as packed `std::uint64_t` words, traversal is scalar,
@@ -23,6 +23,7 @@
 #include <pixie/huffman.h>
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -37,9 +38,9 @@ namespace pixie {
  * @brief Simple scalar PivCo-Huffman codec.
  * @details Implements `HuffmanBase` by building a Huffman tree over the
  *          byte alphabet, storing one routing bitmap per internal node as
- *          packed 64-bit words, and decoding by top-down per-position
- *          traversal. The serialized form is a header followed by the tree
- *          structure and packed node bitmaps.
+ *          packed 64-bit words, and decoding by bottom-up merging of child
+ *          symbol streams. The serialized form is a header followed by the
+ *          tree structure and packed node bitmaps.
  */
 class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
  public:
@@ -99,28 +100,18 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     std::vector<std::uint64_t> words;
     std::size_t count = 0;
 
-    /** @brief Append one bit to the end of the bitmap. */
-    void push_back(bool bit) {
-      if (count % kWordBits == 0) {
-        words.push_back(0);
-      }
-      if (bit) {
-        words.back() |= (1ull << (count % kWordBits));
-      }
-      ++count;
-    }
-
-    /** @brief Read the bit at position @p i. */
-    bool get(std::size_t i) const {
-      return ((words[i / kWordBits] >> (i % kWordBits)) & 1ull) != 0;
-    }
-
-    /** @brief Number of stored bits. */
-    std::size_t size() const { return count; }
-
     /** @brief Number of 64-bit words backing the bitmap. */
     std::size_t word_count() const {
       return (count + kWordBits - 1) / kWordBits;
+    }
+
+    /** @brief Number of set (1) bits in the bitmap. */
+    std::size_t popcount() const {
+      std::size_t total = 0;
+      for (std::uint64_t w : words) {
+        total += std::popcount(w);
+      }
+      return total;
     }
   };
 
@@ -168,6 +159,10 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     std::priority_queue<HeapItem, std::vector<HeapItem>, decltype(cmp)> heap(
         cmp);
 
+    // At most 2*kAlphabet-1 nodes (leaves + internal). Pre-allocate to avoid
+    // reallocation during tree construction.
+    nodes_.reserve(2 * kAlphabet - 1);
+
     for (std::size_t s = 0; s < kAlphabet; s++) {
       if (freq[s] > 0) {
         Node n;
@@ -187,8 +182,11 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
       n.is_leaf = false;
       n.left = a.idx;
       n.right = b.idx;
+      std::size_t w = a.weight + b.weight;
+      n.bits.count = w;
+      n.bits.words.assign((w + kWordBits - 1) / kWordBits, 0);
       nodes_.push_back(std::move(n));
-      heap.push({a.weight + b.weight, nodes_.size() - 1});
+      heap.push({w, nodes_.size() - 1});
     }
     root_ = heap.top().idx;
 
@@ -197,12 +195,9 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     std::vector<std::pair<std::size_t, bool>> path;
     assign_paths(root_, path, paths);
 
-    // Append one direction bit per visited node, in input order.
-    for (auto s : input) {
-      for (const auto& [idx, bit] : paths[s]) {
-        nodes_[idx].bits.push_back(bit);
-      }
-    }
+    // Top-down partitioning: recursively split the symbol stream and fill
+    // pre-allocated bitmaps. Leaves are skipped (zero overhead).
+    encode_node(root_, 0, input, paths);
   }
 
   /** @brief Depth-first assignment of root-to-leaf paths. */
@@ -222,29 +217,99 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     path.pop_back();
   }
 
+  /** @brief Top-down encoding: recursively partition symbols and fill bitmaps.
+   *  @details At each internal node, fill the pre-allocated bitmap with the
+   *           direction bit of each symbol's code at this depth, and split the
+   *           symbol stream into left (0) and right (1) child vectors. Leaves
+   *           return immediately — zero overhead.
+   *  @param idx     Current node index.
+   *  @param depth   Current tree depth (indexes into each symbol's code path).
+   *  @param symbols Symbol stream arriving at this node, in order.
+   *  @param paths   Per-symbol code paths from `assign_paths`. */
+  void encode_node(std::size_t idx,
+                   std::size_t depth,
+                   std::span<const symbol_type> symbols,
+                   const std::array<std::vector<std::pair<std::size_t, bool>>,
+                                    kAlphabet>& paths) {
+    if (nodes_[idx].is_leaf) {
+      return;
+    }
+
+    auto& n = nodes_[idx];
+    std::vector<symbol_type> left_symbols, right_symbols;
+    std::size_t left_size = nodes_[n.left].bits.count;
+    std::size_t right_size = nodes_[n.right].bits.count;
+    left_symbols.reserve(left_size);
+    right_symbols.reserve(right_size);
+
+    // Fill bitmap via incremental word/bit tracking — avoids per-symbol
+    // division and modulo.
+    std::size_t word_idx = 0;
+    std::size_t bit_pos = 0;
+    for (std::size_t i = 0; i < symbols.size(); i++) {
+      bool bit = paths[symbols[i]][depth].second;
+      if (bit) {
+        n.bits.words[word_idx] |= (1ull << bit_pos);
+        right_symbols.push_back(symbols[i]);
+      } else {
+        left_symbols.push_back(symbols[i]);
+      }
+      if (++bit_pos == kWordBits) {
+        bit_pos = 0;
+        ++word_idx;
+      }
+    }
+
+    encode_node(n.left, depth + 1, left_symbols, paths);
+    encode_node(n.right, depth + 1, right_symbols, paths);
+  }
+
   // --- decode --------------------------------------------------------------
 
-  /** @brief Reconstruct the original sequence by top-down traversal. */
+  /** @brief Reconstruct the original sequence by bottom-up merging. */
   std::vector<symbol_type> decode_from_tree() const {
-    std::vector<symbol_type> out(uncompressed_size_);
     if (root_ == kNpos) {
-      return out;
+      return std::vector<symbol_type>();
     }
-    if (nodes_[root_].is_leaf) {
-      const std::uint8_t sym = nodes_[root_].symbol;
-      for (auto& s : out) {
-        s = sym;
-      }
-      return out;
+    return decode_node(root_, uncompressed_size_);
+  }
+
+  /** @brief Recursively decode a node's output stream bottom-up.
+   *  @param weight Number of symbols this node must produce. For internal
+   *         nodes this equals `bits.count`; for leaves it is passed down from
+   *         the parent (no bitmap to read it from). */
+  std::vector<symbol_type> decode_node(std::size_t idx,
+                                       std::size_t weight) const {
+    const auto& n = nodes_[idx];
+    if (n.is_leaf) {
+      return std::vector<symbol_type>(weight, n.symbol);
     }
-    std::vector<std::size_t> cursor(nodes_.size(), 0);
-    for (std::size_t i = 0; i < uncompressed_size_; i++) {
-      std::size_t idx = root_;
-      while (!nodes_[idx].is_leaf) {
-        const bool bit = nodes_[idx].bits.get(cursor[idx]++);
-        idx = bit ? nodes_[idx].right : nodes_[idx].left;
+
+    std::size_t right_weight = n.bits.popcount();
+    std::size_t left_weight = n.bits.count - right_weight;
+    std::vector<symbol_type> left_symbols = decode_node(n.left, left_weight);
+    std::vector<symbol_type> right_symbols = decode_node(n.right, right_weight);
+
+    std::vector<symbol_type> out(n.bits.count);
+    std::size_t c_left = 0;
+    std::size_t c_right = 0;
+    // Word-wise merge: read each 64-bit word once and shift through its bits,
+    // avoiding per-bit division/modulo.
+    for (std::size_t w = 0; w < n.bits.words.size(); w++) {
+      std::uint64_t word = n.bits.words[w];
+      std::size_t base = w * kWordBits;
+      std::size_t limit = base + kWordBits;
+      if (limit > n.bits.count) {
+        limit = n.bits.count;
       }
-      out[i] = nodes_[idx].symbol;
+      for (std::size_t i = base; i < limit; i++) {
+        if (word & 1ull) {
+          out[i] = right_symbols[c_right++];
+        } else {
+          out[i] = left_symbols[c_left++];
+        }
+        word >>= 1;
+      }
     }
     return out;
   }

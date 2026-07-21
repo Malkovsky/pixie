@@ -4,36 +4,23 @@
 #include <cstdint>
 #include <cstdlib>
 #include <random>
-#include <string>
 #include <vector>
 
 using pixie::PivCoHuffman;
 
 // ---------------------------------------------------------------------------
-// Configuration via environment variables (follows the Pixie convention used
-// by EXCESS_POS_CASES / RECORD_LOWS_CASES etc.):
-//   PIVCO_BENCH_SIZE - input size in bytes (default 1<<16 = 64 KiB)
+// Configuration:
 //   PIVCO_BENCH_SEED - random seed (default 42)
 //
-// To run a subset of datasets, use Google Benchmark's built-in filter flag,
-// e.g. `--benchmark_filter=".*Skewed.*|.*Text.*"`. No code change needed.
+// Input sizes are swept by Google Benchmark's range mechanism, not an env
+// var: 1 KiB -> 1 MiB -> 1 GiB (multiplier 1024). This exercises the codec
+// from cache-resident to gigabyte scale in a single run.
+//
+// To run a subset of datasets or sizes, use Google Benchmark's filter flag,
+// e.g. `--benchmark_filter="BM_Encode/Uniform256"`.
 // ---------------------------------------------------------------------------
 
 namespace {
-
-/// @brief Input size in bytes, overridable via `PIVCO_BENCH_SIZE`.
-std::size_t bench_size() {
-  if (const char* env = std::getenv("PIVCO_BENCH_SIZE")) {
-    try {
-      const unsigned long long v = std::stoull(env);
-      if (v != 0) {
-        return static_cast<std::size_t>(v);
-      }
-    } catch (...) {
-    }
-  }
-  return 1ull << 16;
-}
 
 /// @brief RNG seed, overridable via `PIVCO_BENCH_SEED`.
 std::uint64_t bench_seed() {
@@ -131,23 +118,34 @@ void report_ratio(benchmark::State& state,
                           static_cast<double>(input_bytes);
 }
 
+/// @brief Common range of input sizes: 1 KiB, 1 MiB, 1 GiB.
+/// @details Applied to every registered benchmark. The 1 GiB tier exercises
+///         gigabyte-scale inputs; at that size Google Benchmark runs a single
+///         iteration per case.
+constexpr std::int64_t kSizeLo = 1ull << 10;  // 1 KiB
+constexpr std::int64_t kSizeHi = 1ull << 30;  // 1 GiB
+constexpr std::int64_t kSizeMult = 1024;
+
 // --- benchmarks ------------------------------------------------------------
 
 /// @brief Measure full encoding: build Huffman tree, fill node bitmaps, and
-///        serialize the compressed stream.
+///        serialize the compressed stream. The compressed size is read from
+///        the first timed iteration (no separate probe build), which keeps
+///        gigabyte-scale setup cost to a single encode.
 void BM_Encode(benchmark::State& state, DatasetMaker make) {
-  const std::size_t size = bench_size();
+  const std::size_t size = static_cast<std::size_t>(state.range(0));
   std::mt19937_64 rng(bench_seed());
   const std::vector<std::uint8_t> data = make(size, rng);
 
-  // Encode once outside timing to report compression ratio.
-  const PivCoHuffman probe(data);
-  report_ratio(state, probe.compressed_size(), size);
-
+  std::size_t compressed = 0;
   for (auto _ : state) {
     PivCoHuffman codec(data);
+    compressed = codec.compressed_size();
     benchmark::DoNotOptimize(codec.compressed_data().data());
     benchmark::ClobberMemory();
+  }
+  if (compressed > 0) {
+    report_ratio(state, compressed, size);
   }
   state.SetBytesProcessed(static_cast<int64_t>(state.iterations() * size));
 }
@@ -155,7 +153,7 @@ void BM_Encode(benchmark::State& state, DatasetMaker make) {
 /// @brief Measure decoding: reconstruct the original byte stream from the
 ///        in-memory tree. Encoding is done once, outside the timed loop.
 void BM_Decode(benchmark::State& state, DatasetMaker make) {
-  const std::size_t size = bench_size();
+  const std::size_t size = static_cast<std::size_t>(state.range(0));
   std::mt19937_64 rng(bench_seed());
   const std::vector<std::uint8_t> data = make(size, rng);
 
@@ -172,18 +170,28 @@ void BM_Decode(benchmark::State& state, DatasetMaker make) {
 
 }  // namespace
 
-// Register encode + decode for every built-in dataset. Each registration is
-// named `BM_<Op>/<Dataset>`, so `--benchmark_filter` selects subsets freely.
-BENCHMARK_CAPTURE(BM_Encode, Uniform256, make_uniform256);
-BENCHMARK_CAPTURE(BM_Encode, Binary, make_binary);
-BENCHMARK_CAPTURE(BM_Encode, LowEntropy4, make_low_entropy_4);
-BENCHMARK_CAPTURE(BM_Encode, TextLike, make_text_like);
-BENCHMARK_CAPTURE(BM_Encode, Skewed99, make_skewed99);
-BENCHMARK_CAPTURE(BM_Encode, SingleSymbol, make_single_symbol);
+// Register encode + decode for every built-in dataset, each swept over the
+// full size range. Each registration is named `BM_<Op>/<Dataset>/<size>`, so
+// `--benchmark_filter` selects subsets freely.
+#define PIXIE_PIVCO_REGISTER(Op, Dataset, Maker) \
+  BENCHMARK_CAPTURE(BM_##Op, Dataset, Maker)     \
+      ->Unit(benchmark::kMillisecond)            \
+      ->UseRealTime()                            \
+      ->Repetitions(5)                           \
+      ->ReportAggregatesOnly(true)               \
+      ->RangeMultiplier(kSizeMult)               \
+      ->Range(kSizeLo, kSizeHi);
 
-BENCHMARK_CAPTURE(BM_Decode, Uniform256, make_uniform256);
-BENCHMARK_CAPTURE(BM_Decode, Binary, make_binary);
-BENCHMARK_CAPTURE(BM_Decode, LowEntropy4, make_low_entropy_4);
-BENCHMARK_CAPTURE(BM_Decode, TextLike, make_text_like);
-BENCHMARK_CAPTURE(BM_Decode, Skewed99, make_skewed99);
-BENCHMARK_CAPTURE(BM_Decode, SingleSymbol, make_single_symbol);
+PIXIE_PIVCO_REGISTER(Encode, Uniform256, make_uniform256)
+PIXIE_PIVCO_REGISTER(Encode, Binary, make_binary)
+PIXIE_PIVCO_REGISTER(Encode, LowEntropy4, make_low_entropy_4)
+PIXIE_PIVCO_REGISTER(Encode, TextLike, make_text_like)
+PIXIE_PIVCO_REGISTER(Encode, Skewed99, make_skewed99)
+PIXIE_PIVCO_REGISTER(Encode, SingleSymbol, make_single_symbol)
+
+PIXIE_PIVCO_REGISTER(Decode, Uniform256, make_uniform256)
+PIXIE_PIVCO_REGISTER(Decode, Binary, make_binary)
+PIXIE_PIVCO_REGISTER(Decode, LowEntropy4, make_low_entropy_4)
+PIXIE_PIVCO_REGISTER(Decode, TextLike, make_text_like)
+PIXIE_PIVCO_REGISTER(Decode, Skewed99, make_skewed99)
+PIXIE_PIVCO_REGISTER(Decode, SingleSymbol, make_single_symbol)
