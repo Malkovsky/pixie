@@ -112,6 +112,13 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
   /// @brief Maximum supported Huffman code length (matches common decoders).
   static constexpr std::size_t kMaxCodeLength = 15;
 
+  /// @brief Maximum depth of a flat subtree (table size = 2^depth ≤ 256).
+  /// @details A flat subtree replaces `2^d - 1` internal nodes (each with a
+  ///          1-bit-per-symbol bitmap and a merge pass) with a single node
+  ///          storing `d` bits per symbol and a lookup table. This turns `d`
+  ///          decode merge passes into a single table-lookup pass.
+  static constexpr std::uint8_t kMaxFlatDepth = 8;
+
   /// @brief Default block size for block-based processing (64 KiB).
   /// @details Each block is compressed independently with its own Huffman
   ///          tree. This keeps the decode workspace (2 × block_size = 128 KiB)
@@ -130,11 +137,14 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
    */
   struct Bitmap {
     std::size_t offset = 0;
-    std::size_t count = 0;
+    std::size_t count = 0;  ///< Number of symbols (not bits).
 
-    /** @brief Number of 64-bit words backing the bitmap. */
-    std::size_t word_count() const {
-      return (count + kWordBits - 1) / kWordBits;
+    /** @brief Number of 64-bit words backing the bitmap.
+     *  @param flat_depth 0 for normal nodes (1 bit/symbol); >0 for flat
+     *         nodes (`flat_depth` bits/symbol). */
+    std::size_t word_count(std::uint8_t flat_depth = 0) const {
+      std::size_t bits_per = flat_depth > 0 ? flat_depth : 1;
+      return (count * bits_per + kWordBits - 1) / kWordBits;
     }
   };
 
@@ -150,6 +160,9 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     std::uint8_t symbol = 0;
     bool is_leaf = false;
     Bitmap bits;
+    /// @brief 0 = normal node (1 bit/symbol); >0 = flat subtree of this depth
+    ///        (stores `flat_depth` bits/symbol + a lookup table).
+    std::uint8_t flat_depth = 0;
   };
 
   /// @brief Total uncompressed size across all blocks (set during
@@ -177,6 +190,10 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
   /// @brief Uncompressed size of the current block being processed.
   mutable std::size_t block_uncompressed_size_ = 0;
   mutable std::array<std::uint8_t, kAlphabet> code_lengths_{};
+  /// @brief Per-node flat lookup tables. `flat_tables_[i]` is valid when
+  ///        `nodes_[i].flat_depth > 0`; it maps each `d`-bit suffix to its
+  ///        symbol. Rebuilt from the tree structure (not serialized).
+  mutable std::vector<std::vector<symbol_type>> flat_tables_;
 
   // --- construction --------------------------------------------------------
 
@@ -225,6 +242,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     // 3. Rebuild a canonical tree from the lengths (groups same-length codes).
     //    Structure only: bitmap weights/offsets are assigned below, not here.
     build_canonical_tree(code_lengths_);
+    detect_flat_subtrees();
 
     // Single-symbol input: root is a leaf, no internal nodes, no arena.
     if (root_ == kNpos || nodes_[root_].is_leaf) {
@@ -380,6 +398,142 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     }
   }
 
+  // --- bit helpers ---------------------------------------------------------
+  //  Small functions for reading/writing individual bits and multi-bit
+  //  values from/to packed `std::uint64_t` word arrays. Used by both the
+  //  normal (1-bit-per-symbol) and flat (d-bits-per-symbol) code paths.
+
+  /** @brief Read a single bit from a packed word array at bit position @p pos.
+   */
+  static bool read_bit(const std::uint64_t* words, std::size_t pos) {
+    return (words[pos / kWordBits] >> (pos % kWordBits)) & 1ull;
+  }
+
+  /** @brief Set a single bit in a packed word array at bit position @p pos.
+   *  @details Assumes the word is pre-zeroed; only sets 1-bits. */
+  static void set_bit(std::uint64_t* words, std::size_t pos) {
+    words[pos / kWordBits] |= (1ull << (pos % kWordBits));
+  }
+
+  /** @brief Read @p d bits from a packed word array starting at bit position
+   *         @p pos, MSB-first. Returns the decoded value. */
+  static std::uint32_t read_bits(const std::uint64_t* words,
+                                 std::size_t pos,
+                                 std::uint8_t d) {
+    std::uint32_t value = 0;
+    for (std::uint8_t i = 0; i < d; i++) {
+      value = (value << 1) | read_bit(words, pos + i);
+    }
+    return value;
+  }
+
+  /** @brief Write @p d bits of @p value to a packed word array starting at
+   *         bit position @p pos, MSB-first. Only sets 1-bits (pre-zeroed). */
+  static void write_bits(std::uint64_t* words,
+                         std::size_t pos,
+                         std::uint32_t value,
+                         std::uint8_t d) {
+    for (std::uint8_t i = 0; i < d; i++) {
+      if ((value >> (d - 1 - i)) & 1u) {
+        set_bit(words, pos + i);
+      }
+    }
+  }
+
+  // --- flat subtree detection ----------------------------------------------
+
+  /** @brief Check if all leaves in the subtree rooted at @p idx are at the
+   *         same depth from @p idx.
+   *  @param idx    Subtree root.
+   *  @param depth  Output: the uniform leaf depth (0 for a leaf itself).
+   *  @returns true if uniform, false if leaves are at mixed depths. */
+  bool is_uniform_leaf_depth(std::size_t idx, std::uint8_t& depth) const {
+    const Node& n = nodes_[idx];
+    if (n.is_leaf) {
+      depth = 0;
+      return true;
+    }
+    std::uint8_t ld = 0, rd = 0;
+    if (!is_uniform_leaf_depth(n.left, ld) ||
+        !is_uniform_leaf_depth(n.right, rd)) {
+      return false;
+    }
+    if (ld != rd) {
+      return false;
+    }
+    depth = ld + 1;
+    return true;
+  }
+
+  /** @brief Walk the tree top-down, marking nodes whose subtrees are uniform
+   *         and shallow enough (≤ kMaxFlatDepth) to flatten.
+   *  @details A flat node of depth @p d stores `d` bits per symbol in its
+   *           bitmap and uses a lookup table of size `2^d` to decode. It
+   *           replaces `2^d - 1` internal nodes, eliminating `d - 1` merge
+   *           passes. Top-down marking ensures the largest eligible subtree
+   *           is flattened; children of a flat node are not visited. */
+  void detect_flat_subtrees() const {
+    flat_tables_.clear();
+    flat_tables_.resize(nodes_.size());
+    mark_flat(root_);
+  }
+
+  /** @brief Recursively mark a node as flat if eligible, else recurse. */
+  void mark_flat(std::size_t idx) const {
+    if (idx == kNpos) {
+      return;
+    }
+    Node& n = nodes_[idx];
+    if (n.is_leaf) {
+      return;
+    }
+
+    std::uint8_t depth = 0;
+    if (is_uniform_leaf_depth(idx, depth) && depth >= 2 &&
+        depth <= kMaxFlatDepth) {
+      n.flat_depth = depth;
+      flat_tables_[idx].assign(std::size_t{1} << depth, 0);
+      build_flat_table(idx, depth, 0, flat_tables_[idx]);
+      return;  // children are covered by this flat node
+    }
+
+    mark_flat(n.left);
+    mark_flat(n.right);
+  }
+
+  /** @brief Populate the flat lookup table by walking the subtree.
+   *  @param idx             Current node.
+   *  @param remaining_depth Bits remaining (counts down to 0 at leaves).
+   *  @param code            Suffix accumulated so far (MSB-first: left=0,
+   * right=1).
+   *  @param table           Output table of size `2^total_depth`. */
+  void build_flat_table(std::size_t idx,
+                        std::uint8_t remaining_depth,
+                        std::uint32_t code,
+                        std::vector<symbol_type>& table) const {
+    const Node& n = nodes_[idx];
+    if (n.is_leaf) {
+      table[code] = n.symbol;
+      return;
+    }
+    build_flat_table(n.left, remaining_depth - 1, code << 1, table);
+    build_flat_table(n.right, remaining_depth - 1, (code << 1) | 1, table);
+  }
+
+  /** @brief Total frequency weight of a subtree (sum of leaf frequencies). */
+  std::size_t subtree_weight(
+      std::size_t idx,
+      const std::array<std::size_t, kAlphabet>& freq) const {
+    if (idx == kNpos) {
+      return 0;
+    }
+    const Node& n = nodes_[idx];
+    if (n.is_leaf) {
+      return freq[n.symbol];
+    }
+    return subtree_weight(n.left, freq) + subtree_weight(n.right, freq);
+  }
+
   /** @brief Rebuild a canonical Huffman tree from code lengths.
    *  @details Assigns canonical codes (sorted by length, then symbol), then
    *           builds the tree top-down by inserting each (symbol, code) pair.
@@ -491,13 +645,25 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     if (n.is_leaf) {
       return freq[n.symbol];
     }
+
+    if (n.flat_depth > 0) {
+      // Flat node: compute weight from subtree, assign arena for its
+      // d-bits-per-symbol bitmap, but DON'T recurse into children (their
+      // bitmaps aren't stored — the flat node replaces them).
+      std::size_t weight = subtree_weight(idx, freq);
+      n.bits.count = weight;
+      n.bits.offset = arena_words;
+      arena_words += n.bits.word_count(n.flat_depth);
+      return weight;
+    }
+
     std::size_t left_weight =
         assign_weights_and_offsets(n.left, freq, arena_words);
     std::size_t right_weight =
         assign_weights_and_offsets(n.right, freq, arena_words);
     n.bits.count = left_weight + right_weight;
     n.bits.offset = arena_words;
-    arena_words += n.bits.word_count();
+    arena_words += n.bits.word_count(0);
     return n.bits.count;
   }
 
@@ -554,6 +720,24 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     }
 
     Node& n = nodes_[idx];
+
+    // Flat node: write d-bit suffix per symbol, no partition, no recursion.
+    if (n.flat_depth > 0) {
+      const std::uint8_t d = n.flat_depth;
+      std::uint64_t* bits = arena_.data() + n.bits.offset;
+      const symbol_type* src = workspace_half(depth) + out_base;
+      for (std::size_t i = 0; i < n.bits.count; i++) {
+        // Build the d-bit suffix from the symbol's precomputed code path.
+        std::uint32_t suffix = 0;
+        for (std::uint8_t b = 0; b < d; b++) {
+          suffix = (suffix << 1) | (paths[src[i]][depth + b].second ? 1 : 0);
+        }
+        write_bits(bits, i * d, suffix, d);
+      }
+      return;
+    }
+
+    // Normal node: 1-bit-per-symbol bitmap + partition into children.
     const std::size_t left_weight = child_weight(n.left, freq);
     const std::size_t weight = n.bits.count;
 
@@ -627,14 +811,23 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
       return;
     }
 
+    // Flat node: read d-bit suffixes, lookup symbols, no merge.
+    if (n.flat_depth > 0) {
+      const std::uint8_t d = n.flat_depth;
+      const std::uint64_t* bits = arena_.data() + n.bits.offset;
+      const symbol_type* table = flat_tables_[idx].data();
+      for (std::size_t i = 0; i < weight; i++) {
+        dst[i] = table[read_bits(bits, i * d, d)];
+      }
+      return;
+    }
+
+    // Normal node: decode children, then merge by 1-bit-per-symbol bitmap.
     const std::size_t right_weight = bitmap_popcount(n.bits);
     const std::size_t left_weight = n.bits.count - right_weight;
     decode_node(n.left, left_weight, depth + 1, out_base);
     decode_node(n.right, right_weight, depth + 1, out_base + left_weight);
 
-    // Children wrote to the opposite half: [out_base, out_base + left_weight)
-    // holds the left stream, [out_base + left_weight, out_base + weight)
-    // holds the right stream. Merge both into this node's half by the bitmap.
     const symbol_type* src = workspace_half(depth + 1) + out_base;
     const symbol_type* left_out = src;
     const symbol_type* right_out = src + left_weight;
@@ -643,7 +836,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     std::size_t c_left = 0;
     std::size_t c_right = 0;
     const std::uint64_t* bits = arena_.data() + n.bits.offset;
-    const std::size_t words = n.bits.word_count();
+    const std::size_t words = n.bits.word_count(0);
     for (std::size_t w = 0; w < words; w++) {
       std::uint64_t word = bits[w];
       std::size_t limit = kWordBits;
@@ -663,11 +856,13 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     return workspace_.data() + (depth % 2) * block_uncompressed_size_;
   }
 
-  /** @brief Number of set bits in a node's arena-backed bitmap. */
+  /** @brief Number of set bits in a normal (1-bit-per-symbol) node's bitmap.
+   *  @details Only called for non-flat nodes (flat nodes use table lookup,
+   *           not merge). */
   std::size_t bitmap_popcount(const Bitmap& b) const {
     const std::uint64_t* p = arena_.data() + b.offset;
     std::size_t total = 0;
-    const std::size_t words = b.word_count();
+    const std::size_t words = b.word_count(0);
     for (std::size_t i = 0; i < words; i++) {
       total += std::popcount(p[i]);
     }
@@ -700,18 +895,24 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     serialize_node(root_);
   }
 
-  /** @brief Serialize a node's bitmap and recurse (pre-order). */
+  /** @brief Serialize a node's bitmap and recurse (pre-order).
+   *  @details Flat nodes are terminal: their children's bitmaps are not
+   *           serialized (the flat node replaces them). */
   void serialize_node(std::size_t idx) {
     if (idx == kNpos) {
       return;
     }
     const auto& n = nodes_[idx];
-    if (!n.is_leaf) {
-      write(n.bits.count);
-      write_words(n.bits.offset, n.bits.word_count());
-      serialize_node(n.left);
-      serialize_node(n.right);
+    if (n.is_leaf) {
+      return;
     }
+    write(n.bits.count);
+    write_words(n.bits.offset, n.bits.word_count(n.flat_depth));
+    if (n.flat_depth > 0) {
+      return;  // flat: children not serialized
+    }
+    serialize_node(n.left);
+    serialize_node(n.right);
   }
 
   /** @brief Load the serialized stream and parse the block header.
@@ -756,6 +957,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
 
     // Rebuild the canonical tree from lengths.
     build_canonical_tree(code_lengths_);
+    detect_flat_subtrees();
 
     // Single-symbol input: root is a leaf, no internal nodes, no arena.
     if (root_ == kNpos || nodes_[root_].is_leaf) {
@@ -778,7 +980,8 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
   /** @brief Pass 1: read each internal node's `count` from the wire, assign its
    *         arena offset, and advance past its word bytes without storing
    *         them. Sums the total arena word count so the caller allocates once.
-   *  @details Pre-order traversal matches the serialization order. */
+   *  @details Pre-order traversal matches the serialization order. Flat nodes
+   *           are terminal (children not visited). */
   void scan_node_counts(std::size_t idx,
                         std::span<const std::byte> data,
                         std::size_t& pos,
@@ -792,14 +995,18 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     }
     n.bits.count = read<std::size_t>(data, pos);
     n.bits.offset = arena_words;
-    arena_words += n.bits.word_count();
-    pos += n.bits.word_count() * sizeof(std::uint64_t);
+    arena_words += n.bits.word_count(n.flat_depth);
+    pos += n.bits.word_count(n.flat_depth) * sizeof(std::uint64_t);
+    if (n.flat_depth > 0) {
+      return;  // flat: children not on the wire
+    }
     scan_node_counts(n.left, data, pos, arena_words);
     scan_node_counts(n.right, data, pos, arena_words);
   }
 
   /** @brief Pass 2: read each internal node's packed words from the wire into
-   *         its arena slot (pre-order, matching serialization). */
+   *         its arena slot (pre-order, matching serialization). Flat nodes are
+   *         terminal. */
   void read_node_words(std::size_t idx,
                        std::span<const std::byte> data,
                        std::size_t& pos) const {
@@ -811,12 +1018,15 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
       return;
     }
     pos += sizeof(std::size_t);  // count, already read in pass 1
-    const std::size_t words = n.bits.word_count();
+    const std::size_t words = n.bits.word_count(n.flat_depth);
     const std::size_t bytes = words * sizeof(std::uint64_t);
     if (bytes > 0) {
       std::memcpy(arena_.data() + n.bits.offset, data.data() + pos, bytes);
     }
     pos += bytes;
+    if (n.flat_depth > 0) {
+      return;  // flat: children not on the wire
+    }
     read_node_words(n.left, data, pos);
     read_node_words(n.right, data, pos);
   }
