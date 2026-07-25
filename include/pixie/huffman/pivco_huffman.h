@@ -534,21 +534,27 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     return subtree_weight(n.left, freq) + subtree_weight(n.right, freq);
   }
 
-  /** @brief Rebuild a canonical Huffman tree from code lengths.
-   *  @details Assigns canonical codes (sorted by length, then symbol), then
-   *           builds the tree top-down by inserting each (symbol, code) pair.
-   *           Same-length codes are grouped together, which is a prerequisite
-   *           for future flat-subtree optimization. */
+  /// @brief A symbol with its Huffman code length, used for tree building.
+  struct SymbolEntry {
+    std::uint8_t symbol;
+    std::uint8_t length;
+  };
+
+  /** @brief Rebuild a Huffman tree from code lengths, reshaped to maximize
+   *         flat-subtree opportunities.
+   *  @details Instead of building the canonical tree bit-by-bit (which scatters
+   *           same-length symbols across the tree), this builder groups
+   *           same-length symbols into power-of-two flat subtrees, then
+   *           assembles them into a tree whose root-to-leaf path lengths still
+   *           equal the original code lengths. This is the paper's "non-
+   *           canonical subtree" optimization (Section 2.2.4): same average
+   *           code lengths, different (better) tree shape. */
   void build_canonical_tree(
       const std::array<std::uint8_t, kAlphabet>& lengths) const {
     nodes_.clear();
     nodes_.reserve(2 * kAlphabet);
 
     // Collect symbols present, sorted by (length, symbol).
-    struct SymbolEntry {
-      std::uint8_t symbol;
-      std::uint8_t length;
-    };
     std::vector<SymbolEntry> entries;
     entries.reserve(kAlphabet);
     for (std::size_t s = 0; s < kAlphabet; s++) {
@@ -564,8 +570,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
                 return a.symbol < b.symbol;
               });
 
-    // Special case: single distinct symbol → root is a leaf (no internal nodes,
-    // no bitmaps). decode_node returns a constant-filled vector.
+    // Special case: single distinct symbol → root is a leaf.
     if (entries.size() == 1) {
       nodes_.push_back(Node{});
       root_ = 0;
@@ -574,58 +579,128 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
       return;
     }
 
-    // Assign canonical codes: first code at each length is 0, increment
-    // within a length, shift left when length increases.
-    std::vector<std::pair<std::uint64_t, std::uint8_t>>
-        codes;  // (code, length)
-    codes.reserve(entries.size());
-    std::uint64_t code = 0;
-    std::uint8_t prev_len = 0;
-    for (const auto& e : entries) {
-      if (prev_len == 0) {
-        prev_len = e.length;
-      }
-      while (prev_len < e.length) {
-        code <<= 1;
-        prev_len++;
-      }
-      codes.push_back({code, e.length});
-      code++;
-    }
+    // Build the reshaped tree using the power-of-two grouping strategy.
+    build_reshaped_tree(entries);
+  }
 
-    // Build tree by inserting each (symbol, code) pair via bit-by-bit descent.
-    // Create root.
-    nodes_.push_back(Node{});
-    root_ = 0;
-
-    for (std::size_t i = 0; i < entries.size(); i++) {
-      std::uint64_t c = codes[i].first;
-      std::uint8_t len = codes[i].second;
-      std::size_t cur = root_;
-
-      // Descend len-1 bits, creating internal nodes as needed.
-      for (std::size_t bit = 0; bit + 1 < len; bit++) {
-        // Read MSB first (canonical codes are assigned MSB-first).
-        bool go_right = (c >> (len - 1 - bit)) & 1;
-        std::size_t& child = go_right ? nodes_[cur].right : nodes_[cur].left;
-        if (child == kNpos) {
-          nodes_.push_back(Node{});
-          child = nodes_.size() - 1;
-        }
-        cur = child;
-      }
-      // Last bit → leaf.
-      bool go_right = (c >> 0) & 1;
-      std::size_t& child = go_right ? nodes_[cur].right : nodes_[cur].left;
+  /** @brief Build a non-canonical tree that groups same-length symbols into
+   *         power-of-two flat subtrees.
+   *  @details Uses a recursive slot-filling approach. At each depth, we have
+   *           `slots` open positions. We fill them with leaves (grouped into
+   *           power-of-2 balanced subtrees for flat-node detection) and
+   *           internal nodes (which recurse deeper). The split is determined
+   *           by the Kraft equality: `leaves_at_depth + 2*internal_at_depth =
+   *           slots`, and `internal_at_depth` creates the slots for the next
+   *           depth. */
+  /** @brief Build a balanced binary subtree of depth @p d with @p count
+   *         leaves (count must be 2^d).
+   *  @param symbols Array of symbol values (count entries).
+   *  @param count Number of symbols (must be 2^d).
+   *  @param d Depth of the subtree (0 = single leaf).
+   *  @returns Node index of the subtree root. */
+  std::size_t build_balanced_subtree(const std::uint8_t* symbols,
+                                     std::size_t count,
+                                     std::uint8_t d) const {
+    if (d == 0) {
       nodes_.push_back(Node{});
-      child = nodes_.size() - 1;
-      nodes_[child].is_leaf = true;
-      nodes_[child].symbol = entries[i].symbol;
+      std::size_t idx = nodes_.size() - 1;
+      nodes_[idx].is_leaf = true;
+      nodes_[idx].symbol = symbols[0];
+      return idx;
+    }
+    std::size_t half = count / 2;
+    std::size_t left = build_balanced_subtree(symbols, half, d - 1);
+    std::size_t right = build_balanced_subtree(symbols + half, half, d - 1);
+    nodes_.push_back(Node{});
+    std::size_t idx = nodes_.size() - 1;
+    nodes_[idx].left = left;
+    nodes_[idx].right = right;
+    return idx;
+  }
+
+  void build_reshaped_tree(const std::vector<SymbolEntry>& entries) const {
+    std::array<std::vector<std::uint8_t>, kMaxCodeLength + 1> by_length;
+    for (const auto& e : entries) {
+      by_length[e.length].push_back(e.symbol);
     }
 
-    // Bitmap weights and arena offsets are assigned by the caller: `build()`
-    // derives them from symbol frequencies (exact), `deserialize()` reads
-    // them from the wire. This keeps the tree builder free of bitmap storage.
+    // Per-depth consumption cursor.
+    std::array<std::size_t, kMaxCodeLength + 1> cursor{};
+    root_ = build_slots(by_length, cursor, 1, 2);
+  }
+
+  /** @brief Fill `slots` open positions at `depth` with leaves and internal
+   *         nodes, returning the root of the resulting balanced subtree.
+   *  @param by_length  Symbols grouped by code length.
+   *  @param cursor     Per-depth consumption cursor (how many symbols used).
+   *  @param depth      Current tree depth (1 = children of root).
+   *  @param slots      Number of open positions (must be a power of 2). */
+  std::size_t build_slots(
+      std::array<std::vector<std::uint8_t>, kMaxCodeLength + 1>& by_length,
+      std::array<std::size_t, kMaxCodeLength + 1>& cursor,
+      std::uint8_t depth,
+      std::size_t slots) const {
+    if (slots == 0) {
+      return kNpos;
+    }
+
+    // How many leaves to place at this depth.
+    std::size_t available = by_length[depth].size() - cursor[depth];
+    std::size_t leaves_here = std::min(available, slots);
+    std::size_t internal = slots - leaves_here;
+
+    // Build children left-to-right: first leaves (grouped), then internal.
+    std::vector<std::size_t> children;
+
+    // Group leaves into power-of-2 balanced subtrees.
+    std::size_t leaf_off = cursor[depth];
+    std::size_t remaining = leaves_here;
+    while (remaining > 0) {
+      std::uint8_t d = 0;
+      std::size_t subset = 1;
+      while (subset * 2 <= remaining && d < kMaxFlatDepth) {
+        subset *= 2;
+        d++;
+      }
+      children.push_back(build_balanced_subtree(
+          by_length[depth].data() + leaf_off, subset, d));
+      leaf_off += subset;
+      remaining -= subset;
+    }
+    cursor[depth] += leaves_here;
+
+    // Internal nodes: each recurses with 2 slots at depth+1.
+    for (std::size_t i = 0; i < internal; i++) {
+      children.push_back(build_slots(by_length, cursor, depth + 1, 2));
+    }
+
+    // Assemble children into a balanced binary tree.
+    return assemble_balanced(children);
+  }
+
+  /** @brief Assemble a list of subtree roots into a balanced binary tree.
+   *  @details Recursively pairs children left-right, creating internal nodes.
+   */
+  std::size_t assemble_balanced(std::vector<std::size_t>& children) const {
+    if (children.empty()) {
+      return kNpos;
+    }
+    if (children.size() == 1) {
+      return children[0];
+    }
+    // Pair up: left half vs right half.
+    std::size_t mid = children.size() / 2;
+    std::vector<std::size_t> left_children(children.begin(),
+                                           children.begin() + mid);
+    std::vector<std::size_t> right_children(children.begin() + mid,
+                                            children.end());
+    std::size_t left = assemble_balanced(left_children);
+    std::size_t right = assemble_balanced(right_children);
+    nodes_.push_back(Node{});
+    std::size_t idx = nodes_.size() - 1;
+    nodes_[idx].left = left;
+    nodes_[idx].right = right;
+    return idx;
   }
 
   /** @brief Post-order assignment of exact per-node weights and arena offsets.
