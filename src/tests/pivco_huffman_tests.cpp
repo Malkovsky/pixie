@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <pixie/huffman/implementations.h>
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <random>
@@ -77,6 +79,112 @@ TEST(PivCoHuffmanSmoke, FullAlphabetRoundTrips) {
   const PivCoHuffman codec(data);
   EXPECT_EQ(decode_same(codec), data);
   EXPECT_EQ(decode_via_bytes(codec), data);
+}
+
+TEST(PivCoHuffmanSmoke, FlatPowerOfTwoAlphabetsRoundTrip) {
+  std::mt19937 rng(1871);
+  for (std::uint8_t depth = 1; depth <= 8; ++depth) {
+    const std::size_t alphabet_size = std::size_t{1} << depth;
+    std::vector<std::uint8_t> data;
+    data.reserve(alphabet_size * 16);
+    for (std::size_t repetition = 0; repetition < 16; ++repetition) {
+      for (std::size_t symbol = 0; symbol < alphabet_size; ++symbol) {
+        data.push_back(static_cast<std::uint8_t>(symbol));
+      }
+    }
+    std::shuffle(data.begin(), data.end(), rng);
+
+    const PivCoHuffman codec(data);
+    EXPECT_EQ(decode_same(codec), data) << "flat depth " << +depth;
+    EXPECT_EQ(decode_via_bytes(codec), data) << "flat depth " << +depth;
+  }
+}
+
+TEST(PivCoSimd, FlatKernelsDecodeFullGroupsAndTails) {
+  std::mt19937 rng(4189);
+  for (std::uint8_t depth = 1; depth <= 8; ++depth) {
+    const std::size_t alphabet_size = std::size_t{1} << depth;
+    const std::size_t count = 129 + depth;
+    std::vector<std::uint8_t> table(alphabet_size);
+    for (std::size_t i = 0; i < alphabet_size; ++i) {
+      table[i] = static_cast<std::uint8_t>(i);
+    }
+    std::shuffle(table.begin(), table.end(), rng);
+
+    std::vector<std::uint64_t> bits((count * depth + 63) / 64, 0);
+    std::vector<std::uint8_t> expected(count);
+    for (std::size_t i = 0; i < count; ++i) {
+      const std::uint64_t code = rng() % alphabet_size;
+      const std::size_t bit_position = i * depth;
+      const std::size_t word_index = bit_position / 64;
+      const std::size_t bit_offset = bit_position % 64;
+      bits[word_index] |= code << bit_offset;
+      if (bit_offset + depth > 64) {
+        bits[word_index + 1] |= code >> (64 - bit_offset);
+      }
+      expected[i] = table[code];
+    }
+
+    std::vector<std::uint8_t> decoded(count);
+    pixie::pivco_flat_decode(decoded.data(), bits.data(), table.data(), count,
+                             depth);
+    EXPECT_EQ(decoded, expected) << "flat depth " << +depth;
+  }
+}
+
+TEST(PivCoSimd, PartitionVariantsBuildTheSameDirectionMask) {
+  constexpr std::size_t kCount = 257;
+  std::array<std::uint8_t, 256> directions{};
+  for (std::size_t symbol = 0; symbol < directions.size(); ++symbol) {
+    directions[symbol] =
+        static_cast<std::uint8_t>(((symbol * 73) ^ (symbol >> 2)) & 1u);
+  }
+
+  std::mt19937 rng(7127);
+  std::vector<std::uint8_t> input(kCount);
+  std::vector<std::uint8_t> expected_left;
+  std::vector<std::uint8_t> expected_right;
+  std::vector<std::uint64_t> expected_bits((kCount + 63) / 64, 0);
+  for (std::size_t i = 0; i < input.size(); ++i) {
+    input[i] = static_cast<std::uint8_t>(rng());
+    if (directions[input[i]]) {
+      expected_bits[i / 64] |= std::uint64_t{1} << (i % 64);
+      expected_right.push_back(input[i]);
+    } else {
+      expected_left.push_back(input[i]);
+    }
+  }
+
+  std::vector<std::uint8_t> left(expected_left.size());
+  std::vector<std::uint8_t> right(expected_right.size());
+  std::vector<std::uint64_t> full_bits(expected_bits.size(), 0);
+  pixie::pivco_partition_encode(left.data(), right.data(), full_bits.data(),
+                                input.data(), directions.data(), input.size(),
+                                left.size(), right.size());
+  EXPECT_EQ(left, expected_left);
+  EXPECT_EQ(right, expected_right);
+  EXPECT_EQ(full_bits, expected_bits);
+
+  std::vector<std::uint64_t> left_bits(expected_bits.size(), 0);
+  std::fill(left.begin(), left.end(), 0);
+  pixie::pivco_partition_encode_left(left.data(), left_bits.data(),
+                                     input.data(), directions.data(),
+                                     input.size(), left.size());
+  EXPECT_EQ(left, expected_left);
+  EXPECT_EQ(left_bits, expected_bits);
+
+  std::vector<std::uint64_t> right_bits(expected_bits.size(), 0);
+  std::fill(right.begin(), right.end(), 0);
+  pixie::pivco_partition_encode_right(right.data(), right_bits.data(),
+                                      input.data(), directions.data(),
+                                      input.size(), right.size());
+  EXPECT_EQ(right, expected_right);
+  EXPECT_EQ(right_bits, expected_bits);
+
+  std::vector<std::uint64_t> bitmap_only(expected_bits.size(), 0);
+  pixie::pivco_partition_encode_none(bitmap_only.data(), input.data(),
+                                     directions.data(), input.size());
+  EXPECT_EQ(bitmap_only, expected_bits);
 }
 
 TEST(PivCoHuffmanSmoke, RandomUniformRoundTrips) {

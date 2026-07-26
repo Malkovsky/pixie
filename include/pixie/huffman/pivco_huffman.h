@@ -30,7 +30,6 @@
 
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -193,6 +192,9 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     std::uint8_t length = 0;
   };
 
+  using DirectionTables =
+      std::array<std::array<std::uint8_t, kAlphabet>, kMaxCodeLength>;
+
   /// @brief Total uncompressed size across all blocks (set during
   ///        build/deserialize, read by `uncompressed_size_impl()`).
   std::size_t uncompressed_size_ = 0;
@@ -285,9 +287,10 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     //    ping-pongs between the two halves — no per-node allocations.
     std::array<SymbolCode, kAlphabet> codes{};
     assign_codes(root_, 0, 0, codes);
+    const DirectionTables directions = build_direction_tables(codes);
     workspace_.resize(block_uncompressed_size_ * 2 + kWorkspaceSlack);
     std::copy(input.begin(), input.end(), workspace_.data());
-    encode_partition(root_, 0, 0, codes, freq);
+    encode_partition(root_, 0, 0, directions, freq);
   }
 
   /** @brief Count a block's byte frequencies with independent accumulators.
@@ -477,37 +480,6 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     return value >> (8 - width);
   }
 
-  /** @brief Read @p d bits from a packed word array starting at bit position
-   *         @p pos, MSB-first. Returns the decoded value. */
-  static std::uint32_t read_bits(const std::uint64_t* words,
-                                 std::size_t pos,
-                                 std::uint8_t d) {
-    const std::size_t word_index = pos / kWordBits;
-    const std::size_t shift = pos % kWordBits;
-    std::uint64_t packed = words[word_index] >> shift;
-    if (shift + d > kWordBits) {
-      packed |= words[word_index + 1] << (kWordBits - shift);
-    }
-    const std::uint8_t mask = static_cast<std::uint8_t>((1u << d) - 1);
-    return reverse_low_bits(static_cast<std::uint8_t>(packed) & mask, d);
-  }
-
-  /** @brief Write @p d bits of @p value to a packed word array starting at
-   *         bit position @p pos, MSB-first. Only sets 1-bits (pre-zeroed). */
-  static void write_bits(std::uint64_t* words,
-                         std::size_t pos,
-                         std::uint32_t value,
-                         std::uint8_t d) {
-    const std::uint64_t packed =
-        reverse_low_bits(static_cast<std::uint8_t>(value), d);
-    const std::size_t word_index = pos / kWordBits;
-    const std::size_t shift = pos % kWordBits;
-    words[word_index] |= packed << shift;
-    if (shift + d > kWordBits) {
-      words[word_index + 1] |= packed >> (kWordBits - shift);
-    }
-  }
-
   // --- flat subtree detection ----------------------------------------------
 
   /** @brief Sentinel value meaning "subtree has non-uniform leaf depths". */
@@ -562,7 +534,8 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
       n.flat_depth = depth;
       n.flat_table_offset = flat_tables_.size();
       flat_tables_.resize(flat_tables_.size() + (std::size_t{1} << depth));
-      build_flat_table(idx, 0, flat_tables_.data() + n.flat_table_offset);
+      build_flat_table(idx, depth, 0,
+                       flat_tables_.data() + n.flat_table_offset);
       return;
     }
 
@@ -572,19 +545,22 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
 
   /** @brief Populate the flat lookup table by walking the subtree.
    *  @param idx             Current node.
+   *  @param flat_depth      Total depth of the flat subtree.
    *  @param code            Suffix accumulated so far (MSB-first: left=0,
    * right=1).
    *  @param table           Output table of size `2^total_depth`. */
   void build_flat_table(std::size_t idx,
+                        std::uint8_t flat_depth,
                         std::uint32_t code,
                         symbol_type* table) const {
     const Node& n = nodes_[idx];
     if (n.is_leaf) {
-      table[code] = n.symbol;
+      table[reverse_low_bits(static_cast<std::uint8_t>(code), flat_depth)] =
+          n.symbol;
       return;
     }
-    build_flat_table(n.left, code << 1, table);
-    build_flat_table(n.right, (code << 1) | 1, table);
+    build_flat_table(n.left, flat_depth, code << 1, table);
+    build_flat_table(n.right, flat_depth, (code << 1) | 1, table);
   }
 
   /** @brief Total frequency weight of a subtree (sum of leaf frequencies). */
@@ -826,6 +802,91 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
                  length + 1, codes);
   }
 
+  /** @brief Build the per-depth direction tables shared by all tree nodes.
+   *  @details A symbol can occur in only one node at a given depth, so one
+   *           256-byte table per depth replaces rebuilding the same direction
+   *           information separately for every internal node. */
+  static DirectionTables build_direction_tables(
+      const std::array<SymbolCode, kAlphabet>& codes) {
+    DirectionTables directions{};
+    for (std::size_t symbol = 0; symbol < kAlphabet; ++symbol) {
+      const SymbolCode code = codes[symbol];
+      for (std::uint8_t depth = 0; depth < code.length; ++depth) {
+        directions[depth][symbol] = static_cast<std::uint8_t>(
+            (code.bits >> (code.length - depth - 1)) & 1u);
+      }
+    }
+    return directions;
+  }
+
+  /** @brief Pack one flat node's fixed-width wire codes.
+   *  @details Inverts the node's small decode table once, then packs directly
+   *           from the symbol-to-wire-code lookup. Widths dividing a byte get
+   *           dedicated loops; other widths track word position without a
+   *           division per symbol. */
+  static void encode_flat_values(std::uint64_t* bits,
+                                 const symbol_type* src,
+                                 std::size_t count,
+                                 std::uint8_t flat_depth,
+                                 const symbol_type* table) {
+    std::array<std::uint8_t, kAlphabet> wire_code;
+    const std::size_t alphabet_size = std::size_t{1} << flat_depth;
+    for (std::size_t code = 0; code < alphabet_size; ++code) {
+      wire_code[table[code]] = static_cast<std::uint8_t>(code);
+    }
+
+    auto* bytes = reinterpret_cast<std::uint8_t*>(bits);
+    if (flat_depth == 8) {
+      for (std::size_t i = 0; i < count; ++i) {
+        bytes[i] = wire_code[src[i]];
+      }
+      return;
+    }
+    if (flat_depth == 4) {
+      std::size_t i = 0;
+      for (; i + 2 <= count; i += 2) {
+        bytes[i / 2] = static_cast<std::uint8_t>(wire_code[src[i]] |
+                                                 (wire_code[src[i + 1]] << 4));
+      }
+      if (i < count) {
+        bytes[i / 2] = wire_code[src[i]];
+      }
+      return;
+    }
+    if (flat_depth == 2) {
+      std::size_t i = 0;
+      for (; i + 4 <= count; i += 4) {
+        bytes[i / 4] = static_cast<std::uint8_t>(
+            wire_code[src[i]] | (wire_code[src[i + 1]] << 2) |
+            (wire_code[src[i + 2]] << 4) | (wire_code[src[i + 3]] << 6));
+      }
+      if (i < count) {
+        std::uint8_t packed = 0;
+        for (std::size_t lane = 0; i + lane < count; ++lane) {
+          packed |=
+              static_cast<std::uint8_t>(wire_code[src[i + lane]] << (2 * lane));
+        }
+        bytes[i / 4] = packed;
+      }
+      return;
+    }
+
+    std::size_t word_index = 0;
+    std::size_t bit_offset = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+      const std::uint64_t packed = wire_code[src[i]];
+      bits[word_index] |= packed << bit_offset;
+      if (bit_offset + flat_depth > kWordBits) {
+        bits[word_index + 1] |= packed >> (kWordBits - bit_offset);
+      }
+      bit_offset += flat_depth;
+      if (bit_offset >= kWordBits) {
+        bit_offset -= kWordBits;
+        ++word_index;
+      }
+    }
+  }
+
   /** @brief Top-down in-place partition encoding into the reusable workspace.
    *  @details The dual of decode: at each internal node, read the incoming
    *           symbol stream from workspace half `depth`, fill the node's
@@ -838,12 +899,12 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
    *  @param depth    Current tree depth (selects workspace half + path index).
    *  @param out_base Offset within the current half where this node's stream
    *                  begins.
-   *  @param codes    Compact per-symbol codes from `assign_codes`.
+   *  @param directions Per-depth symbol direction lookup tables.
    *  @param freq     Symbol frequencies (sizing child partitions). */
   void encode_partition(std::size_t idx,
                         std::size_t depth,
                         std::size_t out_base,
-                        const std::array<SymbolCode, kAlphabet>& codes,
+                        const DirectionTables& directions,
                         const std::array<std::size_t, kAlphabet>& freq) {
     if (nodes_[idx].is_leaf) {
       return;
@@ -853,15 +914,14 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
 
     // Flat node: write d-bit suffix per symbol, no partition, no recursion.
     if (n.flat_depth > 0) {
-      const std::uint8_t d = n.flat_depth;
       std::uint64_t* bits = arena_.data() + n.bits.offset;
       const symbol_type* src = workspace_half(depth) + out_base;
-      const std::uint16_t mask = (std::uint16_t{1} << d) - 1;
-      for (std::size_t i = 0; i < n.bits.count; i++) {
-        const SymbolCode code = codes[src[i]];
-        const std::uint8_t shift = code.length - depth - d;
-        const std::uint16_t suffix = (code.bits >> shift) & mask;
-        write_bits(bits, i * d, suffix, d);
+      if (n.flat_depth == 1) {
+        pivco_partition_encode_none(bits, src, directions[depth].data(),
+                                    n.bits.count);
+      } else {
+        const symbol_type* table = flat_tables_.data() + n.flat_table_offset;
+        encode_flat_values(bits, src, n.bits.count, n.flat_depth, table);
       }
       return;
     }
@@ -875,22 +935,25 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     symbol_type* right_dst = workspace_half(depth + 1) + out_base + left_weight;
 
     std::uint64_t* bits = arena_.data() + n.bits.offset;
-
-    // Per-symbol direction bit at this node's depth: bit (length-depth-1) of
-    // each symbol's code. Only symbols passing through (length > depth) are
-    // routed; absent symbols (length 0) are never read here.
-    std::array<std::uint8_t, kAlphabet> dir{};
-    for (std::size_t s = 0; s < kAlphabet; ++s) {
-      const std::uint8_t len = codes[s].length;
-      dir[s] = (len > depth) ? static_cast<std::uint8_t>(
-                                   (codes[s].bits >> (len - depth - 1)) & 1u)
-                             : 0;
+    const std::uint8_t* dir = directions[depth].data();
+    const bool left_is_leaf = nodes_[n.left].is_leaf;
+    const bool right_is_leaf = nodes_[n.right].is_leaf;
+    if (left_is_leaf && right_is_leaf) {
+      pivco_partition_encode_none(bits, src, dir, weight);
+    } else if (right_is_leaf) {
+      pivco_partition_encode_left(left_dst, bits, src, dir, weight,
+                                  left_weight);
+    } else if (left_is_leaf) {
+      pivco_partition_encode_right(right_dst, bits, src, dir, weight,
+                                   weight - left_weight);
+    } else {
+      pivco_partition_encode(left_dst, right_dst, bits, src, dir, weight,
+                             left_weight, weight - left_weight);
     }
-    pivco_partition_encode(left_dst, right_dst, bits, src, dir.data(), weight,
-                           left_weight, weight - left_weight);
 
-    encode_partition(n.left, depth + 1, out_base, codes, freq);
-    encode_partition(n.right, depth + 1, out_base + left_weight, codes, freq);
+    encode_partition(n.left, depth + 1, out_base, directions, freq);
+    encode_partition(n.right, depth + 1, out_base + left_weight, directions,
+                     freq);
   }
 
   // --- decode --------------------------------------------------------------
@@ -938,45 +1001,48 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
 
     // Flat node: read d-bit suffixes, lookup symbols, no merge.
     if (n.flat_depth > 0) {
-      const std::uint8_t d = n.flat_depth;
       const std::uint64_t* bits = arena_.data() + n.bits.offset;
       const symbol_type* table = flat_tables_.data() + n.flat_table_offset;
-      for (std::size_t i = 0; i < weight; i++) {
-        dst[i] = table[read_bits(bits, i * d, d)];
-      }
+      pivco_flat_decode(dst, bits, table, weight, n.flat_depth);
       return;
     }
 
-    // Normal node: decode children, then merge by 1-bit-per-symbol bitmap.
-    const std::size_t right_weight = bitmap_popcount(n.bits);
-    const std::size_t left_weight = n.bits.count - right_weight;
-    decode_node(n.left, left_weight, depth + 1, out_base);
-    decode_node(n.right, right_weight, depth + 1, out_base + left_weight);
+    // Normal node: decode non-leaf children, then select the paper's matching
+    // MVV/MCV/MVC/MCC merge primitive. Internal children already carry their
+    // exact stream size, so no bitmap popcount pass is needed.
+    const Node& left = nodes_[n.left];
+    const Node& right = nodes_[n.right];
+    const std::uint64_t* bits = arena_.data() + n.bits.offset;
+    if (left.is_leaf && right.is_leaf) {
+      pivco_merge_decode_cst_cst(dst, left.symbol, right.symbol, bits, weight);
+      return;
+    }
+
+    const std::size_t left_weight =
+        left.is_leaf ? weight - right.bits.count : left.bits.count;
+    const std::size_t right_weight = weight - left_weight;
+    if (!left.is_leaf) {
+      decode_node(n.left, left_weight, depth + 1, out_base);
+    }
+    if (!right.is_leaf) {
+      decode_node(n.right, right_weight, depth + 1, out_base + left_weight);
+    }
 
     const symbol_type* src = workspace_half(depth + 1) + out_base;
     const symbol_type* left_out = src;
     const symbol_type* right_out = src + left_weight;
-
-    const std::uint64_t* bits = arena_.data() + n.bits.offset;
-    pivco_merge_decode(dst, left_out, right_out, bits, n.bits.count);
+    if (left.is_leaf) {
+      pivco_merge_decode_cst_vec(dst, left.symbol, right_out, bits, weight);
+    } else if (right.is_leaf) {
+      pivco_merge_decode_vec_cst(dst, left_out, right.symbol, bits, weight);
+    } else {
+      pivco_merge_decode(dst, left_out, right_out, bits, weight);
+    }
   }
 
   /** @brief Pointer to the workspace half that holds depth-@p depth outputs. */
   symbol_type* workspace_half(std::size_t depth) const {
     return workspace_.data() + (depth % 2) * block_uncompressed_size_;
-  }
-
-  /** @brief Number of set bits in a normal (1-bit-per-symbol) node's bitmap.
-   *  @details Only called for non-flat nodes (flat nodes use table lookup,
-   *           not merge). */
-  std::size_t bitmap_popcount(const Bitmap& b) const {
-    const std::uint64_t* p = arena_.data() + b.offset;
-    std::size_t total = 0;
-    const std::size_t words = b.word_count(0);
-    for (std::size_t i = 0; i < words; i++) {
-      total += std::popcount(p[i]);
-    }
-    return total;
   }
 
   // --- serialization -------------------------------------------------------
