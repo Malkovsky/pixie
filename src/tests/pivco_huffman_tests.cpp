@@ -106,3 +106,52 @@ TEST(PivCoHuffmanSmoke, SkewedInputRoundTrips) {
   EXPECT_EQ(decode_same(codec), data);
   EXPECT_EQ(decode_via_bytes(codec), data);
 }
+
+TEST(PivCoHuffmanSmoke, LengthLimitedTreeRoundTrips) {
+  // Fibonacci weights create a maximally deep unconstrained Huffman tree and
+  // exercise the 15-bit length correction.
+  std::vector<std::uint8_t> data;
+  std::size_t previous = 1;
+  std::size_t current = 1;
+  for (std::uint8_t symbol = 0; symbol < 17; ++symbol) {
+    const std::size_t frequency = symbol < 2 ? 1 : previous + current;
+    if (symbol >= 2) {
+      previous = current;
+      current = frequency;
+    }
+    data.insert(data.end(), frequency, symbol);
+  }
+
+  const PivCoHuffman codec(data);
+  EXPECT_EQ(decode_same(codec), data);
+  EXPECT_EQ(decode_via_bytes(codec), data);
+}
+
+TEST(PivCoHuffmanSmoke, MultipleBlocksRoundTrip) {
+  std::mt19937 rng(9127);
+  std::uniform_int_distribution<int> dist(0, 255);
+  std::vector<std::uint8_t> data(3 * 64 * 1024 + 137);
+  for (auto& byte : data) {
+    byte = static_cast<std::uint8_t>(dist(rng));
+  }
+
+  const PivCoHuffman codec(data);
+  EXPECT_EQ(decode_same(codec), data);
+  EXPECT_EQ(decode_via_bytes(codec), data);
+}
+
+TEST(PivCoHuffmanSmoke, RandomizedAlphabetAndBlockSizesRoundTrip) {
+  std::mt19937 rng(3319);
+  for (std::size_t test_case = 0; test_case < 32; ++test_case) {
+    const std::size_t alphabet_size = 1 + rng() % 256;
+    const std::size_t size = 1 + rng() % (2 * 64 * 1024);
+    std::vector<std::uint8_t> data(size);
+    for (auto& byte : data) {
+      byte = static_cast<std::uint8_t>(rng() % alphabet_size);
+    }
+
+    const PivCoHuffman codec(data);
+    EXPECT_EQ(decode_same(codec), data) << "test case " << test_case;
+    EXPECT_EQ(decode_via_bytes(codec), data) << "test case " << test_case;
+  }
+}
