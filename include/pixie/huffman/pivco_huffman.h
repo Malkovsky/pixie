@@ -10,16 +10,15 @@
  * path. Decoding merges child symbol streams bottom-up from leaves to root,
  * using the node bitmap as a selector.
  *
- * The tree uses canonical Huffman code lengths (<= 15 bits, enforced via the
- * package-merge length-limited algorithm): the wire format stores only the 256
+ * The tree uses canonical Huffman code lengths (<= 15 bits, enforced with a
+ * zlib-style overflow correction): the wire format stores only the 256
  * per-symbol lengths (128 bytes as 4-bit nibbles), and the tree structure is
- * reconstructed deterministically at load time. This groups same-length codes
- * together, which is a prerequisite for future flat-subtree optimizations and
- * reduces serialized header size.
+ * reconstructed deterministically at load time. Same-length symbols are
+ * reshaped into flat subtrees as described by the PivCo-Huffman paper.
  *
- * This is a deliberately simple, unoptimized reference implementation: node
- * bitmaps are stored as packed `std::uint64_t` words, traversal is scalar,
- * and there are no flat-subtree, SIMD, or selective-ANS optimizations.
+ * This implementation uses packed `std::uint64_t` bitmaps, flat subtrees,
+ * contiguous arenas, and scalar bottom-up decoding. SIMD and selective ANS
+ * are intentionally left to specialized future implementations.
  *
  * Range and ownership conventions follow `HuffmanBase`: symbols are bytes,
  * the compressed stream is a byte view, and the codec owns its serialized form.
@@ -34,7 +33,6 @@
 #include <cstdint>
 #include <cstring>
 #include <span>
-#include <utility>
 #include <vector>
 
 namespace pixie {
@@ -119,6 +117,9 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
   ///          decode merge passes into a single table-lookup pass.
   static constexpr std::uint8_t kMaxFlatDepth = 8;
 
+  /// @brief Maximum nodes in a full binary tree over the byte alphabet.
+  static constexpr std::size_t kMaxTreeNodes = 2 * kAlphabet - 1;
+
   /// @brief Default block size for block-based processing (64 KiB).
   /// @details Each block is compressed independently with its own Huffman
   ///          tree. This keeps the decode workspace (2 × block_size = 128 KiB)
@@ -163,6 +164,23 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     /// @brief 0 = normal node (1 bit/symbol); >0 = flat subtree of this depth
     ///        (stores `flat_depth` bits/symbol + a lookup table).
     std::uint8_t flat_depth = 0;
+    /// @brief Offset of this flat node's decode table in `flat_tables_`.
+    std::size_t flat_table_offset = 0;
+  };
+
+  /// @brief A symbol with its frequency weight, used for Huffman construction.
+  struct Leaf {
+    std::size_t weight;
+    std::uint8_t symbol;
+  };
+
+  /** @brief Compact root-to-leaf code used by the scalar encoder.
+   *  @details Codes are stored MSB-first in the low `length` bits. The
+   *           15-bit length limit keeps every code in one 16-bit value and
+   *           avoids the per-symbol dynamic path vectors used previously. */
+  struct SymbolCode {
+    std::uint16_t bits = 0;
+    std::uint8_t length = 0;
   };
 
   /// @brief Total uncompressed size across all blocks (set during
@@ -190,10 +208,8 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
   /// @brief Uncompressed size of the current block being processed.
   mutable std::size_t block_uncompressed_size_ = 0;
   mutable std::array<std::uint8_t, kAlphabet> code_lengths_{};
-  /// @brief Per-node flat lookup tables. `flat_tables_[i]` is valid when
-  ///        `nodes_[i].flat_depth > 0`; it maps each `d`-bit suffix to its
-  ///        symbol. Rebuilt from the tree structure (not serialized).
-  mutable std::vector<std::vector<symbol_type>> flat_tables_;
+  /// @brief Contiguous storage for all flat-subtree decode tables.
+  mutable std::vector<symbol_type> flat_tables_;
 
   // --- construction --------------------------------------------------------
 
@@ -230,18 +246,15 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
       return;
     }
 
-    // 1. Count symbol frequencies.
-    std::array<std::size_t, kAlphabet> freq{};
-    for (auto s : input) {
-      freq[s]++;
-    }
+    // 1. Count symbol frequencies using independent partial histograms.
+    const std::array<std::size_t, kAlphabet> freq = count_frequencies(input);
 
     // 2. Build a Huffman tree to determine code lengths, then extract lengths.
     compute_code_lengths(freq, code_lengths_);
 
     // 3. Rebuild a canonical tree from the lengths (groups same-length codes).
     //    Structure only: bitmap weights/offsets are assigned below, not here.
-    build_canonical_tree(code_lengths_);
+    build_noncanonical_tree(code_lengths_);
     detect_flat_subtrees();
 
     // Single-symbol input: root is a leaf, no internal nodes, no arena.
@@ -255,146 +268,187 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     assign_weights_and_offsets(root_, freq, arena_words);
     arena_.assign(arena_words, 0);
 
-    // 5. Assign per-symbol code paths, then fill node bitmaps via top-down
+    // 5. Assign compact per-symbol codes, then fill node bitmaps via top-down
     //    in-place partition into the reusable workspace. This mirrors decode:
     //    the root reads its input from workspace half 0, writes its bitmap,
     //    and partitions symbols into half 1 for its children. Each level
     //    ping-pongs between the two halves — no per-node allocations.
-    std::array<std::vector<std::pair<std::size_t, bool>>, kAlphabet> paths;
-    std::vector<std::pair<std::size_t, bool>> path;
-    assign_paths(root_, path, paths);
+    std::array<SymbolCode, kAlphabet> codes{};
+    assign_codes(root_, 0, 0, codes);
     workspace_.resize(block_uncompressed_size_ * 2);
     std::copy(input.begin(), input.end(), workspace_.data());
-    encode_partition(root_, 0, 0, paths, freq);
+    encode_partition(root_, 0, 0, codes, freq);
   }
 
-  /** @brief Compute length-limited Huffman code lengths via package-merge.
-   *  @details Implements the Larmore-Hirschberg package-merge algorithm to
-   *           produce optimal code lengths subject to `length <=
-   * kMaxCodeLength`. This guarantees the 4-bit nibble header never truncates a
-   * length, and keeps all downstream canonical-tree, flat-subtree, and
-   *           reshaping optimizations valid.
+  /** @brief Count a block's byte frequencies with independent accumulators.
+   *  @details Eight partial histograms break the dependency chain caused by
+   *           repeatedly incrementing a hot symbol. The block is at most
+   *           64 KiB, so 32-bit partial counters cannot overflow. */
+  static std::array<std::size_t, kAlphabet> count_frequencies(
+      std::span<const symbol_type> input) {
+    constexpr std::size_t kLanes = 8;
+    std::array<std::array<std::uint32_t, kAlphabet>, kLanes> partial{};
+    std::size_t i = 0;
+    for (; i + kLanes <= input.size(); i += kLanes) {
+      partial[0][input[i]]++;
+      partial[1][input[i + 1]]++;
+      partial[2][input[i + 2]]++;
+      partial[3][input[i + 3]]++;
+      partial[4][input[i + 4]]++;
+      partial[5][input[i + 5]]++;
+      partial[6][input[i + 6]]++;
+      partial[7][input[i + 7]]++;
+    }
+    for (; i < input.size(); ++i) {
+      partial[0][input[i]]++;
+    }
+
+    std::array<std::size_t, kAlphabet> frequencies{};
+    for (std::size_t symbol = 0; symbol < kAlphabet; ++symbol) {
+      for (std::size_t lane = 0; lane < kLanes; ++lane) {
+        frequencies[symbol] += partial[lane][symbol];
+      }
+    }
+    return frequencies;
+  }
+
+  /** @brief Compute Huffman code lengths, limited to ≤ kMaxCodeLength.
+   *  @details Two-phase approach (same as zlib/zstd):
+   *           1. Sort present symbols by frequency and build a standard
+   *              Huffman tree with the linear two-queue algorithm, then
+   *              extract per-leaf depths by walking parent pointers.
+   *           2. If any depth exceeds kMaxCodeLength, apply the zlib-style
+   *              "overflow fixup": collapse all lengths > L into L, then
+   *              rebalance the Kraft sum by borrowing from shorter codes.
    *
-   *  Algorithm: maintain a sorted list of "items" per level (1..L). A level-1
-   *  item is a single coin (one symbol). At each subsequent level, form
-   *  "packages" by pairing consecutive items from the previous level (a
-   *  package commits to selecting both its constituents), then merge with the
-   *  original coins and keep the cheapest `2n-2` items. After L-1 iterations,
-   *  summing each symbol's count across the final `2n-2` items yields its code
-   *  length (each ≤ L, and the Kraft inequality holds exactly).
-   *
-   *  Each item carries a per-symbol count vector (`Counts`) so that summing at
-   *  the end is a flat array reduction; with `n <= 256` and `L = 15` the total
-   *  work is ~2M additions (< 1 ms), negligible relative to the bitmap fill. */
+   *  This is O(n log n) for sorting and O(n + L) after that, with fixed-size
+   *  storage for the byte alphabet. */
   void compute_code_lengths(const std::array<std::size_t, kAlphabet>& freq,
                             std::array<std::uint8_t, kAlphabet>& lengths) {
     lengths.fill(0);
 
-    // Collect present symbols, sorted by weight ascending (the coin list S,
-    // reused at every level of the package-merge).
-    struct Coin {
-      std::uint8_t symbol;
-      std::size_t weight;
-    };
-    std::vector<Coin> coins;
-    coins.reserve(kAlphabet);
+    std::array<Leaf, kAlphabet> leaves{};
+    std::size_t leaf_count = 0;
     for (std::size_t s = 0; s < kAlphabet; s++) {
       if (freq[s] > 0) {
-        coins.push_back({static_cast<std::uint8_t>(s), freq[s]});
+        leaves[leaf_count++] = {freq[s], static_cast<std::uint8_t>(s)};
       }
     }
-    std::sort(coins.begin(), coins.end(),
-              [](const Coin& a, const Coin& b) { return a.weight < b.weight; });
-
-    const std::size_t n = coins.size();
-    if (n == 0) {
+    if (leaf_count == 0) {
       return;
     }
-    // Single distinct symbol: must still get a 1-bit code to be decodable.
-    if (n == 1) {
-      lengths[coins[0].symbol] = 1;
+    if (leaf_count == 1) {
+      lengths[leaves[0].symbol] = 1;
       return;
     }
 
-    // Per-item symbol-count vector. uint16 suffices: a symbol's count within a
-    // single package can grow across levels, but final lengths are <= L = 15.
-    using Counts = std::array<std::uint16_t, kAlphabet>;
-    struct Item {
-      std::size_t weight;
-      Counts counts;
+    std::sort(leaves.begin(), leaves.begin() + leaf_count,
+              [](const Leaf& a, const Leaf& b) {
+                if (a.weight != b.weight) {
+                  return a.weight < b.weight;
+                }
+                return a.symbol < b.symbol;
+              });
+
+    // Build the Huffman tree with the linear two-queue algorithm. Sorted
+    // leaves form one queue; newly-created internal nodes form the other.
+    // Internal weights are produced in nondecreasing order, so selecting the
+    // smaller queue front replaces all binary-heap maintenance.
+    struct TmpNode {
+      std::size_t weight = 0;
+      std::size_t parent = kNpos;
+    };
+    std::array<TmpNode, kMaxTreeNodes> tree{};
+    for (std::size_t i = 0; i < leaf_count; ++i) {
+      tree[i].weight = leaves[i].weight;
+    }
+
+    std::size_t leaf_head = 0;
+    std::size_t internal_head = leaf_count;
+    std::size_t next_internal = leaf_count;
+    auto take_smallest = [&]() {
+      const bool take_leaf =
+          leaf_head < leaf_count &&
+          (internal_head == next_internal ||
+           tree[leaf_head].weight <= tree[internal_head].weight);
+      return take_leaf ? leaf_head++ : internal_head++;
     };
 
-    // Level-1 list: one coin per symbol.
-    std::vector<Item> cur;
-    cur.reserve(2 * n);
-    for (const auto& c : coins) {
-      Item it{};
-      it.weight = c.weight;
-      it.counts[c.symbol] = 1;
-      cur.push_back(std::move(it));
+    const std::size_t node_count = 2 * leaf_count - 1;
+    while (next_internal < node_count) {
+      const std::size_t left = take_smallest();
+      const std::size_t right = take_smallest();
+      tree[next_internal].weight = tree[left].weight + tree[right].weight;
+      tree[left].parent = next_internal;
+      tree[right].parent = next_internal;
+      ++next_internal;
     }
 
-    // Keep the cheapest 2n-2 items at each level (the final selection size;
-    // cheaper items at a level can never displace a more expensive one in an
-    // optimal solution, so pruning to 2n-2 is safe).
-    const std::size_t keep = 2 * n - 2;
-
-    // Iterate levels 2..L. Coins are reused at every level via the merge.
-    for (std::size_t level = 1; level < kMaxCodeLength; level++) {
-      // Package: pair consecutive items of `cur` (already weight-sorted).
-      std::vector<Item> packages;
-      packages.reserve(cur.size() / 2);
-      for (std::size_t i = 0; i + 1 < cur.size(); i += 2) {
-        Item pkg{};
-        pkg.weight = cur[i].weight + cur[i + 1].weight;
-        for (std::size_t j = 0; j < kAlphabet; j++) {
-          pkg.counts[j] = cur[i].counts[j] + cur[i + 1].counts[j];
-        }
-        packages.push_back(std::move(pkg));
+    // Extract code lengths by walking from each leaf to root.
+    std::uint8_t max_len = 0;
+    for (std::size_t i = 0; i < leaf_count; ++i) {
+      std::uint8_t depth = 0;
+      std::size_t cur = i;
+      while (tree[cur].parent != kNpos) {
+        cur = tree[cur].parent;
+        depth++;
       }
-      // Merge coins (sorted) with packages (sorted — pairing preserves order),
-      // keeping the cheapest `keep` items. Ties prefer coins (deterministic).
-      // At early levels the combined list may hold fewer than `keep` items;
-      // keep all of them in that case (the list grows toward `keep` over
-      // levels as packages proliferate).
-      const std::size_t available = n + packages.size();
-      const std::size_t keep_here = std::min(keep, available);
-      std::vector<Item> next;
-      next.reserve(keep_here);
-      std::size_t ci = 0;
-      std::size_t pi = 0;
-      while (next.size() < keep_here) {
-        bool use_coin;
-        if (ci >= n) {
-          use_coin = false;
-        } else if (pi >= packages.size()) {
-          use_coin = true;
-        } else {
-          use_coin = coins[ci].weight <= packages[pi].weight;
-        }
-        if (use_coin) {
-          Item it{};
-          it.weight = coins[ci].weight;
-          it.counts[coins[ci].symbol] = 1;
-          next.push_back(std::move(it));
-          ci++;
-        } else {
-          next.push_back(std::move(packages[pi]));
-          pi++;
-        }
-      }
-      cur = std::move(next);
-    }
-
-    // Sum symbol counts across the final 2n-2 selected items -> code lengths.
-    Counts total{};
-    for (const auto& it : cur) {
-      for (std::size_t j = 0; j < kAlphabet; j++) {
-        total[j] += it.counts[j];
+      lengths[leaves[i].symbol] = depth;
+      if (depth > max_len) {
+        max_len = depth;
       }
     }
-    for (const auto& c : coins) {
-      lengths[c.symbol] = static_cast<std::uint8_t>(total[c.symbol]);
+
+    if (max_len <= kMaxCodeLength) {
+      return;
+    }
+
+    // Length limiting via zlib-style overflow fixup.
+    limit_code_lengths(lengths,
+                       std::span<const Leaf>(leaves.data(), leaf_count));
+  }
+
+  /** @brief Limit Huffman code lengths to ≤ kMaxCodeLength.
+   *  @details Collapses all lengths > L into L, rebalances the length
+   *           histogram, then assigns its longest codes to the least frequent
+   *           symbols. */
+  void limit_code_lengths(std::array<std::uint8_t, kAlphabet>& lengths,
+                          std::span<const Leaf> leaves) {
+    // Count codes at each length and track how many exceeded the limit. This
+    // is the same overflow definition used by zlib's gen_bitlen().
+    std::array<int, kMaxCodeLength + 2> bl_count{};
+    int overflow = 0;
+    for (const Leaf& leaf : leaves) {
+      std::uint8_t len = lengths[leaf.symbol];
+      if (len > kMaxCodeLength) {
+        len = kMaxCodeLength;
+        ++overflow;
+      }
+      ++bl_count[len];
+    }
+
+    // Move one leaf down from the deepest available shorter level, creating
+    // two children there, and remove one overlong code from level L.
+    while (overflow > 0) {
+      int bits = static_cast<int>(kMaxCodeLength) - 1;
+      while (bits > 0 && bl_count[bits] == 0) {
+        --bits;
+      }
+      --bl_count[bits];
+      bl_count[bits + 1] += 2;
+      --bl_count[kMaxCodeLength];
+      overflow -= 2;
+    }
+
+    // Leaves arrive sorted by ascending frequency. Assign the longest codes
+    // first so the fixup preserves the minimum weighted path length for its
+    // corrected length histogram.
+    lengths.fill(0);
+    std::size_t leaf_index = 0;
+    for (int len = static_cast<int>(kMaxCodeLength); len >= 1; --len) {
+      for (int count = 0; count < bl_count[len]; ++count) {
+        lengths[leaves[leaf_index++].symbol] = static_cast<std::uint8_t>(len);
+      }
     }
   }
 
@@ -403,16 +457,14 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
   //  values from/to packed `std::uint64_t` word arrays. Used by both the
   //  normal (1-bit-per-symbol) and flat (d-bits-per-symbol) code paths.
 
-  /** @brief Read a single bit from a packed word array at bit position @p pos.
-   */
-  static bool read_bit(const std::uint64_t* words, std::size_t pos) {
-    return (words[pos / kWordBits] >> (pos % kWordBits)) & 1ull;
-  }
-
-  /** @brief Set a single bit in a packed word array at bit position @p pos.
-   *  @details Assumes the word is pre-zeroed; only sets 1-bits. */
-  static void set_bit(std::uint64_t* words, std::size_t pos) {
-    words[pos / kWordBits] |= (1ull << (pos % kWordBits));
+  /** @brief Reverse the low @p width bits of an at-most-eight-bit value. */
+  static std::uint8_t reverse_low_bits(std::uint8_t value, std::uint8_t width) {
+    value = static_cast<std::uint8_t>(((value & 0x55u) << 1) |
+                                      ((value & 0xAAu) >> 1));
+    value = static_cast<std::uint8_t>(((value & 0x33u) << 2) |
+                                      ((value & 0xCCu) >> 2));
+    value = static_cast<std::uint8_t>((value << 4) | (value >> 4));
+    return value >> (8 - width);
   }
 
   /** @brief Read @p d bits from a packed word array starting at bit position
@@ -420,11 +472,14 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
   static std::uint32_t read_bits(const std::uint64_t* words,
                                  std::size_t pos,
                                  std::uint8_t d) {
-    std::uint32_t value = 0;
-    for (std::uint8_t i = 0; i < d; i++) {
-      value = (value << 1) | read_bit(words, pos + i);
+    const std::size_t word_index = pos / kWordBits;
+    const std::size_t shift = pos % kWordBits;
+    std::uint64_t packed = words[word_index] >> shift;
+    if (shift + d > kWordBits) {
+      packed |= words[word_index + 1] << (kWordBits - shift);
     }
-    return value;
+    const std::uint8_t mask = static_cast<std::uint8_t>((1u << d) - 1);
+    return reverse_low_bits(static_cast<std::uint8_t>(packed) & mask, d);
   }
 
   /** @brief Write @p d bits of @p value to a packed word array starting at
@@ -433,91 +488,93 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
                          std::size_t pos,
                          std::uint32_t value,
                          std::uint8_t d) {
-    for (std::uint8_t i = 0; i < d; i++) {
-      if ((value >> (d - 1 - i)) & 1u) {
-        set_bit(words, pos + i);
-      }
+    const std::uint64_t packed =
+        reverse_low_bits(static_cast<std::uint8_t>(value), d);
+    const std::size_t word_index = pos / kWordBits;
+    const std::size_t shift = pos % kWordBits;
+    words[word_index] |= packed << shift;
+    if (shift + d > kWordBits) {
+      words[word_index + 1] |= packed >> (kWordBits - shift);
     }
   }
 
   // --- flat subtree detection ----------------------------------------------
 
-  /** @brief Check if all leaves in the subtree rooted at @p idx are at the
-   *         same depth from @p idx.
-   *  @param idx    Subtree root.
-   *  @param depth  Output: the uniform leaf depth (0 for a leaf itself).
-   *  @returns true if uniform, false if leaves are at mixed depths. */
-  bool is_uniform_leaf_depth(std::size_t idx, std::uint8_t& depth) const {
-    const Node& n = nodes_[idx];
-    if (n.is_leaf) {
-      depth = 0;
-      return true;
-    }
-    std::uint8_t ld = 0, rd = 0;
-    if (!is_uniform_leaf_depth(n.left, ld) ||
-        !is_uniform_leaf_depth(n.right, rd)) {
-      return false;
-    }
-    if (ld != rd) {
-      return false;
-    }
-    depth = ld + 1;
-    return true;
-  }
+  /** @brief Sentinel value meaning "subtree has non-uniform leaf depths". */
+  static constexpr std::uint8_t kNotUniform = 0xFF;
 
-  /** @brief Walk the tree top-down, marking nodes whose subtrees are uniform
-   *         and shallow enough (≤ kMaxFlatDepth) to flatten.
-   *  @details A flat node of depth @p d stores `d` bits per symbol in its
-   *           bitmap and uses a lookup table of size `2^d` to decode. It
-   *           replaces `2^d - 1` internal nodes, eliminating `d - 1` merge
-   *           passes. Top-down marking ensures the largest eligible subtree
-   *           is flattened; children of a flat node are not visited. */
+  /** @brief Detect maximal flat subtrees in two linear tree passes.
+   *  @details The post-order pass computes uniform leaf depths without
+   *           allocating per node. A top-down pass then selects only maximal
+   *           eligible subtrees and appends their tables to one contiguous
+   *           arena. This follows the paper's flat-subtree optimization while
+   *           avoiding temporary child tables that a bottom-up marker would
+   *           immediately discard when their parent is also flat. */
   void detect_flat_subtrees() const {
     flat_tables_.clear();
-    flat_tables_.resize(nodes_.size());
-    mark_flat(root_);
+    if (root_ != kNpos) {
+      std::array<std::uint8_t, kMaxTreeNodes> uniform_depths{};
+      compute_uniform_depths(root_, uniform_depths);
+      mark_flat_topdown(root_, uniform_depths);
+    }
   }
 
-  /** @brief Recursively mark a node as flat if eligible, else recurse. */
-  void mark_flat(std::size_t idx) const {
-    if (idx == kNpos) {
-      return;
+  /** @brief Record each subtree's uniform leaf depth in post-order. */
+  std::uint8_t compute_uniform_depths(
+      std::size_t idx,
+      std::array<std::uint8_t, kMaxTreeNodes>& depths) const {
+    const Node& n = nodes_[idx];
+    if (n.is_leaf) {
+      return depths[idx] = 0;
     }
+
+    const std::uint8_t left_depth = compute_uniform_depths(n.left, depths);
+    const std::uint8_t right_depth = compute_uniform_depths(n.right, depths);
+
+    if (left_depth == kNotUniform || right_depth == kNotUniform ||
+        left_depth != right_depth) {
+      return depths[idx] = kNotUniform;
+    }
+    return depths[idx] = static_cast<std::uint8_t>(left_depth + 1);
+  }
+
+  /** @brief Mark maximal flat subtrees and append their lookup tables. */
+  void mark_flat_topdown(
+      std::size_t idx,
+      const std::array<std::uint8_t, kMaxTreeNodes>& depths) const {
     Node& n = nodes_[idx];
     if (n.is_leaf) {
       return;
     }
 
-    std::uint8_t depth = 0;
-    if (is_uniform_leaf_depth(idx, depth) && depth >= 2 &&
-        depth <= kMaxFlatDepth) {
+    const std::uint8_t depth = depths[idx];
+    if (depth >= 2 && depth <= kMaxFlatDepth) {
       n.flat_depth = depth;
-      flat_tables_[idx].assign(std::size_t{1} << depth, 0);
-      build_flat_table(idx, depth, 0, flat_tables_[idx]);
-      return;  // children are covered by this flat node
+      n.flat_table_offset = flat_tables_.size();
+      flat_tables_.resize(flat_tables_.size() + (std::size_t{1} << depth));
+      build_flat_table(idx, 0, flat_tables_.data() + n.flat_table_offset);
+      return;
     }
 
-    mark_flat(n.left);
-    mark_flat(n.right);
+    mark_flat_topdown(n.left, depths);
+    mark_flat_topdown(n.right, depths);
   }
 
   /** @brief Populate the flat lookup table by walking the subtree.
    *  @param idx             Current node.
-   *  @param remaining_depth Bits remaining (counts down to 0 at leaves).
    *  @param code            Suffix accumulated so far (MSB-first: left=0,
    * right=1).
    *  @param table           Output table of size `2^total_depth`. */
   void build_flat_table(std::size_t idx,
-                        std::uint8_t remaining_depth,
                         std::uint32_t code,
-                        std::vector<symbol_type>& table) const {
+                        symbol_type* table) const {
     const Node& n = nodes_[idx];
     if (n.is_leaf) {
       table[code] = n.symbol;
       return;
     }
-    build_flat_table(n.left, remaining_depth - 1, code << 1, table);
-    build_flat_table(n.right, remaining_depth - 1, (code << 1) | 1, table);
+    build_flat_table(n.left, code << 1, table);
+    build_flat_table(n.right, (code << 1) | 1, table);
   }
 
   /** @brief Total frequency weight of a subtree (sum of leaf frequencies). */
@@ -534,11 +591,9 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     return subtree_weight(n.left, freq) + subtree_weight(n.right, freq);
   }
 
-  /// @brief A symbol with its Huffman code length, used for tree building.
-  struct SymbolEntry {
-    std::uint8_t symbol;
-    std::uint8_t length;
-  };
+  using SymbolsByLength =
+      std::array<std::array<std::uint8_t, kAlphabet>, kMaxCodeLength + 1>;
+  using LengthCounts = std::array<std::size_t, kMaxCodeLength + 1>;
 
   /** @brief Rebuild a Huffman tree from code lengths, reshaped to maximize
    *         flat-subtree opportunities.
@@ -549,38 +604,37 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
    *           equal the original code lengths. This is the paper's "non-
    *           canonical subtree" optimization (Section 2.2.4): same average
    *           code lengths, different (better) tree shape. */
-  void build_canonical_tree(
+  void build_noncanonical_tree(
       const std::array<std::uint8_t, kAlphabet>& lengths) const {
     nodes_.clear();
     nodes_.reserve(2 * kAlphabet);
 
-    // Collect symbols present, sorted by (length, symbol).
-    std::vector<SymbolEntry> entries;
-    entries.reserve(kAlphabet);
-    for (std::size_t s = 0; s < kAlphabet; s++) {
-      if (lengths[s] > 0) {
-        entries.push_back({static_cast<std::uint8_t>(s), lengths[s]});
+    SymbolsByLength by_length{};
+    LengthCounts length_counts{};
+    std::size_t symbol_count = 0;
+    std::uint8_t only_symbol = 0;
+    for (std::size_t symbol = 0; symbol < kAlphabet; ++symbol) {
+      const std::uint8_t length = lengths[symbol];
+      if (length == 0) {
+        continue;
       }
+      by_length[length][length_counts[length]++] =
+          static_cast<std::uint8_t>(symbol);
+      only_symbol = static_cast<std::uint8_t>(symbol);
+      ++symbol_count;
     }
-    std::sort(entries.begin(), entries.end(),
-              [](const SymbolEntry& a, const SymbolEntry& b) {
-                if (a.length != b.length) {
-                  return a.length < b.length;
-                }
-                return a.symbol < b.symbol;
-              });
 
     // Special case: single distinct symbol → root is a leaf.
-    if (entries.size() == 1) {
+    if (symbol_count == 1) {
       nodes_.push_back(Node{});
       root_ = 0;
       nodes_[0].is_leaf = true;
-      nodes_[0].symbol = entries[0].symbol;
+      nodes_[0].symbol = only_symbol;
       return;
     }
 
     // Build the reshaped tree using the power-of-two grouping strategy.
-    build_reshaped_tree(entries);
+    build_reshaped_tree(by_length, length_counts);
   }
 
   /** @brief Build a non-canonical tree that groups same-length symbols into
@@ -618,15 +672,11 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     return idx;
   }
 
-  void build_reshaped_tree(const std::vector<SymbolEntry>& entries) const {
-    std::array<std::vector<std::uint8_t>, kMaxCodeLength + 1> by_length;
-    for (const auto& e : entries) {
-      by_length[e.length].push_back(e.symbol);
-    }
-
+  void build_reshaped_tree(const SymbolsByLength& by_length,
+                           const LengthCounts& length_counts) const {
     // Per-depth consumption cursor.
-    std::array<std::size_t, kMaxCodeLength + 1> cursor{};
-    root_ = build_slots(by_length, cursor, 1, 2);
+    LengthCounts cursor{};
+    root_ = build_slots(by_length, length_counts, cursor, 1, 2);
   }
 
   /** @brief Fill `slots` open positions at `depth` with leaves and internal
@@ -635,22 +685,23 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
    *  @param cursor     Per-depth consumption cursor (how many symbols used).
    *  @param depth      Current tree depth (1 = children of root).
    *  @param slots      Number of open positions (must be a power of 2). */
-  std::size_t build_slots(
-      std::array<std::vector<std::uint8_t>, kMaxCodeLength + 1>& by_length,
-      std::array<std::size_t, kMaxCodeLength + 1>& cursor,
-      std::uint8_t depth,
-      std::size_t slots) const {
+  std::size_t build_slots(const SymbolsByLength& by_length,
+                          const LengthCounts& length_counts,
+                          LengthCounts& cursor,
+                          std::uint8_t depth,
+                          std::size_t slots) const {
     if (slots == 0) {
       return kNpos;
     }
 
     // How many leaves to place at this depth.
-    std::size_t available = by_length[depth].size() - cursor[depth];
+    std::size_t available = length_counts[depth] - cursor[depth];
     std::size_t leaves_here = std::min(available, slots);
     std::size_t internal = slots - leaves_here;
 
     // Build children left-to-right: first leaves (grouped), then internal.
-    std::vector<std::size_t> children;
+    std::array<std::size_t, 2> children{};
+    std::size_t child_count = 0;
 
     // Group leaves into power-of-2 balanced subtrees.
     std::size_t leaf_off = cursor[depth];
@@ -662,8 +713,8 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
         subset *= 2;
         d++;
       }
-      children.push_back(build_balanced_subtree(
-          by_length[depth].data() + leaf_off, subset, d));
+      children[child_count++] =
+          build_balanced_subtree(by_length[depth].data() + leaf_off, subset, d);
       leaf_off += subset;
       remaining -= subset;
     }
@@ -671,17 +722,19 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
 
     // Internal nodes: each recurses with 2 slots at depth+1.
     for (std::size_t i = 0; i < internal; i++) {
-      children.push_back(build_slots(by_length, cursor, depth + 1, 2));
+      children[child_count++] =
+          build_slots(by_length, length_counts, cursor, depth + 1, 2);
     }
 
     // Assemble children into a balanced binary tree.
-    return assemble_balanced(children);
+    return assemble_balanced(
+        std::span<const std::size_t>(children.data(), child_count));
   }
 
   /** @brief Assemble a list of subtree roots into a balanced binary tree.
    *  @details Recursively pairs children left-right, creating internal nodes.
    */
-  std::size_t assemble_balanced(std::vector<std::size_t>& children) const {
+  std::size_t assemble_balanced(std::span<const std::size_t> children) const {
     if (children.empty()) {
       return kNpos;
     }
@@ -690,12 +743,8 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     }
     // Pair up: left half vs right half.
     std::size_t mid = children.size() / 2;
-    std::vector<std::size_t> left_children(children.begin(),
-                                           children.begin() + mid);
-    std::vector<std::size_t> right_children(children.begin() + mid,
-                                            children.end());
-    std::size_t left = assemble_balanced(left_children);
-    std::size_t right = assemble_balanced(right_children);
+    std::size_t left = assemble_balanced(children.first(mid));
+    std::size_t right = assemble_balanced(children.subspan(mid));
     nodes_.push_back(Node{});
     std::size_t idx = nodes_.size() - 1;
     nodes_[idx].left = left;
@@ -752,21 +801,19 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     return n.is_leaf ? freq[n.symbol] : n.bits.count;
   }
 
-  /** @brief Depth-first assignment of root-to-leaf paths. */
-  void assign_paths(
-      std::size_t idx,
-      std::vector<std::pair<std::size_t, bool>>& path,
-      std::array<std::vector<std::pair<std::size_t, bool>>, kAlphabet>& paths) {
+  /** @brief Assign compact MSB-first codes with a depth-first tree walk. */
+  void assign_codes(std::size_t idx,
+                    std::uint16_t bits,
+                    std::uint8_t length,
+                    std::array<SymbolCode, kAlphabet>& codes) const {
     if (nodes_[idx].is_leaf) {
-      paths[nodes_[idx].symbol] = path;
+      codes[nodes_[idx].symbol] = {bits, length};
       return;
     }
-    path.emplace_back(idx, false);
-    assign_paths(nodes_[idx].left, path, paths);
-    path.pop_back();
-    path.emplace_back(idx, true);
-    assign_paths(nodes_[idx].right, path, paths);
-    path.pop_back();
+    assign_codes(nodes_[idx].left, static_cast<std::uint16_t>(bits << 1),
+                 length + 1, codes);
+    assign_codes(nodes_[idx].right, static_cast<std::uint16_t>((bits << 1) | 1),
+                 length + 1, codes);
   }
 
   /** @brief Top-down in-place partition encoding into the reusable workspace.
@@ -781,15 +828,13 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
    *  @param depth    Current tree depth (selects workspace half + path index).
    *  @param out_base Offset within the current half where this node's stream
    *                  begins.
-   *  @param paths    Per-symbol code paths from `assign_paths`.
+   *  @param codes    Compact per-symbol codes from `assign_codes`.
    *  @param freq     Symbol frequencies (sizing child partitions). */
-  void encode_partition(
-      std::size_t idx,
-      std::size_t depth,
-      std::size_t out_base,
-      const std::array<std::vector<std::pair<std::size_t, bool>>, kAlphabet>&
-          paths,
-      const std::array<std::size_t, kAlphabet>& freq) {
+  void encode_partition(std::size_t idx,
+                        std::size_t depth,
+                        std::size_t out_base,
+                        const std::array<SymbolCode, kAlphabet>& codes,
+                        const std::array<std::size_t, kAlphabet>& freq) {
     if (nodes_[idx].is_leaf) {
       return;
     }
@@ -801,12 +846,11 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
       const std::uint8_t d = n.flat_depth;
       std::uint64_t* bits = arena_.data() + n.bits.offset;
       const symbol_type* src = workspace_half(depth) + out_base;
+      const std::uint16_t mask = (std::uint16_t{1} << d) - 1;
       for (std::size_t i = 0; i < n.bits.count; i++) {
-        // Build the d-bit suffix from the symbol's precomputed code path.
-        std::uint32_t suffix = 0;
-        for (std::uint8_t b = 0; b < d; b++) {
-          suffix = (suffix << 1) | (paths[src[i]][depth + b].second ? 1 : 0);
-        }
+        const SymbolCode code = codes[src[i]];
+        const std::uint8_t shift = code.length - depth - d;
+        const std::uint16_t suffix = (code.bits >> shift) & mask;
         write_bits(bits, i * d, suffix, d);
       }
       return;
@@ -827,7 +871,9 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     std::size_t c_right = 0;
     for (std::size_t i = 0; i < weight; i++) {
       symbol_type s = src[i];
-      if (paths[s][depth].second) {
+      const SymbolCode code = codes[s];
+      const bool goes_right = (code.bits >> (code.length - depth - 1)) & 1u;
+      if (goes_right) {
         bits[word_idx] |= (1ull << bit_pos);
         right_dst[c_right++] = s;
       } else {
@@ -839,8 +885,8 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
       }
     }
 
-    encode_partition(n.left, depth + 1, out_base, paths, freq);
-    encode_partition(n.right, depth + 1, out_base + left_weight, paths, freq);
+    encode_partition(n.left, depth + 1, out_base, codes, freq);
+    encode_partition(n.right, depth + 1, out_base + left_weight, codes, freq);
   }
 
   // --- decode --------------------------------------------------------------
@@ -890,7 +936,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     if (n.flat_depth > 0) {
       const std::uint8_t d = n.flat_depth;
       const std::uint64_t* bits = arena_.data() + n.bits.offset;
-      const symbol_type* table = flat_tables_[idx].data();
+      const symbol_type* table = flat_tables_.data() + n.flat_table_offset;
       for (std::size_t i = 0; i < weight; i++) {
         dst[i] = table[read_bits(bits, i * d, d)];
       }
@@ -1031,7 +1077,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     }
 
     // Rebuild the canonical tree from lengths.
-    build_canonical_tree(code_lengths_);
+    build_noncanonical_tree(code_lengths_);
     detect_flat_subtrees();
 
     // Single-symbol input: root is a leaf, no internal nodes, no arena.
