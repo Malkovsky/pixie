@@ -17,14 +17,16 @@
  * reshaped into flat subtrees as described by the PivCo-Huffman paper.
  *
  * This implementation uses packed `std::uint64_t` bitmaps, flat subtrees,
- * contiguous arenas, and scalar bottom-up decoding. SIMD and selective ANS
- * are intentionally left to specialized future implementations.
+ * contiguous arenas, and bottom-up decoding. The merge/partition primitives are
+ * vectorized in `pivco_simd.h` (AVX-512 VBMI2, AVX2, and scalar fallbacks);
+ * selective ANS remains future work.
  *
  * Range and ownership conventions follow `HuffmanBase`: symbols are bytes,
  * the compressed stream is a byte view, and the codec owns its serialized form.
  */
 
 #include <pixie/huffman.h>
+#include <pixie/huffman/pivco_simd.h>
 
 #include <algorithm>
 #include <array>
@@ -126,6 +128,14 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
   ///          within the per-core L2 (256 KiB), eliminating the L2 evictions
   ///          that hurt decode throughput on whole-input processing.
   static constexpr std::size_t kBlockSize = 64 * 1024;
+
+  /// @brief Extra bytes appended to the ping-pong workspace beyond `2 * block`.
+  /// @details Vectorized merge/partition kernels read and write a full 8- or
+  ///          64-byte vector on each iteration even when the final group is
+  ///          shorter; this slack makes those over-reads/over-writes stay
+  ///          within the allocated buffer rather than spilling past the end of
+  ///          a child region that abuts the workspace boundary.
+  static constexpr std::size_t kWorkspaceSlack = 64;
 
   /**
    * @brief Lightweight descriptor for a node's routing bitmap.
@@ -275,7 +285,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     //    ping-pongs between the two halves — no per-node allocations.
     std::array<SymbolCode, kAlphabet> codes{};
     assign_codes(root_, 0, 0, codes);
-    workspace_.resize(block_uncompressed_size_ * 2);
+    workspace_.resize(block_uncompressed_size_ * 2 + kWorkspaceSlack);
     std::copy(input.begin(), input.end(), workspace_.data());
     encode_partition(root_, 0, 0, codes, freq);
   }
@@ -865,25 +875,19 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     symbol_type* right_dst = workspace_half(depth + 1) + out_base + left_weight;
 
     std::uint64_t* bits = arena_.data() + n.bits.offset;
-    std::size_t word_idx = 0;
-    std::size_t bit_pos = 0;
-    std::size_t c_left = 0;
-    std::size_t c_right = 0;
-    for (std::size_t i = 0; i < weight; i++) {
-      symbol_type s = src[i];
-      const SymbolCode code = codes[s];
-      const bool goes_right = (code.bits >> (code.length - depth - 1)) & 1u;
-      if (goes_right) {
-        bits[word_idx] |= (1ull << bit_pos);
-        right_dst[c_right++] = s;
-      } else {
-        left_dst[c_left++] = s;
-      }
-      if (++bit_pos == kWordBits) {
-        bit_pos = 0;
-        ++word_idx;
-      }
+
+    // Per-symbol direction bit at this node's depth: bit (length-depth-1) of
+    // each symbol's code. Only symbols passing through (length > depth) are
+    // routed; absent symbols (length 0) are never read here.
+    std::array<std::uint8_t, kAlphabet> dir{};
+    for (std::size_t s = 0; s < kAlphabet; ++s) {
+      const std::uint8_t len = codes[s].length;
+      dir[s] = (len > depth) ? static_cast<std::uint8_t>(
+                                   (codes[s].bits >> (len - depth - 1)) & 1u)
+                             : 0;
     }
+    pivco_partition_encode(left_dst, right_dst, bits, src, dir.data(), weight,
+                           left_weight, weight - left_weight);
 
     encode_partition(n.left, depth + 1, out_base, codes, freq);
     encode_partition(n.right, depth + 1, out_base + left_weight, codes, freq);
@@ -907,7 +911,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
                                       nodes_[root_].symbol);
     }
     const std::size_t n = block_uncompressed_size_;
-    workspace_.resize(n * 2);
+    workspace_.resize(n * 2 + kWorkspaceSlack);
     decode_node(root_, n, 0, 0);
     return std::vector<symbol_type>(workspace_.begin(), workspace_.begin() + n);
   }
@@ -953,23 +957,8 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     const symbol_type* left_out = src;
     const symbol_type* right_out = src + left_weight;
 
-    std::size_t out_i = 0;
-    std::size_t c_left = 0;
-    std::size_t c_right = 0;
     const std::uint64_t* bits = arena_.data() + n.bits.offset;
-    const std::size_t words = n.bits.word_count(0);
-    for (std::size_t w = 0; w < words; w++) {
-      std::uint64_t word = bits[w];
-      std::size_t limit = kWordBits;
-      if (w + 1 == words) {
-        limit = n.bits.count - w * kWordBits;
-      }
-      for (std::size_t i = 0; i < limit; i++) {
-        dst[out_i++] =
-            (word & 1ull) ? right_out[c_right++] : left_out[c_left++];
-        word >>= 1;
-      }
-    }
+    pivco_merge_decode(dst, left_out, right_out, bits, n.bits.count);
   }
 
   /** @brief Pointer to the workspace half that holds depth-@p depth outputs. */
