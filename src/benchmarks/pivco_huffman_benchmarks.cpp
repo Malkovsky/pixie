@@ -67,6 +67,21 @@ std::vector<std::uint8_t> make_low_entropy_4(std::size_t n,
   return data;
 }
 
+/// @brief Uniform distribution over a power-of-two alphabet.
+/// @details Depths 3--7 exercise every flat width between the four-symbol and
+///          full-byte datasets.
+template <std::uint8_t kDepth>
+std::vector<std::uint8_t> make_uniform_pow2(std::size_t n,
+                                            std::mt19937_64& rng) {
+  static_assert(kDepth >= 3 && kDepth <= 7);
+  constexpr std::uint8_t kMask = (std::uint8_t{1} << kDepth) - 1;
+  std::vector<std::uint8_t> data(n);
+  for (auto& b : data) {
+    b = static_cast<std::uint8_t>(rng()) & kMask;
+  }
+  return data;
+}
+
 /// @brief English-text-like distribution: ~17% space, ~80% lowercase letters,
 ///        ~2% digits, ~1% punctuation.
 std::vector<std::uint8_t> make_text_like(std::size_t n, std::mt19937_64& rng) {
@@ -185,6 +200,11 @@ void BM_Decode(benchmark::State& state, DatasetMaker make) {
 PIXIE_PIVCO_REGISTER(Encode, Uniform256, make_uniform256)
 PIXIE_PIVCO_REGISTER(Encode, Binary, make_binary)
 PIXIE_PIVCO_REGISTER(Encode, LowEntropy4, make_low_entropy_4)
+PIXIE_PIVCO_REGISTER(Encode, Uniform8, make_uniform_pow2<3>)
+PIXIE_PIVCO_REGISTER(Encode, Uniform16, make_uniform_pow2<4>)
+PIXIE_PIVCO_REGISTER(Encode, Uniform32, make_uniform_pow2<5>)
+PIXIE_PIVCO_REGISTER(Encode, Uniform64, make_uniform_pow2<6>)
+PIXIE_PIVCO_REGISTER(Encode, Uniform128, make_uniform_pow2<7>)
 PIXIE_PIVCO_REGISTER(Encode, TextLike, make_text_like)
 PIXIE_PIVCO_REGISTER(Encode, Skewed99, make_skewed99)
 PIXIE_PIVCO_REGISTER(Encode, SingleSymbol, make_single_symbol)
@@ -192,6 +212,11 @@ PIXIE_PIVCO_REGISTER(Encode, SingleSymbol, make_single_symbol)
 PIXIE_PIVCO_REGISTER(Decode, Uniform256, make_uniform256)
 PIXIE_PIVCO_REGISTER(Decode, Binary, make_binary)
 PIXIE_PIVCO_REGISTER(Decode, LowEntropy4, make_low_entropy_4)
+PIXIE_PIVCO_REGISTER(Decode, Uniform8, make_uniform_pow2<3>)
+PIXIE_PIVCO_REGISTER(Decode, Uniform16, make_uniform_pow2<4>)
+PIXIE_PIVCO_REGISTER(Decode, Uniform32, make_uniform_pow2<5>)
+PIXIE_PIVCO_REGISTER(Decode, Uniform64, make_uniform_pow2<6>)
+PIXIE_PIVCO_REGISTER(Decode, Uniform128, make_uniform_pow2<7>)
 PIXIE_PIVCO_REGISTER(Decode, TextLike, make_text_like)
 PIXIE_PIVCO_REGISTER(Decode, Skewed99, make_skewed99)
 PIXIE_PIVCO_REGISTER(Decode, SingleSymbol, make_single_symbol)

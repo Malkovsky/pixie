@@ -77,21 +77,6 @@ inline std::uint8_t build_dir_mask8(const std::uint8_t* s8,
                                    (dir[s8[6]] << 6) | (dir[s8[7]] << 7));
 }
 
-/// @brief Read 8 bits starting at bit position @p pos from a packed word array.
-/// @pre @p pos + 8 is within the bitmap's bit range; callers stop the SIMD
-///      loop once fewer than 8 symbols remain, so the span never exceeds the
-///      allocated words.
-inline std::uint8_t extract_byte(const std::uint64_t* bits,
-                                 std::size_t pos) noexcept {
-  const std::size_t w = pos / 64;
-  const std::size_t b = pos % 64;
-  std::uint64_t v = bits[w] >> b;
-  if (b + 8 > 64) {
-    v |= bits[w + 1] << (64 - b);
-  }
-  return static_cast<std::uint8_t>(v);
-}
-
 /// @brief Scalar merge tail: process the remaining `< 8` symbols bit-by-bit.
 template <bool kLeftConstant, bool kRightConstant>
 inline void merge_scalar_tail(std::uint8_t* dst,
@@ -280,6 +265,48 @@ inline const ShufTable& compress_left_lut() {
   return lut;
 }
 
+/// @brief Merge two constant leaves 32 symbols at a time with AVX2.
+/// @details Four routing bytes are widened to four qwords, each byte is
+///          broadcast over its eight output lanes, and a fixed bit-position
+///          vector expands the bitmap without a shuffle-table lookup.
+inline void merge_decode_cst_cst_avx2(std::uint8_t* dst,
+                                      std::uint8_t left_symbol,
+                                      std::uint8_t right_symbol,
+                                      const std::uint64_t* bits,
+                                      std::size_t count) noexcept {
+  const auto* bit_bytes = reinterpret_cast<const std::uint8_t*>(bits);
+  const __m256i broadcast_control =
+      _mm256_setr_epi8(0, 0, 0, 0, 0, 0, 0, 0, 8, 8, 8, 8, 8, 8, 8, 8, 0, 0, 0,
+                       0, 0, 0, 0, 0, 8, 8, 8, 8, 8, 8, 8, 8);
+  const __m256i bit_positions = _mm256_setr_epi8(
+      1, 2, 4, 8, 16, 32, 64, static_cast<char>(0x80), 1, 2, 4, 8, 16, 32, 64,
+      static_cast<char>(0x80), 1, 2, 4, 8, 16, 32, 64, static_cast<char>(0x80),
+      1, 2, 4, 8, 16, 32, 64, static_cast<char>(0x80));
+  const __m256i zero = _mm256_setzero_si256();
+  const __m256i left = _mm256_set1_epi8(static_cast<char>(left_symbol));
+  const __m256i delta =
+      _mm256_set1_epi8(static_cast<char>(left_symbol ^ right_symbol));
+
+  std::size_t i = 0;
+  for (; i + 32 <= count; i += 32) {
+    std::uint32_t routing = 0;
+    std::memcpy(&routing, bit_bytes + i / 8, sizeof(routing));
+    const __m128i routing_bytes = _mm_cvtsi32_si128(static_cast<int>(routing));
+    const __m256i routing_qwords = _mm256_cvtepu8_epi64(routing_bytes);
+    const __m256i broadcast =
+        _mm256_shuffle_epi8(routing_qwords, broadcast_control);
+    const __m256i clear_bits =
+        _mm256_cmpeq_epi8(_mm256_and_si256(broadcast, bit_positions), zero);
+    const __m256i symbols =
+        _mm256_xor_si256(left, _mm256_andnot_si256(clear_bits, delta));
+    _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), symbols);
+  }
+  for (; i < count; ++i) {
+    dst[i] =
+        ((bits[i / 64] >> (i % 64)) & 1u) != 0 ? right_symbol : left_symbol;
+  }
+}
+
 template <bool kLeftConstant, bool kRightConstant>
 inline void merge_decode_avx2(std::uint8_t* dst,
                               const std::uint8_t* left,
@@ -288,13 +315,22 @@ inline void merge_decode_avx2(std::uint8_t* dst,
                               std::uint8_t right_symbol,
                               const std::uint64_t* bits,
                               std::size_t count) noexcept {
+  if constexpr (kLeftConstant && kRightConstant) {
+    merge_decode_cst_cst_avx2(dst, left_symbol, right_symbol, bits, count);
+    return;
+  }
+
   const auto& mlut = merge_lut();
+  const auto* bit_bytes = reinterpret_cast<const std::uint8_t*>(bits);
   std::size_t out_i = 0;
   std::size_t c_left = 0;
   std::size_t c_right = 0;
   std::size_t i = 0;
   for (; i + 8 <= count; i += 8) {
-    const std::uint8_t m8 = extract_byte(bits, i);
+    // AVX2 is little-endian on every supported x86 target. Eight-symbol
+    // groups are byte-aligned in the LSB-first bitmap, so loading the routing
+    // byte directly avoids a word-index/shift sequence in every merge group.
+    const std::uint8_t m8 = bit_bytes[i / 8];
     __m128i left_values;
     if constexpr (kLeftConstant) {
       left_values = _mm_set1_epi8(static_cast<char>(left_symbol));
@@ -394,6 +430,60 @@ inline void partition_encode_avx2(std::uint8_t* left_dst,
   }
 }
 
+/// @brief AVX2 partition when one child is a constant leaf.
+/// @tparam kLeftConstant True when the left child is the constant; the dense
+///                       right stream is written. False writes the dense left
+///                       stream and treats the right child as constant.
+template <bool kLeftConstant>
+inline void partition_encode_one_constant_avx2(
+    std::uint8_t* output,
+    std::uint64_t* bits,
+    const std::uint8_t* src,
+    std::uint8_t constant_symbol,
+    std::size_t weight,
+    std::size_t output_weight) noexcept {
+  auto* bit_bytes = reinterpret_cast<std::uint8_t*>(bits);
+  const __m128i constant = _mm_set1_epi8(static_cast<char>(constant_symbol));
+  std::size_t output_count = 0;
+  const std::size_t full = weight / 8;
+  std::size_t group = 0;
+  for (; group < full; ++group) {
+    const std::uint8_t* s8 = src + group * 8;
+    const __m128i data = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(s8));
+    const std::uint8_t equal_mask = static_cast<std::uint8_t>(
+        _mm_movemask_epi8(_mm_cmpeq_epi8(data, constant)));
+    const std::uint8_t routing =
+        kLeftConstant ? static_cast<std::uint8_t>(~equal_mask) : equal_mask;
+    bit_bytes[group] = routing;
+
+    const auto& lut =
+        kLeftConstant ? compress_right_lut() : compress_left_lut();
+    const __m128i packed = _mm_shuffle_epi8(data, load_shuf(lut, routing));
+    store_masked_epi64(output + output_count, packed,
+                       static_cast<int>(output_weight - output_count));
+    const std::size_t right_count =
+        std::popcount(static_cast<unsigned>(routing));
+    output_count += kLeftConstant ? right_count : 8 - right_count;
+  }
+
+  std::size_t word_index = (group * 8) / 64;
+  std::size_t bit_position = (group * 8) % 64;
+  for (std::size_t i = group * 8; i < weight; ++i) {
+    const bool is_constant = src[i] == constant_symbol;
+    const bool goes_right = kLeftConstant ? !is_constant : is_constant;
+    if (goes_right) {
+      bits[word_index] |= std::uint64_t{1} << bit_position;
+    }
+    if (kLeftConstant ? goes_right : !goes_right) {
+      output[output_count++] = src[i];
+    }
+    if (++bit_position == 64) {
+      bit_position = 0;
+      ++word_index;
+    }
+  }
+}
+
 /// @brief Decode a 2-bit flat subtree, 32 symbols per iteration.
 inline void flat_decode_d2_avx2(std::uint8_t* dst,
                                 const std::uint8_t* packed,
@@ -453,6 +543,374 @@ inline void flat_decode_d4_avx2(std::uint8_t* dst,
     dst[i] = table[(packed[i / 2] >> (4 * (i % 2))) & 0x0fu];
   }
 }
+
+/// @brief Reverse the low @p width bits of one byte.
+inline std::uint8_t reverse_low_bits_avx2(std::uint8_t value,
+                                          std::uint8_t width) noexcept {
+  value = static_cast<std::uint8_t>(((value & 0x55u) << 1) |
+                                    ((value & 0xaau) >> 1));
+  value = static_cast<std::uint8_t>(((value & 0x33u) << 2) |
+                                    ((value & 0xccu) >> 2));
+  value = static_cast<std::uint8_t>((value << 4) | (value >> 4));
+  return value >> (8 - width);
+}
+
+/// @brief Decode a known full-alphabet depth-8 bit-reversal table.
+/// @details A balanced tree built from symbols 0..255 stores
+///          `table[reverse8(code)] = code`. AVX2 can apply that permutation
+///          with two nibble `pshufb` operations, avoiding the arbitrary byte
+///          lookup that AVX2 cannot otherwise vectorize efficiently.
+inline void flat_decode_d8_bitreverse_unchecked_avx2(
+    std::uint8_t* dst,
+    const std::uint8_t* packed,
+    const std::uint8_t* table,
+    std::size_t count) noexcept {
+  alignas(16) static constexpr std::uint8_t kReverseNibble[16] = {
+      0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15};
+  const __m128i reverse128 =
+      _mm_load_si128(reinterpret_cast<const __m128i*>(kReverseNibble));
+  const __m256i reverse = _mm256_broadcastsi128_si256(reverse128);
+  const __m256i nibble_mask = _mm256_set1_epi8(0x0f);
+  std::size_t i = 0;
+  for (; i + 32 <= count; i += 32) {
+    const __m256i codes =
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(packed + i));
+    const __m256i low = _mm256_and_si256(codes, nibble_mask);
+    const __m256i high =
+        _mm256_and_si256(_mm256_srli_epi16(codes, 4), nibble_mask);
+    const __m256i reversed_low = _mm256_shuffle_epi8(reverse, low);
+    const __m256i reversed_high = _mm256_shuffle_epi8(reverse, high);
+    const __m256i symbols =
+        _mm256_or_si256(_mm256_slli_epi16(reversed_low, 4), reversed_high);
+    _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), symbols);
+  }
+  for (; i < count; ++i) {
+    dst[i] = table[packed[i]];
+  }
+}
+
+/// @brief Decode the common full-alphabet depth-8 bit-reversal table.
+/// @returns True when @p table has the reshaped tree's bit-reversal layout and
+///          the output was produced; false for an arbitrary 256-byte table.
+inline bool flat_decode_d8_bitreverse_avx2(std::uint8_t* dst,
+                                           const std::uint8_t* packed,
+                                           const std::uint8_t* table,
+                                           std::size_t count) noexcept {
+  for (std::size_t code = 0; code < 256; ++code) {
+    if (table[code] !=
+        reverse_low_bits_avx2(static_cast<std::uint8_t>(code), 8)) {
+      return false;
+    }
+  }
+  flat_decode_d8_bitreverse_unchecked_avx2(dst, packed, table, count);
+  return true;
+}
+
+/// @brief Expand eight tightly packed D-bit codes into eight byte lanes.
+/// @details Eight codes occupy exactly D bytes, so every eight-code group is
+///          byte-aligned. BMI2 `pdep` inserts the padding bits between codes in
+///          one instruction. The constexpr fallback is fully unrolled for
+///          AVX2 CPUs that do not also expose BMI2.
+template <std::uint8_t kDepth>
+inline std::uint64_t expand_codes8_avx2(const std::uint8_t* packed) noexcept {
+  static_assert(kDepth >= 3 && kDepth <= 8);
+  std::uint64_t dense = 0;
+  std::memcpy(&dense, packed, kDepth);
+  if constexpr (kDepth == 8) {
+    return dense;
+  }
+
+  constexpr std::uint64_t kCodeMask = (std::uint64_t{1} << kDepth) - 1;
+#if defined(__BMI2__)
+  constexpr std::uint64_t kByteLaneMask =
+      kCodeMask * UINT64_C(0x0101010101010101);
+  return _pdep_u64(dense, kByteLaneMask);
+#else
+  std::uint64_t expanded = 0;
+  for (std::size_t lane = 0; lane < 8; ++lane) {
+    expanded |= ((dense >> (lane * kDepth)) & kCodeMask) << (lane * 8);
+  }
+  return expanded;
+#endif
+}
+
+/// @brief Reverse the low D bits independently in 16 byte lanes.
+template <std::uint8_t kDepth>
+inline __m128i reverse_low_bits16_avx2(__m128i values) noexcept {
+  static_assert(kDepth >= 2 && kDepth <= 7);
+  alignas(16) static constexpr std::uint8_t kReverseNibble[16] = {
+      0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15};
+  const __m128i reverse =
+      _mm_load_si128(reinterpret_cast<const __m128i*>(kReverseNibble));
+  const __m128i nibble_mask = _mm_set1_epi8(0x0f);
+  const __m128i low = _mm_and_si128(values, nibble_mask);
+  const __m128i high = _mm_and_si128(_mm_srli_epi16(values, 4), nibble_mask);
+  const __m128i reversed =
+      _mm_or_si128(_mm_slli_epi16(_mm_shuffle_epi8(reverse, low), 4),
+                   _mm_shuffle_epi8(reverse, high));
+  constexpr std::uint8_t kCodeMask = (std::uint8_t{1} << kDepth) - 1;
+  return _mm_and_si128(_mm_srli_epi16(reversed, 8 - kDepth),
+                       _mm_set1_epi8(static_cast<char>(kCodeMask)));
+}
+
+/// @brief Decode a known balanced low-alphabet table as bit reversal.
+template <std::uint8_t kDepth>
+inline void flat_decode_bitreverse_unchecked_avx2(std::uint8_t* dst,
+                                                  const std::uint8_t* packed,
+                                                  const std::uint8_t* table,
+                                                  std::size_t count) noexcept {
+  static_assert(kDepth >= 6 && kDepth <= 7);
+  std::size_t i = 0;
+  for (; i + 16 <= count; i += 16) {
+    const std::size_t byte_offset = (i * kDepth) / 8;
+    const std::uint64_t codes0 =
+        expand_codes8_avx2<kDepth>(packed + byte_offset);
+    const std::uint64_t codes1 =
+        expand_codes8_avx2<kDepth>(packed + byte_offset + kDepth);
+    const __m128i codes = _mm_set_epi64x(static_cast<long long>(codes1),
+                                         static_cast<long long>(codes0));
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i),
+                     reverse_low_bits16_avx2<kDepth>(codes));
+  }
+  constexpr std::uint64_t kCodeMask = (std::uint64_t{1} << kDepth) - 1;
+  const auto* words = reinterpret_cast<const std::uint64_t*>(packed);
+  for (; i < count; ++i) {
+    const std::size_t bit_position = i * kDepth;
+    const std::size_t word_index = bit_position / 64;
+    const std::size_t bit_offset = bit_position % 64;
+    std::uint64_t code = words[word_index] >> bit_offset;
+    if (bit_offset + kDepth > 64) {
+      code |= words[word_index + 1] << (64 - bit_offset);
+    }
+    dst[i] = table[code & kCodeMask];
+  }
+}
+
+/// @brief Decode a balanced low-alphabet flat table as bit reversal.
+/// @returns True when the table has the expected permutation and was decoded.
+template <std::uint8_t kDepth>
+inline bool flat_decode_bitreverse_avx2(std::uint8_t* dst,
+                                        const std::uint8_t* packed,
+                                        const std::uint8_t* table,
+                                        std::size_t count) noexcept {
+  static_assert(kDepth >= 6 && kDepth <= 7);
+  constexpr std::size_t kTableSize = std::size_t{1} << kDepth;
+  for (std::size_t code = 0; code < kTableSize; ++code) {
+    if (table[code] !=
+        reverse_low_bits_avx2(static_cast<std::uint8_t>(code), kDepth)) {
+      return false;
+    }
+  }
+  flat_decode_bitreverse_unchecked_avx2<kDepth>(dst, packed, table, count);
+  return true;
+}
+
+/// @brief Lookup byte indices in a power-of-two collection of 16-byte banks.
+/// @details AVX2 has no arbitrary byte permutation across 256 entries. Each
+///          leaf performs one `pshufb` using the low nibble; balanced
+///          `blendv` levels select the bank with the remaining high bits.
+///          The recursion is compile-time and emits straight-line SIMD code.
+template <std::size_t kFirstBank, std::size_t kBankCount>
+inline __m128i lookup_banked_bytes_avx2(const std::uint8_t* table,
+                                        __m128i low_nibbles,
+                                        __m128i codes) noexcept {
+  static_assert(kBankCount > 0 && std::has_single_bit(kBankCount));
+  if constexpr (kBankCount == 1) {
+    const __m128i bank = _mm_loadu_si128(
+        reinterpret_cast<const __m128i*>(table + kFirstBank * 16));
+    return _mm_shuffle_epi8(bank, low_nibbles);
+  } else {
+    constexpr std::size_t kHalf = kBankCount / 2;
+    constexpr int kSelectBit = 3 + std::countr_zero(kBankCount);
+    const __m128i low =
+        lookup_banked_bytes_avx2<kFirstBank, kHalf>(table, low_nibbles, codes);
+    const __m128i high = lookup_banked_bytes_avx2<kFirstBank + kHalf, kHalf>(
+        table, low_nibbles, codes);
+    const __m128i select = _mm_slli_epi16(codes, 7 - kSelectBit);
+    return _mm_blendv_epi8(low, high, select);
+  }
+}
+
+/// @brief Decode flat depths 3 and 5..7 in 16-symbol AVX2 batches.
+/// @details The existing depth-2/depth-4 kernels unpack 32 symbols per batch
+///          and remain faster for those widths. Other depths use BMI2 to
+///          expand two groups of eight packed codes, followed by a banked
+///          `pshufb` lookup. This avoids the former per-symbol shift, branch,
+///          and dependent table load loop.
+template <std::uint8_t kDepth>
+inline void flat_decode_banked_avx2(std::uint8_t* dst,
+                                    const std::uint8_t* packed,
+                                    const std::uint8_t* table,
+                                    std::size_t count) noexcept {
+  static_assert(kDepth == 3 || (kDepth >= 5 && kDepth <= 7));
+  constexpr std::size_t kTableSize = std::size_t{1} << kDepth;
+  constexpr std::size_t kBankCount = kTableSize <= 16 ? 1 : kTableSize / 16;
+  const __m128i nibble_mask = _mm_set1_epi8(0x0f);
+
+  // A depth-3 table has only eight valid bytes, while the banked lookup loads
+  // a complete vector. Pad that one small table locally; depths >=5 already
+  // contain one or more complete 16-byte banks.
+  alignas(16) std::uint8_t padded_depth3[16]{};
+  const std::uint8_t* lookup_table = table;
+  if constexpr (kDepth == 3) {
+    std::memcpy(padded_depth3, table, kTableSize);
+    lookup_table = padded_depth3;
+  }
+
+  std::size_t i = 0;
+  for (; i + 16 <= count; i += 16) {
+    const std::size_t byte_offset = (i * kDepth) / 8;
+    const std::uint64_t codes0 =
+        expand_codes8_avx2<kDepth>(packed + byte_offset);
+    const std::uint64_t codes1 =
+        expand_codes8_avx2<kDepth>(packed + byte_offset + kDepth);
+    const __m128i codes = _mm_set_epi64x(static_cast<long long>(codes1),
+                                         static_cast<long long>(codes0));
+    const __m128i low_nibbles = _mm_and_si128(codes, nibble_mask);
+    const __m128i symbols = lookup_banked_bytes_avx2<0, kBankCount>(
+        lookup_table, low_nibbles, codes);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i), symbols);
+  }
+
+  const auto* words = reinterpret_cast<const std::uint64_t*>(packed);
+  constexpr std::uint64_t kCodeMask = (std::uint64_t{1} << kDepth) - 1;
+  for (; i < count; ++i) {
+    const std::size_t bit_position = i * kDepth;
+    const std::size_t word_index = bit_position / 64;
+    const std::size_t bit_offset = bit_position % 64;
+    std::uint64_t code = words[word_index] >> bit_offset;
+    if (bit_offset + kDepth > 64) {
+      code |= words[word_index + 1] << (64 - bit_offset);
+    }
+    dst[i] = table[code & kCodeMask];
+  }
+}
+
+#if defined(__BMI2__)
+/// @brief Encode one depth-3 flat subtree with AVX2 gather and BMI2 packing.
+/// @details AVX2 has no byte gather, so eight input symbols are widened to
+///          dword indices and looked up together. The gathered codes are
+///          narrowed back to bytes, then `pext` packs their low three bits.
+///          Wider flat depths were benchmarked and deliberately retain their
+///          faster scalar encoders. The caller provides three readable pad
+///          bytes after the 256-entry code table because dword gathers overlap
+///          adjacent byte entries.
+inline void flat_encode_d3_avx2(std::uint64_t* bits,
+                                const std::uint8_t* src,
+                                const std::uint8_t* wire_code,
+                                std::size_t count) noexcept {
+  constexpr std::uint8_t kDepth = 3;
+  constexpr std::uint64_t kByteLaneMask = UINT64_C(0x0707070707070707);
+  auto* packed = reinterpret_cast<std::uint8_t*>(bits);
+  const __m256i byte_mask = _mm256_set1_epi32(0xff);
+  const __m128i zero = _mm_setzero_si128();
+
+  std::size_t i = 0;
+  for (; i + 8 <= count; i += 8) {
+    const __m128i symbols =
+        _mm_loadl_epi64(reinterpret_cast<const __m128i*>(src + i));
+    const __m256i indices = _mm256_cvtepu8_epi32(symbols);
+    const __m256i gathered = _mm256_and_si256(
+        _mm256_i32gather_epi32(reinterpret_cast<const int*>(wire_code), indices,
+                               1),
+        byte_mask);
+    const __m128i gathered_low = _mm256_castsi256_si128(gathered);
+    const __m128i gathered_high = _mm256_extracti128_si256(gathered, 1);
+    const __m128i codes16 = _mm_packus_epi32(gathered_low, gathered_high);
+    const __m128i codes8 = _mm_packus_epi16(codes16, zero);
+    const std::uint64_t codes =
+        static_cast<std::uint64_t>(_mm_cvtsi128_si64(codes8));
+    const std::uint64_t dense = _pext_u64(codes, kByteLaneMask);
+    std::memcpy(packed + (i * kDepth) / 8, &dense, kDepth);
+  }
+
+  std::size_t word_index = (i * kDepth) / 64;
+  std::size_t bit_offset = (i * kDepth) % 64;
+  for (; i < count; ++i) {
+    const std::uint64_t code = wire_code[src[i]];
+    bits[word_index] |= code << bit_offset;
+    if (bit_offset + kDepth > 64) {
+      bits[word_index + 1] |= code >> (64 - bit_offset);
+    }
+    bit_offset += kDepth;
+    if (bit_offset >= 64) {
+      bit_offset -= 64;
+      ++word_index;
+    }
+  }
+}
+
+/// @brief Encode a known balanced low-alphabet table as bit reversal.
+template <std::uint8_t kDepth>
+inline void flat_encode_bitreverse_unchecked_avx2(std::uint64_t* bits,
+                                                  const std::uint8_t* src,
+                                                  const std::uint8_t* wire_code,
+                                                  std::size_t count) noexcept {
+  static_assert(kDepth >= 2 && kDepth <= 7);
+  constexpr std::uint64_t kCodeMask = (std::uint64_t{1} << kDepth) - 1;
+  constexpr std::uint64_t kByteLaneMask =
+      kCodeMask * UINT64_C(0x0101010101010101);
+  auto* packed = reinterpret_cast<std::uint8_t*>(bits);
+  std::size_t i = 0;
+  for (; i + 8 <= count; i += 8) {
+    const __m128i symbols =
+        _mm_loadl_epi64(reinterpret_cast<const __m128i*>(src + i));
+    const __m128i codes = reverse_low_bits16_avx2<kDepth>(symbols);
+    const std::uint64_t byte_codes =
+        static_cast<std::uint64_t>(_mm_cvtsi128_si64(codes));
+    const std::uint64_t dense = _pext_u64(byte_codes, kByteLaneMask);
+    std::memcpy(packed + (i * kDepth) / 8, &dense, kDepth);
+  }
+
+  std::size_t word_index = (i * kDepth) / 64;
+  std::size_t bit_offset = (i * kDepth) % 64;
+  for (; i < count; ++i) {
+    const std::uint64_t code = wire_code[src[i]];
+    bits[word_index] |= code << bit_offset;
+    if (bit_offset + kDepth > 64) {
+      bits[word_index + 1] |= code >> (64 - bit_offset);
+    }
+    bit_offset += kDepth;
+    if (bit_offset >= 64) {
+      bit_offset -= 64;
+      ++word_index;
+    }
+  }
+}
+
+/// @brief Encode a balanced low-alphabet table as vectorized bit reversal.
+/// @returns True when @p wire_code has the expected mapping and was encoded.
+template <std::uint8_t kDepth>
+inline bool flat_encode_bitreverse_avx2(std::uint64_t* bits,
+                                        const std::uint8_t* src,
+                                        const std::uint8_t* wire_code,
+                                        std::size_t count) noexcept {
+  static_assert(kDepth >= 2 && kDepth <= 7);
+  constexpr std::size_t kTableSize = std::size_t{1} << kDepth;
+  for (std::size_t symbol = 0; symbol < kTableSize; ++symbol) {
+    if (wire_code[symbol] !=
+        reverse_low_bits_avx2(static_cast<std::uint8_t>(symbol), kDepth)) {
+      return false;
+    }
+  }
+  flat_encode_bitreverse_unchecked_avx2<kDepth>(bits, src, wire_code, count);
+  return true;
+}
+
+/// @brief Select checked or preclassified balanced-table encoding.
+template <std::uint8_t kDepth>
+inline bool flat_encode_bitreverse_maybe_avx2(std::uint64_t* bits,
+                                              const std::uint8_t* src,
+                                              const std::uint8_t* wire_code,
+                                              std::size_t count,
+                                              bool known_bitreverse) noexcept {
+  if (known_bitreverse) {
+    flat_encode_bitreverse_unchecked_avx2<kDepth>(bits, src, wire_code, count);
+    return true;
+  }
+  return flat_encode_bitreverse_avx2<kDepth>(bits, src, wire_code, count);
+}
+#endif
 
 #endif  // AVX2 + SSE4.1
 
@@ -907,7 +1365,8 @@ inline void flat_decode_dispatch(std::uint8_t* dst,
                                  const std::uint64_t* bits,
                                  const std::uint8_t* table,
                                  std::size_t count,
-                                 std::uint8_t depth) noexcept {
+                                 std::uint8_t depth,
+                                 bool known_bitreverse) noexcept {
 #if defined(__AVX512VBMI2__) && defined(__AVX512BW__)
   if (depth == 1) {
     merge_decode_avx512<true, true>(dst, nullptr, table[0], nullptr, table[1],
@@ -952,13 +1411,50 @@ inline void flat_decode_dispatch(std::uint8_t* dst,
 
 #if defined(__AVX2__) && defined(__SSE4_1__)
   const auto* packed = reinterpret_cast<const std::uint8_t*>(bits);
-  if (depth == 2) {
-    flat_decode_d2_avx2(dst, packed, table, count);
-    return;
-  }
-  if (depth == 4) {
-    flat_decode_d4_avx2(dst, packed, table, count);
-    return;
+  switch (depth) {
+    case 2:
+      flat_decode_d2_avx2(dst, packed, table, count);
+      return;
+    case 3:
+      flat_decode_banked_avx2<3>(dst, packed, table, count);
+      return;
+    case 4:
+      flat_decode_d4_avx2(dst, packed, table, count);
+      return;
+    case 5:
+      flat_decode_banked_avx2<5>(dst, packed, table, count);
+      return;
+    case 6:
+      if (known_bitreverse) {
+        flat_decode_bitreverse_unchecked_avx2<6>(dst, packed, table, count);
+        return;
+      }
+      if (flat_decode_bitreverse_avx2<6>(dst, packed, table, count)) {
+        return;
+      }
+      flat_decode_banked_avx2<6>(dst, packed, table, count);
+      return;
+    case 7:
+      if (known_bitreverse) {
+        flat_decode_bitreverse_unchecked_avx2<7>(dst, packed, table, count);
+        return;
+      }
+      if (flat_decode_bitreverse_avx2<7>(dst, packed, table, count)) {
+        return;
+      }
+      flat_decode_banked_avx2<7>(dst, packed, table, count);
+      return;
+    case 8:
+      if (known_bitreverse) {
+        flat_decode_d8_bitreverse_unchecked_avx2(dst, packed, table, count);
+        return;
+      }
+      if (flat_decode_d8_bitreverse_avx2(dst, packed, table, count)) {
+        return;
+      }
+      break;
+    default:
+      break;
   }
 #endif
   flat_decode_scalar(dst, bits, table, count, depth);
@@ -1081,13 +1577,140 @@ inline void pivco_partition_encode_none(std::uint64_t* bits,
       nullptr, nullptr, bits, src, dir, weight, 0, 0);
 }
 
+/// @brief Build a bitmap for a node whose two children are constant leaves.
+/// @details A set bit means @p src equals @p right_symbol. Unlike the generic
+///          direction-table path, AVX2 can compare 32 symbols directly and
+///          obtain the complete routing word fragment with `vpmovmskb`.
+inline void pivco_partition_encode_cst_cst(std::uint64_t* bits,
+                                           const std::uint8_t* src,
+                                           std::uint8_t right_symbol,
+                                           std::size_t weight) noexcept {
+  std::size_t i = 0;
+#if defined(__AVX512VBMI2__) && defined(__AVX512BW__)
+  const __m512i right = _mm512_set1_epi8(static_cast<char>(right_symbol));
+  for (; i + 64 <= weight; i += 64) {
+    const __m512i symbols = _mm512_loadu_si512(src + i);
+    bits[i / 64] = _mm512_cmpeq_epi8_mask(symbols, right);
+  }
+#elif defined(__AVX2__)
+  const __m256i right = _mm256_set1_epi8(static_cast<char>(right_symbol));
+  auto* bit_bytes = reinterpret_cast<std::uint8_t*>(bits);
+  for (; i + 32 <= weight; i += 32) {
+    const __m256i symbols =
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
+    const std::uint32_t routing = static_cast<std::uint32_t>(
+        _mm256_movemask_epi8(_mm256_cmpeq_epi8(symbols, right)));
+    std::memcpy(bit_bytes + i / 8, &routing, sizeof(routing));
+  }
+#endif
+  for (; i < weight; ++i) {
+    if (src[i] == right_symbol) {
+      bits[i / 64] |= std::uint64_t{1} << (i % 64);
+    }
+  }
+}
+
+#if defined(__AVX2__) && defined(__SSE4_1__)
+/// @brief Partition a constant left leaf and materialize the right stream.
+inline void pivco_partition_encode_cst_vec(std::uint8_t* right_dst,
+                                           std::uint64_t* bits,
+                                           const std::uint8_t* src,
+                                           std::uint8_t left_symbol,
+                                           std::size_t weight,
+                                           std::size_t right_weight) noexcept {
+  pivco_simd_detail::partition_encode_one_constant_avx2<true>(
+      right_dst, bits, src, left_symbol, weight, right_weight);
+}
+
+/// @brief Partition a dense left stream and a constant right leaf.
+inline void pivco_partition_encode_vec_cst(std::uint8_t* left_dst,
+                                           std::uint64_t* bits,
+                                           const std::uint8_t* src,
+                                           std::uint8_t right_symbol,
+                                           std::size_t weight,
+                                           std::size_t left_weight) noexcept {
+  pivco_simd_detail::partition_encode_one_constant_avx2<false>(
+      left_dst, bits, src, right_symbol, weight, left_weight);
+}
+#endif
+
+#if defined(__AVX2__) && defined(__SSE4_1__) && defined(__BMI2__)
+/// @brief Encode a balanced depth-2..7 table as AVX2 bit reversal.
+/// @param known_bitreverse Skip the table scan when construction already
+///        classified the mapping.
+inline bool pivco_flat_encode_bitreverse(
+    std::uint64_t* bits,
+    const std::uint8_t* src,
+    const std::uint8_t* wire_code,
+    std::size_t count,
+    std::uint8_t depth,
+    bool known_bitreverse = false) noexcept {
+  switch (depth) {
+    case 2:
+      return pivco_simd_detail::flat_encode_bitreverse_maybe_avx2<2>(
+          bits, src, wire_code, count, known_bitreverse);
+    case 3:
+      return pivco_simd_detail::flat_encode_bitreverse_maybe_avx2<3>(
+          bits, src, wire_code, count, known_bitreverse);
+    case 4:
+      return pivco_simd_detail::flat_encode_bitreverse_maybe_avx2<4>(
+          bits, src, wire_code, count, known_bitreverse);
+    case 5:
+      return pivco_simd_detail::flat_encode_bitreverse_maybe_avx2<5>(
+          bits, src, wire_code, count, known_bitreverse);
+    case 6:
+      return pivco_simd_detail::flat_encode_bitreverse_maybe_avx2<6>(
+          bits, src, wire_code, count, known_bitreverse);
+    case 7:
+      return pivco_simd_detail::flat_encode_bitreverse_maybe_avx2<7>(
+          bits, src, wire_code, count, known_bitreverse);
+    default:
+      return false;
+  }
+}
+
+/// @brief Pack a depth-3 flat subtree through the AVX2/BMI2 kernel.
+/// @pre @p wire_code has 259 readable bytes.
+inline void pivco_flat_encode_d3(std::uint64_t* bits,
+                                 const std::uint8_t* src,
+                                 const std::uint8_t* wire_code,
+                                 std::size_t count) noexcept {
+  pivco_simd_detail::flat_encode_d3_avx2(bits, src, wire_code, count);
+}
+#endif
+
+#if defined(__AVX2__) && defined(__SSE4_1__)
+/// @brief Encode the common full-alphabet bit-reversal table with AVX2.
+/// @returns True when @p wire_code is the expected bit-reversal permutation.
+/// @param known_bitreverse Skip the table scan when construction already
+///        classified the mapping.
+inline bool pivco_flat_encode_d8_bitreverse(
+    std::uint64_t* bits,
+    const std::uint8_t* src,
+    const std::uint8_t* wire_code,
+    std::size_t count,
+    bool known_bitreverse = false) noexcept {
+  if (known_bitreverse) {
+    pivco_simd_detail::flat_decode_d8_bitreverse_unchecked_avx2(
+        reinterpret_cast<std::uint8_t*>(bits), src, wire_code, count);
+    return true;
+  }
+  return pivco_simd_detail::flat_decode_d8_bitreverse_avx2(
+      reinterpret_cast<std::uint8_t*>(bits), src, wire_code, count);
+}
+#endif
+
 /// @brief Unpack and translate a flat subtree's fixed-width wire codes.
+/// @param known_bitreverse Skip table classification when the caller already
+///        established the balanced mapping during construction.
 inline void pivco_flat_decode(std::uint8_t* dst,
                               const std::uint64_t* bits,
                               const std::uint8_t* table,
                               std::size_t count,
-                              std::uint8_t depth) noexcept {
-  pivco_simd_detail::flat_decode_dispatch(dst, bits, table, count, depth);
+                              std::uint8_t depth,
+                              bool known_bitreverse = false) noexcept {
+  pivco_simd_detail::flat_decode_dispatch(dst, bits, table, count, depth,
+                                          known_bitreverse);
 }
 
 }  // namespace pixie

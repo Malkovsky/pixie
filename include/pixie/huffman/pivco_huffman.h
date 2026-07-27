@@ -173,6 +173,8 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     /// @brief 0 = normal node (1 bit/symbol); >0 = flat subtree of this depth
     ///        (stores `flat_depth` bits/symbol + a lookup table).
     std::uint8_t flat_depth = 0;
+    /// @brief Whether this flat table is the balanced bit-reversal mapping.
+    bool flat_bitreverse = false;
     /// @brief Offset of this flat node's decode table in `flat_tables_`.
     std::size_t flat_table_offset = 0;
   };
@@ -534,8 +536,8 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
       n.flat_depth = depth;
       n.flat_table_offset = flat_tables_.size();
       flat_tables_.resize(flat_tables_.size() + (std::size_t{1} << depth));
-      build_flat_table(idx, depth, 0,
-                       flat_tables_.data() + n.flat_table_offset);
+      n.flat_bitreverse = build_flat_table(
+          idx, depth, 0, flat_tables_.data() + n.flat_table_offset);
       return;
     }
 
@@ -548,8 +550,10 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
    *  @param flat_depth      Total depth of the flat subtree.
    *  @param code            Suffix accumulated so far (MSB-first: left=0,
    * right=1).
-   *  @param table           Output table of size `2^total_depth`. */
-  void build_flat_table(std::size_t idx,
+   *  @param table           Output table of size `2^total_depth`.
+   *  @return True when the completed table is the balanced bit-reversal
+   *          permutation used by the specialized AVX2 kernels. */
+  bool build_flat_table(std::size_t idx,
                         std::uint8_t flat_depth,
                         std::uint32_t code,
                         symbol_type* table) const {
@@ -557,10 +561,13 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     if (n.is_leaf) {
       table[reverse_low_bits(static_cast<std::uint8_t>(code), flat_depth)] =
           n.symbol;
-      return;
+      return n.symbol == code;
     }
-    build_flat_table(n.left, flat_depth, code << 1, table);
-    build_flat_table(n.right, flat_depth, (code << 1) | 1, table);
+    const bool left_bitreverse =
+        build_flat_table(n.left, flat_depth, code << 1, table);
+    const bool right_bitreverse =
+        build_flat_table(n.right, flat_depth, (code << 1) | 1, table);
+    return left_bitreverse && right_bitreverse;
   }
 
   /** @brief Total frequency weight of a subtree (sum of leaf frequencies). */
@@ -828,12 +835,34 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
                                  const symbol_type* src,
                                  std::size_t count,
                                  std::uint8_t flat_depth,
-                                 const symbol_type* table) {
-    std::array<std::uint8_t, kAlphabet> wire_code;
+                                 const symbol_type* table,
+                                 bool known_bitreverse) {
+    // Three zero pad bytes make overlapping dword gathers at symbol 255 safe
+    // in the AVX2 flat encoder.
+    std::array<std::uint8_t, kAlphabet + 3> wire_code{};
     const std::size_t alphabet_size = std::size_t{1} << flat_depth;
     for (std::size_t code = 0; code < alphabet_size; ++code) {
       wire_code[table[code]] = static_cast<std::uint8_t>(code);
     }
+
+#if defined(__AVX2__) && defined(__SSE4_1__) && !defined(__AVX512VBMI2__)
+    if (flat_depth == 8 &&
+        pivco_flat_encode_d8_bitreverse(bits, src, wire_code.data(), count,
+                                        known_bitreverse)) {
+      return;
+    }
+#if defined(__BMI2__)
+    if (flat_depth >= 2 && flat_depth <= 7 &&
+        pivco_flat_encode_bitreverse(bits, src, wire_code.data(), count,
+                                     flat_depth, known_bitreverse)) {
+      return;
+    }
+    if (flat_depth == 3) {
+      pivco_flat_encode_d3(bits, src, wire_code.data(), count);
+      return;
+    }
+#endif
+#endif
 
     auto* bytes = reinterpret_cast<std::uint8_t*>(bits);
     if (flat_depth == 8) {
@@ -921,7 +950,8 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
                                     n.bits.count);
       } else {
         const symbol_type* table = flat_tables_.data() + n.flat_table_offset;
-        encode_flat_values(bits, src, n.bits.count, n.flat_depth, table);
+        encode_flat_values(bits, src, n.bits.count, n.flat_depth, table,
+                           n.flat_bitreverse);
       }
       return;
     }
@@ -939,13 +969,24 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     const bool left_is_leaf = nodes_[n.left].is_leaf;
     const bool right_is_leaf = nodes_[n.right].is_leaf;
     if (left_is_leaf && right_is_leaf) {
-      pivco_partition_encode_none(bits, src, dir, weight);
+      pivco_partition_encode_cst_cst(bits, src, nodes_[n.right].symbol, weight);
     } else if (right_is_leaf) {
+#if defined(__AVX2__) && defined(__SSE4_1__) && !defined(__AVX512VBMI2__)
+      pivco_partition_encode_vec_cst(
+          left_dst, bits, src, nodes_[n.right].symbol, weight, left_weight);
+#else
       pivco_partition_encode_left(left_dst, bits, src, dir, weight,
                                   left_weight);
+#endif
     } else if (left_is_leaf) {
+#if defined(__AVX2__) && defined(__SSE4_1__) && !defined(__AVX512VBMI2__)
+      pivco_partition_encode_cst_vec(right_dst, bits, src,
+                                     nodes_[n.left].symbol, weight,
+                                     weight - left_weight);
+#else
       pivco_partition_encode_right(right_dst, bits, src, dir, weight,
                                    weight - left_weight);
+#endif
     } else {
       pivco_partition_encode(left_dst, right_dst, bits, src, dir, weight,
                              left_weight, weight - left_weight);
@@ -1003,7 +1044,8 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     if (n.flat_depth > 0) {
       const std::uint64_t* bits = arena_.data() + n.bits.offset;
       const symbol_type* table = flat_tables_.data() + n.flat_table_offset;
-      pivco_flat_decode(dst, bits, table, weight, n.flat_depth);
+      pivco_flat_decode(dst, bits, table, weight, n.flat_depth,
+                        n.flat_bitreverse);
       return;
     }
 
