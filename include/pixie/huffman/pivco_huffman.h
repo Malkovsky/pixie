@@ -552,7 +552,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
    * right=1).
    *  @param table           Output table of size `2^total_depth`.
    *  @return True when the completed table is the balanced bit-reversal
-   *          permutation used by the specialized AVX2 kernels. */
+   *          permutation used by the specialized SIMD kernels. */
   bool build_flat_table(std::size_t idx,
                         std::uint8_t flat_depth,
                         std::uint32_t code,
@@ -837,6 +837,13 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
                                  std::uint8_t flat_depth,
                                  const symbol_type* table,
                                  bool known_bitreverse) {
+#if defined(PIXIE_PIVCO_NEON_SUPPORT)
+    if (known_bitreverse) {
+      pivco_flat_encode_neon(bits, src, nullptr, count, flat_depth, true);
+      return;
+    }
+#endif
+
     // Three zero pad bytes make overlapping dword gathers at symbol 255 safe
     // in the AVX2 flat encoder.
     std::array<std::uint8_t, kAlphabet + 3> wire_code{};
@@ -862,6 +869,12 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
       return;
     }
 #endif
+#endif
+
+#if defined(PIXIE_PIVCO_NEON_SUPPORT)
+    pivco_flat_encode_neon(bits, src, wire_code.data(), count, flat_depth,
+                           false);
+    return;
 #endif
 
     auto* bytes = reinterpret_cast<std::uint8_t*>(bits);
@@ -971,7 +984,9 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     if (left_is_leaf && right_is_leaf) {
       pivco_partition_encode_cst_cst(bits, src, nodes_[n.right].symbol, weight);
     } else if (right_is_leaf) {
-#if defined(__AVX2__) && defined(__SSE4_1__) && !defined(__AVX512VBMI2__)
+#if ((defined(__AVX2__) && defined(__SSE4_1__)) || \
+     defined(PIXIE_PIVCO_NEON_SUPPORT)) &&         \
+    !defined(__AVX512VBMI2__)
       pivco_partition_encode_vec_cst(
           left_dst, bits, src, nodes_[n.right].symbol, weight, left_weight);
 #else
@@ -979,7 +994,9 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
                                   left_weight);
 #endif
     } else if (left_is_leaf) {
-#if defined(__AVX2__) && defined(__SSE4_1__) && !defined(__AVX512VBMI2__)
+#if ((defined(__AVX2__) && defined(__SSE4_1__)) || \
+     defined(PIXIE_PIVCO_NEON_SUPPORT)) &&         \
+    !defined(__AVX512VBMI2__)
       pivco_partition_encode_cst_vec(right_dst, bits, src,
                                      nodes_[n.left].symbol, weight,
                                      weight - left_weight);

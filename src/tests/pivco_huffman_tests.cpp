@@ -132,6 +132,64 @@ TEST(PivCoSimd, FlatKernelsDecodeFullGroupsAndTails) {
   }
 }
 
+TEST(PivCoSimd, MergeVariantsMatchReferenceAcrossFullGroupsAndTail) {
+  constexpr std::size_t kCount = 263;
+  constexpr std::size_t kPadding = 64;
+  std::vector<std::uint64_t> bits((kCount + 63) / 64, 0);
+  std::vector<std::uint8_t> left(kCount + kPadding, 0);
+  std::vector<std::uint8_t> right(kCount + kPadding, 0);
+  std::vector<std::uint8_t> expected(kCount);
+  std::size_t left_count = 0;
+  std::size_t right_count = 0;
+  for (std::size_t i = 0; i < kCount; ++i) {
+    const bool goes_right = ((i * 37 + i / 5 + 11) % 13) < 6;
+    if (goes_right) {
+      bits[i / 64] |= std::uint64_t{1} << (i % 64);
+      right[right_count] = static_cast<std::uint8_t>(0x80u + right_count % 97);
+      expected[i] = right[right_count++];
+    } else {
+      left[left_count] = static_cast<std::uint8_t>(left_count % 113);
+      expected[i] = left[left_count++];
+    }
+  }
+
+  std::vector<std::uint8_t> decoded(kCount + kPadding, 0);
+  pixie::pivco_merge_decode(decoded.data(), left.data(), right.data(),
+                            bits.data(), kCount);
+  EXPECT_TRUE(std::equal(expected.begin(), expected.end(), decoded.begin()));
+
+  constexpr std::uint8_t kLeftSymbol = 17;
+  constexpr std::uint8_t kRightSymbol = 231;
+  for (std::size_t i = 0; i < kCount; ++i) {
+    const bool goes_right = ((bits[i / 64] >> (i % 64)) & 1u) != 0;
+    expected[i] = goes_right ? kRightSymbol : kLeftSymbol;
+  }
+  std::fill(decoded.begin(), decoded.end(), 0);
+  pixie::pivco_merge_decode_cst_cst(decoded.data(), kLeftSymbol, kRightSymbol,
+                                    bits.data(), kCount);
+  EXPECT_TRUE(std::equal(expected.begin(), expected.end(), decoded.begin()));
+
+  right_count = 0;
+  for (std::size_t i = 0; i < kCount; ++i) {
+    const bool goes_right = ((bits[i / 64] >> (i % 64)) & 1u) != 0;
+    expected[i] = goes_right ? right[right_count++] : kLeftSymbol;
+  }
+  std::fill(decoded.begin(), decoded.end(), 0);
+  pixie::pivco_merge_decode_cst_vec(decoded.data(), kLeftSymbol, right.data(),
+                                    bits.data(), kCount);
+  EXPECT_TRUE(std::equal(expected.begin(), expected.end(), decoded.begin()));
+
+  left_count = 0;
+  for (std::size_t i = 0; i < kCount; ++i) {
+    const bool goes_right = ((bits[i / 64] >> (i % 64)) & 1u) != 0;
+    expected[i] = goes_right ? kRightSymbol : left[left_count++];
+  }
+  std::fill(decoded.begin(), decoded.end(), 0);
+  pixie::pivco_merge_decode_vec_cst(decoded.data(), left.data(), kRightSymbol,
+                                    bits.data(), kCount);
+  EXPECT_TRUE(std::equal(expected.begin(), expected.end(), decoded.begin()));
+}
+
 TEST(PivCoSimd, PartitionVariantsBuildTheSameDirectionMask) {
   constexpr std::size_t kCount = 257;
   std::array<std::uint8_t, 256> directions{};
@@ -186,6 +244,68 @@ TEST(PivCoSimd, PartitionVariantsBuildTheSameDirectionMask) {
                                      directions.data(), input.size());
   EXPECT_EQ(bitmap_only, expected_bits);
 }
+
+TEST(PivCoSimd, ConstantLeafBitmapMatchesReferenceAcrossTail) {
+  constexpr std::size_t kCount = 267;
+  constexpr std::uint8_t kRightSymbol = 193;
+  std::vector<std::uint8_t> input(kCount);
+  std::vector<std::uint64_t> expected_bits((kCount + 63) / 64, 0);
+  for (std::size_t i = 0; i < kCount; ++i) {
+    const bool is_right = ((i * 19 + i / 3) % 11) < 5;
+    input[i] = is_right ? kRightSymbol : static_cast<std::uint8_t>(i % 127);
+    if (is_right) {
+      expected_bits[i / 64] |= std::uint64_t{1} << (i % 64);
+    }
+  }
+
+  std::vector<std::uint64_t> bits(expected_bits.size(), 0);
+  pixie::pivco_partition_encode_cst_cst(bits.data(), input.data(), kRightSymbol,
+                                        input.size());
+  EXPECT_EQ(bits, expected_bits);
+}
+
+#if (defined(__AVX2__) && defined(__SSE4_1__)) || \
+    defined(PIXIE_PIVCO_NEON_SUPPORT)
+TEST(PivCoSimd, OneConstantPartitionsMatchReferenceAcrossTail) {
+  constexpr std::size_t kCount = 269;
+  constexpr std::uint8_t kConstant = 241;
+  std::vector<std::uint8_t> input(kCount);
+  std::vector<std::uint8_t> expected_dense;
+  std::vector<std::uint64_t> expected_bits((kCount + 63) / 64, 0);
+  for (std::size_t i = 0; i < kCount; ++i) {
+    const bool is_constant = ((i * 23 + i / 7) % 17) < 8;
+    input[i] = is_constant ? kConstant : static_cast<std::uint8_t>(i % 191);
+    if (!is_constant) {
+      expected_bits[i / 64] |= std::uint64_t{1} << (i % 64);
+      expected_dense.push_back(input[i]);
+    }
+  }
+
+  std::vector<std::uint8_t> dense(expected_dense.size());
+  std::vector<std::uint64_t> bits(expected_bits.size(), 0);
+  pixie::pivco_partition_encode_cst_vec(dense.data(), bits.data(), input.data(),
+                                        kConstant, input.size(), dense.size());
+  EXPECT_EQ(dense, expected_dense);
+  EXPECT_EQ(bits, expected_bits);
+
+  std::fill(expected_bits.begin(), expected_bits.end(), 0);
+  expected_dense.clear();
+  for (std::size_t i = 0; i < kCount; ++i) {
+    const bool is_constant = input[i] == kConstant;
+    if (is_constant) {
+      expected_bits[i / 64] |= std::uint64_t{1} << (i % 64);
+    } else {
+      expected_dense.push_back(input[i]);
+    }
+  }
+  std::fill(dense.begin(), dense.end(), 0);
+  std::fill(bits.begin(), bits.end(), 0);
+  pixie::pivco_partition_encode_vec_cst(dense.data(), bits.data(), input.data(),
+                                        kConstant, input.size(), dense.size());
+  EXPECT_EQ(dense, expected_dense);
+  EXPECT_EQ(bits, expected_bits);
+}
+#endif
 
 TEST(PivCoHuffmanSmoke, RandomUniformRoundTrips) {
   std::mt19937 rng(239);

@@ -27,6 +27,8 @@
  *   full `merge_flat_D` family without changing the wire format.
  * - AVX2 + SSE4.1: 8-byte-at-a-time `_mm_shuffle_epi8` with 256-entry lookup
  *   tables, mirroring the paper's NEON `vqtbl1q_u8` technique.
+ * - AArch64 NEON: paper-style `vqtbl*`/`vqtbx*` table lookup, compact and
+ *   expand tables, and 16-symbol fixed-width unpacking.
  * - Scalar: the original bit-by-bit / symbol-by-symbol loops.
  *
  * Every SIMD backend produces byte-identical output to the scalar fallback
@@ -45,6 +47,11 @@
 
 #if defined(__AVX2__) || defined(__AVX512VBMI2__)
 #include <immintrin.h>
+#endif
+
+#if defined(__aarch64__) && (defined(__ARM_NEON) || defined(__ARM_NEON__))
+#include <arm_neon.h>
+#define PIXIE_PIVCO_NEON_SUPPORT 1
 #endif
 
 namespace pixie::pivco_simd_detail {
@@ -172,6 +179,761 @@ inline void partition_scalar_tail(std::uint8_t* left_dst,
     }
   }
 }
+
+// ===========================================================================
+// AArch64 NEON backend (table lookup and compaction, 8/16 symbols per batch).
+// ===========================================================================
+#if defined(PIXIE_PIVCO_NEON_SUPPORT)
+
+/// @brief 256 eight-byte table controls for one NEON `vqtbl1_u8` operation.
+struct NeonShufTable {
+  alignas(16) std::uint8_t entry[256][8];
+};
+
+/// @brief Paper `expand_tab`: select left/right dense elements for each mask.
+inline const NeonShufTable& merge_lut_neon() {
+  static const NeonShufTable lut = [] {
+    NeonShufTable table{};
+    for (int mask = 0; mask < 256; ++mask) {
+      int left = 0;
+      int right = 0;
+      for (int lane = 0; lane < 8; ++lane) {
+        if ((mask >> lane) & 1) {
+          table.entry[mask][lane] = static_cast<std::uint8_t>(8 + right++);
+        } else {
+          table.entry[mask][lane] = static_cast<std::uint8_t>(left++);
+        }
+      }
+    }
+    return table;
+  }();
+  return lut;
+}
+
+/// @brief Paper `compress_tab` for elements routed to the right child.
+inline const NeonShufTable& compress_right_lut_neon() {
+  static const NeonShufTable lut = [] {
+    NeonShufTable table{};
+    for (int mask = 0; mask < 256; ++mask) {
+      int output = 0;
+      for (int lane = 0; lane < 8; ++lane) {
+        if ((mask >> lane) & 1) {
+          table.entry[mask][output++] = static_cast<std::uint8_t>(lane);
+        }
+      }
+      for (; output < 8; ++output) {
+        table.entry[mask][output] = 0xff;
+      }
+    }
+    return table;
+  }();
+  return lut;
+}
+
+/// @brief Paper `compress_tab` for elements routed to the left child.
+inline const NeonShufTable& compress_left_lut_neon() {
+  static const NeonShufTable lut = [] {
+    NeonShufTable table{};
+    for (int mask = 0; mask < 256; ++mask) {
+      int output = 0;
+      for (int lane = 0; lane < 8; ++lane) {
+        if (((mask >> lane) & 1) == 0) {
+          table.entry[mask][output++] = static_cast<std::uint8_t>(lane);
+        }
+      }
+      for (; output < 8; ++output) {
+        table.entry[mask][output] = 0xff;
+      }
+    }
+    return table;
+  }();
+  return lut;
+}
+
+/// @brief Four 64-byte NEON lookup banks, enough for any byte alphabet.
+struct ByteLookupNeon {
+  uint8x16x4_t bank0;
+  uint8x16x4_t bank1;
+  uint8x16x4_t bank2;
+  uint8x16x4_t bank3;
+};
+
+/// @brief Return four zero vectors in the layout expected by `vqtbl4*`.
+inline uint8x16x4_t zero_lookup_bank_neon() noexcept {
+  const uint8x16_t zero = vdupq_n_u8(0);
+  uint8x16x4_t bank;
+  bank.val[0] = zero;
+  bank.val[1] = zero;
+  bank.val[2] = zero;
+  bank.val[3] = zero;
+  return bank;
+}
+
+/// @brief Load one complete 64-byte `vqtbl4*` bank.
+inline uint8x16x4_t load_lookup_bank_neon(const std::uint8_t* table) noexcept {
+  uint8x16x4_t bank;
+  bank.val[0] = vld1q_u8(table);
+  bank.val[1] = vld1q_u8(table + 16);
+  bank.val[2] = vld1q_u8(table + 32);
+  bank.val[3] = vld1q_u8(table + 48);
+  return bank;
+}
+
+/// @brief Load exactly `2^D` table bytes without reading past small tables.
+template <std::uint8_t kDepth>
+inline ByteLookupNeon load_byte_lookup_neon(
+    const std::uint8_t* table) noexcept {
+  static_assert(kDepth >= 1 && kDepth <= 8);
+  ByteLookupNeon lookup{zero_lookup_bank_neon(), zero_lookup_bank_neon(),
+                        zero_lookup_bank_neon(), zero_lookup_bank_neon()};
+  if constexpr (kDepth <= 3) {
+    std::uint64_t entries = 0;
+    std::memcpy(&entries, table, std::size_t{1} << kDepth);
+    lookup.bank0.val[0] = vcombine_u8(vcreate_u8(entries), vdup_n_u8(0));
+  } else if constexpr (kDepth == 4) {
+    lookup.bank0.val[0] = vld1q_u8(table);
+  } else if constexpr (kDepth == 5) {
+    lookup.bank0.val[0] = vld1q_u8(table);
+    lookup.bank0.val[1] = vld1q_u8(table + 16);
+  } else {
+    lookup.bank0 = load_lookup_bank_neon(table);
+    if constexpr (kDepth >= 7) {
+      lookup.bank1 = load_lookup_bank_neon(table + 64);
+    }
+    if constexpr (kDepth == 8) {
+      lookup.bank2 = load_lookup_bank_neon(table + 128);
+      lookup.bank3 = load_lookup_bank_neon(table + 192);
+    }
+  }
+  return lookup;
+}
+
+/// @brief Translate sixteen byte indices through a preloaded `2^D` table.
+template <std::uint8_t kDepth>
+inline uint8x16_t lookup_bytes16_neon(const ByteLookupNeon& lookup,
+                                      uint8x16_t indices) noexcept {
+  uint8x16_t result = vqtbl4q_u8(lookup.bank0, indices);
+  if constexpr (kDepth >= 7) {
+    result =
+        vqtbx4q_u8(result, lookup.bank1, vsubq_u8(indices, vdupq_n_u8(64)));
+  }
+  if constexpr (kDepth == 8) {
+    result =
+        vqtbx4q_u8(result, lookup.bank2, vsubq_u8(indices, vdupq_n_u8(128)));
+    result =
+        vqtbx4q_u8(result, lookup.bank3, vsubq_u8(indices, vdupq_n_u8(192)));
+  }
+  return result;
+}
+
+/// @brief Translate eight byte indices through a preloaded `2^D` table.
+template <std::uint8_t kDepth>
+inline uint8x8_t lookup_bytes8_neon(const ByteLookupNeon& lookup,
+                                    uint8x8_t indices) noexcept {
+  uint8x8_t result = vqtbl4_u8(lookup.bank0, indices);
+  if constexpr (kDepth >= 7) {
+    result = vqtbx4_u8(result, lookup.bank1, vsub_u8(indices, vdup_n_u8(64)));
+  }
+  if constexpr (kDepth == 8) {
+    result = vqtbx4_u8(result, lookup.bank2, vsub_u8(indices, vdup_n_u8(128)));
+    result = vqtbx4_u8(result, lookup.bank3, vsub_u8(indices, vdup_n_u8(192)));
+  }
+  return result;
+}
+
+/// @brief Reverse the low D bits independently in sixteen byte lanes.
+template <std::uint8_t kDepth>
+inline uint8x16_t reverse_low_bits16_neon(uint8x16_t values) noexcept {
+  static_assert(kDepth >= 2 && kDepth <= 8);
+  const uint8x16_t reversed = vrbitq_u8(values);
+  if constexpr (kDepth == 8) {
+    return reversed;
+  } else {
+    return vshrq_n_u8(reversed, 8 - kDepth);
+  }
+}
+
+/// @brief Scalar bit reverse for the final fewer-than-16 encode symbols.
+template <std::uint8_t kDepth>
+inline std::uint8_t reverse_low_bits_scalar_neon(std::uint8_t value) noexcept {
+  static_assert(kDepth >= 2 && kDepth <= 8);
+  value = static_cast<std::uint8_t>((value >> 4) | (value << 4));
+  value = static_cast<std::uint8_t>(((value & 0xccu) >> 2) |
+                                    ((value & 0x33u) << 2));
+  value = static_cast<std::uint8_t>(((value & 0xaau) >> 1) |
+                                    ((value & 0x55u) << 1));
+  return static_cast<std::uint8_t>(value >> (8 - kDepth));
+}
+
+/// @brief Translate flat codes through either a table or a known bit reverse.
+template <std::uint8_t kDepth, bool kBitReverse>
+inline uint8x16_t translate_flat_codes16_neon(const ByteLookupNeon* lookup,
+                                              uint8x16_t codes) noexcept {
+  if constexpr (kBitReverse) {
+    return reverse_low_bits16_neon<kDepth>(codes);
+  } else {
+    return lookup_bytes16_neon<kDepth>(*lookup, codes);
+  }
+}
+
+/// @brief Eight-lane form of `translate_flat_codes16_neon`.
+template <std::uint8_t kDepth, bool kBitReverse>
+inline uint8x8_t translate_flat_codes8_neon(const ByteLookupNeon* lookup,
+                                            uint8x8_t codes) noexcept {
+  if constexpr (kBitReverse) {
+    return vget_low_u8(
+        reverse_low_bits16_neon<kDepth>(vcombine_u8(codes, codes)));
+  } else {
+    return lookup_bytes8_neon<kDepth>(*lookup, codes);
+  }
+}
+
+/// @brief Convert eight lanes containing 0/1 into an LSB-first byte mask.
+inline std::uint8_t lane_bits_to_mask_neon(uint8x8_t lane_bits) noexcept {
+  alignas(8) static constexpr std::uint8_t kBitWeights[8] = {1,  2,  4,  8,
+                                                             16, 32, 64, 128};
+  return vaddv_u8(vmul_u8(lane_bits, vld1_u8(kBitWeights)));
+}
+
+/// @brief Store only the valid prefix of an eight-byte compaction result.
+inline void store_masked_neon(std::uint8_t* dst,
+                              uint8x8_t values,
+                              std::size_t count) noexcept {
+  if (count >= 8) {
+    vst1_u8(dst, values);
+  } else if (count != 0) {
+    alignas(8) std::uint8_t temporary[8];
+    vst1_u8(temporary, values);
+    std::memcpy(dst, temporary, count);
+  }
+}
+
+/// @brief Compact one eight-symbol partition group into its requested child
+/// streams.
+template <bool kWriteLeft, bool kWriteRight>
+inline void partition_group8_neon(std::uint8_t* left_dst,
+                                  std::uint8_t* right_dst,
+                                  uint8x8_t values,
+                                  std::uint8_t routing,
+                                  std::size_t left_weight,
+                                  std::size_t right_weight,
+                                  std::size_t& left_count,
+                                  std::size_t& right_count) noexcept {
+  const uint8x16_t table = vcombine_u8(values, vdup_n_u8(0));
+  if constexpr (kWriteRight) {
+    const uint8x8_t controls =
+        vld1_u8(compress_right_lut_neon().entry[routing]);
+    store_masked_neon(right_dst + right_count, vqtbl1_u8(table, controls),
+                      right_weight - right_count);
+  }
+  if constexpr (kWriteLeft) {
+    const uint8x8_t controls = vld1_u8(compress_left_lut_neon().entry[routing]);
+    store_masked_neon(left_dst + left_count, vqtbl1_u8(table, controls),
+                      left_weight - left_count);
+  }
+  const std::size_t routed_right =
+      std::popcount(static_cast<unsigned>(routing));
+  right_count += routed_right;
+  left_count += 8 - routed_right;
+}
+
+/// @brief Compact the non-constant side of one eight-symbol leaf partition.
+template <bool kLeftConstant>
+inline void partition_one_constant_group8_neon(std::uint8_t* output,
+                                               uint8x8_t values,
+                                               uint8x8_t equal_lanes,
+                                               std::size_t output_weight,
+                                               std::size_t& output_count,
+                                               std::uint8_t& routing) noexcept {
+  const std::uint8_t equal = lane_bits_to_mask_neon(vshr_n_u8(equal_lanes, 7));
+  routing = kLeftConstant ? static_cast<std::uint8_t>(~equal) : equal;
+  const auto& lut =
+      kLeftConstant ? compress_right_lut_neon() : compress_left_lut_neon();
+  const uint8x8_t packed =
+      vqtbl1_u8(vcombine_u8(values, vdup_n_u8(0)), vld1_u8(lut.entry[routing]));
+  store_masked_neon(output + output_count, packed,
+                    output_weight - output_count);
+  const std::size_t routed_right =
+      std::popcount(static_cast<unsigned>(routing));
+  output_count += kLeftConstant ? routed_right : 8 - routed_right;
+}
+
+/// @brief Merge two constant leaves without a shuffle-table load.
+inline void merge_decode_cst_cst_neon(std::uint8_t* dst,
+                                      std::uint8_t left_symbol,
+                                      std::uint8_t right_symbol,
+                                      const std::uint64_t* bits,
+                                      std::size_t count) noexcept {
+  alignas(16) static constexpr std::uint8_t kBitPositions[16] = {
+      1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128};
+  const uint8x16_t positions = vld1q_u8(kBitPositions);
+  const uint8x16_t left = vdupq_n_u8(left_symbol);
+  const uint8x16_t right = vdupq_n_u8(right_symbol);
+  const auto* bit_bytes = reinterpret_cast<const std::uint8_t*>(bits);
+  std::size_t i = 0;
+  for (; i + 16 <= count; i += 16) {
+    const uint8x16_t routing = vcombine_u8(vdup_n_u8(bit_bytes[i / 8]),
+                                           vdup_n_u8(bit_bytes[i / 8 + 1]));
+    vst1q_u8(dst + i, vbslq_u8(vtstq_u8(routing, positions), right, left));
+  }
+  for (; i < count; ++i) {
+    dst[i] =
+        ((bits[i / 64] >> (i % 64)) & 1u) != 0 ? right_symbol : left_symbol;
+  }
+}
+
+/// @brief Paper-style NEON dense/constant merge in eight-symbol batches.
+template <bool kLeftConstant, bool kRightConstant>
+inline void merge_decode_neon(std::uint8_t* dst,
+                              const std::uint8_t* left,
+                              std::uint8_t left_symbol,
+                              const std::uint8_t* right,
+                              std::uint8_t right_symbol,
+                              const std::uint64_t* bits,
+                              std::size_t count) noexcept {
+  if constexpr (kLeftConstant && kRightConstant) {
+    merge_decode_cst_cst_neon(dst, left_symbol, right_symbol, bits, count);
+    return;
+  }
+
+  const auto& merge_table = merge_lut_neon();
+  const auto* bit_bytes = reinterpret_cast<const std::uint8_t*>(bits);
+  std::size_t output = 0;
+  std::size_t left_count = 0;
+  std::size_t right_count = 0;
+  std::size_t i = 0;
+  for (; i + 8 <= count; i += 8) {
+    const std::uint8_t routing = bit_bytes[i / 8];
+    uint8x8_t left_values;
+    if constexpr (kLeftConstant) {
+      left_values = vdup_n_u8(left_symbol);
+    } else {
+      left_values = vld1_u8(left + left_count);
+    }
+    uint8x8_t right_values;
+    if constexpr (kRightConstant) {
+      right_values = vdup_n_u8(right_symbol);
+    } else {
+      right_values = vld1_u8(right + right_count);
+    }
+    const uint8x8_t controls = vld1_u8(merge_table.entry[routing]);
+    vst1_u8(dst + output,
+            vqtbl1_u8(vcombine_u8(left_values, right_values), controls));
+    output += 8;
+    const std::size_t routed_right =
+        std::popcount(static_cast<unsigned>(routing));
+    right_count += routed_right;
+    left_count += 8 - routed_right;
+  }
+  merge_scalar_tail<kLeftConstant, kRightConstant>(
+      dst, output, left, left_symbol, left_count, right, right_symbol,
+      right_count, bits, i, count);
+}
+
+/// @brief Paper-style direction lookup plus NEON `compress_tab` partition.
+template <bool kWriteLeft, bool kWriteRight>
+inline void partition_encode_neon(std::uint8_t* left_dst,
+                                  std::uint8_t* right_dst,
+                                  std::uint64_t* bits,
+                                  const std::uint8_t* src,
+                                  const std::uint8_t* dir,
+                                  std::size_t weight,
+                                  std::size_t left_weight,
+                                  std::size_t right_weight) noexcept {
+  const ByteLookupNeon direction_lookup = load_byte_lookup_neon<8>(dir);
+  auto* bit_bytes = reinterpret_cast<std::uint8_t*>(bits);
+  std::size_t left_count = 0;
+  std::size_t right_count = 0;
+  std::size_t i = 0;
+  for (; i + 16 <= weight; i += 16) {
+    const uint8x16_t values = vld1q_u8(src + i);
+    const uint8x16_t directions =
+        lookup_bytes16_neon<8>(direction_lookup, values);
+    const std::uint8_t low_routing =
+        lane_bits_to_mask_neon(vget_low_u8(directions));
+    const std::uint8_t high_routing =
+        lane_bits_to_mask_neon(vget_high_u8(directions));
+    bit_bytes[i / 8] = low_routing;
+    bit_bytes[i / 8 + 1] = high_routing;
+    partition_group8_neon<kWriteLeft, kWriteRight>(
+        left_dst, right_dst, vget_low_u8(values), low_routing, left_weight,
+        right_weight, left_count, right_count);
+    partition_group8_neon<kWriteLeft, kWriteRight>(
+        left_dst, right_dst, vget_high_u8(values), high_routing, left_weight,
+        right_weight, left_count, right_count);
+  }
+  for (; i + 8 <= weight; i += 8) {
+    const uint8x8_t values = vld1_u8(src + i);
+    const std::uint8_t routing =
+        lane_bits_to_mask_neon(lookup_bytes8_neon<8>(direction_lookup, values));
+    bit_bytes[i / 8] = routing;
+    partition_group8_neon<kWriteLeft, kWriteRight>(
+        left_dst, right_dst, values, routing, left_weight, right_weight,
+        left_count, right_count);
+  }
+
+  if constexpr (kWriteLeft || kWriteRight) {
+    partition_scalar_tail<kWriteLeft, kWriteRight>(left_dst, right_dst, bits,
+                                                   src, dir, left_count,
+                                                   right_count, i, weight);
+  } else {
+    partition_bitmap_tail(bits, src, dir, i, weight);
+  }
+}
+
+/// @brief NEON partition when one child is a constant leaf.
+template <bool kLeftConstant>
+inline void partition_encode_one_constant_neon(
+    std::uint8_t* output,
+    std::uint64_t* bits,
+    const std::uint8_t* src,
+    std::uint8_t constant_symbol,
+    std::size_t weight,
+    std::size_t output_weight) noexcept {
+  const uint8x8_t constant = vdup_n_u8(constant_symbol);
+  auto* bit_bytes = reinterpret_cast<std::uint8_t*>(bits);
+  std::size_t output_count = 0;
+  std::size_t i = 0;
+  for (; i + 16 <= weight; i += 16) {
+    const uint8x16_t values = vld1q_u8(src + i);
+    const uint8x16_t equal = vceqq_u8(values, vdupq_n_u8(constant_symbol));
+    std::uint8_t low_routing = 0;
+    std::uint8_t high_routing = 0;
+    partition_one_constant_group8_neon<kLeftConstant>(
+        output, vget_low_u8(values), vget_low_u8(equal), output_weight,
+        output_count, low_routing);
+    partition_one_constant_group8_neon<kLeftConstant>(
+        output, vget_high_u8(values), vget_high_u8(equal), output_weight,
+        output_count, high_routing);
+    bit_bytes[i / 8] = low_routing;
+    bit_bytes[i / 8 + 1] = high_routing;
+  }
+  for (; i + 8 <= weight; i += 8) {
+    const uint8x8_t values = vld1_u8(src + i);
+    std::uint8_t routing = 0;
+    partition_one_constant_group8_neon<kLeftConstant>(
+        output, values, vceq_u8(values, constant), output_weight, output_count,
+        routing);
+    bit_bytes[i / 8] = routing;
+  }
+
+  for (; i < weight; ++i) {
+    const bool is_constant = src[i] == constant_symbol;
+    const bool goes_right = kLeftConstant ? !is_constant : is_constant;
+    if (goes_right) {
+      bits[i / 64] |= std::uint64_t{1} << (i % 64);
+    }
+    if (kLeftConstant ? goes_right : !goes_right) {
+      output[output_count++] = src[i];
+    }
+  }
+}
+
+/// @brief Build a two-leaf routing bitmap sixteen symbols at a time.
+inline void partition_encode_cst_cst_neon(std::uint64_t* bits,
+                                          const std::uint8_t* src,
+                                          std::uint8_t right_symbol,
+                                          std::size_t weight) noexcept {
+  const uint8x16_t right = vdupq_n_u8(right_symbol);
+  auto* bit_bytes = reinterpret_cast<std::uint8_t*>(bits);
+  std::size_t i = 0;
+  for (; i + 16 <= weight; i += 16) {
+    const uint8x16_t equal = vceqq_u8(vld1q_u8(src + i), right);
+    bit_bytes[i / 8] = lane_bits_to_mask_neon(vshr_n_u8(vget_low_u8(equal), 7));
+    bit_bytes[i / 8 + 1] =
+        lane_bits_to_mask_neon(vshr_n_u8(vget_high_u8(equal), 7));
+  }
+  for (; i < weight; ++i) {
+    if (src[i] == right_symbol) {
+      bits[i / 64] |= std::uint64_t{1} << (i % 64);
+    }
+  }
+}
+
+/// @brief Load exactly the bytes containing sixteen packed D-bit codes.
+template <std::uint8_t kDepth>
+inline uint8x16_t load_packed_codes16_neon(
+    const std::uint8_t* packed) noexcept {
+  static_assert(kDepth >= 3 && kDepth <= 8);
+  constexpr std::size_t kPackedBytes = 2 * kDepth;
+  std::uint64_t low = 0;
+  std::uint64_t high = 0;
+  constexpr std::size_t kLowBytes = kPackedBytes < 8 ? kPackedBytes : 8;
+  std::memcpy(&low, packed, kLowBytes);
+  if constexpr (kPackedBytes > 8) {
+    std::memcpy(&high, packed + 8, kPackedBytes - 8);
+  }
+  return vcombine_u8(vcreate_u8(low), vcreate_u8(high));
+}
+
+/// @brief Unpack sixteen tightly packed D-bit codes into sixteen byte lanes.
+template <std::uint8_t kDepth>
+inline uint8x16_t unpack_codes16_neon(const std::uint8_t* packed) noexcept {
+  static_assert(kDepth >= 3 && kDepth <= 7);
+  alignas(16) static constexpr auto kLowIndices = [] {
+    std::array<std::uint8_t, 16> controls{};
+    for (std::size_t lane = 0; lane < controls.size(); ++lane) {
+      controls[lane] = static_cast<std::uint8_t>((lane * kDepth) / 8);
+    }
+    return controls;
+  }();
+  alignas(16) static constexpr auto kHighIndices = [] {
+    std::array<std::uint8_t, 16> controls{};
+    for (std::size_t lane = 0; lane < controls.size(); ++lane) {
+      controls[lane] = static_cast<std::uint8_t>((lane * kDepth) / 8 + 1);
+    }
+    return controls;
+  }();
+  alignas(16) static constexpr auto kRightShifts = [] {
+    std::array<std::int8_t, 16> shifts{};
+    for (std::size_t lane = 0; lane < shifts.size(); ++lane) {
+      shifts[lane] = -static_cast<std::int8_t>((lane * kDepth) % 8);
+    }
+    return shifts;
+  }();
+  alignas(16) static constexpr auto kLeftShifts = [] {
+    std::array<std::int8_t, 16> shifts{};
+    for (std::size_t lane = 0; lane < shifts.size(); ++lane) {
+      const std::uint8_t offset = (lane * kDepth) % 8;
+      shifts[lane] = static_cast<std::int8_t>(offset == 0 ? 8 : 8 - offset);
+    }
+    return shifts;
+  }();
+
+  const uint8x16_t bytes = load_packed_codes16_neon<kDepth>(packed);
+  const uint8x16_t low = vqtbl1q_u8(bytes, vld1q_u8(kLowIndices.data()));
+  const uint8x16_t high = vqtbl1q_u8(bytes, vld1q_u8(kHighIndices.data()));
+  const uint8x16_t codes =
+      vorrq_u8(vshlq_u8(low, vld1q_s8(kRightShifts.data())),
+               vshlq_u8(high, vld1q_s8(kLeftShifts.data())));
+  return vandq_u8(codes, vdupq_n_u8((std::uint8_t{1} << kDepth) - 1));
+}
+
+/// @brief Decode one flat subtree with NEON table lookup or bit reversal.
+template <std::uint8_t kDepth, bool kBitReverse = false>
+inline void flat_decode_neon(std::uint8_t* dst,
+                             const std::uint64_t* bits,
+                             const std::uint8_t* table,
+                             std::size_t count) noexcept {
+  static_assert(kDepth >= 2 && kDepth <= 8);
+  ByteLookupNeon lookup;
+  const ByteLookupNeon* lookup_ptr = nullptr;
+  if constexpr (!kBitReverse) {
+    lookup = load_byte_lookup_neon<kDepth>(table);
+    lookup_ptr = &lookup;
+  }
+  const auto* packed = reinterpret_cast<const std::uint8_t*>(bits);
+  std::size_t i = 0;
+  if constexpr (kDepth == 2) {
+    const uint8x8_t mask = vdup_n_u8(0x03);
+    for (; i + 32 <= count; i += 32) {
+      const uint8x8_t bytes = vld1_u8(packed + i / 4);
+      uint8x8x4_t symbols;
+      symbols.val[0] = translate_flat_codes8_neon<2, kBitReverse>(
+          lookup_ptr, vand_u8(bytes, mask));
+      symbols.val[1] = translate_flat_codes8_neon<2, kBitReverse>(
+          lookup_ptr, vand_u8(vshr_n_u8(bytes, 2), mask));
+      symbols.val[2] = translate_flat_codes8_neon<2, kBitReverse>(
+          lookup_ptr, vand_u8(vshr_n_u8(bytes, 4), mask));
+      symbols.val[3] = translate_flat_codes8_neon<2, kBitReverse>(
+          lookup_ptr, vshr_n_u8(bytes, 6));
+      vst4_u8(dst + i, symbols);
+    }
+  } else if constexpr (kDepth == 4) {
+    const uint8x8_t mask = vdup_n_u8(0x0f);
+    for (; i + 16 <= count; i += 16) {
+      const uint8x8_t bytes = vld1_u8(packed + i / 2);
+      uint8x8x2_t symbols;
+      symbols.val[0] = translate_flat_codes8_neon<4, kBitReverse>(
+          lookup_ptr, vand_u8(bytes, mask));
+      symbols.val[1] = translate_flat_codes8_neon<4, kBitReverse>(
+          lookup_ptr, vshr_n_u8(bytes, 4));
+      vst2_u8(dst + i, symbols);
+    }
+  } else if constexpr (kDepth == 8) {
+    for (; i + 16 <= count; i += 16) {
+      const uint8x16_t codes = vld1q_u8(packed + i);
+      const uint8x16_t symbols =
+          translate_flat_codes16_neon<8, kBitReverse>(lookup_ptr, codes);
+      vst1q_u8(dst + i, symbols);
+    }
+  } else {
+    for (; i + 16 <= count; i += 16) {
+      const auto* group = packed + (i * kDepth) / 8;
+      const uint8x16_t codes = unpack_codes16_neon<kDepth>(group);
+      const uint8x16_t symbols =
+          translate_flat_codes16_neon<kDepth, kBitReverse>(lookup_ptr, codes);
+      vst1q_u8(dst + i, symbols);
+    }
+  }
+
+  constexpr std::uint64_t kCodeMask = (std::uint64_t{1} << kDepth) - 1;
+  for (; i < count; ++i) {
+    const std::size_t bit_position = i * kDepth;
+    const std::size_t word_index = bit_position / 64;
+    const std::size_t bit_offset = bit_position % 64;
+    std::uint64_t code = bits[word_index] >> bit_offset;
+    if (bit_offset + kDepth > 64) {
+      code |= bits[word_index + 1] << (64 - bit_offset);
+    }
+    dst[i] = table[code & kCodeMask];
+  }
+}
+
+/// @brief Densely pack eight byte codes into the low `8 * D` bits.
+template <std::uint8_t kDepth>
+inline std::uint64_t pack_codes8_neon(std::uint64_t byte_codes) noexcept {
+  static_assert(kDepth >= 3 && kDepth <= 8);
+  constexpr std::uint64_t kCodeMask = (std::uint64_t{1} << kDepth) - 1;
+  std::uint64_t dense = 0;
+  for (std::size_t lane = 0; lane < 8; ++lane) {
+    dense |= ((byte_codes >> (lane * 8)) & kCodeMask) << (lane * kDepth);
+  }
+  return dense;
+}
+
+/// @brief Encode flat wire codes with NEON lookup/bit-reverse and fixed pack.
+template <std::uint8_t kDepth, bool kBitReverse = false>
+inline void flat_encode_neon(std::uint64_t* bits,
+                             const std::uint8_t* src,
+                             const std::uint8_t* wire_code,
+                             std::size_t count) noexcept {
+  static_assert(kDepth >= 2 && kDepth <= 8);
+  ByteLookupNeon lookup;
+  const ByteLookupNeon* lookup_ptr = nullptr;
+  if constexpr (!kBitReverse) {
+    lookup = load_byte_lookup_neon<8>(wire_code);
+    lookup_ptr = &lookup;
+  }
+  auto* packed = reinterpret_cast<std::uint8_t*>(bits);
+  std::size_t i = 0;
+  if constexpr (kDepth == 8) {
+    for (; i + 16 <= count; i += 16) {
+      const uint8x16_t symbols = vld1q_u8(src + i);
+      const uint8x16_t codes =
+          translate_flat_codes16_neon<8, kBitReverse>(lookup_ptr, symbols);
+      vst1q_u8(packed + i, codes);
+    }
+    for (; i < count; ++i) {
+      if constexpr (kBitReverse) {
+        packed[i] = reverse_low_bits_scalar_neon<8>(src[i]);
+      } else {
+        packed[i] = wire_code[src[i]];
+      }
+    }
+    return;
+  }
+
+  for (; i + 16 <= count; i += 16) {
+    uint8x16_t codes;
+    if constexpr (kBitReverse) {
+      codes = reverse_low_bits16_neon<kDepth>(vld1q_u8(src + i));
+    } else {
+      codes = lookup_bytes16_neon<8>(*lookup_ptr, vld1q_u8(src + i));
+    }
+    if constexpr (kDepth == 2) {
+      const uint8x16_t even = vuzp1q_u8(codes, codes);
+      const uint8x16_t odd = vuzp2q_u8(codes, codes);
+      const uint8x8_t pairs = vget_low_u8(
+          vorrq_u8(even, vshlq_n_u8(odd, static_cast<int>(kDepth))));
+      const uint8x8_t packed_codes =
+          vorr_u8(vuzp1_u8(pairs, pairs), vshl_n_u8(vuzp2_u8(pairs, pairs), 4));
+      const std::uint32_t dense =
+          vget_lane_u32(vreinterpret_u32_u8(packed_codes), 0);
+      std::memcpy(packed + i / 4, &dense, sizeof(dense));
+    } else if constexpr (kDepth == 4) {
+      const uint8x16_t even = vuzp1q_u8(codes, codes);
+      const uint8x16_t odd = vuzp2q_u8(codes, codes);
+      vst1_u8(packed + i / 2, vget_low_u8(vorrq_u8(even, vshlq_n_u8(odd, 4))));
+    } else {
+      const uint64x2_t byte_codes = vreinterpretq_u64_u8(codes);
+      const std::uint64_t low =
+          pack_codes8_neon<kDepth>(vgetq_lane_u64(byte_codes, 0));
+      const std::uint64_t high =
+          pack_codes8_neon<kDepth>(vgetq_lane_u64(byte_codes, 1));
+      auto* output = packed + (i * kDepth) / 8;
+      std::memcpy(output, &low, kDepth);
+      std::memcpy(output + kDepth, &high, kDepth);
+    }
+  }
+
+  std::size_t word_index = (i * kDepth) / 64;
+  std::size_t bit_offset = (i * kDepth) % 64;
+  for (; i < count; ++i) {
+    std::uint64_t code;
+    if constexpr (kBitReverse) {
+      code = reverse_low_bits_scalar_neon<kDepth>(src[i]);
+    } else {
+      code = wire_code[src[i]];
+    }
+    bits[word_index] |= code << bit_offset;
+    if (bit_offset + kDepth > 64) {
+      bits[word_index + 1] |= code >> (64 - bit_offset);
+    }
+    bit_offset += kDepth;
+    if (bit_offset >= 64) {
+      bit_offset -= 64;
+      ++word_index;
+    }
+  }
+}
+
+/// @brief Select table lookup or the preclassified balanced-table fast path.
+template <std::uint8_t kDepth>
+inline void flat_encode_maybe_bitreverse_neon(std::uint64_t* bits,
+                                              const std::uint8_t* src,
+                                              const std::uint8_t* wire_code,
+                                              std::size_t count,
+                                              bool known_bitreverse) noexcept {
+  if (known_bitreverse) {
+    flat_encode_neon<kDepth, true>(bits, src, wire_code, count);
+  } else {
+    flat_encode_neon<kDepth, false>(bits, src, wire_code, count);
+  }
+}
+
+/// @brief Runtime depth dispatch for NEON flat encoding.
+inline void flat_encode_dispatch_neon(std::uint64_t* bits,
+                                      const std::uint8_t* src,
+                                      const std::uint8_t* wire_code,
+                                      std::size_t count,
+                                      std::uint8_t depth,
+                                      bool known_bitreverse) noexcept {
+  switch (depth) {
+    case 2:
+      flat_encode_maybe_bitreverse_neon<2>(bits, src, wire_code, count,
+                                           known_bitreverse);
+      return;
+    case 3:
+      flat_encode_maybe_bitreverse_neon<3>(bits, src, wire_code, count,
+                                           known_bitreverse);
+      return;
+    case 4:
+      flat_encode_maybe_bitreverse_neon<4>(bits, src, wire_code, count,
+                                           known_bitreverse);
+      return;
+    case 5:
+      flat_encode_maybe_bitreverse_neon<5>(bits, src, wire_code, count,
+                                           known_bitreverse);
+      return;
+    case 6:
+      flat_encode_maybe_bitreverse_neon<6>(bits, src, wire_code, count,
+                                           known_bitreverse);
+      return;
+    case 7:
+      flat_encode_maybe_bitreverse_neon<7>(bits, src, wire_code, count,
+                                           known_bitreverse);
+      return;
+    case 8:
+      flat_encode_maybe_bitreverse_neon<8>(bits, src, wire_code, count,
+                                           known_bitreverse);
+      return;
+    default:
+      return;
+  }
+}
+
+#endif  // PIXIE_PIVCO_NEON_SUPPORT
 
 // ===========================================================================
 // AVX2 backend (SSE4.1 byte-shuffle lookup tables; AVX2 implies SSE4.1).
@@ -1331,6 +2093,9 @@ inline void merge_decode_dispatch(std::uint8_t* dst,
 #elif defined(__AVX2__) && defined(__SSE4_1__)
   merge_decode_avx2<kLeftConstant, kRightConstant>(
       dst, left, left_symbol, right, right_symbol, bits, count);
+#elif defined(PIXIE_PIVCO_NEON_SUPPORT)
+  merge_decode_neon<kLeftConstant, kRightConstant>(
+      dst, left, left_symbol, right, right_symbol, bits, count);
 #else
   merge_decode_scalar<kLeftConstant, kRightConstant>(
       dst, left, left_symbol, right, right_symbol, bits, count);
@@ -1351,6 +2116,9 @@ inline void partition_encode_dispatch(std::uint8_t* left_dst,
       left_dst, right_dst, bits, src, dir, weight, left_weight, right_weight);
 #elif defined(__AVX2__) && defined(__SSE4_1__)
   partition_encode_avx2<kWriteLeft, kWriteRight>(
+      left_dst, right_dst, bits, src, dir, weight, left_weight, right_weight);
+#elif defined(PIXIE_PIVCO_NEON_SUPPORT)
+  partition_encode_neon<kWriteLeft, kWriteRight>(
       left_dst, right_dst, bits, src, dir, weight, left_weight, right_weight);
 #else
   partition_encode_scalar<kWriteLeft, kWriteRight>(left_dst, right_dst, bits,
@@ -1376,6 +2144,12 @@ inline void flat_decode_dispatch(std::uint8_t* dst,
 #elif defined(__AVX2__) && defined(__SSE4_1__)
   if (depth == 1) {
     merge_decode_avx2<true, true>(dst, nullptr, table[0], nullptr, table[1],
+                                  bits, count);
+    return;
+  }
+#elif defined(PIXIE_PIVCO_NEON_SUPPORT)
+  if (depth == 1) {
+    merge_decode_neon<true, true>(dst, nullptr, table[0], nullptr, table[1],
                                   bits, count);
     return;
   }
@@ -1457,6 +2231,43 @@ inline void flat_decode_dispatch(std::uint8_t* dst,
       break;
   }
 #endif
+
+#if defined(PIXIE_PIVCO_NEON_SUPPORT)
+  switch (depth) {
+    case 2:
+      flat_decode_neon<2>(dst, bits, table, count);
+      return;
+    case 3:
+      flat_decode_neon<3>(dst, bits, table, count);
+      return;
+    case 4:
+      flat_decode_neon<4>(dst, bits, table, count);
+      return;
+    case 5:
+      flat_decode_neon<5>(dst, bits, table, count);
+      return;
+    case 6:
+      flat_decode_neon<6>(dst, bits, table, count);
+      return;
+    case 7:
+      if (known_bitreverse) {
+        flat_decode_neon<7, true>(dst, bits, table, count);
+      } else {
+        flat_decode_neon<7, false>(dst, bits, table, count);
+      }
+      return;
+    case 8:
+      if (known_bitreverse) {
+        flat_decode_neon<8, true>(dst, bits, table, count);
+      } else {
+        flat_decode_neon<8, false>(dst, bits, table, count);
+      }
+      return;
+    default:
+      break;
+  }
+#endif
+  (void)known_bitreverse;
   flat_decode_scalar(dst, bits, table, count, depth);
 }
 
@@ -1579,8 +2390,8 @@ inline void pivco_partition_encode_none(std::uint64_t* bits,
 
 /// @brief Build a bitmap for a node whose two children are constant leaves.
 /// @details A set bit means @p src equals @p right_symbol. Unlike the generic
-///          direction-table path, AVX2 can compare 32 symbols directly and
-///          obtain the complete routing word fragment with `vpmovmskb`.
+///          direction-table path, SIMD backends compare complete vectors and
+///          pack the equality results directly into routing bytes.
 inline void pivco_partition_encode_cst_cst(std::uint64_t* bits,
                                            const std::uint8_t* src,
                                            std::uint8_t right_symbol,
@@ -1602,6 +2413,10 @@ inline void pivco_partition_encode_cst_cst(std::uint64_t* bits,
         _mm256_movemask_epi8(_mm256_cmpeq_epi8(symbols, right)));
     std::memcpy(bit_bytes + i / 8, &routing, sizeof(routing));
   }
+#elif defined(PIXIE_PIVCO_NEON_SUPPORT)
+  pivco_simd_detail::partition_encode_cst_cst_neon(bits, src, right_symbol,
+                                                   weight);
+  return;
 #endif
   for (; i < weight; ++i) {
     if (src[i] == right_symbol) {
@@ -1631,6 +2446,41 @@ inline void pivco_partition_encode_vec_cst(std::uint8_t* left_dst,
                                            std::size_t left_weight) noexcept {
   pivco_simd_detail::partition_encode_one_constant_avx2<false>(
       left_dst, bits, src, right_symbol, weight, left_weight);
+}
+#elif defined(PIXIE_PIVCO_NEON_SUPPORT)
+/// @brief Partition a constant left leaf and materialize the right stream.
+inline void pivco_partition_encode_cst_vec(std::uint8_t* right_dst,
+                                           std::uint64_t* bits,
+                                           const std::uint8_t* src,
+                                           std::uint8_t left_symbol,
+                                           std::size_t weight,
+                                           std::size_t right_weight) noexcept {
+  pivco_simd_detail::partition_encode_one_constant_neon<true>(
+      right_dst, bits, src, left_symbol, weight, right_weight);
+}
+
+/// @brief Partition a dense left stream and a constant right leaf.
+inline void pivco_partition_encode_vec_cst(std::uint8_t* left_dst,
+                                           std::uint64_t* bits,
+                                           const std::uint8_t* src,
+                                           std::uint8_t right_symbol,
+                                           std::size_t weight,
+                                           std::size_t left_weight) noexcept {
+  pivco_simd_detail::partition_encode_one_constant_neon<false>(
+      left_dst, bits, src, right_symbol, weight, left_weight);
+}
+#endif
+
+#if defined(PIXIE_PIVCO_NEON_SUPPORT)
+/// @brief Pack a depth-2..8 flat subtree through the AArch64 NEON backend.
+inline void pivco_flat_encode_neon(std::uint64_t* bits,
+                                   const std::uint8_t* src,
+                                   const std::uint8_t* wire_code,
+                                   std::size_t count,
+                                   std::uint8_t depth,
+                                   bool known_bitreverse) noexcept {
+  pivco_simd_detail::flat_encode_dispatch_neon(bits, src, wire_code, count,
+                                               depth, known_bitreverse);
 }
 #endif
 
