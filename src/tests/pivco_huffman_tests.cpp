@@ -368,6 +368,23 @@ TEST(PivCoHuffmanSmoke, MultipleBlocksRoundTrip) {
   EXPECT_EQ(decode_via_bytes(codec), data);
 }
 
+TEST(PivCoHuffmanSmoke, SharedTreeHandlesBlockLocalMissingSymbols) {
+  constexpr std::size_t kBlockSize = 64 * 1024;
+  std::vector<std::uint8_t> data;
+  data.reserve(3 * kBlockSize);
+  data.insert(data.end(), kBlockSize, 17);
+  data.insert(data.end(), kBlockSize, 93);
+  data.insert(data.end(), kBlockSize, 241);
+
+  const PivCoHuffman codec(data);
+  EXPECT_EQ(codec.decode(), data);
+  EXPECT_EQ(codec.decode(), data);
+
+  const PivCoHuffman copy(codec.compressed_data());
+  EXPECT_EQ(copy.decode(), data);
+  EXPECT_EQ(copy.decode(), data);
+}
+
 TEST(PivCoHuffmanSmoke, RandomizedAlphabetAndBlockSizesRoundTrip) {
   std::mt19937 rng(3319);
   for (std::size_t test_case = 0; test_case < 32; ++test_case) {

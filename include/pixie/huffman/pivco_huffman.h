@@ -11,10 +11,11 @@
  * using the node bitmap as a selector.
  *
  * The tree uses canonical Huffman code lengths (<= 15 bits, enforced with a
- * zlib-style overflow correction): the wire format stores only the 256
- * per-symbol lengths (128 bytes as 4-bit nibbles), and the tree structure is
- * reconstructed deterministically at load time. Same-length symbols are
- * reshaped into flat subtrees as described by the PivCo-Huffman paper.
+ * zlib-style overflow correction): the wire format stores one file-level set
+ * of 256 per-symbol lengths (128 bytes as 4-bit nibbles), and the tree
+ * structure is reconstructed once at load time and reused by every block.
+ * Same-length symbols are reshaped into flat subtrees as described by the
+ * PivCo-Huffman paper.
  *
  * This implementation uses packed `std::uint64_t` bitmaps, flat subtrees,
  * contiguous arenas, and bottom-up decoding. The merge/partition primitives are
@@ -44,8 +45,9 @@ namespace pixie {
  *          byte alphabet, canonicalizing it (grouping same-length codes),
  *          storing one routing bitmap per internal node as packed 64-bit
  *          words, and decoding by bottom-up merging of child symbol streams.
- *          The serialized form is 256 code lengths followed by packed node
- *          bitmaps; the tree is reconstructed from the lengths at load time.
+ *          The serialized form is one file-level set of 256 code lengths
+ *          followed by block-local packed node bitmaps; the shared tree is
+ *          reconstructed from the lengths at load time.
  */
 class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
  public:
@@ -84,17 +86,19 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     if (uncompressed_size_ == 0) {
       return std::vector<symbol_type>();
     }
-    std::vector<symbol_type> result;
-    result.reserve(uncompressed_size_);
-    // Skip the top-level header (total_size + block_size).
-    std::size_t pos = sizeof(std::size_t) * 2;
-    std::size_t remaining = uncompressed_size_;
-    while (remaining > 0) {
-      deserialize_block(pos);
-      std::vector<symbol_type> block_result = decode_from_tree();
-      result.insert(result.end(), block_result.begin(), block_result.end());
-      remaining -= block_uncompressed_size_;
+    // SIMD merge kernels may touch one vector past their logical output. Keep
+    // the same slack as the internal workspace; resize it away without copying
+    // after the last block has decoded.
+    std::vector<symbol_type> result(uncompressed_size_ + kWorkspaceSlack);
+    std::size_t pos = blocks_offset_;
+    std::size_t output_offset = 0;
+    while (output_offset < uncompressed_size_) {
+      deserialize_block_payload(pos);
+      decode_block_into(std::span<symbol_type>(result).subspan(
+          output_offset, block_uncompressed_size_));
+      output_offset += block_uncompressed_size_;
     }
+    result.resize(uncompressed_size_);
     return result;
   }
 
@@ -122,10 +126,10 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
   static constexpr std::size_t kMaxTreeNodes = 2 * kAlphabet - 1;
 
   /// @brief Default block size for block-based processing (64 KiB).
-  /// @details Each block is compressed independently with its own Huffman
-  ///          tree. This keeps the decode workspace (2 × block_size = 128 KiB)
-  ///          within the per-core L2 (256 KiB), eliminating the L2 evictions
-  ///          that hurt decode throughput on whole-input processing.
+  /// @details All blocks share one file-level Huffman tree but carry their own
+  ///          routing bitmaps. This keeps the decode workspace (2 × block_size
+  ///          = 128 KiB) within the per-core L2 while avoiding per-block tree
+  ///          construction and serialization overhead.
   static constexpr std::size_t kBlockSize = 64 * 1024;
 
   /// @brief Extra bytes appended to the ping-pong workspace beyond `2 * block`.
@@ -196,6 +200,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
 
   using DirectionTables =
       std::array<std::array<std::uint8_t, kAlphabet>, kMaxCodeLength>;
+  using FrequencyTable = std::array<std::size_t, kAlphabet>;
 
   /// @brief Total uncompressed size across all blocks (set during
   ///        build/deserialize, read by `uncompressed_size_impl()`).
@@ -205,10 +210,12 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
   std::size_t block_size_ = kBlockSize;
   /// @brief Serialized compressed stream (header + per-block data).
   std::vector<std::byte> compressed_;
+  /// @brief Byte offset of the first block payload in `compressed_`.
+  std::size_t blocks_offset_ = 0;
 
-  // --- per-block tree state (rebuilt for each block during decode) --------
-  //    Mutable because `decode_impl()` is const but rebuilds the tree
-  //    per-block from the serialized stream.
+  // --- shared tree and current-block state --------------------------------
+  //    The topology and flat tables are file-level. Bitmap counts, offsets,
+  //    and words are replaced for each block during const decoding.
   mutable std::size_t root_ = kNpos;
   mutable std::vector<Node> nodes_;
   /// @brief One contiguous allocation backing every internal node's bitmap
@@ -227,69 +234,95 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
 
   // --- construction --------------------------------------------------------
 
-  /** @brief Build and serialize all blocks from @p input.
-   *  @details Splits the input into fixed-size blocks (kBlockSize), builds
-   *           an independent Huffman tree per block, and serializes each
-   *           block into `compressed_`. The wire format is:
+  /** @brief Build and serialize a shared tree and all block payloads.
+   *  @details Counts each block once, combines those counts to build one
+   *           file-level Huffman tree, then reuses its topology and direction
+   *           tables while encoding every block. The wire format is:
    *           - total_uncompressed_size (8 bytes)
    *           - block_size (8 bytes)
-   *           - Per block: block_uncompressed_size (8 bytes) + 128 bytes
-   *             nibbles + per-internal-node bitmaps. */
+   *           - 256 file-level code lengths as 128 bytes of nibbles
+   *           - Per block: block_uncompressed_size (8 bytes) followed by
+   *             per-internal-node bitmaps. */
   void build(std::span<const symbol_type> input) {
     uncompressed_size_ = input.size();
     compressed_.clear();
     write(uncompressed_size_);
     write(block_size_);
-
-    std::size_t offset = 0;
-    while (offset < input.size()) {
-      std::size_t remaining = input.size() - offset;
-      std::size_t this_block = std::min(remaining, block_size_);
-      build_block(input.subspan(offset, this_block));
-      serialize_block();
-      offset += this_block;
-    }
-  }
-
-  /** @brief Build the canonical Huffman tree and per-node bitmaps for one
-   *         block of @p input. */
-  void build_block(std::span<const symbol_type> input) {
-    block_uncompressed_size_ = input.size();
-    if (block_uncompressed_size_ == 0) {
-      root_ = kNpos;
+    blocks_offset_ = compressed_.size();
+    if (input.empty()) {
       return;
     }
 
-    // 1. Count symbol frequencies using independent partial histograms.
-    const std::array<std::size_t, kAlphabet> freq = count_frequencies(input);
+    const std::size_t block_count =
+        (input.size() + block_size_ - 1) / block_size_;
+    std::vector<FrequencyTable> block_frequencies;
+    block_frequencies.reserve(block_count);
+    FrequencyTable file_frequencies{};
 
-    // 2. Build a Huffman tree to determine code lengths, then extract lengths.
-    compute_code_lengths(freq, code_lengths_);
+    std::size_t offset = 0;
+    while (offset < input.size()) {
+      const std::size_t this_block =
+          std::min(input.size() - offset, block_size_);
+      block_frequencies.push_back(
+          count_frequencies(input.subspan(offset, this_block)));
+      const FrequencyTable& frequencies = block_frequencies.back();
+      for (std::size_t symbol = 0; symbol < kAlphabet; ++symbol) {
+        file_frequencies[symbol] += frequencies[symbol];
+      }
+      offset += this_block;
+    }
 
-    // 3. Rebuild a canonical tree from the lengths (groups same-length codes).
-    //    Structure only: bitmap weights/offsets are assigned below, not here.
+    compute_code_lengths(file_frequencies, code_lengths_);
     build_noncanonical_tree(code_lengths_);
     detect_flat_subtrees();
+    serialize_code_lengths();
+    blocks_offset_ = compressed_.size();
+
+    std::array<SymbolCode, kAlphabet> codes{};
+    DirectionTables directions{};
+    if (root_ != kNpos && !nodes_[root_].is_leaf) {
+      assign_codes(root_, 0, 0, codes);
+      directions = build_direction_tables(codes);
+    }
+
+    offset = 0;
+    std::size_t block_index = 0;
+    while (offset < input.size()) {
+      const std::size_t this_block =
+          std::min(input.size() - offset, block_size_);
+      build_block_payload(input.subspan(offset, this_block),
+                          block_frequencies[block_index], directions);
+      serialize_block_payload();
+      offset += this_block;
+      ++block_index;
+    }
+  }
+
+  /** @brief Build one block's bitmaps using the file-level tree. */
+  void build_block_payload(std::span<const symbol_type> input,
+                           const FrequencyTable& freq,
+                           const DirectionTables& directions) {
+    block_uncompressed_size_ = input.size();
+    if (block_uncompressed_size_ == 0) {
+      return;
+    }
 
     // Single-symbol input: root is a leaf, no internal nodes, no arena.
     if (root_ == kNpos || nodes_[root_].is_leaf) {
       return;
     }
 
-    // 4. Assign exact per-node weights (subtree frequency sums) and arena
+    // Assign exact per-node weights (subtree frequency sums) and arena
     //    offsets in a single post-order walk, then allocate the arena once.
     std::size_t arena_words = 0;
     assign_weights_and_offsets(root_, freq, arena_words);
     arena_.assign(arena_words, 0);
 
-    // 5. Assign compact per-symbol codes, then fill node bitmaps via top-down
-    //    in-place partition into the reusable workspace. This mirrors decode:
+    // Fill node bitmaps via top-down in-place partition into the reusable
+    //    workspace. This mirrors decode:
     //    the root reads its input from workspace half 0, writes its bitmap,
     //    and partitions symbols into half 1 for its children. Each level
     //    ping-pongs between the two halves — no per-node allocations.
-    std::array<SymbolCode, kAlphabet> codes{};
-    assign_codes(root_, 0, 0, codes);
-    const DirectionTables directions = build_direction_tables(codes);
     workspace_.resize(block_uncompressed_size_ * 2 + kWorkspaceSlack);
     std::copy(input.begin(), input.end(), workspace_.data());
     encode_partition(root_, 0, 0, directions, freq);
@@ -299,8 +332,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
    *  @details Eight partial histograms break the dependency chain caused by
    *           repeatedly incrementing a hot symbol. The block is at most
    *           64 KiB, so 32-bit partial counters cannot overflow. */
-  static std::array<std::size_t, kAlphabet> count_frequencies(
-      std::span<const symbol_type> input) {
+  static FrequencyTable count_frequencies(std::span<const symbol_type> input) {
     constexpr std::size_t kLanes = 8;
     std::array<std::array<std::uint32_t, kAlphabet>, kLanes> partial{};
     std::size_t i = 0;
@@ -318,7 +350,7 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
       partial[0][input[i]]++;
     }
 
-    std::array<std::size_t, kAlphabet> frequencies{};
+    FrequencyTable frequencies{};
     for (std::size_t symbol = 0; symbol < kAlphabet; ++symbol) {
       for (std::size_t lane = 0; lane < kLanes; ++lane) {
         frequencies[symbol] += partial[lane][symbol];
@@ -953,6 +985,9 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     }
 
     Node& n = nodes_[idx];
+    if (n.bits.count == 0) {
+      return;
+    }
 
     // Flat node: write d-bit suffix per symbol, no partition, no recursion.
     if (n.flat_depth > 0) {
@@ -1016,42 +1051,43 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
 
   // --- decode --------------------------------------------------------------
 
-  /** @brief Reconstruct the original sequence by bottom-up merging.
-   *  @details Uses a single reusable workspace buffer (sized to twice the
-   *           uncompressed length, allocated once and reused across calls)
-   *           and ping-pongs between its two halves by tree depth. Each node
-   *           reads its children's outputs from one half and writes its merged
-   *           output to the other, so no per-node allocation occurs after the
-   *           workspace is sized. The final result is copied out of half 0. */
-  std::vector<symbol_type> decode_from_tree() const {
-    if (root_ == kNpos) {
-      return std::vector<symbol_type>();
+  /** @brief Decode the current block directly into its final output slice.
+   *  @details Internal levels still ping-pong through the reusable two-block
+   *           workspace, but the root writes into @p output. This avoids a
+   *           temporary block vector and the subsequent append/copy. */
+  void decode_block_into(std::span<symbol_type> output) const {
+    if (root_ == kNpos || output.empty()) {
+      return;
     }
     if (nodes_[root_].is_leaf) {
-      return std::vector<symbol_type>(block_uncompressed_size_,
-                                      nodes_[root_].symbol);
+      std::fill(output.begin(), output.end(), nodes_[root_].symbol);
+      return;
     }
-    const std::size_t n = block_uncompressed_size_;
-    workspace_.resize(n * 2 + kWorkspaceSlack);
-    decode_node(root_, n, 0, 0);
-    return std::vector<symbol_type>(workspace_.begin(), workspace_.begin() + n);
+    workspace_.resize(output.size() * 2 + kWorkspaceSlack);
+    decode_node(root_, output.size(), 0, 0, output.data());
   }
 
   /** @brief Recursively decode a node's output stream bottom-up into the
    *         reusable workspace.
    *  @param weight   Number of symbols this node must produce.
-   *  @param depth     Tree depth, selecting which workspace half receives this
-   *                   node's output; children write to the opposite half.
+   *  @param depth     Tree depth. The root writes directly to the caller's
+   *                   output; deeper levels select a workspace half.
    *  @param out_base  Offset within the selected half where this node's output
    *                   begins. Children are placed at `out_base` (left) and
    *                   `out_base + left_weight` (right) in the opposite half,
-   *                   then merged into `[out_base, out_base + weight)` here. */
+   *                   then merged into `[out_base, out_base + weight)` here.
+   *  @param block_output Final output address used by the root node. */
   void decode_node(std::size_t idx,
                    std::size_t weight,
                    std::size_t depth,
-                   std::size_t out_base) const {
+                   std::size_t out_base,
+                   symbol_type* block_output) const {
+    if (weight == 0) {
+      return;
+    }
     const Node& n = nodes_[idx];
-    symbol_type* dst = workspace_half(depth) + out_base;
+    symbol_type* dst =
+        depth == 0 ? block_output : workspace_half(depth) + out_base;
     if (n.is_leaf) {
       std::fill(dst, dst + weight, n.symbol);
       return;
@@ -1081,10 +1117,11 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
         left.is_leaf ? weight - right.bits.count : left.bits.count;
     const std::size_t right_weight = weight - left_weight;
     if (!left.is_leaf) {
-      decode_node(n.left, left_weight, depth + 1, out_base);
+      decode_node(n.left, left_weight, depth + 1, out_base, block_output);
     }
     if (!right.is_leaf) {
-      decode_node(n.right, right_weight, depth + 1, out_base + left_weight);
+      decode_node(n.right, right_weight, depth + 1, out_base + left_weight,
+                  block_output);
     }
 
     const symbol_type* src = workspace_half(depth + 1) + out_base;
@@ -1106,24 +1143,25 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
 
   // --- serialization -------------------------------------------------------
 
-  /** @brief Append one block's serialized form to `compressed_`.
-   *  @details Per-block wire format:
-   *           - block_uncompressed_size (8 bytes)
-   *           - 256 code lengths as 128 bytes of 4-bit nibbles (0 = absent)
-   *           - For each internal node (pre-order): bits.count (8 bytes) +
-   *             packed words. Leaves are implied by the tree structure
-   *             reconstructed from lengths. */
-  void serialize_block() {
-    write(block_uncompressed_size_);
-    if (block_uncompressed_size_ == 0) {
-      return;
-    }
-
-    // Pack stored code lengths as nibbles: 2 symbols per byte.
+  /** @brief Append the shared file-level code lengths as packed nibbles. */
+  void serialize_code_lengths() {
     for (std::size_t i = 0; i < kAlphabet; i += 2) {
       std::uint8_t byte = static_cast<std::uint8_t>(
           code_lengths_[i] | (code_lengths_[i + 1] << 4));
       write(byte);
+    }
+  }
+
+  /** @brief Append one block's serialized payload to `compressed_`.
+   *  @details Per-block wire format:
+   *           - block_uncompressed_size (8 bytes)
+   *           - For each internal node (pre-order): bits.count (8 bytes) +
+   *             packed words. Leaves and topology are implied by the shared
+   *             file-level code lengths. */
+  void serialize_block_payload() {
+    write(block_uncompressed_size_);
+    if (block_uncompressed_size_ == 0) {
+      return;
     }
 
     // Write internal node bitmaps in pre-order (matches deserialize order).
@@ -1150,10 +1188,10 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     serialize_node(n.right);
   }
 
-  /** @brief Load the serialized stream and parse the block header.
+  /** @brief Load the serialized stream and reconstruct its shared tree.
    *  @details Copies @p data into `compressed_` and reads the top-level
-   *           header (total_uncompressed_size, block_size). Per-block trees
-   *           are rebuilt on demand during `decode_impl()`. */
+   *           header and file-level code lengths. Per-block bitmap payloads
+   *           are loaded on demand during `decode_impl()`. */
   void deserialize(std::span<const std::byte> data) {
     compressed_.assign(data.begin(), data.end());
     nodes_.clear();
@@ -1161,38 +1199,36 @@ class PivCoHuffman : public HuffmanBase<PivCoHuffman> {
     root_ = kNpos;
     if (data.empty()) {
       uncompressed_size_ = 0;
+      blocks_offset_ = 0;
       return;
     }
     std::size_t pos = 0;
     uncompressed_size_ = read<std::size_t>(compressed_, pos);
     block_size_ = read<std::size_t>(compressed_, pos);
+    if (uncompressed_size_ == 0) {
+      blocks_offset_ = pos;
+      return;
+    }
+
+    for (std::size_t i = 0; i < kAlphabet; i += 2) {
+      const std::uint8_t byte = read<std::uint8_t>(compressed_, pos);
+      code_lengths_[i] = byte & 0x0F;
+      code_lengths_[i + 1] = (byte >> 4) & 0x0F;
+    }
+    build_noncanonical_tree(code_lengths_);
+    detect_flat_subtrees();
+    blocks_offset_ = pos;
   }
 
-  /** @brief Rebuild the tree and arena for one block from `compressed_` at
-   *         @p pos. Advances @p pos past the block's serialized data.
-   *  @details Reads the per-block header (uncompressed_size + nibbles),
-   *           rebuilds the canonical tree, and reads arena words via a
-   *           two-pass wire walk. */
-  void deserialize_block(std::size_t& pos) const {
-    nodes_.clear();
-    arena_.clear();
-    root_ = kNpos;
-
+  /** @brief Load one block's arena from `compressed_` at @p pos.
+   *  @details Reuses the file-level tree, reads the block's uncompressed size,
+   *           and loads its arena words via a two-pass wire walk. Advances
+   *           @p pos past the block payload. */
+  void deserialize_block_payload(std::size_t& pos) const {
     block_uncompressed_size_ = read<std::size_t>(compressed_, pos);
     if (block_uncompressed_size_ == 0) {
       return;
     }
-
-    // Read 256 code lengths from nibbles.
-    for (std::size_t i = 0; i < kAlphabet; i += 2) {
-      std::uint8_t byte = read<std::uint8_t>(compressed_, pos);
-      code_lengths_[i] = byte & 0x0F;
-      code_lengths_[i + 1] = (byte >> 4) & 0x0F;
-    }
-
-    // Rebuild the canonical tree from lengths.
-    build_noncanonical_tree(code_lengths_);
-    detect_flat_subtrees();
 
     // Single-symbol input: root is a leaf, no internal nodes, no arena.
     if (root_ == kNpos || nodes_[root_].is_leaf) {
