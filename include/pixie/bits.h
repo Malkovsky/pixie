@@ -322,7 +322,6 @@ static inline uint64_t rank_512(const uint64_t* x, uint64_t count) {
 #endif
 }
 
-#ifndef PIXIE_BMI2_SUPPORT
 struct PixieSelectByteLut {
   uint8_t popcounts[256];
   uint8_t select[256][8];
@@ -373,11 +372,15 @@ static inline uint64_t select_64_no_bmi2(uint64_t x, uint64_t rank) {
 
   return offset + pixie_select_byte_lut.select[static_cast<uint8_t>(x)][rank];
 }
-#endif
 
 /**
- * @brief Return position of @p rank 1 bit in @p x
+ * @brief Return position of @p rank 1 bit in @p x.
  * @details Uses BMI/BMI2 when enabled and a portable fallback otherwise.
+ * @param x Word containing the selected bits.
+ * @param rank Zero-based rank among the 1 bits in @p x.
+ * @pre @p rank is less than `std::popcount(x)`; behavior is undefined
+ * otherwise.
+ * @return The selected bit position in `[0, 64)`.
  */
 static inline uint64_t select_64(uint64_t x, uint64_t rank) {
 #ifdef PIXIE_BMI2_SUPPORT
@@ -408,14 +411,28 @@ static inline uint64_t select_512_selected_word(uint64_t word) {
 template <bool Invert>
 static inline uint64_t select_512_scalar_impl(const uint64_t* x,
                                               uint64_t rank) {
-  for (size_t i = 0; i < 8; ++i) {
-    const uint64_t count = select_512_word_count<Invert>(x[i]);
-    if (rank < count) {
-      return i * 64 + select_64(select_512_selected_word<Invert>(x[i]), rank);
-    }
-    rank -= count;
+  size_t word = 0;
+  int count;
+  if constexpr (Invert) {
+    count = std::popcount(~x[0]);
+  } else {
+    count = std::popcount(x[0]);
   }
-  return 512;
+  while (word < 7 && count <= rank) {
+    rank -= count;
+    ++word;
+    if constexpr (Invert) {
+      count = std::popcount(~x[word]);
+    } else {
+      count = std::popcount(x[word]);
+    }
+  }
+
+  if constexpr (Invert) {
+    return word * 64 + select_64(~x[word], rank);
+  } else {
+    return word * 64 + select_64(x[word], rank);
+  }
 }
 
 #ifdef PIXIE_AVX2_SUPPORT
@@ -497,7 +514,7 @@ static inline uint64_t select_512_avx512_impl(const uint64_t* x,
 
   const __mmask8 mask = _mm512_cmpgt_epu64_mask(
       prefix, _mm512_set1_epi64(static_cast<int64_t>(rank)));
-  const uint32_t lane = std::countr_zero(static_cast<uint32_t>(mask));
+  const uint32_t lane = _tzcnt_u32(static_cast<uint32_t>(mask));
   const uint64_t previous = select_512_avx512_previous_prefix(prefix, lane);
   return lane * 64 +
          select_64(select_512_selected_word<Invert>(x[lane]), rank - previous);
@@ -506,16 +523,23 @@ static inline uint64_t select_512_avx512_impl(const uint64_t* x,
 
 /**
  * @brief Return position of @p rank 1 bit in @p x.
- * @details Uses AVX-512, then AVX2, then scalar fallback. The 64-bit in-word
- * select uses BMI2 PDEP unless PIXIE_DISABLE_BMI2 is defined or BMI2 is not
- * available.
+ * @details Uses AVX-512 when available, otherwise a scalar word scan. The
+ * 64-bit in-word select uses BMI2 PDEP unless PIXIE_DISABLE_BMI2 is defined or
+ * BMI2 is not available.
+ * @param x Pointer to eight readable 64-bit words.
+ * @param rank Zero-based rank among the 1 bits in the block.
+ * @pre @p x points to at least eight readable words.
+ * @pre @p rank is less than the number of 1 bits in the block; behavior is
+ * undefined otherwise.
+ * @return The selected bit position in `[0, 512)`.
  */
 static inline uint64_t select_512(const uint64_t* x, uint64_t rank) {
 #ifdef PIXIE_AVX512_SUPPORT
   return select_512_avx512_impl<false>(x, rank);
-#elif defined(PIXIE_AVX2_SUPPORT)
-  return select_512_avx2_impl<false>(x, rank);
 #else
+  // The AVX2 implementation is kept for explicit benchmarking, but production
+  // intentionally falls back to scalar here: on tested machines, the scalar
+  // word scan is faster than AVX2 setup for this 8-word block.
   return select_512_scalar_impl<false>(x, rank);
 #endif
 }
@@ -523,13 +547,19 @@ static inline uint64_t select_512(const uint64_t* x, uint64_t rank) {
 /**
  * @brief Return position of @p rank0 0 bit in @p x.
  * @details select_512 with bit inversion.
+ * @param x Pointer to eight readable 64-bit words.
+ * @param rank0 Zero-based rank among the 0 bits in the block.
+ * @pre @p x points to at least eight readable words.
+ * @pre @p rank0 is less than the number of 0 bits in the block; behavior is
+ * undefined otherwise.
+ * @return The selected bit position in `[0, 512)`.
  */
 static inline uint64_t select0_512(const uint64_t* x, uint64_t rank0) {
 #ifdef PIXIE_AVX512_SUPPORT
   return select_512_avx512_impl<true>(x, rank0);
-#elif defined(PIXIE_AVX2_SUPPORT)
-  return select_512_avx2_impl<true>(x, rank0);
 #else
+  // See select_512: AVX2 is deliberately not used in the default path because
+  // the scalar scan benchmarked faster for 512-bit select blocks.
   return select_512_scalar_impl<true>(x, rank0);
 #endif
 }

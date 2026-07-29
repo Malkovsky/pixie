@@ -113,8 +113,8 @@ TEST(Rank512, Random) {
 TEST(Select64, Ones) {
   uint64_t x = std::numeric_limits<uint64_t>::max();
   for (size_t i = 0; i < 64; ++i) {
-    auto p = select_64(x, i);
-    EXPECT_EQ(p, i);
+    EXPECT_EQ(select_64(x, i), i);
+    EXPECT_EQ(select_64_no_bmi2(x, i), i);
   }
 }
 
@@ -127,8 +127,9 @@ TEST(Select64, Random) {
     size_t rank = 0;
     for (size_t i = 0; i < 64; ++i) {
       if (1 & (a >> i)) {
-        auto p = select_64(a, rank++);
-        ASSERT_EQ(p, i);
+        ASSERT_EQ(select_64(a, rank), i);
+        ASSERT_EQ(select_64_no_bmi2(a, rank), i);
+        ++rank;
       }
     }
   }

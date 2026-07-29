@@ -1,5 +1,41 @@
 #pragma once
 
+/*
+ * Select512 benchmark summary, 2026-06-09.
+ *
+ * Conditions: taskset -c 0, FillPermille=500, 3 repetitions, aggregate CPU ns.
+ * RankMode columns:
+ * - r0: first valid rank in the block.
+ * - r1: middle valid rank in the block.
+ * - r2: last valid rank in the block.
+ * - r3: random valid rank in the block.
+ *
+ * AVX512 disabled, BMI2 enabled:
+ *
+ * | Query   | Variant  | r0 ns | r1 ns | r2 ns | r3 ns |
+ * |---------|----------|-------|-------|-------|-------|
+ * | select1 | Current  | 1.63  | 2.26  | 3.19  | 2.34  |
+ * | select1 | AVX2PDEP | 1.67  | 2.82  | 4.07  | 2.89  |
+ * | select0 | Current  | 1.64  | 2.67  | 3.77  | 2.77  |
+ * | select0 | AVX2PDEP | 1.81  | 2.90  | 4.24  | 2.96  |
+ *
+ * AVX512 disabled, BMI2 disabled:
+ *
+ * | Query   | Variant    | r0 ns | r1 ns | r2 ns | r3 ns |
+ * |---------|------------|-------|-------|-------|-------|
+ * | select1 | Current    | 1.82  | 3.25  | 4.38  | 3.26  |
+ * | select1 | AVX2NoPDEP | 2.18  | 3.66  | 5.30  | 3.81  |
+ * | select0 | Current    | 1.89  | 3.65  | 5.20  | 3.61  |
+ * | select0 | AVX2NoPDEP | 2.16  | 3.72  | 5.28  | 3.89  |
+ *
+ * Interpretation: for 512-bit blocks, AVX2 setup costs more than it saves.
+ * Production therefore dispatches AVX-512 -> scalar and deliberately skips AVX2
+ * in the default path. The AVX2 variants stay here for explicit experiments.
+ * With AVX-512 available, the vector prefix path remains useful for late or
+ * fixed-latency ranks, while ScalarPDEP is usually faster for first, middle,
+ * and random ranks.
+ */
+
 #include <pixie/bits.h>
 
 #include <bit>
