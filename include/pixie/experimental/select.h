@@ -44,6 +44,18 @@
 
 namespace pixie::experimental {
 
+/**
+ * @defgroup experimental_select Experimental select implementations
+ * @brief Alternative low-level select implementations for benchmarking.
+ * @details Ranks are zero-based. Every `select_64_*` function requires
+ * `rank < popcount(x)`. Every `select_512_*` and `select0_512_*` function
+ * requires @p x to point to eight readable words and @p rank to be less than
+ * the number of selected 1 or 0 bits, respectively. Behavior is undefined
+ * when these preconditions are violated; sentinel results from individual
+ * implementations are not part of the contract.
+ * @{
+ */
+
 struct SelectByteLut {
   uint8_t popcounts[256];
   uint8_t select[256][8];
@@ -769,5 +781,7 @@ static inline uint64_t select0_512_experimental_default(
   return select0_512_scalar_experimental_default(x, rank);
 #endif
 }
+
+/** @} */
 
 }  // namespace pixie::experimental
