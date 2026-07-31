@@ -1472,7 +1472,17 @@ static inline void excess_positions_512_expand(const uint64_t* s,
       const __m256i cmp = _mm256_cmpeq_epi16(pref_abs, vtarget);
 
       const uint32_t m32 = (uint32_t)_mm256_movemask_epi8(cmp);
-      const uint16_t m16 = (uint16_t)_pext_u32(m32, 0xAAAAAAAAu);
+#ifdef PIXIE_BMI2_SUPPORT
+      const uint16_t m16 = static_cast<uint16_t>(_pext_u32(m32, 0xAAAAAAAAu));
+#else
+      // Compact one comparison bit per 16-bit lane without BMI2.
+      uint32_t packed = (m32 >> 1) & 0x55555555u;
+      packed = (packed | (packed >> 1)) & 0x33333333u;
+      packed = (packed | (packed >> 2)) & 0x0F0F0F0Fu;
+      packed = (packed | (packed >> 4)) & 0x00FF00FFu;
+      packed = (packed | (packed >> 8)) & 0x0000FFFFu;
+      const uint16_t m16 = static_cast<uint16_t>(packed);
+#endif
 
       out[word_idx] |= uint64_t(m16) << shift;
       cur += (int)excess_last_prefix_16x_i16(pref_rel);
