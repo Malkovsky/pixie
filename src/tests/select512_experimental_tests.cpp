@@ -242,6 +242,20 @@ TEST(Select512Experimental, AllZeros) {
   }
 }
 
+TEST(Select512Experimental, MissingBitReturnsSentinel) {
+  const Block zeros{};
+  Block ones;
+  ones.fill(std::numeric_limits<uint64_t>::max());
+
+  EXPECT_EQ(select_64_byte_lut(0, 0), 64);
+  EXPECT_EQ(select_512_scalar_byte_lut(zeros.data(), 0), 512);
+  EXPECT_EQ(select0_512_scalar_byte_lut(ones.data(), 0), 512);
+  EXPECT_EQ(select_512_avx2_byte_lut(zeros.data(), 0), 512);
+  EXPECT_EQ(select0_512_avx2_byte_lut(ones.data(), 0), 512);
+  EXPECT_EQ(select_512_avx512_hybrid1_pdep(zeros.data(), 0), 512);
+  EXPECT_EQ(select0_512_avx512_hybrid1_pdep(ones.data(), 0), 512);
+}
+
 TEST(Select512Experimental, Alternating) {
   const Block block = {0xAAAAAAAAAAAAAAAAull, 0x5555555555555555ull,
                        0xAAAAAAAAAAAAAAAAull, 0x5555555555555555ull,
