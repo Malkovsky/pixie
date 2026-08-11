@@ -1,10 +1,13 @@
 #pragma once
 
+#include <pixie/detail/serialization.h>
+#include <pixie/packed_bit_builder.h>
 #include <pixie/rank_select/support.h>
 #include <pixie/wavelet_tree.h>
 
-#include <cstdlib>
-#include <cstring>
+#include <array>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <numeric>
@@ -19,13 +22,17 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
  private:
   using node_index_t = size_t;
   static constexpr node_index_t npos = std::numeric_limits<node_index_t>::max();
+  static constexpr std::array<std::uint8_t, 8> kSerializationMagic = {
+      'P', 'X', 'W', 'A', 'V', 'E', 'T', '\0'};
+  static constexpr std::uint32_t kSerializationVersion = 1;
+  static constexpr std::size_t kSerializationHeaderBytes = 24;
 
   struct PreWaveletNode {
     node_index_t parent = npos;
     node_index_t left_child = npos;
     node_index_t right_child = npos;
     uint64_t middle;
-    OutputBitStream stream;
+    PackedBitBuilder stream;
     explicit PreWaveletNode(uint64_t middle) : middle(middle) {}
   };
 
@@ -58,34 +65,35 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
         : parent(node.parent),
           left_child(node.left_child),
           right_child(node.right_child),
-          middle(node.middle),
-          bit_vector_data(std::move(align(node.stream.extract()))),
-          data(bit_vector_data.as_words64(), node.stream.size()) {}
-
-    /** @brief Writes a node serialization to the bit stream */
-    void serialize(pixie::OutputBitStream& bs) const {
-      bs << parent << left_child << right_child << middle;
-      bit_vector_data.serialize(bs);
-      data.serialize(bs);
+          middle(node.middle) {
+      const std::size_t bit_count = node.stream.size_bits();
+      bit_vector_data = align(node.stream.take_words());
+      data =
+          RankSelectSupport<Storage>(bit_vector_data.as_words64(), bit_count);
     }
 
-    /** @brief Constructs wavelet node out of the raw bytes */
-    static WaveletNode deserialize(std::span<const std::byte>& data)
+    /** @brief Write one node in canonical little-endian form. */
+    void serialize(BinaryWriter& writer) const {
+      writer.write_size(parent);
+      writer.write_size(left_child);
+      writer.write_size(right_child);
+      writer.write_u64(middle);
+      bit_vector_data.serialize(writer);
+      data.serialize(writer);
+    }
+
+    /** @brief Construct one checked, non-owning node from @p reader. */
+    static WaveletNode deserialize(BinaryReader& reader)
       requires(std::same_as<Storage, ReadOnlyStorageView>)
     {
       WaveletNode result;
-      auto read = [&data](auto& value) {
-        constexpr size_t length = sizeof(value);
-        std::memcpy(&value, data.data(), length);
-        data = data.subspan(length);
-      };
-      read(result.parent);
-      read(result.left_child);
-      read(result.right_child);
-      read(result.middle);
-      result.bit_vector_data = ReadOnlyStorageView::deserialize(data);
+      result.parent = reader.read_size();
+      result.left_child = reader.read_size();
+      result.right_child = reader.read_size();
+      result.middle = reader.read_u64();
+      result.bit_vector_data = ReadOnlyStorageView::deserialize(reader);
       result.data = RankSelectSupport<Storage>::deserialize(
-          result.bit_vector_data.as_words64(), data);
+          result.bit_vector_data.as_words64(), reader);
       return result;
     }
   };
@@ -136,7 +144,7 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
     middle = begin + (middle == npos ? (end - begin) / 2 : middle);
 
     nodes.emplace_back(middle);
-    nodes[result].stream.reserve(prefix_sum[end] - prefix_sum[begin]);
+    nodes[result].stream.reserve_bits(prefix_sum[end] - prefix_sum[begin]);
     nodes[result].parent = parent;
     nodes[result].left_child =
         build_node(begin, middle, result, get_middle, prefix_sum, nodes);
@@ -305,7 +313,7 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
       for (node_index_t current = root_; current != npos;) {
         auto& node = nodes[current];
         bool go_right = index >= node.middle;
-        node.stream << go_right;
+        node.stream.write_bit(go_right);
         if (go_right) {
           current = node.right_child;
         } else {
@@ -377,6 +385,12 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
    * @param end End of the segment
    * @return Queried segment of data
    *
+   * @details Queries packed bit vectors and rank/select metadata directly
+   * through the node storage. A deserialized view does not consult or retain
+   * its `BinaryReader`. The current implementation materializes the requested
+   * output and an equally sized temporary buffer, for peak auxiliary and
+   * result storage of two `uint64_t` values per returned symbol.
+   *
    */
   std::vector<uint64_t> get_segment_impl(size_t begin, size_t end) const {
     if (alphabet_size_ == 0 || data_size_ == 0 || begin >= end) [[unlikely]] {
@@ -398,51 +412,161 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
   size_t size_impl() const { return data_size_; }
 
   /**
-   * @brief Writes a wavelet tree serialization to the bit stream
+   * @brief Write a versioned canonical little-endian wavelet-tree artifact.
    *
+   * @throws std::invalid_argument if the artifact would not begin at an
+   * eight-byte-aligned writer offset required by zero-copy deserialization.
    */
-  void serialize(pixie::OutputBitStream& bs) const {
-    bs << alphabet_size_ << data_size_ << root_ << nodes_.size();
+  void serialize(BinaryWriter& writer) const {
+    if (writer.size_bytes() % alignof(std::uint64_t) != 0) {
+      throw std::invalid_argument(
+          "Wavelet-tree serialization requires an aligned writer offset");
+    }
+    const std::size_t artifact_begin = writer.size_bytes();
+    detail::write_magic(writer, kSerializationMagic);
+    writer.write_u32(kSerializationVersion);
+    writer.write_u32(0);
+    const std::size_t artifact_size_position = writer.write_u64_placeholder();
+
+    writer.write_size(alphabet_size_);
+    writer.write_size(data_size_);
+    writer.write_size(root_);
+    writer.write_size(nodes_.size());
     for (const WaveletNode& node : nodes_) {
-      node.serialize(bs);
+      node.serialize(writer);
     }
     for (const node_index_t leaf : leaves_) {
-      bs << leaf;
+      writer.write_size(leaf);
     }
     for (const size_t idx : permutation_) {
-      bs << idx;
+      writer.write_size(idx);
     }
+
+    const std::size_t unpadded_size = writer.size_bytes() - artifact_begin;
+    writer.write_zeros(
+        (sizeof(std::uint64_t) - unpadded_size % sizeof(std::uint64_t)) %
+        sizeof(std::uint64_t));
+    writer.patch_u64(
+        artifact_size_position,
+        static_cast<std::uint64_t>(writer.size_bytes() - artifact_begin));
   }
 
+  /**
+   * @brief Restore one checked, non-owning wavelet-tree artifact.
+   *
+   * @details The result retains views into the reader's backing bytes. Those
+   * bytes must remain alive, immutable, and aligned for 64-bit access for the
+   * result's lifetime. On success @p reader advances past exactly one framed
+   * artifact; on failure it is unchanged.
+   *
+   * @throws std::invalid_argument for malformed, truncated, incompatible, or
+   * structurally inconsistent metadata.
+   * @throws std::length_error when an encoded count is not representable.
+   */
   static WaveletTreeIndex<ReadOnlyStorageView> deserialize(
-      std::span<const std::byte>& data) {
+      BinaryReader& reader) {
+    BinaryReader candidate = reader;
+    if (reinterpret_cast<std::uintptr_t>(candidate.remaining_bytes().data()) %
+            alignof(std::uint64_t) !=
+        0) {
+      throw std::invalid_argument(
+          "Serialized wavelet-tree artifact is not word aligned");
+    }
+    const std::size_t available_size = candidate.remaining();
+    detail::require_magic(candidate, kSerializationMagic);
+    if (candidate.read_u32() != kSerializationVersion ||
+        candidate.read_u32() != 0) {
+      throw std::invalid_argument(
+          "Incompatible serialized wavelet-tree artifact");
+    }
+    const std::size_t artifact_size = detail::checked_artifact_size(
+        candidate.read_u64(), kSerializationHeaderBytes, available_size);
+    BinaryReader payload =
+        candidate.read_subreader(artifact_size - kSerializationHeaderBytes);
+
     WaveletTreeIndex<ReadOnlyStorageView> result;
-    auto read = [&data](auto& value) {
-      constexpr size_t length = sizeof(value);
-      std::memcpy(&value, data.data(), length);
-      data = data.subspan(length);
-    };
-    read(result.alphabet_size_);
-    read(result.data_size_);
-    read(result.root_);
-    size_t size;
-    read(size);
-    result.nodes_.resize(size);
+    result.alphabet_size_ = payload.read_size();
+    result.data_size_ = payload.read_size();
+    result.root_ = payload.read_size();
+    const std::size_t node_count = payload.read_size();
+    const std::vector<WaveletNode> empty_nodes;
+    if (node_count > empty_nodes.max_size()) {
+      throw std::length_error(
+          "Serialized wavelet-tree node count is too large");
+    }
+    constexpr std::size_t kMinimumNodeBytes =
+        4 * sizeof(std::uint64_t) + sizeof(std::uint64_t);
+    if (node_count > payload.remaining() / kMinimumNodeBytes) {
+      throw SerializationError("Truncated serialized wavelet-tree nodes",
+                               payload.byte_offset());
+    }
+    result.nodes_.resize(node_count);
     for (auto& node : result.nodes_) {
-      node = WaveletNode::deserialize(data);
+      node = WaveletNode::deserialize(payload);
+    }
+    const std::vector<node_index_t> empty_indices;
+    if (result.alphabet_size_ > empty_indices.max_size() ||
+        result.alphabet_size_ >
+            payload.remaining() / (2 * sizeof(std::uint64_t))) {
+      throw std::length_error("Serialized wavelet-tree alphabet is too large");
     }
     result.leaves_.resize(result.alphabet_size_);
     for (node_index_t& leaf : result.leaves_) {
-      read(leaf);
+      leaf = payload.read_size();
     }
     result.permutation_.resize(result.alphabet_size_);
     for (size_t& index : result.permutation_) {
-      read(index);
+      index = payload.read_size();
     }
     result.inverse_permutation_.resize(result.alphabet_size_);
+    std::vector<bool> seen(result.alphabet_size_);
     for (size_t i = 0; i < result.alphabet_size_; i++) {
+      if (result.permutation_[i] >= result.alphabet_size_ ||
+          seen[result.permutation_[i]]) {
+        throw std::invalid_argument(
+            "Invalid serialized wavelet-tree permutation");
+      }
+      seen[result.permutation_[i]] = true;
       result.inverse_permutation_[result.permutation_[i]] = i;
     }
+    const auto valid_node_index = [&result](node_index_t index) {
+      return index == npos || index < result.nodes_.size();
+    };
+    if (!valid_node_index(result.root_) ||
+        (result.nodes_.empty() != (result.root_ == npos))) {
+      throw std::invalid_argument("Invalid serialized wavelet-tree root");
+    }
+    for (const node_index_t leaf : result.leaves_) {
+      if (!valid_node_index(leaf)) {
+        throw std::invalid_argument("Invalid serialized wavelet-tree leaf");
+      }
+    }
+    for (const WaveletNode& node : result.nodes_) {
+      if (!valid_node_index(node.parent) ||
+          !valid_node_index(node.left_child) ||
+          !valid_node_index(node.right_child) ||
+          node.data.size() > node.bit_vector_data.size_bits()) {
+        throw std::invalid_argument("Invalid serialized wavelet-tree node");
+      }
+    }
+    if (result.root_ != npos &&
+        result.nodes_[result.root_].data.size() != result.data_size_) {
+      throw std::invalid_argument(
+          "Serialized wavelet-tree root has the wrong length");
+    }
+    payload.require_zero_padding(sizeof(std::uint64_t) - 1);
+    reader = candidate;
+    return result;
+  }
+
+  /**
+   * @brief Restore one artifact from @p data and advance it on success.
+   */
+  static WaveletTreeIndex<ReadOnlyStorageView> deserialize(
+      std::span<const std::byte>& data) {
+    BinaryReader reader(data);
+    auto result = deserialize(reader);
+    data = data.subspan(reader.position());
     return result;
   }
 };

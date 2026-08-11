@@ -1,8 +1,17 @@
 #include <gtest/gtest.h>
+#include <pixie/io/file_output_sink.h>
+#include <pixie/io/mapped_file.h>
 #include <pixie/utils.h>
 #include <pixie/wavelet_tree/implementations.h>
 
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
 #include <random>
+#include <span>
+#include <vector>
 
 using pixie::WaveletTree;
 
@@ -156,15 +165,14 @@ TEST(WaveletTreeTest, SerializationSmoke) {
                           pixie::WaveletTreeBuildType::Huffman}) {
     WaveletTree orig_tree(alphabet_size, data, build_type);
 
-    pixie::OutputBitStream bs;
-    orig_tree.serialize(bs);
-    std::vector<uint64_t> serialized_data = bs.extract();
-
-    std::span<const std::byte> byte_span(
-        reinterpret_cast<const std::byte*>(serialized_data.data()),
-        serialized_data.size() * sizeof(uint64_t));
-
-    auto view_tree = pixie::WaveletTreeView::deserialize(byte_span);
+    pixie::VectorOutputSink output;
+    pixie::BinaryWriter writer(output);
+    orig_tree.serialize(writer);
+    writer.finish();
+    std::vector<std::byte> serialized_data = output.take();
+    pixie::BinaryReader reader(serialized_data);
+    auto view_tree = pixie::WaveletTreeView::deserialize(reader);
+    EXPECT_TRUE(reader.empty());
 
     for (size_t i = 0; i <= data_size; i += 16) {
       uint64_t symb = data[i == data_size ? 0 : i];
@@ -186,4 +194,88 @@ TEST(WaveletTreeTest, SerializationSmoke) {
     auto view_segment = view_tree.get_segment(0, data_size);
     EXPECT_EQ(orig_segment, view_segment);
   }
+}
+
+TEST(WaveletTreeTest, SerializationAdvancesAcrossFramedArtifacts) {
+  const std::vector<std::uint64_t> data = {3, 2, 0, 3, 1, 1, 2};
+  const WaveletTree original(4, data);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  original.serialize(writer);
+  writer.finish();
+  const std::vector<std::byte> artifacts = output.take();
+  pixie::BinaryReader reader(artifacts);
+
+  const auto first = pixie::WaveletTreeView::deserialize(reader);
+  EXPECT_FALSE(reader.empty());
+  const auto second = pixie::WaveletTreeView::deserialize(reader);
+  EXPECT_TRUE(reader.empty());
+  EXPECT_EQ(first.get_segment(0, data.size()), data);
+  EXPECT_EQ(second.get_segment(0, data.size()), data);
+}
+
+TEST(WaveletTreeTest, SerializesDirectlyToMappedFile) {
+  const std::vector<std::uint64_t> data = {3, 2, 0, 3, 1, 1, 2};
+  const WaveletTree original(4, data);
+  const auto path = std::filesystem::temp_directory_path() /
+                    "pixie_wavelet_serialization_test.bin";
+  std::filesystem::remove(path);
+  {
+    pixie::io::FileOutputSink output(path);
+    std::array<std::byte, 13> staging{};
+    pixie::BinaryWriter writer(output, staging);
+    original.serialize(writer);
+    writer.finish();
+  }
+
+  pixie::io::MappedFile file(path);
+  pixie::BinaryReader reader(file.as_bytes());
+  const auto restored = pixie::WaveletTreeView::deserialize(reader);
+  EXPECT_TRUE(reader.empty());
+  EXPECT_EQ(restored.get_segment(0, data.size()), data);
+  std::filesystem::remove(path);
+}
+
+TEST(WaveletTreeTest, SerializationRejectsEveryTruncatedPrefixTransactionally) {
+  const std::vector<std::uint64_t> data = {3, 2, 0, 3, 1, 1, 2};
+  const WaveletTree original(4, data);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  const std::vector<std::byte> artifact = output.take();
+
+  for (std::size_t size = 0; size < artifact.size(); ++size) {
+    SCOPED_TRACE(::testing::Message() << "size=" << size);
+    pixie::BinaryReader reader(
+        std::span<const std::byte>(artifact).first(size));
+    EXPECT_THROW((void)pixie::WaveletTreeView::deserialize(reader),
+                 std::invalid_argument);
+    EXPECT_EQ(reader.position(), 0u);
+  }
+}
+
+TEST(WaveletTreeTest, SerializationRejectsUnalignedZeroCopyArtifacts) {
+  const std::vector<std::uint64_t> data = {3, 2, 0, 3, 1, 1, 2};
+  const WaveletTree original(4, data);
+
+  pixie::VectorOutputSink unaligned_output;
+  pixie::BinaryWriter unaligned_writer(unaligned_output);
+  unaligned_writer.write_u8(0);
+  EXPECT_THROW(original.serialize(unaligned_writer), std::invalid_argument);
+  EXPECT_EQ(unaligned_writer.size_bytes(), 1u);
+
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  const std::vector<std::byte> artifact = output.take();
+  std::vector<std::byte> unaligned_artifact(artifact.size() + 1);
+  std::ranges::copy(artifact, unaligned_artifact.begin() + 1);
+  pixie::BinaryReader reader(
+      std::span<const std::byte>(unaligned_artifact).subspan(1));
+  EXPECT_THROW((void)pixie::WaveletTreeView::deserialize(reader),
+               std::invalid_argument);
+  EXPECT_EQ(reader.position(), 0u);
 }

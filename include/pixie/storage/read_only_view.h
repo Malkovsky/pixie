@@ -2,9 +2,7 @@
 
 #include <pixie/storage.h>
 
-#include <cstring>
 #include <span>
-#include <stdexcept>
 
 namespace pixie {
 
@@ -38,20 +36,33 @@ class ReadOnlyStorageView : public StorageBase<ReadOnlyStorageView> {
   }
 
   /**
-   * @brief Deserialize a size-prefixed view and advance @p data.
+   * @brief Deserialize a size-prefixed view and advance @p reader.
+   *
+   * @details The returned view references the reader's backing byte sequence,
+   * which must remain alive and stable for the view's lifetime. The reader is
+   * unchanged on failure.
+   *
    * @throws std::invalid_argument if the size prefix or payload is truncated.
+   * @throws std::length_error if the encoded size is not representable.
+   */
+  static ReadOnlyStorageView deserialize(BinaryReader& reader) {
+    BinaryReader candidate = reader;
+    const std::size_t size = candidate.read_size();
+    ReadOnlyStorageView result(candidate.read_bytes(size));
+    reader = candidate;
+    return result;
+  }
+
+  /**
+   * @brief Deserialize from @p data and advance it past the storage payload.
+   *
+   * @details This compatibility overload has the same lifetime and failure
+   * behavior as the `BinaryReader` overload.
    */
   static ReadOnlyStorageView deserialize(std::span<const std::byte>& data) {
-    if (data.size() < sizeof(std::size_t)) {
-      throw std::invalid_argument("Truncated storage size prefix");
-    }
-    std::size_t size = 0;
-    std::memcpy(&size, data.data(), sizeof(size));
-    if (size > data.size() - sizeof(size)) {
-      throw std::invalid_argument("Truncated storage payload");
-    }
-    ReadOnlyStorageView result(data.subspan(sizeof(size), size));
-    data = data.subspan(sizeof(size) + size);
+    BinaryReader reader(data);
+    ReadOnlyStorageView result = deserialize(reader);
+    data = data.subspan(reader.position());
     return result;
   }
 

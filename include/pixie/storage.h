@@ -8,7 +8,7 @@
  * types.
  */
 
-#include <pixie/bit_stream.h>
+#include <pixie/serialization.h>
 
 #include <concepts>
 #include <cstddef>
@@ -69,12 +69,12 @@ class StorageBase {
     return impl().view_impl(offset_bytes, count_bytes);
   }
 
-  /** @brief Serialize the exposed byte sequence with a size prefix. */
-  void serialize(OutputBitStream& stream) const {
-    stream << size_bytes();
-    for (const std::byte byte : as_bytes()) {
-      stream << static_cast<std::uint8_t>(byte);
-    }
+  /**
+   * @brief Serialize the exposed bytes with a 64-bit little-endian size prefix.
+   */
+  void serialize(BinaryWriter& writer) const {
+    writer.write_size(size_bytes());
+    writer.write_bytes(as_bytes());
   }
 
   /** @brief Resize mutable storage to hold at least @p size_bits bits. */

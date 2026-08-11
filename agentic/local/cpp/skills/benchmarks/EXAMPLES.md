@@ -53,6 +53,37 @@ methodology, align tables visually in source, and exclude local JSON, failed
 probes, and before/after experiment history. Persist other results only for an
 explicitly experimental implementation that has a registered benchmark.
 
+## Serialization Benchmarking
+
+The serialization benchmark binary is:
+
+```bash
+./build/benchmarks/serialization_benchmarks
+```
+
+It separates primitive `BinaryReader` and `BinaryWriter` throughput, zero-copy
+byte-span traversal, fixed-span and growable-vector sinks, warm memory-mapped
+reads, page-cache file writes, framed records with backpatching, and end-to-end
+rank/select, RmM, RMQ, and wavelet-tree serialization. Structure rows report
+logical artifact throughput through `bytes_per_second`, plus `artifact_bytes`
+and `items` counters. Setup, source generation, mapping, and initial structure
+construction are outside the timed region.
+
+Use a pinned Release run and filter the subsystem being investigated. For
+example:
+
+```bash
+taskset -c 0 ./build/benchmarks/serialization_benchmarks \
+  --benchmark_filter='^(BM_Binary(Reader|Writer)|BM_(RankSelect|RmM|Rmq|WaveletTree))' \
+  --benchmark_report_aggregates_only=true \
+  --benchmark_display_aggregates_only=true
+```
+
+The mapped-reader rows warm every mapped page before timing. The file-writer
+rows use real time and close the file, but deliberately do not call `fsync()`;
+interpret them as page-cache/file-system throughput rather than durable-storage
+latency.
+
 ## RMQ Benchmark Tables
 
 The primary RMQ benchmark binary is usually:

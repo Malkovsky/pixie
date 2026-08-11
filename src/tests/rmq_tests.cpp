@@ -1,17 +1,24 @@
 #include <gtest/gtest.h>
+#include <pixie/io/file_output_sink.h>
+#include <pixie/io/mapped_file.h>
 #include <pixie/rmq/implementations.h>
 #include <pixie/rmq/utils/succinct_monotone_stack.h>
 #include <pixie/storage/aligned.h>
 
 #include <algorithm>
+#include <array>
+#include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <functional>
 #include <limits>
 #include <random>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -205,6 +212,302 @@ struct HybridBTreeCase {
 };
 
 }  // namespace
+
+template <class Rmq>
+concept HasRmqSerialization =
+    requires(const Rmq& rmq, pixie::BinaryWriter& writer) {
+      rmq.serialize(writer);
+    };
+
+template <class Rmq>
+concept HasRmqDeserialization = requires(std::span<const std::int64_t> values,
+                                         pixie::BinaryReader& reader) {
+  { Rmq::deserialize(values, reader) } -> std::same_as<Rmq>;
+};
+
+using SerializableRmq = pixie::rmq::CartesianHybridBTree<std::int64_t>;
+static_assert(HasRmqSerialization<SerializableRmq>);
+static_assert(HasRmqDeserialization<SerializableRmq>);
+static_assert(
+    !HasRmqSerialization<pixie::rmq::CartesianHybridBTree<std::int32_t>>);
+static_assert(!HasRmqSerialization<
+              pixie::rmq::CartesianHybridBTree<std::int64_t,
+                                               std::greater<std::int64_t>>>);
+static_assert(!HasRmqSerialization<
+              pixie::rmq::CartesianHybridBTree<std::int64_t,
+                                               std::less<std::int64_t>,
+                                               std::uint32_t>>);
+static_assert(!HasRmqSerialization<
+              pixie::rmq::CartesianHybridBTree<std::int64_t,
+                                               std::less<std::int64_t>,
+                                               std::size_t,
+                                               1024>>);
+static_assert(!HasRmqSerialization<pixie::rmq::CartesianBTree<std::int64_t>>);
+
+static std::vector<std::byte> serialize_rmq(const SerializableRmq& rmq) {
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  rmq.serialize(writer);
+  writer.finish();
+  return output.take();
+}
+
+static void expect_serialized_rmq_ranges(const SerializableRmq& original,
+                                         const SerializableRmq& restored,
+                                         std::span<const std::int64_t> values,
+                                         bool exhaustive) {
+  if (exhaustive) {
+    check_all_ranges(restored, values, std::less<std::int64_t>());
+    return;
+  }
+
+  const std::array<std::pair<std::size_t, std::size_t>, 10> boundaries = {
+      std::pair{std::size_t{0}, values.size()},
+      std::pair{std::size_t{0}, std::min<std::size_t>(512, values.size())},
+      std::pair{std::min<std::size_t>(511, values.size() - 1),
+                std::min<std::size_t>(513, values.size())},
+      std::pair{std::min<std::size_t>(4095, values.size() - 1),
+                std::min<std::size_t>(4097, values.size())},
+      std::pair{values.size() / 3, values.size()},
+      std::pair{values.size() / 4, 3 * values.size() / 4},
+      std::pair{values.size() - 1, values.size()},
+      std::pair{std::size_t{1}, values.size()},
+      std::pair{values.size() / 2, values.size() / 2 + 1},
+      std::pair{std::size_t{0}, std::size_t{1}}};
+  for (const auto& [left, right] : boundaries) {
+    if (left >= right) {
+      continue;
+    }
+    const std::size_t expected =
+        naive_arg_min(values, left, right, std::less<std::int64_t>());
+    EXPECT_EQ(original.arg_min(left, right), expected);
+    EXPECT_EQ(restored.arg_min(left, right), expected);
+    EXPECT_EQ(restored.range_min(left, right), values[expected]);
+  }
+
+  std::mt19937_64 rng(20260718);
+  std::uniform_int_distribution<std::size_t> position(0, values.size() - 1);
+  for (std::size_t query = 0; query < 2000; ++query) {
+    std::size_t left = position(rng);
+    std::size_t right = position(rng);
+    if (left > right) {
+      std::swap(left, right);
+    }
+    ++right;
+    const std::size_t expected =
+        naive_arg_min(values, left, right, std::less<std::int64_t>());
+    EXPECT_EQ(restored.arg_min(left, right), expected);
+  }
+}
+
+static void expect_rmq_serialization_round_trip(std::size_t size) {
+  std::vector<std::int64_t> values(size);
+  for (std::size_t i = 0; i < size; ++i) {
+    values[i] = static_cast<std::int64_t>((i * 37 + i / 5 + i / 97) % 31) - 15;
+  }
+  if (size > 3) {
+    values[size / 3] = -100;
+    values[size / 3 + 1] = -100;
+  }
+
+  const SerializableRmq original(values);
+  std::vector<std::byte> artifact = serialize_rmq(original);
+  pixie::BinaryReader reader(artifact);
+  const SerializableRmq restored = SerializableRmq::deserialize(values, reader);
+
+  EXPECT_TRUE(reader.empty());
+  EXPECT_EQ(restored.size(), values.size());
+  EXPECT_EQ(restored.bp_bit_count(), original.bp_bit_count());
+  EXPECT_EQ(restored.bp_words().size(), original.bp_words().size());
+  EXPECT_EQ(serialize_rmq(restored), artifact);
+
+  artifact.clear();
+  artifact.shrink_to_fit();
+  if (values.empty()) {
+    EXPECT_TRUE(restored.empty());
+    EXPECT_EQ(restored.arg_min(0, 0), SerializableRmq::npos);
+    return;
+  }
+  expect_serialized_rmq_ranges(original, restored, values, size <= 513);
+}
+
+TEST(RmqSerializationTest, RoundTripsOwningMetadataAtBoundaries) {
+  for (const std::size_t size : std::array<std::size_t, 11>{
+           0, 1, 255, 256, 257, 511, 512, 513, 4095, 4096, 4097}) {
+    SCOPED_TRACE(::testing::Message() << "size=" << size);
+    expect_rmq_serialization_round_trip(size);
+  }
+}
+
+TEST(RmqSerializationTest, AdvancesAcrossConcatenatedArtifacts) {
+  std::vector<std::int64_t> values(33);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] = static_cast<std::int64_t>((i * 11) % 17);
+  }
+  const SerializableRmq original(values);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  original.serialize(writer);
+  writer.finish();
+  const auto artifacts = output.take();
+  pixie::BinaryReader reader(artifacts);
+
+  const auto first = SerializableRmq::deserialize(values, reader);
+  EXPECT_FALSE(reader.empty());
+  const auto second = SerializableRmq::deserialize(values, reader);
+  EXPECT_TRUE(reader.empty());
+  EXPECT_EQ(first.arg_min(0, values.size()), second.arg_min(0, values.size()));
+}
+
+TEST(RmqSerializationTest, SerializesDirectlyToMappedFile) {
+  std::vector<std::int64_t> values(65);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] = static_cast<std::int64_t>((i * 19) % 23) - 11;
+  }
+  const SerializableRmq original(values);
+  const auto path = std::filesystem::temp_directory_path() /
+                    "pixie_rmq_serialization_test.bin";
+  std::filesystem::remove(path);
+  {
+    pixie::io::FileOutputSink output(path);
+    std::array<std::byte, 13> staging{};
+    pixie::BinaryWriter writer(output, staging);
+    original.serialize(writer);
+    writer.finish();
+  }
+
+  pixie::io::MappedFile file(path);
+  pixie::BinaryReader reader(file.as_bytes());
+  const SerializableRmq restored = SerializableRmq::deserialize(values, reader);
+  EXPECT_TRUE(reader.empty());
+  check_all_ranges(restored, std::span<const std::int64_t>(values),
+                   std::less<std::int64_t>());
+  std::filesystem::remove(path);
+}
+
+TEST(RmqSerializationTest, RejectsCorruptionWithoutAdvancingInput) {
+  std::vector<std::int64_t> values(40);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] = static_cast<std::int64_t>((i * 13) % 23);
+  }
+  const SerializableRmq original(values);
+  const auto valid = serialize_rmq(original);
+
+  const auto expect_rejected = [&](std::vector<std::byte> artifact) {
+    pixie::BinaryReader reader(artifact);
+    EXPECT_THROW((void)SerializableRmq::deserialize(values, reader),
+                 std::exception);
+    EXPECT_EQ(reader.position(), 0u);
+  };
+  const auto overwrite = [](std::vector<std::byte>& artifact,
+                            std::size_t offset, auto value) {
+    using Value = decltype(value);
+    using Unsigned = std::make_unsigned_t<Value>;
+    const Unsigned encoded = static_cast<Unsigned>(value);
+    for (std::size_t byte = 0; byte < sizeof(Value); ++byte) {
+      artifact[offset + byte] =
+          static_cast<std::byte>((encoded >> (byte * 8)) & Unsigned{0xff});
+    }
+  };
+
+  auto bad_magic = valid;
+  bad_magic[0] ^= std::byte{1};
+  expect_rejected(std::move(bad_magic));
+
+  auto bad_version = valid;
+  overwrite(bad_version, 8, std::uint32_t{2});
+  expect_rejected(std::move(bad_version));
+
+  auto bad_leaf_size = valid;
+  overwrite(bad_leaf_size, 32, std::uint64_t{1024});
+  expect_rejected(std::move(bad_leaf_size));
+
+  auto bad_bp_count = valid;
+  overwrite(bad_bp_count, 48, std::uint64_t{0});
+  expect_rejected(std::move(bad_bp_count));
+
+  auto impossible_storage = valid;
+  overwrite(impossible_storage, 80, std::numeric_limits<std::size_t>::max());
+  expect_rejected(std::move(impossible_storage));
+
+  std::span<const std::byte> truncated =
+      std::span<const std::byte>(valid).first(valid.size() - 1);
+  pixie::BinaryReader truncated_reader(truncated);
+  EXPECT_THROW((void)SerializableRmq::deserialize(values, truncated_reader),
+               std::invalid_argument);
+  EXPECT_EQ(truncated_reader.position(), 0u);
+
+  std::span<const std::int64_t> short_values(values.data(), values.size() - 1);
+  pixie::BinaryReader reader(valid);
+  EXPECT_THROW((void)SerializableRmq::deserialize(short_values, reader),
+               std::invalid_argument);
+  EXPECT_EQ(reader.position(), 0u);
+
+  std::vector<std::int64_t> different_values(values.size(), -1);
+  pixie::BinaryReader different_reader(valid);
+  EXPECT_NO_THROW(
+      (void)SerializableRmq::deserialize(different_values, different_reader));
+  EXPECT_TRUE(different_reader.empty());
+}
+
+TEST(RmqSerializationTest, RejectsMalformedBpEncodingAndPadding) {
+  constexpr std::size_t kBpDataOffset = 88;
+  const auto set_bit = [](std::vector<std::byte>& artifact,
+                          std::size_t position) {
+    artifact[kBpDataOffset + position / 8] |=
+        static_cast<std::byte>(std::uint8_t{1} << (position % 8));
+  };
+  const auto clear_bit = [](std::vector<std::byte>& artifact,
+                            std::size_t position) {
+    artifact[kBpDataOffset + position / 8] &=
+        static_cast<std::byte>(~(std::uint8_t{1} << (position % 8)));
+  };
+
+  for (const std::size_t size :
+       {std::size_t{63}, std::size_t{64}, std::size_t{65}}) {
+    SCOPED_TRACE(::testing::Message() << "size=" << size);
+    std::vector<std::int64_t> values(size);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      values[i] = static_cast<std::int64_t>((i * 13 + i / 3) % 17);
+    }
+    const SerializableRmq original(values);
+    const std::vector<std::byte> valid = serialize_rmq(original);
+    const auto expect_rejected = [&](std::vector<std::byte> artifact) {
+      pixie::BinaryReader reader(artifact);
+      EXPECT_THROW((void)SerializableRmq::deserialize(values, reader),
+                   std::invalid_argument);
+      EXPECT_EQ(reader.position(), 0u);
+    };
+
+    auto negative_first_prefix = valid;
+    clear_bit(negative_first_prefix, 0);
+    expect_rejected(std::move(negative_first_prefix));
+
+    auto nonzero_final_excess = valid;
+    set_bit(nonzero_final_excess, 2 * size - 1);
+    expect_rejected(std::move(nonzero_final_excess));
+
+    auto nonzero_padding = valid;
+    set_bit(nonzero_padding, 2 * size);
+    expect_rejected(std::move(nonzero_padding));
+  }
+
+  constexpr std::size_t kLateViolationSize = 129;
+  std::vector<std::int64_t> values(kLateViolationSize);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] = static_cast<std::int64_t>((i * 19 + i / 7) % 23);
+  }
+  const SerializableRmq original(values);
+  std::vector<std::byte> negative_later = serialize_rmq(original);
+  for (std::size_t position = 128; position < 2 * values.size(); ++position) {
+    clear_bit(negative_later, position);
+  }
+  pixie::BinaryReader reader(negative_later);
+  EXPECT_THROW((void)SerializableRmq::deserialize(values, reader),
+               std::invalid_argument);
+  EXPECT_EQ(reader.position(), 0u);
+}
 
 template <class Case>
 class ValueRmqSpecificationTest : public ::testing::Test {};

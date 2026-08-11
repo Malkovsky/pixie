@@ -242,6 +242,15 @@ if (PIXIE_TESTS)
             gtest_main
             ${PIXIE_DIAGNOSTICS_LIBS})
 
+    add_executable(serialization_tests
+            src/tests/serialization_tests.cpp)
+    target_include_directories(serialization_tests
+            PUBLIC include)
+    target_link_libraries(serialization_tests
+            gtest
+            gtest_main
+            ${PIXIE_DIAGNOSTICS_LIBS})
+
     add_executable(excess_positions_tests
             src/tests/excess_positions_tests.cpp)
     target_include_directories(excess_positions_tests
@@ -291,6 +300,7 @@ if (PIXIE_TESTS)
             tree_tests
             wavelet_tree_tests
             storage_tests
+            serialization_tests
             excess_positions_tests
             select512_experimental_tests
             excess_record_lows_tests
@@ -384,6 +394,15 @@ if (PIXIE_BENCHMARKS)
             benchmark_main
             ${PIXIE_DIAGNOSTICS_LIBS})
 
+    add_executable(serialization_benchmarks
+            src/benchmarks/serialization_benchmarks.cpp)
+    target_include_directories(serialization_benchmarks
+            PUBLIC include)
+    target_link_libraries(serialization_benchmarks
+            benchmark
+            benchmark_main
+            ${PIXIE_DIAGNOSTICS_LIBS})
+
     add_executable(bp_tree_benchmarks
             src/benchmarks/bp_tree_benchmarks.cpp)
     target_include_directories(bp_tree_benchmarks
@@ -444,6 +463,7 @@ if (PIXIE_BENCHMARKS)
             rmq_benchmarks
             louds_tree_benchmarks
             wavelet_tree_benchmarks
+            serialization_benchmarks
             bp_tree_benchmarks
             dfuds_tree_benchmarks
             alignment_comparison_benchmarks

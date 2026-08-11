@@ -1,7 +1,7 @@
 #pragma once
 
-#include <pixie/bit_stream.h>
 #include <pixie/bits.h>
+#include <pixie/detail/serialization.h>
 #include <pixie/rank_select.h>
 #include <pixie/storage/aligned.h>
 #include <pixie/storage/read_only_view.h>
@@ -10,6 +10,7 @@
 #include <bit>
 #include <concepts>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -100,6 +101,107 @@ class RankSelectSupport
   static bool builds_select0(SelectSupport support) {
     return (static_cast<uint8_t>(support) &
             static_cast<uint8_t>(SelectSupport::kSelect0)) != 0;
+  }
+
+  static MetadataStorage deserialize_metadata_storage(BinaryReader& reader)
+    requires(std::same_as<MetadataStorage, AlignedStorage> ||
+             std::same_as<MetadataStorage, ReadOnlyStorageView>)
+  {
+    const std::size_t size = reader.read_size();
+    const std::span<const std::byte> bytes = reader.read_bytes(size);
+    if constexpr (std::same_as<MetadataStorage, ReadOnlyStorageView>) {
+      if (reinterpret_cast<std::uintptr_t>(bytes.data()) %
+              alignof(std::uint64_t) !=
+          0) {
+        throw std::invalid_argument(
+            "Serialized rank/select storage is not word aligned");
+      }
+      return ReadOnlyStorageView(bytes);
+    } else {
+      if (size % kAlignedStorageLineBytes != 0) {
+        throw std::invalid_argument(
+            "Serialized rank/select storage is not cache-line aligned");
+      }
+      if (size > std::numeric_limits<std::size_t>::max() / 8) {
+        throw std::length_error("Serialized rank/select storage is too large");
+      }
+      AlignedStorage result(size * 8);
+      std::ranges::copy(bytes, result.writable_bytes().begin());
+      return result;
+    }
+  }
+
+  void validate_deserialized_state() const {
+    const std::size_t required_words =
+        num_bits_ == 0 ? 0 : 1 + (num_bits_ - 1) / kWordSize;
+    if (required_words > bits_.size()) {
+      throw std::invalid_argument(
+          "RankSelectSupport source bit span is too small");
+    }
+    if (required_words > std::numeric_limits<std::size_t>::max() / kWordSize) {
+      throw std::length_error("RankSelectSupport padded size is too large");
+    }
+    if (padded_size_ != required_words * kWordSize || max_rank_ > num_bits_) {
+      throw std::invalid_argument(
+          "Invalid serialized rank/select size metadata");
+    }
+
+    const auto support_value = static_cast<std::uint8_t>(select_support_);
+    if (support_value > static_cast<std::uint8_t>(SelectSupport::kBoth) ||
+        select0_samples_reversed_) {
+      throw std::invalid_argument(
+          "Invalid serialized rank/select configuration");
+    }
+
+    std::size_t num_superblocks =
+        8 + (padded_size_ == 0 ? 0 : (padded_size_ - 1) / kSuperBlockSize);
+    if (num_superblocks > std::numeric_limits<std::size_t>::max() - 7) {
+      throw std::length_error(
+          "Serialized rank/select super-block count is too large");
+    }
+    num_superblocks = ((num_superblocks + 7) / 8) * 8;
+    if (num_superblocks > std::numeric_limits<std::size_t>::max() /
+                              (kBlocksPerSuperBlock * sizeof(std::uint16_t))) {
+      throw std::length_error(
+          "Serialized rank/select basic-block count is too large");
+    }
+    const std::size_t expected_super_bytes =
+        num_superblocks * sizeof(std::uint64_t);
+    const std::size_t expected_basic_bytes =
+        num_superblocks * kBlocksPerSuperBlock * sizeof(std::uint16_t);
+    if (super_block_rank_.size_bytes() != expected_super_bytes ||
+        basic_block_rank_.size_bytes() != expected_basic_bytes ||
+        select_samples_.size_bytes() % sizeof(std::uint64_t) != 0) {
+      throw std::invalid_argument(
+          "Invalid serialized rank/select storage sizes");
+    }
+
+    const std::size_t sample_count =
+        select_samples_.size_bytes() / sizeof(std::uint64_t);
+    const auto samples_fit = [sample_count](std::size_t begin,
+                                            std::size_t count) {
+      return begin <= sample_count && count <= sample_count - begin;
+    };
+    if (!samples_fit(select1_sample_begin_, select1_sample_count_) ||
+        !samples_fit(select0_sample_begin_, select0_sample_count_) ||
+        (builds_select1(select_support_) != (select1_sample_count_ != 0)) ||
+        (builds_select0(select_support_) != (select0_sample_count_ != 0))) {
+      throw std::invalid_argument(
+          "Invalid serialized rank/select sample metadata");
+    }
+
+    for (std::size_t i = 0; i < 8; ++i) {
+      if (delta_super[i] != i * kSuperBlockSize) {
+        throw std::invalid_argument(
+            "Invalid serialized rank/select SIMD metadata");
+      }
+    }
+    for (std::size_t i = 0; i < 32; ++i) {
+      if (delta_basic[i] != i * kBasicBlockSize) {
+        throw std::invalid_argument(
+            "Invalid serialized rank/select SIMD metadata");
+      }
+    }
   }
 
   size_t logical_word_count() const {
@@ -861,55 +963,98 @@ class RankSelectSupport
     return select_in_words(pos * kWordsPerBlock, rank0, false);
   }
 
-  void serialize(pixie::OutputBitStream& bs) const {
-    bs << num_bits_ << padded_size_ << max_rank_ << select1_sample_begin_
-       << select1_sample_count_ << select0_sample_begin_
-       << select0_sample_count_ << static_cast<uint32_t>(select_support_)
-       << static_cast<uint32_t>(select0_samples_reversed_);
+  /**
+   * @brief Serialize rank/select metadata in canonical little-endian form.
+   *
+   * @details A zero-copy `ReadOnlyStorageView` deserializer also requires each
+   * embedded metadata payload to begin at an address aligned for 64-bit words.
+   */
+  void serialize(BinaryWriter& writer) const {
+    writer.write_size(num_bits_);
+    writer.write_size(padded_size_);
+    writer.write_size(max_rank_);
+    writer.write_size(select1_sample_begin_);
+    writer.write_size(select1_sample_count_);
+    writer.write_size(select0_sample_begin_);
+    writer.write_size(select0_sample_count_);
+    writer.write_u32(static_cast<std::uint32_t>(select_support_));
+    writer.write_u32(static_cast<std::uint32_t>(select0_samples_reversed_));
     for (const uint64_t delta : delta_super) {
-      bs << delta;
+      writer.write_u64(delta);
     }
     for (const uint16_t delta : delta_basic) {
-      bs << delta;
+      writer.write_u16(delta);
     }
-    super_block_rank_.serialize(bs);
-    basic_block_rank_.serialize(bs);
-    select_samples_.serialize(bs);
+    super_block_rank_.serialize(writer);
+    basic_block_rank_.serialize(writer);
+    select_samples_.serialize(writer);
   }
 
+  /**
+   * @brief Restore serialized metadata over caller-owned source bits.
+   *
+   * @details `AlignedStorage` restores owning metadata. A
+   * `ReadOnlyStorageView` specialization retains views into the reader's
+   * backing bytes, which must outlive the result. In both cases @p source_bits
+   * remains non-owning and must outlive the result. The reader is unchanged on
+   * failure.
+   *
+   * @throws std::invalid_argument for truncated or inconsistent metadata.
+   * @throws std::length_error when an encoded size is not representable.
+   */
   static RankSelectSupport deserialize(std::span<const uint64_t> source_bits,
-                                       std::span<const std::byte>& data)
-    requires std::same_as<MetadataStorage, ReadOnlyStorageView>
+                                       BinaryReader& reader)
+    requires(std::same_as<MetadataStorage, AlignedStorage> ||
+             std::same_as<MetadataStorage, ReadOnlyStorageView>)
   {
+    BinaryReader candidate = reader;
     RankSelectSupport result;
     result.source_storage_ = ReadOnlyStorageView(std::as_bytes(source_bits));
     result.bits_ = result.source_storage_.as_words64();
-    auto read = [&data](auto& value) {
-      constexpr size_t length = sizeof(value);
-      std::memcpy(&value, data.data(), length);
-      data = data.subspan(length);
-    };
-    read(result.num_bits_);
-    read(result.padded_size_);
-    read(result.max_rank_);
-    read(result.select1_sample_begin_);
-    read(result.select1_sample_count_);
-    read(result.select0_sample_begin_);
-    read(result.select0_sample_count_);
-    uint32_t buf;
-    read(buf);
-    result.select_support_ = static_cast<SelectSupport>(buf);
-    read(buf);
-    result.select0_samples_reversed_ = static_cast<bool>(buf);
+    result.num_bits_ = candidate.read_size();
+    result.padded_size_ = candidate.read_size();
+    result.max_rank_ = candidate.read_size();
+    result.select1_sample_begin_ = candidate.read_size();
+    result.select1_sample_count_ = candidate.read_size();
+    result.select0_sample_begin_ = candidate.read_size();
+    result.select0_sample_count_ = candidate.read_size();
+    const std::uint32_t support = candidate.read_u32();
+    if (support > static_cast<std::uint32_t>(SelectSupport::kBoth)) {
+      throw std::invalid_argument(
+          "Invalid serialized rank/select configuration");
+    }
+    result.select_support_ = static_cast<SelectSupport>(support);
+    const std::uint32_t reversed = candidate.read_u32();
+    if (reversed > 1) {
+      throw std::invalid_argument(
+          "Invalid serialized rank/select boolean value");
+    }
+    result.select0_samples_reversed_ = reversed != 0;
     for (uint64_t& delta : result.delta_super) {
-      read(delta);
+      delta = candidate.read_u64();
     }
     for (uint16_t& delta : result.delta_basic) {
-      read(delta);
+      delta = candidate.read_u16();
     }
-    result.super_block_rank_ = ReadOnlyStorageView::deserialize(data);
-    result.basic_block_rank_ = ReadOnlyStorageView::deserialize(data);
-    result.select_samples_ = ReadOnlyStorageView::deserialize(data);
+    result.super_block_rank_ = deserialize_metadata_storage(candidate);
+    result.basic_block_rank_ = deserialize_metadata_storage(candidate);
+    result.select_samples_ = deserialize_metadata_storage(candidate);
+    result.validate_deserialized_state();
+    reader = candidate;
+    return result;
+  }
+
+  /**
+   * @brief Restore metadata from @p data and advance the byte span on success.
+   */
+  static RankSelectSupport deserialize(std::span<const uint64_t> source_bits,
+                                       std::span<const std::byte>& data)
+    requires(std::same_as<MetadataStorage, AlignedStorage> ||
+             std::same_as<MetadataStorage, ReadOnlyStorageView>)
+  {
+    BinaryReader reader(data);
+    RankSelectSupport result = deserialize(source_bits, reader);
+    data = data.subspan(reader.position());
     return result;
   }
 };

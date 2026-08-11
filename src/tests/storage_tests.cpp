@@ -7,7 +7,6 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <span>
@@ -77,24 +76,29 @@ TYPED_TEST(StorageSpecificationTest, ProvidesAlignedWordViewsWhenValid) {
 TEST(StorageSerializationTest, OwningStorageAndViewSerializeIdentically) {
   pixie::AlignedStorage storage(1);
   storage.writable_bytes()[0] = std::byte{42};
-  pixie::OutputBitStream owning_stream;
-  pixie::OutputBitStream view_stream;
-  storage.serialize(owning_stream);
-  storage.view().serialize(view_stream);
-  EXPECT_EQ(owning_stream.extract(), view_stream.extract());
+  pixie::VectorOutputSink owning_output;
+  pixie::VectorOutputSink view_output;
+  pixie::BinaryWriter owning_writer(owning_output);
+  pixie::BinaryWriter view_writer(view_output);
+  storage.serialize(owning_writer);
+  storage.view().serialize(view_writer);
+  owning_writer.finish();
+  view_writer.finish();
+  EXPECT_EQ(owning_output.take(), view_output.take());
 }
 
 TEST(StorageSerializationTest, ReadOnlyViewRoundTripsAndAdvancesInput) {
   pixie::AlignedStorage storage(1);
   storage.writable_bytes()[0] = std::byte{42};
-  pixie::OutputBitStream stream;
-  storage.serialize(stream);
-  const auto serialized_words = stream.extract();
-  std::span<const std::byte> input =
-      std::as_bytes(std::span<const std::uint64_t>(serialized_words));
-  const auto restored = pixie::ReadOnlyStorageView::deserialize(input);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  storage.serialize(writer);
+  writer.finish();
+  const auto serialized_data = output.take();
+  pixie::BinaryReader reader(serialized_data);
+  const auto restored = pixie::ReadOnlyStorageView::deserialize(reader);
   EXPECT_TRUE(std::ranges::equal(restored.as_bytes(), storage.as_bytes()));
-  EXPECT_TRUE(input.empty());
+  EXPECT_TRUE(reader.empty());
 }
 
 TEST(AlignedStorageTest, PadsResizesAndProvidesWritableStorage) {
@@ -117,12 +121,15 @@ TEST(ReadOnlyStorageViewTest, MutatingOperationsAreNotAvailable) {
 }
 
 TEST(ReadOnlyStorageViewTest, DeserializeRejectsTruncatedInput) {
-  std::array<std::byte, sizeof(std::size_t)> bytes{};
-  const std::size_t payload_size = 1;
-  std::memcpy(bytes.data(), &payload_size, sizeof(payload_size));
-  std::span<const std::byte> input(bytes);
-  EXPECT_THROW(pixie::ReadOnlyStorageView::deserialize(input),
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  writer.write_size(1);
+  writer.finish();
+  const auto bytes = output.take();
+  pixie::BinaryReader reader(bytes);
+  EXPECT_THROW(pixie::ReadOnlyStorageView::deserialize(reader),
                std::invalid_argument);
+  EXPECT_EQ(reader.position(), 0u);
 }
 
 TEST(MappedFileTest, MapsContentsAndIsMoveOnly) {

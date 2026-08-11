@@ -1,10 +1,15 @@
 #include <gtest/gtest.h>
+#include <pixie/io/file_output_sink.h>
+#include <pixie/io/mapped_file.h>
 #include <pixie/rank_select/implementations.h>
 
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <random>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -81,6 +86,73 @@ TEST(RankSelectSupportTest, AcceptsStorageSourceWithoutCopying) {
   EXPECT_EQ(support.select(4), 5u);
   source.writable_words64()[0] = 0b000001;
   EXPECT_EQ(support[2], 0);
+}
+
+TEST(RankSelectSupportTest, OwningMetadataDeserializationRoundTrips) {
+  constexpr std::size_t kBitCount = 4097;
+  std::vector<std::uint64_t> words((kBitCount + 63) / 64);
+  std::mt19937_64 rng(20260718);
+  for (std::uint64_t& word : words) {
+    word = rng();
+  }
+
+  const pixie::RankSelectSupport<> original(words, kBitCount);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  std::vector<std::byte> artifact = output.take();
+  pixie::BinaryReader reader(artifact);
+  const pixie::RankSelectSupport<> restored =
+      pixie::RankSelectSupport<>::deserialize(words, reader);
+  EXPECT_TRUE(reader.empty());
+
+  artifact.clear();
+  artifact.shrink_to_fit();
+  for (std::size_t position = 0; position <= kBitCount; ++position) {
+    EXPECT_EQ(restored.rank(position), original.rank(position));
+    EXPECT_EQ(restored.rank0(position), original.rank0(position));
+  }
+  const std::size_t ones = original.rank(kBitCount);
+  const std::size_t zeros = original.rank0(kBitCount);
+  for (std::size_t rank = 1; rank <= ones + 1; ++rank) {
+    EXPECT_EQ(restored.select(rank), original.select(rank));
+  }
+  for (std::size_t rank = 1; rank <= zeros + 1; ++rank) {
+    EXPECT_EQ(restored.select0(rank), original.select0(rank));
+  }
+}
+
+TEST(RankSelectSupportTest, SerializesDirectlyToMappedFile) {
+  constexpr std::size_t kBitCount = 1025;
+  std::vector<std::uint64_t> words((kBitCount + 63) / 64);
+  std::mt19937_64 rng(20260721);
+  for (std::uint64_t& word : words) {
+    word = rng();
+  }
+  const pixie::RankSelectSupport<> original(words, kBitCount);
+  const auto path = std::filesystem::temp_directory_path() /
+                    "pixie_rank_select_serialization_test.bin";
+  std::filesystem::remove(path);
+  {
+    pixie::io::FileOutputSink output(path);
+    std::array<std::byte, 13> staging{};
+    pixie::BinaryWriter writer(output, staging);
+    original.serialize(writer);
+    writer.finish();
+  }
+
+  pixie::io::MappedFile file(path);
+  pixie::BinaryReader reader(file.as_bytes());
+  const auto restored =
+      pixie::RankSelectSupport<pixie::ReadOnlyStorageView>::deserialize(words,
+                                                                        reader);
+  EXPECT_TRUE(reader.empty());
+  for (std::size_t position = 0; position <= kBitCount; position += 17) {
+    EXPECT_EQ(restored.rank(position), original.rank(position));
+    EXPECT_EQ(restored.rank0(position), original.rank0(position));
+  }
+  std::filesystem::remove(path);
 }
 
 }  // namespace

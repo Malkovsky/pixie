@@ -85,16 +85,16 @@ static void BM_WaveletTreeViewSelect(benchmark::State& state) {
     }
 
     WaveletTree orig_tree(alphabet_size, data);
-    pixie::OutputBitStream bs;
-    orig_tree.serialize(bs);
-    std::vector<uint64_t> serialized_data = bs.extract();
-    std::span<const std::byte> byte_span(
-        reinterpret_cast<const std::byte*>(serialized_data.data()),
-        serialized_data.size() * sizeof(uint64_t));
+    pixie::VectorOutputSink output;
+    pixie::BinaryWriter writer(output);
+    orig_tree.serialize(writer);
+    writer.finish();
+    std::vector<std::byte> serialized_data = output.take();
+    pixie::BinaryReader reader(serialized_data);
 
     state.ResumeTiming();
 
-    auto view_tree = pixie::WaveletTreeView::deserialize(byte_span);
+    auto view_tree = pixie::WaveletTreeView::deserialize(reader);
     benchmark::DoNotOptimize(view_tree);
 
     for (size_t i = 0; i < query; i++) {
@@ -119,16 +119,16 @@ static void BM_WaveletTreeViewRank(benchmark::State& state) {
                               generate_random_data(query, data_size + 1, rng);
 
     WaveletTree orig_tree(alphabet_size, data);
-    pixie::OutputBitStream bs;
-    orig_tree.serialize(bs);
-    std::vector<uint64_t> serialized_data = bs.extract();
-    std::span<const std::byte> byte_span(
-        reinterpret_cast<const std::byte*>(serialized_data.data()),
-        serialized_data.size() * sizeof(uint64_t));
+    pixie::VectorOutputSink output;
+    pixie::BinaryWriter writer(output);
+    orig_tree.serialize(writer);
+    writer.finish();
+    std::vector<std::byte> serialized_data = output.take();
+    pixie::BinaryReader reader(serialized_data);
 
     state.ResumeTiming();
 
-    auto view_tree = pixie::WaveletTreeView::deserialize(byte_span);
+    auto view_tree = pixie::WaveletTreeView::deserialize(reader);
     benchmark::DoNotOptimize(view_tree);
 
     for (size_t i = 0; i < query; i++) {
@@ -152,16 +152,16 @@ static void BM_WaveletTreeViewSegment(benchmark::State& state) {
         generate_random_data(query, data_size + 1 - length, rng);
 
     WaveletTree orig_tree(alphabet_size, data);
-    pixie::OutputBitStream bs;
-    orig_tree.serialize(bs);
-    std::vector<uint64_t> serialized_data = bs.extract();
-    std::span<const std::byte> byte_span(
-        reinterpret_cast<const std::byte*>(serialized_data.data()),
-        serialized_data.size() * sizeof(uint64_t));
+    pixie::VectorOutputSink output;
+    pixie::BinaryWriter writer(output);
+    orig_tree.serialize(writer);
+    writer.finish();
+    std::vector<std::byte> serialized_data = output.take();
+    pixie::BinaryReader reader(serialized_data);
 
     state.ResumeTiming();
 
-    auto view_tree = pixie::WaveletTreeView::deserialize(byte_span);
+    auto view_tree = pixie::WaveletTreeView::deserialize(reader);
     benchmark::DoNotOptimize(view_tree);
 
     for (size_t i = 0; i < query; i++) {
