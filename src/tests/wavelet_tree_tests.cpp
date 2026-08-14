@@ -34,16 +34,32 @@ struct WaveletNodeOffsets {
   std::size_t middle;
 };
 
-std::vector<WaveletNodeOffsets> locate_wavelet_nodes(
+struct WaveletArtifactOffsets {
+  std::size_t alphabet_size;
+  std::size_t data_size;
+  std::size_t root;
+  std::size_t node_count;
+  std::vector<WaveletNodeOffsets> nodes;
+  std::size_t leaves;
+  std::size_t permutation;
+};
+
+WaveletArtifactOffsets locate_wavelet_artifact(
     std::span<const std::byte> artifact) {
   pixie::BinaryReader reader(artifact);
   reader.skip(3 * sizeof(std::uint64_t));
-  reader.skip(3 * sizeof(std::uint64_t));
+  const std::size_t alphabet_size = reader.position();
+  const std::size_t alphabet_count = reader.read_size();
+  const std::size_t data_size = reader.position();
+  reader.skip(sizeof(std::uint64_t));
+  const std::size_t root = reader.position();
+  reader.skip(sizeof(std::uint64_t));
+  const std::size_t node_count_offset = reader.position();
   const std::size_t node_count = reader.read_size();
 
   const auto skip_storage = [&reader] { reader.skip(reader.read_size()); };
-  std::vector<WaveletNodeOffsets> result;
-  result.reserve(node_count);
+  std::vector<WaveletNodeOffsets> nodes;
+  nodes.reserve(node_count);
   for (std::size_t node = 0; node < node_count; ++node) {
     const std::size_t parent = reader.position();
     reader.skip(sizeof(std::uint64_t));
@@ -53,7 +69,7 @@ std::vector<WaveletNodeOffsets> locate_wavelet_nodes(
     reader.skip(sizeof(std::uint64_t));
     const std::size_t middle = reader.position();
     reader.skip(sizeof(std::uint64_t));
-    result.push_back({parent, left_child, right_child, middle});
+    nodes.push_back({parent, left_child, right_child, middle});
 
     skip_storage();
     reader.skip(7 * sizeof(std::uint64_t) + 2 * sizeof(std::uint32_t) +
@@ -62,7 +78,11 @@ std::vector<WaveletNodeOffsets> locate_wavelet_nodes(
       skip_storage();
     }
   }
-  return result;
+  const std::size_t leaves = reader.position();
+  const std::size_t permutation =
+      leaves + alphabet_count * sizeof(std::uint64_t);
+  return {alphabet_size,    data_size, root,       node_count_offset,
+          std::move(nodes), leaves,    permutation};
 }
 
 }  // namespace
@@ -359,7 +379,8 @@ TEST(WaveletTreeTest, SerializationRejectsMalformedTopologyTransactionally) {
   original.serialize(writer);
   writer.finish();
   const std::vector<std::byte> valid = output.take();
-  const std::vector<WaveletNodeOffsets> nodes = locate_wavelet_nodes(valid);
+  const auto layout = locate_wavelet_artifact(valid);
+  const auto& nodes = layout.nodes;
   ASSERT_EQ(nodes.size(), 7u);
 
   const auto expect_rejected = [&](std::vector<std::byte> artifact) {
@@ -399,4 +420,67 @@ TEST(WaveletTreeTest, SerializationRejectsMalformedTopologyTransactionally) {
   auto invalid_middle = valid;
   overwrite_u64(invalid_middle, nodes[0].middle, 8);
   expect_rejected(std::move(invalid_middle));
+}
+
+TEST(WaveletTreeTest,
+     SerializationRejectsMalformedFrameMetadataTransactionally) {
+  constexpr std::size_t kReservedOffset =
+      sizeof(std::uint64_t) + sizeof(std::uint32_t);
+  const std::vector<std::uint64_t> data = {0, 1, 2, 3, 4, 5, 6, 7};
+  const WaveletTree original(8, data);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  const std::vector<std::byte> valid = output.take();
+  const auto layout = locate_wavelet_artifact(valid);
+  ASSERT_EQ(layout.nodes.size(), 7u);
+
+  const auto expect_rejected = [&](std::vector<std::byte> artifact) {
+    pixie::BinaryReader reader(artifact);
+    EXPECT_THROW((void)pixie::WaveletTreeView::deserialize(reader),
+                 std::exception);
+    EXPECT_EQ(reader.position(), 0u);
+  };
+
+  auto incompatible_header = valid;
+  incompatible_header[kReservedOffset] = std::byte{1};
+  expect_rejected(std::move(incompatible_header));
+
+  auto unpadded_size = valid;
+  overwrite_u64(unpadded_size, 2 * sizeof(std::uint64_t),
+                3 * sizeof(std::uint64_t) + 1);
+  expect_rejected(std::move(unpadded_size));
+
+  auto excessive_node_count = valid;
+  overwrite_u64(excessive_node_count, layout.node_count,
+                std::numeric_limits<std::uint64_t>::max());
+  expect_rejected(std::move(excessive_node_count));
+
+  auto truncated_nodes = valid;
+  overwrite_u64(truncated_nodes, layout.node_count, 1000);
+  expect_rejected(std::move(truncated_nodes));
+
+  auto excessive_alphabet = valid;
+  overwrite_u64(excessive_alphabet, layout.alphabet_size,
+                std::numeric_limits<std::uint64_t>::max());
+  expect_rejected(std::move(excessive_alphabet));
+
+  auto duplicate_permutation = valid;
+  overwrite_u64(duplicate_permutation, layout.permutation, 0);
+  overwrite_u64(duplicate_permutation,
+                layout.permutation + sizeof(std::uint64_t), 0);
+  expect_rejected(std::move(duplicate_permutation));
+
+  auto invalid_root = valid;
+  overwrite_u64(invalid_root, layout.root, layout.nodes.size());
+  expect_rejected(std::move(invalid_root));
+
+  auto invalid_leaf = valid;
+  overwrite_u64(invalid_leaf, layout.leaves, layout.nodes.size());
+  expect_rejected(std::move(invalid_leaf));
+
+  auto wrong_root_length = valid;
+  overwrite_u64(wrong_root_length, layout.data_size, data.size() + 1);
+  expect_rejected(std::move(wrong_root_length));
 }
