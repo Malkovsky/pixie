@@ -8,12 +8,50 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <random>
 #include <span>
 #include <string>
 #include <vector>
 
 namespace {
+
+void overwrite_u64(std::vector<std::byte>& bytes,
+                   std::size_t offset,
+                   std::uint64_t value) {
+  for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
+    bytes[offset + byte] =
+        static_cast<std::byte>((value >> (byte * 8)) & 0xffu);
+  }
+}
+
+struct RankSelectSampleLayout {
+  std::size_t select1_begin;
+  std::size_t select1_count;
+  std::size_t select0_begin;
+  std::size_t select0_count;
+  std::size_t storage_offset;
+};
+
+RankSelectSampleLayout locate_rank_select_samples(
+    std::span<const std::byte> artifact) {
+  pixie::BinaryReader reader(artifact);
+  reader.skip(3 * sizeof(std::uint64_t));
+  RankSelectSampleLayout result;
+  result.select1_begin = reader.read_size();
+  result.select1_count = reader.read_size();
+  result.select0_begin = reader.read_size();
+  result.select0_count = reader.read_size();
+  reader.skip(2 * sizeof(std::uint32_t) + 8 * sizeof(std::uint64_t) +
+              32 * sizeof(std::uint16_t));
+  for (std::size_t storage = 0; storage < 2; ++storage) {
+    reader.skip(reader.read_size());
+  }
+  const std::size_t sample_bytes = reader.read_size();
+  result.storage_offset = reader.position();
+  reader.skip(sample_bytes);
+  return result;
+}
 
 template <class Support>
 class RankSelectSpecificationTest : public testing::Test {};
@@ -153,6 +191,45 @@ TEST(RankSelectSupportTest, SerializesDirectlyToMappedFile) {
     EXPECT_EQ(restored.rank0(position), original.rank0(position));
   }
   std::filesystem::remove(path);
+}
+
+TEST(RankSelectSupportTest,
+     DeserializationRejectsOutOfRangeSelectSamplesTransactionally) {
+  constexpr std::size_t kBitCount = 4097;
+  std::vector<std::uint64_t> words((kBitCount + 63) / 64,
+                                   0xaaaaaaaaaaaaaaaaULL);
+  const pixie::RankSelectSupport<> original(words, kBitCount);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  const std::vector<std::byte> valid = output.take();
+  const RankSelectSampleLayout layout = locate_rank_select_samples(valid);
+  ASSERT_NE(layout.select1_count, 0u);
+  ASSERT_NE(layout.select0_count, 0u);
+
+  const auto expect_rejected = [&](std::size_t sample) {
+    std::vector<std::byte> artifact = valid;
+    overwrite_u64(artifact,
+                  layout.storage_offset + sample * sizeof(std::uint64_t),
+                  std::numeric_limits<std::uint64_t>::max());
+
+    pixie::BinaryReader owning_reader(artifact);
+    EXPECT_THROW(
+        (void)pixie::RankSelectSupport<>::deserialize(words, owning_reader),
+        std::invalid_argument);
+    EXPECT_EQ(owning_reader.position(), 0u);
+
+    pixie::BinaryReader view_reader(artifact);
+    EXPECT_THROW(
+        (void)pixie::RankSelectSupport<pixie::ReadOnlyStorageView>::deserialize(
+            words, view_reader),
+        std::invalid_argument);
+    EXPECT_EQ(view_reader.position(), 0u);
+  };
+
+  expect_rejected(layout.select1_begin);
+  expect_rejected(layout.select0_begin);
 }
 
 }  // namespace

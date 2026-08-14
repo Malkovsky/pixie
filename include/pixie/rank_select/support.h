@@ -189,6 +189,19 @@ class RankSelectSupport
       throw std::invalid_argument(
           "Invalid serialized rank/select sample metadata");
     }
+    const auto samples = select_samples_.as_words64();
+    const auto sample_values_fit = [samples, num_superblocks](
+                                       std::size_t begin, std::size_t count) {
+      return std::ranges::all_of(samples.subspan(begin, count),
+                                 [num_superblocks](std::uint64_t sample) {
+                                   return sample < num_superblocks;
+                                 });
+    };
+    if (!sample_values_fit(select1_sample_begin_, select1_sample_count_) ||
+        !sample_values_fit(select0_sample_begin_, select0_sample_count_)) {
+      throw std::invalid_argument(
+          "Serialized rank/select sample references an invalid super block");
+    }
 
     for (std::size_t i = 0; i < 8; ++i) {
       if (delta_super[i] != i * kSuperBlockSize) {

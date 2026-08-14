@@ -5,6 +5,7 @@
 #include <pixie/rank_select/support.h>
 #include <pixie/wavelet_tree.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -103,6 +104,60 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
   std::vector<WaveletNode> nodes_;
   std::vector<node_index_t> leaves_;
   std::vector<size_t> permutation_, inverse_permutation_;
+
+  void validate_deserialized_topology() const {
+    if (root_ == npos) {
+      return;
+    }
+    if (nodes_[root_].parent != npos) {
+      throw std::invalid_argument("Serialized wavelet-tree root has a parent");
+    }
+
+    std::vector<std::uint8_t> incoming_edges(nodes_.size());
+    for (node_index_t parent = 0; parent < nodes_.size(); ++parent) {
+      const WaveletNode& node = nodes_[parent];
+      for (const node_index_t child : {node.left_child, node.right_child}) {
+        if (child == npos) {
+          continue;
+        }
+        if (nodes_[child].parent != parent) {
+          throw std::invalid_argument(
+              "Serialized wavelet-tree parent/child links disagree");
+        }
+        if (incoming_edges[child] != 0) {
+          throw std::invalid_argument(
+              "Serialized wavelet-tree node has multiple parents");
+        }
+        ++incoming_edges[child];
+      }
+    }
+
+    for (node_index_t node = 0; node < nodes_.size(); ++node) {
+      const std::size_t expected_edges = node == root_ ? 0 : 1;
+      if (incoming_edges[node] != expected_edges) {
+        throw std::invalid_argument(
+            "Serialized wavelet-tree node is detached from its parent");
+      }
+    }
+
+    std::vector<bool> reached(nodes_.size());
+    std::vector<node_index_t> pending = {root_};
+    while (!pending.empty()) {
+      const node_index_t node = pending.back();
+      pending.pop_back();
+      reached[node] = true;
+      if (nodes_[node].left_child != npos) {
+        pending.push_back(nodes_[node].left_child);
+      }
+      if (nodes_[node].right_child != npos) {
+        pending.push_back(nodes_[node].right_child);
+      }
+    }
+    if (std::ranges::find(reached, false) != reached.end()) {
+      throw std::invalid_argument(
+          "Serialized wavelet-tree contains unreachable nodes");
+    }
+  }
 
   /**
    * @brief Recursive building of the nodes
@@ -545,10 +600,12 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
       if (!valid_node_index(node.parent) ||
           !valid_node_index(node.left_child) ||
           !valid_node_index(node.right_child) ||
-          node.data.size() > node.bit_vector_data.size_bits()) {
+          node.data.size() > node.bit_vector_data.size_bits() ||
+          node.middle == 0 || node.middle >= result.alphabet_size_) {
         throw std::invalid_argument("Invalid serialized wavelet-tree node");
       }
     }
+    result.validate_deserialized_topology();
     if (result.root_ != npos &&
         result.nodes_[result.root_].data.size() != result.data_size_) {
       throw std::invalid_argument(

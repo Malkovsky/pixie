@@ -252,6 +252,46 @@ static std::vector<std::byte> serialize_rmq(const SerializableRmq& rmq) {
   return output.take();
 }
 
+static void overwrite_u64(std::vector<std::byte>& bytes,
+                          std::size_t offset,
+                          std::uint64_t value) {
+  for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
+    bytes[offset + byte] =
+        static_cast<std::byte>((value >> (byte * 8)) & 0xffu);
+  }
+}
+
+struct RmqArtifactLayout {
+  std::size_t bp_bit_count;
+  std::size_t top_block_size;
+  std::size_t bp_storage_size;
+  std::size_t candidate_count;
+  std::size_t candidates;
+  std::size_t has_rank_index;
+  std::size_t candidate_size;
+  std::size_t bp_storage_bytes;
+};
+
+static RmqArtifactLayout locate_rmq_artifact(
+    std::span<const std::byte> artifact) {
+  pixie::BinaryReader reader(artifact);
+  reader.skip(6 * sizeof(std::uint64_t));
+  RmqArtifactLayout result;
+  result.bp_bit_count = reader.position();
+  reader.skip(sizeof(std::uint64_t));
+  result.top_block_size = reader.position();
+  reader.skip(3 * sizeof(std::uint64_t));
+  result.bp_storage_size = reader.position();
+  result.bp_storage_bytes = reader.read_size();
+  reader.skip(result.bp_storage_bytes);
+  result.candidate_count = reader.position();
+  result.candidate_size = reader.read_size();
+  result.candidates = reader.position();
+  reader.skip(result.candidate_size * sizeof(std::uint64_t));
+  result.has_rank_index = reader.position();
+  return result;
+}
+
 static void expect_serialized_rmq_ranges(const SerializableRmq& original,
                                          const SerializableRmq& restored,
                                          std::span<const std::int64_t> values,
@@ -507,6 +547,57 @@ TEST(RmqSerializationTest, RejectsMalformedBpEncodingAndPadding) {
   EXPECT_THROW((void)SerializableRmq::deserialize(values, reader),
                std::invalid_argument);
   EXPECT_EQ(reader.position(), 0u);
+}
+
+TEST(RmqSerializationTest, RejectsMalformedIndexMetadataTransactionally) {
+  std::vector<std::int64_t> values(4097);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] = static_cast<std::int64_t>((i * 17 + i / 11) % 29);
+  }
+  const SerializableRmq original(values);
+  const std::vector<std::byte> valid = serialize_rmq(original);
+  const RmqArtifactLayout layout = locate_rmq_artifact(valid);
+  ASSERT_EQ(layout.candidate_size, 4u);
+
+  const auto expect_rejected = [&](std::vector<std::byte> artifact) {
+    pixie::BinaryReader reader(artifact);
+    EXPECT_THROW((void)SerializableRmq::deserialize(values, reader),
+                 std::invalid_argument);
+    EXPECT_EQ(reader.position(), 0u);
+  };
+
+  auto misaligned_storage = valid;
+  overwrite_u64(misaligned_storage, layout.bp_storage_size,
+                layout.bp_storage_bytes - 1);
+  expect_rejected(std::move(misaligned_storage));
+
+  auto insufficient_storage = valid;
+  overwrite_u64(insufficient_storage, layout.bp_bit_count,
+                layout.bp_storage_bytes * 8 + 64);
+  expect_rejected(std::move(insufficient_storage));
+
+  auto invalid_marker = valid;
+  invalid_marker[layout.has_rank_index] = std::byte{2};
+  expect_rejected(std::move(invalid_marker));
+
+  auto invalid_candidate = valid;
+  overwrite_u64(invalid_candidate, layout.candidates, values.size());
+  expect_rejected(std::move(invalid_candidate));
+
+  auto invalid_sparse_padding = valid;
+  overwrite_u64(invalid_sparse_padding,
+                layout.candidates + 3 * sizeof(std::uint64_t), 0);
+  expect_rejected(std::move(invalid_sparse_padding));
+
+  const std::vector<std::int64_t> empty_values;
+  const SerializableRmq empty(empty_values);
+  std::vector<std::byte> invalid_empty = serialize_rmq(empty);
+  const RmqArtifactLayout empty_layout = locate_rmq_artifact(invalid_empty);
+  overwrite_u64(invalid_empty, empty_layout.top_block_size, 1);
+  pixie::BinaryReader empty_reader(invalid_empty);
+  EXPECT_THROW((void)SerializableRmq::deserialize(empty_values, empty_reader),
+               std::invalid_argument);
+  EXPECT_EQ(empty_reader.position(), 0u);
 }
 
 template <class Case>

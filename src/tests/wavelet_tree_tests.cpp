@@ -9,11 +9,63 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <random>
 #include <span>
 #include <vector>
 
 using pixie::WaveletTree;
+
+namespace {
+
+void overwrite_u64(std::vector<std::byte>& bytes,
+                   std::size_t offset,
+                   std::uint64_t value) {
+  for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
+    bytes[offset + byte] =
+        static_cast<std::byte>((value >> (byte * 8)) & 0xffu);
+  }
+}
+
+struct WaveletNodeOffsets {
+  std::size_t parent;
+  std::size_t left_child;
+  std::size_t right_child;
+  std::size_t middle;
+};
+
+std::vector<WaveletNodeOffsets> locate_wavelet_nodes(
+    std::span<const std::byte> artifact) {
+  pixie::BinaryReader reader(artifact);
+  reader.skip(3 * sizeof(std::uint64_t));
+  reader.skip(3 * sizeof(std::uint64_t));
+  const std::size_t node_count = reader.read_size();
+
+  const auto skip_storage = [&reader] { reader.skip(reader.read_size()); };
+  std::vector<WaveletNodeOffsets> result;
+  result.reserve(node_count);
+  for (std::size_t node = 0; node < node_count; ++node) {
+    const std::size_t parent = reader.position();
+    reader.skip(sizeof(std::uint64_t));
+    const std::size_t left_child = reader.position();
+    reader.skip(sizeof(std::uint64_t));
+    const std::size_t right_child = reader.position();
+    reader.skip(sizeof(std::uint64_t));
+    const std::size_t middle = reader.position();
+    reader.skip(sizeof(std::uint64_t));
+    result.push_back({parent, left_child, right_child, middle});
+
+    skip_storage();
+    reader.skip(7 * sizeof(std::uint64_t) + 2 * sizeof(std::uint32_t) +
+                8 * sizeof(std::uint64_t) + 32 * sizeof(std::uint16_t));
+    for (std::size_t storage = 0; storage < 3; ++storage) {
+      skip_storage();
+    }
+  }
+  return result;
+}
+
+}  // namespace
 
 TEST(WaveletTreeTest, BasicSelect) {
   const std::vector<uint64_t> data = {3, 2, 0, 3, 1, 1, 2};
@@ -215,6 +267,24 @@ TEST(WaveletTreeTest, SerializationAdvancesAcrossFramedArtifacts) {
   EXPECT_EQ(second.get_segment(0, data.size()), data);
 }
 
+TEST(WaveletTreeTest, SerializationRoundTripsAnEmptyTree) {
+  const std::vector<std::uint64_t> data;
+  const WaveletTree original(0, data);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  const std::vector<std::byte> artifact = output.take();
+  pixie::BinaryReader reader(artifact);
+  const auto restored = pixie::WaveletTreeView::deserialize(reader);
+
+  EXPECT_TRUE(reader.empty());
+  EXPECT_TRUE(restored.empty());
+  EXPECT_EQ(restored.rank(0, 0), 0u);
+  EXPECT_EQ(restored.select(0, 1), 0u);
+  EXPECT_TRUE(restored.get_segment(0, 0).empty());
+}
+
 TEST(WaveletTreeTest, SerializesDirectlyToMappedFile) {
   const std::vector<std::uint64_t> data = {3, 2, 0, 3, 1, 1, 2};
   const WaveletTree original(4, data);
@@ -278,4 +348,55 @@ TEST(WaveletTreeTest, SerializationRejectsUnalignedZeroCopyArtifacts) {
   EXPECT_THROW((void)pixie::WaveletTreeView::deserialize(reader),
                std::invalid_argument);
   EXPECT_EQ(reader.position(), 0u);
+}
+
+TEST(WaveletTreeTest, SerializationRejectsMalformedTopologyTransactionally) {
+  constexpr std::uint64_t kNoNode = std::numeric_limits<std::uint64_t>::max();
+  const std::vector<std::uint64_t> data = {0, 1, 2, 3, 4, 5, 6, 7};
+  const WaveletTree original(8, data);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  const std::vector<std::byte> valid = output.take();
+  const std::vector<WaveletNodeOffsets> nodes = locate_wavelet_nodes(valid);
+  ASSERT_EQ(nodes.size(), 7u);
+
+  const auto expect_rejected = [&](std::vector<std::byte> artifact) {
+    pixie::BinaryReader reader(artifact);
+    EXPECT_THROW((void)pixie::WaveletTreeView::deserialize(reader),
+                 std::invalid_argument);
+    EXPECT_EQ(reader.position(), 0u);
+  };
+
+  auto root_with_parent = valid;
+  overwrite_u64(root_with_parent, nodes[0].parent, 0);
+  expect_rejected(std::move(root_with_parent));
+
+  auto self_loop = valid;
+  overwrite_u64(self_loop, nodes[2].left_child, 2);
+  expect_rejected(std::move(self_loop));
+
+  auto inconsistent_parent = valid;
+  overwrite_u64(inconsistent_parent, nodes[1].parent, kNoNode);
+  expect_rejected(std::move(inconsistent_parent));
+
+  auto duplicate_parent = valid;
+  overwrite_u64(duplicate_parent, nodes[0].right_child, 1);
+  expect_rejected(std::move(duplicate_parent));
+
+  auto detached_node = valid;
+  overwrite_u64(detached_node, nodes[0].left_child, kNoNode);
+  overwrite_u64(detached_node, nodes[1].parent, kNoNode);
+  expect_rejected(std::move(detached_node));
+
+  auto disconnected_cycle = valid;
+  overwrite_u64(disconnected_cycle, nodes[0].left_child, kNoNode);
+  overwrite_u64(disconnected_cycle, nodes[1].parent, 2);
+  overwrite_u64(disconnected_cycle, nodes[2].left_child, 1);
+  expect_rejected(std::move(disconnected_cycle));
+
+  auto invalid_middle = valid;
+  overwrite_u64(invalid_middle, nodes[0].middle, 8);
+  expect_rejected(std::move(invalid_middle));
 }

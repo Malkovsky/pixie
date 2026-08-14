@@ -43,6 +43,23 @@ TEST(BinarySerializationTest, UsesCanonicalLittleEndianIntegerEncoding) {
   EXPECT_TRUE(reader.empty());
 }
 
+TEST(BinarySerializationTest, RoundTripsEverySignedIntegerWidth) {
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  writer.write_i8(-2);
+  writer.write_i16(-3);
+  writer.write_i32(-4);
+  writer.write_i64(-5);
+  writer.finish();
+
+  pixie::BinaryReader reader(output.bytes());
+  EXPECT_EQ(reader.read_i8(), -2);
+  EXPECT_EQ(reader.read_i16(), -3);
+  EXPECT_EQ(reader.read_i32(), -4);
+  EXPECT_EQ(reader.read_i64(), -5);
+  EXPECT_TRUE(reader.empty());
+}
+
 TEST(BinarySerializationTest, WritesBytesFramesAndPadding) {
   const std::array payload = {std::byte{1}, std::byte{2}, std::byte{3}};
   std::array<std::byte, 16> storage{};
@@ -148,6 +165,42 @@ TEST(BinarySerializationTest, RejectsBadPaddingAndInvalidPatch) {
   writer.finish();
 }
 
+TEST(BinarySerializationTest, RejectsExcessivePaddingTransactionally) {
+  const std::array bytes = {std::byte{0}, std::byte{0}};
+  pixie::BinaryReader reader(bytes);
+  EXPECT_THROW(reader.require_zero_padding(1), pixie::SerializationError);
+  EXPECT_EQ(reader.position(), 0u);
+}
+
+TEST(BinarySerializationTest, OutputSinksCheckDirectWritesAndPatches) {
+  const std::array initial = {std::byte{1}, std::byte{2}, std::byte{3}};
+  const std::array patch = {std::byte{7}, std::byte{8}};
+
+  pixie::VectorOutputSink vector_output;
+  vector_output.reserve_bytes(16);
+  vector_output.write(initial);
+  vector_output.write_at(1, patch);
+  vector_output.write_at(vector_output.size_bytes(), {});
+  EXPECT_THROW(vector_output.write_at(2, patch), std::out_of_range);
+  EXPECT_THROW(vector_output.write_at(4, {}), std::out_of_range);
+  vector_output.finish();
+  EXPECT_EQ(vector_output.bytes()[0], std::byte{1});
+  EXPECT_EQ(vector_output.bytes()[1], std::byte{7});
+  EXPECT_EQ(vector_output.bytes()[2], std::byte{8});
+
+  std::array<std::byte, 4> storage{};
+  pixie::SpanOutputSink span_output(storage);
+  EXPECT_TRUE(span_output.empty());
+  EXPECT_EQ(span_output.capacity_bytes(), storage.size());
+  span_output.write(initial);
+  span_output.write_at(1, patch);
+  EXPECT_THROW(span_output.write(patch), std::length_error);
+  EXPECT_THROW(span_output.write_at(2, patch), std::out_of_range);
+  span_output.finish();
+  EXPECT_EQ(span_output.bytes()[1], std::byte{7});
+  EXPECT_EQ(span_output.bytes()[2], std::byte{8});
+}
+
 TEST(BinarySerializationTest, RejectsEmptyStagingBuffers) {
   pixie::VectorOutputSink output;
   EXPECT_THROW((void)pixie::BinaryWriter(output, std::size_t{0}),
@@ -216,6 +269,30 @@ class FailingOutputSink {
   void finish() {}
 };
 
+class PatchFailingOutputSink {
+ public:
+  void write(std::span<const std::byte> bytes) { size_bytes += bytes.size(); }
+
+  void write_at(std::size_t, std::span<const std::byte>) {
+    throw std::runtime_error("injected patch failure");
+  }
+
+  void finish() {}
+
+  std::size_t size_bytes = 0;
+};
+
+class FinishFailingOutputSink {
+ public:
+  void write(std::span<const std::byte> bytes) { size_bytes += bytes.size(); }
+
+  void write_at(std::size_t, std::span<const std::byte>) {}
+
+  void finish() { throw std::runtime_error("injected finish failure"); }
+
+  std::size_t size_bytes = 0;
+};
+
 TEST(BinarySerializationTest, BecomesUnusableAfterSinkFailure) {
   FailingOutputSink output;
   std::array<std::byte, 1> staging{};
@@ -223,6 +300,38 @@ TEST(BinarySerializationTest, BecomesUnusableAfterSinkFailure) {
   EXPECT_THROW(writer.write_u8(1), std::runtime_error);
   EXPECT_THROW(writer.write_u8(2), std::logic_error);
   EXPECT_THROW(writer.finish(), std::logic_error);
+}
+
+TEST(BinarySerializationTest, BecomesUnusableAfterPatchOrFinishFailure) {
+  PatchFailingOutputSink patch_output;
+  std::array<std::byte, 4> patch_staging{};
+  pixie::BinaryWriter patch_writer(patch_output, patch_staging);
+  patch_writer.write_u64(0);
+  ASSERT_EQ(patch_output.size_bytes, sizeof(std::uint64_t));
+  EXPECT_THROW(patch_writer.patch_u64(0, 1), std::runtime_error);
+  EXPECT_THROW(patch_writer.flush(), std::logic_error);
+
+  FinishFailingOutputSink finish_output;
+  pixie::BinaryWriter finish_writer(finish_output);
+  finish_writer.write_u8(1);
+  EXPECT_THROW(finish_writer.finish(), std::runtime_error);
+  EXPECT_EQ(finish_output.size_bytes, 1u);
+  EXPECT_THROW(finish_writer.finish(), std::logic_error);
+}
+
+TEST(BinarySerializationTest, FlushDeliversBufferedDataAndKeepsWriterOpen) {
+  pixie::VectorOutputSink output;
+  std::array<std::byte, 4> staging{};
+  pixie::BinaryWriter writer(output, staging);
+  EXPECT_TRUE(writer.empty());
+  writer.write_u16(0x1234);
+  EXPECT_TRUE(output.empty());
+  writer.flush();
+  EXPECT_EQ(output.size_bytes(), sizeof(std::uint16_t));
+  writer.flush();
+  writer.write_u8(5);
+  writer.finish();
+  EXPECT_EQ(output.size_bytes(), 3u);
 }
 
 TEST(BinarySerializationTest, FinishIsIdempotentAndClosesTheWriter) {
@@ -257,6 +366,47 @@ TEST(BinarySerializationTest, WritesAndBackpatchesAFileWithBoundedMemory) {
   EXPECT_EQ(reader.read_u32(), 0x12345678u);
   reader.require_zero_padding(4);
   std::filesystem::remove(path);
+}
+
+TEST(BinarySerializationTest, FileSinkSupportsMovesAndChecksItsState) {
+  const auto first_path = std::filesystem::temp_directory_path() /
+                          "pixie_file_output_sink_move_test.bin";
+  const auto second_path = std::filesystem::temp_directory_path() /
+                           "pixie_file_output_sink_assignment_test.bin";
+  std::filesystem::remove(first_path);
+  std::filesystem::remove(second_path);
+  const std::array bytes = {std::byte{1}, std::byte{2}, std::byte{3}};
+  const std::array patch = {std::byte{9}};
+  {
+    pixie::io::FileOutputSink first(first_path);
+    first.write(bytes);
+    pixie::io::FileOutputSink moved(std::move(first));
+    EXPECT_THROW(first.write({}), std::logic_error);
+
+    pixie::io::FileOutputSink assigned(second_path);
+    assigned = std::move(moved);
+    EXPECT_EQ(assigned.size_bytes(), bytes.size());
+    assigned.write_at(1, patch);
+    EXPECT_THROW(assigned.write_at(3, patch), std::out_of_range);
+    assigned.finish();
+    EXPECT_NO_THROW(assigned.finish());
+    EXPECT_THROW(assigned.write({}), std::logic_error);
+  }
+
+  pixie::io::MappedFile file(first_path);
+  ASSERT_EQ(file.as_bytes().size(), bytes.size());
+  EXPECT_EQ(file.as_bytes()[1], std::byte{9});
+  std::filesystem::remove(first_path);
+  std::filesystem::remove(second_path);
+}
+
+TEST(BinarySerializationTest, FileSinkReportsOpenFailure) {
+  const auto missing_directory =
+      std::filesystem::temp_directory_path() / "pixie_missing_output_directory";
+  std::filesystem::remove_all(missing_directory);
+  EXPECT_THROW(
+      (void)pixie::io::FileOutputSink(missing_directory / "artifact.bin"),
+      std::system_error);
 }
 
 bool packed_bit(std::span<const std::uint64_t> words, std::size_t position) {
@@ -298,6 +448,7 @@ TEST(PackedBitBuilderTest, SupportsPartialFieldsAndSafeReuse) {
   EXPECT_EQ(first[0], 0xfu);
 
   builder.write_bit(true);
+  builder.write_bits(42, 0);
   const auto second = builder.take_words();
   ASSERT_EQ(second.size(), 1u);
   EXPECT_EQ(second[0], 1u);
