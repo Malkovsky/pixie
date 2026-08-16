@@ -98,8 +98,11 @@ each implementation.
 2. **Non-owning indexes**: indexes use external immutable data where
    appropriate, commonly `std::span<const std::uint64_t>`. The caller keeps
    that data alive and stable for the index lifetime.
-3. **SIMD conditional compilation**: use `PIXIE_AVX512_SUPPORT` and
-   `PIXIE_AVX2_SUPPORT` guards with a scalar fallback.
+3. **SIMD primitive dispatch**: keep `PIXIE_AVX512_SUPPORT` and
+   `PIXIE_AVX2_SUPPORT` feature guards, SIMD implementations, and scalar
+   fallbacks inside the low-level primitive header that owns the operation.
+   Callers use one unconditional primitive API and must not branch on Pixie
+   SIMD feature macros.
 4. **Target domain**: optimize for bit sequences and indexes up to `2^64`
    bits.
 5. **Platform**: Linux/Unix is the current target platform. `MappedFile`
@@ -115,6 +118,20 @@ each implementation.
    invalidated by owner resize or destruction.
 8. **Optional adapters**: third-party implementations stay behind their build
    option and must not become a library runtime dependency.
+9. **Serialization and residency**: `BinaryReader` is a parse-time cursor over
+   contiguous virtual address space; a byte span does not imply that every page
+   is resident in RAM. A reader over `MappedFile` relies on normal OS demand
+   paging. Zero-copy deserializers retain views into the backing storage, not
+   the reader, so the backing owner must remain alive and immutable while
+   queries access those views directly.
+10. **Serialization output buffering**: `BinaryWriter` writes through an
+    explicit seekable sink and owns only a fixed-size staging buffer, or borrows
+    one supplied by the caller. `VectorOutputSink` is the explicit
+    whole-artifact-in-memory choice; `SpanOutputSink` and POSIX
+    `io::FileOutputSink` provide bounded-memory destinations. Call
+    `BinaryWriter::finish()` before consuming the sink. Current framing uses
+    backpatching, so non-seekable pipes, sockets, and compression streams would
+    require a future counting pass or format change.
 
 ### Why Header-Only?
 
@@ -227,8 +244,9 @@ ctest --preset release -L rank_select_tests
 The registered test executables are `bit_algorithms_unittests`,
 `rank_select_unittests`, `rank_select_tests`, `benchmark_tests`, `test_rmm`,
 `tree_tests`, `wavelet_tree_tests`, `storage_tests`,
-`excess_positions_tests`, `excess_record_lows_tests`, and `rmq_tests`. Run an
-executable directly only when debugging a focused Google Test filter.
+`serialization_tests`, `excess_positions_tests`, `excess_record_lows_tests`,
+and `rmq_tests`. Run an executable directly only when debugging a focused
+Google Test filter.
 
 ### Test Configuration via Environment Variables
 
@@ -327,13 +345,17 @@ The script configures and builds the `coverage` preset, deletes stale
 
 ### Modifying SIMD Code
 
-1. Keep an AVX-512 implementation, AVX2 implementation where useful, and a
+1. Keep feature detection and SIMD/scalar dispatch local to the low-level
+   primitive that owns the operation. Callers must use its stable API
+   unconditionally; do not leak `PIXIE_*_SUPPORT` guards into data-structure
+   code.
+2. Keep an AVX-512 implementation, AVX2 implementation where useful, and a
    scalar fallback behind the existing feature guards.
-2. Include `<immintrin.h>` only in translation units or headers that use SIMD
+3. Include `<immintrin.h>` only in translation units or headers that use SIMD
    intrinsics; do not make it a generic benchmark dependency.
-3. Validate the fallback with the `asan` preset or an isolated
+4. Validate the fallback with the `asan` preset or an isolated
    `DISABLE_AVX512=ON` build.
-4. Build the relevant benchmark preset before claiming a performance result.
+5. Build the relevant benchmark preset before claiming a performance result.
    Use `benchmarks-profile` for hardware counters when supported by the host.
 
 ### Adding Tests

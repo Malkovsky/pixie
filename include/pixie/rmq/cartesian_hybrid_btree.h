@@ -1,6 +1,7 @@
 #pragma once
 
 #include <pixie/bits.h>
+#include <pixie/detail/serialization.h>
 #include <pixie/memory_usage.h>
 #include <pixie/rank_select/support.h>
 #include <pixie/rmq.h>
@@ -22,6 +23,13 @@
 #include <vector>
 
 namespace pixie::rmq {
+
+template <class T,
+          class Compare,
+          class Index,
+          std::size_t LeafSize,
+          bool UseTopSparseOverlay>
+class CartesianHybridBTree;
 
 namespace detail {
 
@@ -58,6 +66,9 @@ template <class Index = std::size_t,
           bool UseHighSparseLayout = true,
           std::size_t HighSparseLayoutLevels = 2>
 class HybridBTreePlusMinusOne {
+  template <class, class, class, std::size_t, bool>
+  friend class ::pixie::rmq::CartesianHybridBTree;
+
  public:
   static_assert(std::is_unsigned_v<Index>,
                 "HybridBTreePlusMinusOne index type must be unsigned");
@@ -354,6 +365,8 @@ class HybridBTreePlusMinusOne {
     }
 
    private:
+    friend class HybridBTreePlusMinusOne;
+
     /**
      * @brief Prepend one BP bit while building the sequence right-to-left.
      */
@@ -438,6 +451,394 @@ class HybridBTreePlusMinusOne {
   };
 
   static_assert(sizeof(Bp512Selector) == 64);
+
+  void serialize_metadata(BinaryWriter& writer) const {
+    if (depth_count_ != 0 &&
+        (owned_rank_index_.has_value() || external_rank_index_ == nullptr)) {
+      throw std::invalid_argument(
+          "Depth RMQ serialization requires external rank support");
+    }
+    if (depth_count_ != 0) {
+      validate_serialized_state(*external_rank_index_,
+                                DeserializationValidation::kQuick);
+    } else {
+      validate_serialized_state(RankSelectSupport<>(),
+                                DeserializationValidation::kQuick);
+    }
+
+    writer.write_size(depth_count_);
+    writer.write_size(internal_selectors_.size());
+    for (const Bp512Selector& selector : internal_selectors_) {
+      for (const std::uint64_t word : selector.bp_bits_) {
+        writer.write_u64(word);
+      }
+    }
+    pixie::detail::write_vector(
+        writer, std::span<const Index>(internal_min_positions_));
+    pixie::detail::write_vector(
+        writer, std::span<const std::int64_t>(internal_min_depths_));
+
+    writer.write_size(high_child_metadata_.size());
+    for (const HighChildMetadata& metadata : high_child_metadata_) {
+      writer.write_size(metadata.position_begin);
+      writer.write_size(metadata.position_end);
+      pixie::detail::write_integral(writer, metadata.min_position);
+      writer.write_i64(metadata.min_depth);
+    }
+    pixie::detail::write_vector(
+        writer, std::span<const std::uint8_t>(high_sparse_min_slots_));
+    pixie::detail::write_vector(
+        writer, std::span<const std::size_t>(internal_level_offsets_));
+    pixie::detail::write_vector(
+        writer, std::span<const std::size_t>(min_summary_level_offsets_));
+    pixie::detail::write_vector(
+        writer, std::span<const std::size_t>(high_level_offsets_));
+    pixie::detail::write_vector(writer,
+                                std::span<const std::size_t>(level_sizes_));
+    pixie::detail::write_vector(
+        writer, std::span<const std::size_t>(level_position_spans_));
+    pixie::detail::write_vector(writer,
+                                std::span<const std::size_t>(level_fanouts_));
+    writer.write_size(high_level_begin_);
+  }
+
+  static HybridBTreePlusMinusOne deserialize_metadata(
+      std::span<const std::uint64_t> bits,
+      const RankSelectSupport<>& rank_index,
+      BinaryReader& reader) {
+    HybridBTreePlusMinusOne result;
+    result.input_bits_ = bits;
+    result.depth_count_ = reader.read_size();
+    result.external_rank_index_ = &rank_index;
+
+    const std::size_t selector_count = reader.read_size();
+    const std::vector<Bp512Selector> empty_selectors;
+    if (selector_count > empty_selectors.max_size()) {
+      throw std::length_error(
+          "Serialized depth RMQ selector count is too large");
+    }
+    if (selector_count >
+        reader.remaining() / (kSelectorWords * sizeof(std::uint64_t))) {
+      throw std::invalid_argument("Truncated serialized depth RMQ selectors");
+    }
+    result.internal_selectors_.resize(selector_count);
+    for (Bp512Selector& selector : result.internal_selectors_) {
+      for (std::uint64_t& word : selector.bp_bits_) {
+        word = reader.read_u64();
+      }
+    }
+    result.internal_min_positions_ = pixie::detail::read_vector<Index>(reader);
+    result.internal_min_depths_ =
+        pixie::detail::read_vector<std::int64_t>(reader);
+
+    const std::size_t metadata_count = reader.read_size();
+    const std::vector<HighChildMetadata> empty_metadata;
+    if (metadata_count > empty_metadata.max_size()) {
+      throw std::length_error(
+          "Serialized depth RMQ child metadata is too large");
+    }
+    constexpr std::size_t kSerializedMetadataBytes =
+        2 * sizeof(std::uint64_t) + sizeof(Index) + sizeof(std::int64_t);
+    if (metadata_count > reader.remaining() / kSerializedMetadataBytes) {
+      throw std::invalid_argument(
+          "Truncated serialized depth RMQ child metadata");
+    }
+    result.high_child_metadata_.resize(metadata_count);
+    for (HighChildMetadata& metadata : result.high_child_metadata_) {
+      metadata.position_begin = reader.read_size();
+      metadata.position_end = reader.read_size();
+      metadata.min_position = pixie::detail::read_integral<Index>(reader);
+      metadata.min_depth = reader.read_i64();
+    }
+    result.high_sparse_min_slots_ =
+        pixie::detail::read_vector<std::uint8_t>(reader);
+    result.internal_level_offsets_ =
+        pixie::detail::read_vector<std::size_t>(reader);
+    result.min_summary_level_offsets_ =
+        pixie::detail::read_vector<std::size_t>(reader);
+    result.high_level_offsets_ =
+        pixie::detail::read_vector<std::size_t>(reader);
+    result.level_sizes_ = pixie::detail::read_vector<std::size_t>(reader);
+    result.level_position_spans_ =
+        pixie::detail::read_vector<std::size_t>(reader);
+    result.level_fanouts_ = pixie::detail::read_vector<std::size_t>(reader);
+    result.high_level_begin_ = reader.read_size();
+    return result;
+  }
+
+  void restore_external_sources(
+      std::span<const std::uint64_t> bits,
+      const RankSelectSupport<>& rank_index) noexcept {
+    input_bits_ = bits;
+    owned_rank_index_.reset();
+    external_rank_index_ = &rank_index;
+  }
+
+  void restore_empty_sources() noexcept {
+    input_bits_ = {};
+    owned_rank_index_.reset();
+    external_rank_index_ = nullptr;
+  }
+
+  void validate_serialized_state(const RankSelectSupport<>& rank_index,
+                                 DeserializationValidation validation) const {
+    if (depth_count_ == 0) {
+      if (!input_bits_.empty() || owned_rank_index_.has_value() ||
+          !internal_selectors_.empty() || !internal_min_positions_.empty() ||
+          !internal_min_depths_.empty() || !high_child_metadata_.empty() ||
+          !high_sparse_min_slots_.empty() || !internal_level_offsets_.empty() ||
+          !min_summary_level_offsets_.empty() || !high_level_offsets_.empty() ||
+          !level_sizes_.empty() || !level_position_spans_.empty() ||
+          !level_fanouts_.empty() ||
+          high_level_begin_ != std::numeric_limits<std::size_t>::max()) {
+        throw std::invalid_argument(
+            "Invalid serialized empty depth RMQ metadata");
+      }
+      return;
+    }
+
+    const std::size_t delta_count = depth_count_ - 1;
+    const std::size_t required_words =
+        delta_count == 0 ? 0 : 1 + (delta_count - 1) / 64;
+    if (required_words > input_bits_.size() ||
+        rank_index.size() < delta_count || owned_rank_index_.has_value()) {
+      throw std::invalid_argument(
+          "Invalid serialized depth RMQ source metadata");
+    }
+
+    const std::size_t level_count = level_sizes_.size();
+    if (level_count == 0 || internal_level_offsets_.size() != level_count ||
+        min_summary_level_offsets_.size() != level_count ||
+        high_level_offsets_.size() != level_count ||
+        level_position_spans_.size() != level_count ||
+        level_fanouts_.size() != level_count) {
+      throw std::invalid_argument(
+          "Invalid serialized depth RMQ topology sizes");
+    }
+
+    const std::size_t expected_leaf_count = 1 + (depth_count_ - 1) / LeafSize;
+    if (level_sizes_[0] != expected_leaf_count ||
+        level_position_spans_[0] != LeafSize || level_fanouts_[0] != 0 ||
+        internal_level_offsets_[0] != 0 ||
+        min_summary_level_offsets_[0] != npos || high_level_offsets_[0] != 0) {
+      throw std::invalid_argument("Invalid serialized depth RMQ leaf topology");
+    }
+
+    std::size_t current_count = expected_leaf_count;
+    std::size_t current_span = LeafSize;
+    std::size_t expected_internal_count = 0;
+    for (std::size_t level = 1; level < level_count; ++level) {
+      const std::size_t expected_fanout =
+          current_count > kHighLevelFanout * kHighLevelFanout
+              ? kMiddleFanout
+              : kHighLevelFanout;
+      current_count = ceil_div(current_count, expected_fanout);
+      current_span = saturating_product(current_span, expected_fanout);
+      if (level_fanouts_[level] != expected_fanout ||
+          level_sizes_[level] != current_count ||
+          level_position_spans_[level] != current_span ||
+          internal_level_offsets_[level] != expected_internal_count) {
+        throw std::invalid_argument(
+            "Invalid serialized depth RMQ level topology");
+      }
+      if (current_count >
+          std::numeric_limits<std::size_t>::max() - expected_internal_count) {
+        throw std::length_error(
+            "Serialized depth RMQ internal count is too large");
+      }
+      expected_internal_count += current_count;
+    }
+    if (current_count != 1 ||
+        internal_selectors_.size() != expected_internal_count) {
+      throw std::invalid_argument(
+          "Invalid serialized depth RMQ selector topology");
+    }
+
+    const std::size_t root_level = level_count - 1;
+    const std::size_t expected_high_begin =
+        level_count == 1
+            ? std::numeric_limits<std::size_t>::max()
+            : (level_fanouts_[root_level] == kHighLevelFanout ? root_level
+                                                              : level_count);
+    if (high_level_begin_ != expected_high_begin) {
+      throw std::invalid_argument(
+          "Invalid serialized depth RMQ high-level topology");
+    }
+
+    std::size_t high_node_count = 0;
+    std::size_t side_summary_count = 0;
+    for (std::size_t level = 1; level < level_count; ++level) {
+      const bool high_level = level >= expected_high_begin;
+      if (high_level_offsets_[level] != high_node_count) {
+        throw std::invalid_argument(
+            "Invalid serialized depth RMQ high-level offsets");
+      }
+      if (high_level) {
+        high_node_count += level_sizes_[level];
+      }
+      const bool embeds =
+          !high_level && level_fanouts_[level] <= kEmbeddedSummaryMaxEntries;
+      const std::size_t expected_summary_offset =
+          embeds ? npos : side_summary_count;
+      if (min_summary_level_offsets_[level] != expected_summary_offset) {
+        throw std::invalid_argument(
+            "Invalid serialized depth RMQ summary offsets");
+      }
+      if (!embeds) {
+        side_summary_count += level_sizes_[level];
+      }
+    }
+    if (internal_min_positions_.size() != side_summary_count ||
+        internal_min_depths_.size() != side_summary_count ||
+        high_node_count >
+            std::numeric_limits<std::size_t>::max() / kHighLevelFanout ||
+        high_child_metadata_.size() != high_node_count * kHighLevelFanout ||
+        high_node_count >
+            std::numeric_limits<std::size_t>::max() / kHighSparseSlotsPerNode ||
+        high_sparse_min_slots_.size() !=
+            high_node_count * kHighSparseSlotsPerNode) {
+      throw std::invalid_argument(
+          "Invalid serialized depth RMQ metadata counts");
+    }
+
+    for (const Index position : internal_min_positions_) {
+      if (position == invalid_index ||
+          static_cast<std::size_t>(position) >= depth_count_) {
+        throw std::invalid_argument(
+            "Invalid serialized depth RMQ minimum position");
+      }
+    }
+    for (std::size_t level = expected_high_begin; level < level_count;
+         ++level) {
+      for (std::size_t node = 0; node < level_sizes_[level]; ++node) {
+        const std::size_t count = entry_count(level, node);
+        const std::size_t first_child = node * level_fanouts_[level];
+        const std::size_t flat = high_level_offsets_[level] + node;
+        for (std::size_t slot = 0; slot < count; ++slot) {
+          const HighChildMetadata& metadata =
+              high_child_metadata_[flat * kHighLevelFanout + slot];
+          const std::size_t child = first_child + slot;
+          const std::size_t expected_begin =
+              child * level_position_spans_[level - 1];
+          const std::size_t expected_end = std::min(
+              depth_count_, expected_begin + level_position_spans_[level - 1]);
+          if (metadata.position_begin != expected_begin ||
+              metadata.position_end != expected_end ||
+              metadata.min_position == invalid_index ||
+              metadata.min_position < expected_begin ||
+              metadata.min_position >= expected_end) {
+            throw std::invalid_argument(
+                "Invalid serialized depth RMQ child metadata");
+          }
+        }
+      }
+    }
+    if (validation == DeserializationValidation::kFull) {
+      validate_exact_metadata();
+    }
+  }
+
+  void validate_exact_metadata() const {
+    for (std::size_t level = 1; level < level_count(); ++level) {
+      for (std::size_t node = 0; node < level_sizes_[level]; ++node) {
+        const std::size_t count = entry_count(level, node);
+        const std::size_t first_child = node * level_fanouts_[level];
+        std::array<DepthCandidate, kSelectorEntries> child_minima{};
+        for (std::size_t slot = 0; slot < count; ++slot) {
+          child_minima[slot] =
+              subtree_min_candidate(level - 1, first_child + slot);
+        }
+
+        Bp512Selector expected_selector;
+        expected_selector.build(count,
+                                [&](std::size_t left, std::size_t right) {
+                                  return strictly_better_candidate(
+                                      child_minima[left], child_minima[right]);
+                                });
+        std::size_t best_slot = 0;
+        for (std::size_t slot = 1; slot < count; ++slot) {
+          if (strictly_better_candidate(child_minima[slot],
+                                        child_minima[best_slot])) {
+            best_slot = slot;
+          }
+        }
+        const DepthCandidate expected_minimum = child_minima[best_slot];
+        if (level_embeds_min_summary(level)) {
+          expected_selector.set_embedded_min_summary(expected_minimum.position,
+                                                     expected_minimum.depth);
+        } else {
+          const std::size_t flat = min_summary_flat_index(level, node);
+          if (internal_min_positions_[flat] != expected_minimum.position ||
+              internal_min_depths_[flat] != expected_minimum.depth) {
+            throw std::invalid_argument(
+                "Serialized depth RMQ minimum disagrees with source");
+          }
+        }
+        if (selector_at(level, node).bp_bits_ != expected_selector.bp_bits_) {
+          throw std::invalid_argument(
+              "Serialized depth RMQ selector disagrees with source");
+        }
+
+        if (!is_high_level(level)) {
+          continue;
+        }
+        const std::size_t high_flat = high_flat_index(level, node);
+        for (std::size_t slot = 0; slot < kHighLevelFanout; ++slot) {
+          HighChildMetadata expected;
+          if (slot < count) {
+            const std::size_t child = first_child + slot;
+            expected.position_begin = node_position_begin(level - 1, child);
+            expected.position_end = node_position_end(level - 1, child);
+            expected.min_position =
+                static_cast<Index>(child_minima[slot].position);
+            expected.min_depth = child_minima[slot].depth;
+          }
+          const HighChildMetadata& actual =
+              high_child_metadata_at(high_flat, slot);
+          if (actual.position_begin != expected.position_begin ||
+              actual.position_end != expected.position_end ||
+              actual.min_position != expected.min_position ||
+              actual.min_depth != expected.min_depth) {
+            throw std::invalid_argument(
+                "Serialized depth RMQ child metadata disagrees with source");
+          }
+        }
+
+        std::array<std::uint8_t, kHighSparseSlotsPerNode> expected_sparse{};
+        for (std::size_t slot = 0; slot < count; ++slot) {
+          expected_sparse[slot] = static_cast<std::uint8_t>(slot);
+        }
+        for (std::size_t sparse_level = 1;
+             sparse_level < kHighSparseTableLevels; ++sparse_level) {
+          const std::size_t span = std::size_t{1} << sparse_level;
+          if (span > count) {
+            break;
+          }
+          const std::size_t half_span = span >> 1;
+          const std::size_t previous = (sparse_level - 1) * kHighLevelFanout;
+          const std::size_t current = sparse_level * kHighLevelFanout;
+          for (std::size_t slot = 0; slot + span <= count; ++slot) {
+            const std::size_t left = expected_sparse[previous + slot];
+            const std::size_t right =
+                expected_sparse[previous + slot + half_span];
+            expected_sparse[current + slot] = static_cast<std::uint8_t>(
+                strictly_better_candidate(child_minima[right],
+                                          child_minima[left])
+                    ? right
+                    : left);
+          }
+        }
+        const std::uint8_t* actual_sparse =
+            high_sparse_min_slots_begin(high_flat);
+        if (!std::ranges::equal(
+                expected_sparse,
+                std::span(actual_sparse, kHighSparseSlotsPerNode))) {
+          throw std::invalid_argument(
+              "Serialized depth RMQ sparse metadata disagrees with source");
+        }
+      }
+    }
+  }
 
   /**
    * @brief Return whether a stored position is one of the missing sentinels.
@@ -1357,6 +1758,32 @@ class CartesianHybridBTree
                                           LeafSize,
                                           UseTopSparseOverlay>,
                      T> {
+ private:
+  using BpDepthRmq = detail::HybridBTreePlusMinusOne<Index, LeafSize, true, 1>;
+
+  struct TopCandidate {
+    Index position = std::numeric_limits<Index>::max();
+  };
+  static_assert(sizeof(TopCandidate) == sizeof(Index));
+
+  struct LoadedState {
+    pixie::AlignedStorage bp_bits_;
+    std::size_t bp_bit_count_ = 0;
+    std::vector<TopCandidate> top_sparse_candidates_;
+    std::size_t top_block_size_ = 4096;
+    std::size_t top_block_count_ = 0;
+    std::size_t top_sparse_levels_ = 0;
+    std::optional<RankSelectSupport<>> bp_index_;
+    BpDepthRmq bp_depth_rmq_;
+  };
+
+  struct LoadTag {};
+
+  static constexpr std::array<std::uint8_t, 8> kSerializationMagic = {
+      'P', 'I', 'X', 'I', 'E', 'R', 'M', 'Q'};
+  static constexpr std::uint32_t kSerializationVersion = 1;
+  static constexpr std::size_t kSerializationHeaderBytes = 48;
+
  public:
   static_assert(std::is_unsigned_v<Index>,
                 "CartesianHybridBTree index type must be unsigned");
@@ -1372,6 +1799,11 @@ class CartesianHybridBTree
   static constexpr std::size_t kMinTopSparseBlockSize = 4096;
   static constexpr std::size_t kMaxTopSparseBlocks = std::size_t{1} << 14;
   static constexpr bool kUseTopSparseOverlay = UseTopSparseOverlay;
+  static constexpr bool kSerializationSupported =
+      std::same_as<T, std::int64_t> &&
+      std::same_as<Compare, std::less<std::int64_t>> &&
+      std::same_as<Index, std::size_t> && LeafSize == 512 &&
+      UseTopSparseOverlay;
 
   /**
    * @brief Construct an empty Cartesian-tree RMQ index.
@@ -1388,6 +1820,172 @@ class CartesianHybridBTree
                                 Compare compare = Compare())
       : values_(values), compare_(compare) {
     build();
+  }
+
+  /**
+   * @brief Serialize the complete owning RMQ metadata.
+   *
+   * @details Available only for the exact default
+   * `CartesianHybridBTree<std::int64_t>` specialization. The external values
+   * are not serialized. The artifact is versioned, canonical little-endian,
+   * and padded to an eight-byte boundary.
+   */
+  void serialize(BinaryWriter& writer) const
+    requires(kSerializationSupported)
+  {
+    validate_serialized_state(DeserializationValidation::kQuick);
+
+    const std::size_t artifact_begin = writer.size_bytes();
+    pixie::detail::write_magic(writer, kSerializationMagic);
+    writer.write_u32(kSerializationVersion);
+    writer.write_u8(pixie::detail::kLittleEndianMarker);
+    writer.write_u8(sizeof(std::uint64_t));
+    writer.write_u8(sizeof(T));
+    writer.write_u8(sizeof(Index));
+    const std::size_t artifact_size_position = writer.write_u64_placeholder();
+    writer.write_size(values_.size());
+    writer.write_size(LeafSize);
+    writer.write_u32(static_cast<std::uint32_t>(UseTopSparseOverlay));
+    writer.write_u32(0);
+
+    writer.write_size(bp_bit_count_);
+    writer.write_size(top_block_size_);
+    writer.write_size(top_block_count_);
+    writer.write_size(top_sparse_levels_);
+    bp_bits_.serialize(writer);
+    writer.write_size(top_sparse_candidates_.size());
+    for (const TopCandidate candidate : top_sparse_candidates_) {
+      pixie::detail::write_integral(writer, candidate.position);
+    }
+    writer.write_u8(static_cast<std::uint8_t>(bp_index_.has_value()));
+    if (bp_index_) {
+      bp_index_->serialize(writer);
+    }
+    bp_depth_rmq_.serialize_metadata(writer);
+
+    const std::size_t unpadded_size = writer.size_bytes() - artifact_begin;
+    writer.write_zeros(
+        (sizeof(std::uint64_t) - unpadded_size % sizeof(std::uint64_t)) %
+        sizeof(std::uint64_t));
+    const std::size_t artifact_size = writer.size_bytes() - artifact_begin;
+    writer.patch_u64(artifact_size_position,
+                     static_cast<std::uint64_t>(artifact_size));
+  }
+
+  /**
+   * @brief Restore owning RMQ metadata over caller-owned values.
+   *
+   * @details Available only for the exact default
+   * `CartesianHybridBTree<std::int64_t>` specialization. The result retains a
+   * non-owning view of @p values, which must remain alive and immutable. On
+   * success, @p reader advances past exactly one artifact; on failure it is
+   * unchanged. @p validation selects quick structural checks or exact
+   * source-derived metadata validation.
+   *
+   * @param values Non-owning values retained by the result.
+   * @param reader Input cursor, advanced only after successful validation.
+   * @param validation Quick structural or full source-derived validation.
+   *
+   * @throws std::invalid_argument for malformed, incompatible, truncated, or
+   * structurally inconsistent metadata.
+   * @throws std::length_error when an encoded size is not representable.
+   */
+  static Self deserialize(
+      std::span<const std::int64_t> values,
+      BinaryReader& reader,
+      DeserializationValidation validation = DeserializationValidation::kQuick)
+    requires(kSerializationSupported)
+  {
+    BinaryReader candidate = reader;
+    const std::size_t available_size = candidate.remaining();
+    pixie::detail::require_magic(candidate, kSerializationMagic);
+    if (candidate.read_u32() != kSerializationVersion ||
+        candidate.read_u8() != pixie::detail::kLittleEndianMarker ||
+        candidate.read_u8() != sizeof(std::uint64_t) ||
+        candidate.read_u8() != sizeof(T) ||
+        candidate.read_u8() != sizeof(Index)) {
+      throw std::invalid_argument("Incompatible serialized RMQ artifact");
+    }
+    const std::size_t artifact_size = pixie::detail::checked_artifact_size(
+        candidate.read_u64(), kSerializationHeaderBytes, available_size);
+    const std::size_t source_value_count = candidate.read_size();
+    if (candidate.read_size() != LeafSize ||
+        candidate.read_u32() !=
+            static_cast<std::uint32_t>(UseTopSparseOverlay) ||
+        candidate.read_u32() != 0) {
+      throw std::invalid_argument("Incompatible serialized RMQ configuration");
+    }
+
+    BinaryReader payload =
+        candidate.read_subreader(artifact_size - kSerializationHeaderBytes);
+    LoadedState state;
+    state.bp_bit_count_ = payload.read_size();
+    state.top_block_size_ = payload.read_size();
+    state.top_block_count_ = payload.read_size();
+    state.top_sparse_levels_ = payload.read_size();
+    state.bp_bits_ = deserialize_aligned_storage(payload);
+
+    const std::size_t candidate_count = payload.read_size();
+    const std::vector<TopCandidate> empty_candidates;
+    if (candidate_count > empty_candidates.max_size()) {
+      throw std::length_error(
+          "Serialized RMQ top candidate count is too large");
+    }
+    if (candidate_count > payload.remaining() / sizeof(Index)) {
+      throw std::invalid_argument("Truncated serialized RMQ top candidates");
+    }
+    state.top_sparse_candidates_.resize(candidate_count);
+    for (TopCandidate& candidate : state.top_sparse_candidates_) {
+      candidate.position = pixie::detail::read_integral<Index>(payload);
+    }
+
+    const std::uint8_t has_rank_index = payload.read_u8();
+    if (has_rank_index > 1) {
+      throw std::invalid_argument("Invalid serialized RMQ rank-index marker");
+    }
+    const std::size_t bp_word_count =
+        state.bp_bit_count_ == 0 ? 0 : 1 + (state.bp_bit_count_ - 1) / 64;
+    if (bp_word_count > state.bp_bits_.as_words64().size()) {
+      throw std::invalid_argument("Serialized RMQ BP storage is too small");
+    }
+    if (has_rank_index != 0) {
+      state.bp_index_ = RankSelectSupport<>::deserialize(
+          state.bp_bits_.as_words64().first(bp_word_count), payload,
+          validation);
+    }
+
+    const RankSelectSupport<> empty_rank_index;
+    const RankSelectSupport<>& rank_index =
+        state.bp_index_ ? *state.bp_index_ : empty_rank_index;
+    state.bp_depth_rmq_ = BpDepthRmq::deserialize_metadata(
+        state.bp_bits_.as_words64(), rank_index, payload);
+    payload.require_zero_padding(sizeof(std::uint64_t) - 1);
+
+    if (source_value_count != values.size()) {
+      throw std::invalid_argument(
+          "Serialized RMQ source value count is inconsistent");
+    }
+    validate_loaded_state(values, state, validation);
+    reader = candidate;
+    return Self(LoadTag{}, values, std::move(state));
+  }
+
+  /**
+   * @brief Restore one artifact from @p data and advance it on success.
+   * @param values Non-owning values retained by the result.
+   * @param data Input bytes, advanced only after successful validation.
+   * @param validation Quick structural or full source-derived validation.
+   */
+  static Self deserialize(
+      std::span<const std::int64_t> values,
+      std::span<const std::byte>& data,
+      DeserializationValidation validation = DeserializationValidation::kQuick)
+    requires(kSerializationSupported)
+  {
+    BinaryReader reader(data);
+    Self result = deserialize(values, reader, validation);
+    data = data.subspan(reader.position());
+    return result;
   }
 
   /**
@@ -1556,12 +2154,231 @@ class CartesianHybridBTree
   }
 
  private:
-  using BpDepthRmq = detail::HybridBTreePlusMinusOne<Index, LeafSize, true, 1>;
+  static pixie::AlignedStorage deserialize_aligned_storage(
+      BinaryReader& reader) {
+    const std::size_t size = reader.read_size();
+    const std::span<const std::byte> bytes = reader.read_bytes(size);
+    if (size % kAlignedStorageLineBytes != 0) {
+      throw std::invalid_argument(
+          "Serialized RMQ storage is not cache-line aligned");
+    }
+    if (size > std::numeric_limits<std::size_t>::max() / 8) {
+      throw std::length_error("Serialized RMQ storage is too large");
+    }
+    pixie::AlignedStorage result(size * 8);
+    std::ranges::copy(bytes, result.writable_bytes().begin());
+    return result;
+  }
 
-  struct TopCandidate {
-    Index position = invalid_index;
-  };
-  static_assert(sizeof(TopCandidate) == sizeof(Index));
+  template <class State>
+  static void validate_loaded_state(std::span<const T> values,
+                                    const State& state,
+                                    DeserializationValidation validation) {
+    if (values.size() > (static_cast<std::size_t>(invalid_index) - 1) / 2) {
+      throw std::length_error("Serialized RMQ value count is too large");
+    }
+    const std::size_t expected_bp_bit_count = 2 * values.size();
+    if (state.bp_bit_count_ != expected_bp_bit_count) {
+      throw std::invalid_argument("Invalid serialized RMQ BP bit count");
+    }
+
+    std::size_t expected_padded_bits = 0;
+    if (expected_bp_bit_count != 0) {
+      const std::size_t depth_count = expected_bp_bit_count + 1;
+      if (depth_count > std::numeric_limits<std::int64_t>::max()) {
+        throw std::length_error("Serialized RMQ BP depth count is too large");
+      }
+      const std::size_t leaf_count = 1 + (depth_count - 1) / LeafSize;
+      if (leaf_count > std::numeric_limits<std::size_t>::max() / LeafSize) {
+        throw std::length_error("Serialized RMQ padded BP size is too large");
+      }
+      expected_padded_bits = leaf_count * LeafSize;
+    }
+    if (state.bp_bits_.size_bits() != expected_padded_bits) {
+      throw std::invalid_argument("Invalid serialized RMQ BP storage size");
+    }
+
+    if (values.empty()) {
+      if (state.top_block_size_ != kMinTopSparseBlockSize ||
+          state.top_block_count_ != 0 || state.top_sparse_levels_ != 0 ||
+          !state.top_sparse_candidates_.empty() ||
+          state.bp_index_.has_value() || !state.bp_depth_rmq_.empty()) {
+        throw std::invalid_argument("Invalid serialized empty RMQ metadata");
+      }
+      const RankSelectSupport<> empty_rank;
+      state.bp_depth_rmq_.validate_serialized_state(empty_rank, validation);
+      return;
+    }
+
+    const std::size_t expected_block_size =
+        top_sparse_block_size_for(values.size());
+    const std::size_t expected_block_count =
+        top_sparse_block_count_for(values.size());
+    const std::size_t expected_levels = std::bit_width(expected_block_count);
+    if (state.top_block_size_ != expected_block_size ||
+        state.top_block_count_ != expected_block_count ||
+        state.top_sparse_levels_ != expected_levels ||
+        expected_block_count >
+            std::numeric_limits<std::size_t>::max() / expected_levels ||
+        state.top_sparse_candidates_.size() !=
+            expected_block_count * expected_levels ||
+        !state.bp_index_.has_value() ||
+        state.bp_index_->size() != expected_bp_bit_count ||
+        state.bp_index_->supports_select1() ||
+        !state.bp_index_->supports_select0() ||
+        state.bp_depth_rmq_.size() != expected_bp_bit_count + 1) {
+      throw std::invalid_argument("Invalid serialized RMQ index metadata");
+    }
+
+    for (std::size_t level = 0;
+         validation == DeserializationValidation::kQuick &&
+         level < expected_levels;
+         ++level) {
+      const std::size_t span = std::size_t{1} << level;
+      for (std::size_t block = 0; block < expected_block_count; ++block) {
+        const std::size_t position = static_cast<std::size_t>(
+            state.top_sparse_candidates_[level * expected_block_count + block]
+                .position);
+        const bool populated = block + span <= expected_block_count;
+        if (!populated) {
+          if (position != static_cast<std::size_t>(invalid_index)) {
+            throw std::invalid_argument(
+                "Invalid serialized RMQ sparse-table padding");
+          }
+          continue;
+        }
+        const std::size_t begin = block * expected_block_size;
+        const std::size_t end =
+            std::min(values.size(), (block + span) * expected_block_size);
+        if (position < begin || position >= end) {
+          throw std::invalid_argument(
+              "Invalid serialized RMQ sparse-table candidate");
+        }
+      }
+    }
+    state.bp_depth_rmq_.validate_serialized_state(*state.bp_index_, validation);
+    if (validation == DeserializationValidation::kFull) {
+      validate_exact_source(values, state, expected_padded_bits);
+    }
+  }
+
+  template <class State>
+  static void validate_exact_source(std::span<const T> values,
+                                    const State& state,
+                                    std::size_t expected_padded_bits) {
+    const std::span<const std::uint64_t> bp_words = state.bp_bits_.as_words64();
+    const auto bp_bit = [bp_words](std::size_t position) {
+      return ((bp_words[position >> 6] >> (position & 63)) & 1u) != 0;
+    };
+    const auto require_bp_bit = [&](std::size_t position, bool expected) {
+      if (bp_bit(position) != expected) {
+        throw std::invalid_argument(
+            "Serialized RMQ Cartesian BP disagrees with source values");
+      }
+    };
+    const auto better_position = [&](std::size_t left, std::size_t right) {
+      if (right == static_cast<std::size_t>(invalid_index)) {
+        return left;
+      }
+      if (left == static_cast<std::size_t>(invalid_index)) {
+        return right;
+      }
+      if (std::less<T>{}(values[right], values[left])) {
+        return right;
+      }
+      if (std::less<T>{}(values[left], values[right])) {
+        return left;
+      }
+      return std::min(left, right);
+    };
+
+    utils::SuccinctIncreasingStack stack(values.size());
+    std::size_t write_position = 2 * values.size();
+    std::size_t block_minimum = static_cast<std::size_t>(invalid_index);
+    for (std::size_t position = values.size(); position-- > 0;) {
+      while (!stack.empty()) {
+        const std::size_t top_position = values.size() - 1 - stack.top();
+        if (std::less<T>{}(values[top_position], values[position])) {
+          break;
+        }
+        stack.pop();
+        require_bp_bit(--write_position, true);
+      }
+      stack.push(values.size() - 1 - position);
+      require_bp_bit(--write_position, false);
+
+      block_minimum = better_position(block_minimum, position);
+      if (position % state.top_block_size_ == 0) {
+        const std::size_t block = position / state.top_block_size_;
+        if (static_cast<std::size_t>(
+                state.top_sparse_candidates_[block].position) !=
+            block_minimum) {
+          throw std::invalid_argument(
+              "Serialized RMQ block minimum disagrees with source values");
+        }
+        block_minimum = static_cast<std::size_t>(invalid_index);
+      }
+    }
+    while (write_position != 0) {
+      require_bp_bit(--write_position, true);
+    }
+
+    for (std::size_t position = 2 * values.size();
+         position < expected_padded_bits; ++position) {
+      if (bp_bit(position)) {
+        throw std::invalid_argument("Serialized RMQ BP padding is non-zero");
+      }
+    }
+
+    for (std::size_t level = 1; level < state.top_sparse_levels_; ++level) {
+      const std::size_t span = std::size_t{1} << level;
+      const std::size_t half_span = span >> 1;
+      const std::size_t current_offset = level * state.top_block_count_;
+      const std::size_t previous_offset = (level - 1) * state.top_block_count_;
+      for (std::size_t block = 0; block < state.top_block_count_; ++block) {
+        const std::size_t actual = static_cast<std::size_t>(
+            state.top_sparse_candidates_[current_offset + block].position);
+        if (block + span > state.top_block_count_) {
+          if (actual != static_cast<std::size_t>(invalid_index)) {
+            throw std::invalid_argument(
+                "Invalid serialized RMQ sparse-table padding");
+          }
+          continue;
+        }
+        const std::size_t left = static_cast<std::size_t>(
+            state.top_sparse_candidates_[previous_offset + block].position);
+        const std::size_t right = static_cast<std::size_t>(
+            state.top_sparse_candidates_[previous_offset + block + half_span]
+                .position);
+        if (actual != better_position(left, right)) {
+          throw std::invalid_argument(
+              "Serialized RMQ sparse-table candidate disagrees with source");
+        }
+      }
+    }
+  }
+
+  void validate_serialized_state(DeserializationValidation validation) const {
+    validate_loaded_state(values_, *this, validation);
+  }
+
+  CartesianHybridBTree(LoadTag, std::span<const T> values, LoadedState&& state)
+      : values_(values),
+        compare_(),
+        bp_bits_(std::move(state.bp_bits_)),
+        bp_bit_count_(state.bp_bit_count_),
+        top_sparse_candidates_(std::move(state.top_sparse_candidates_)),
+        top_block_size_(state.top_block_size_),
+        top_block_count_(state.top_block_count_),
+        top_sparse_levels_(state.top_sparse_levels_),
+        bp_index_(std::move(state.bp_index_)),
+        bp_depth_rmq_(std::move(state.bp_depth_rmq_)) {
+    if (bp_index_) {
+      bp_depth_rmq_.restore_external_sources(bp_bits_.as_words64(), *bp_index_);
+    } else {
+      bp_depth_rmq_.restore_empty_sources();
+    }
+  }
 
   /**
    * @brief Return the first minimum position through the Cartesian BP

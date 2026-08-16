@@ -1,16 +1,21 @@
 #include <gtest/gtest.h>
+#include <pixie/io/file_output_sink.h>
+#include <pixie/io/mapped_file.h>
 #include <pixie/rmm/implementations.h>
 #include <references/naive_rmm_tree.h>
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <random>
 #include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 using std::size_t;
@@ -20,15 +25,6 @@ static std::string bits_to_parens(const std::string& bits) {
   s.reserve(bits.size());
   for (char c : bits) {
     s.push_back(c == '1' ? '(' : ')');
-  }
-  return s;
-}
-
-static std::string vecbits_to_string(const std::vector<uint8_t>& v) {
-  std::string s;
-  s.resize(v.size());
-  for (size_t i = 0; i < v.size(); ++i) {
-    s[i] = v[i] ? '1' : '0';
   }
   return s;
 }
@@ -538,6 +534,276 @@ static void expect_range_ops_equal(const pixie::RmMTree& rm,
     size_t k = k_dist(rng);
     EXPECT_EQ(rm.minselect(i, j, k), nv.minselect(i, j, k));
   }
+}
+
+static std::vector<std::byte> serialize_rmm(const pixie::RmMTree& tree) {
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  tree.serialize(writer);
+  writer.finish();
+  return output.take();
+}
+
+static void overwrite_i32(std::vector<std::byte>& bytes,
+                          std::size_t offset,
+                          std::int32_t value) {
+  const std::uint32_t encoded = static_cast<std::uint32_t>(value);
+  for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
+    bytes[offset + byte] =
+        static_cast<std::byte>((encoded >> (byte * 8)) & 0xffu);
+  }
+}
+
+static void expect_rmm_serialization_round_trip(const std::string& bits) {
+  auto words = pack_words_lsb_first(bits);
+  const pixie::RmMTree original(std::span<const std::uint64_t>(words),
+                                bits.size(),
+                                /*leaf_block_bits=*/128);
+  std::vector<std::byte> artifact = serialize_rmm(original);
+  pixie::BinaryReader reader(artifact);
+  const pixie::RmMTree restored = pixie::RmMTree::deserialize(words, reader);
+
+  EXPECT_TRUE(reader.empty());
+  EXPECT_EQ(serialize_rmm(restored), artifact);
+  artifact.clear();
+  artifact.shrink_to_fit();
+
+  const NaiveRmM naive(bits);
+  expect_rank_select_equal(restored, naive, bits.size());
+  expect_range_ops_equal(restored, naive, bits.size());
+  if (!bits.empty()) {
+    const std::array<int, 7> deltas = {-9, -2, -1, 0, 1, 2, 9};
+    const std::size_t step = std::max<std::size_t>(1, bits.size() / 17);
+    for (std::size_t position = 0; position < bits.size(); position += step) {
+      EXPECT_EQ(restored.close(position), naive.close(position));
+      EXPECT_EQ(restored.open(position), naive.open(position));
+      EXPECT_EQ(restored.enclose(position), naive.enclose(position));
+      for (const int delta : deltas) {
+        EXPECT_EQ(restored.fwdsearch(position, delta),
+                  naive.fwdsearch(position, delta));
+        EXPECT_EQ(restored.bwdsearch(position + 1, delta),
+                  naive.bwdsearch(position + 1, delta));
+      }
+    }
+  }
+}
+
+TEST(RmMSerializationTest, RoundTripsOwningMetadataAtBoundaries) {
+  std::mt19937_64 rng(20260718);
+  for (const std::size_t size :
+       std::array<std::size_t, 10>{0, 1, 63, 64, 65, 127, 128, 129, 256, 777}) {
+    SCOPED_TRACE(::testing::Message() << "size=" << size);
+    expect_rmm_serialization_round_trip(random_bits(rng, size));
+  }
+}
+
+TEST(RmMSerializationTest, AdvancesAcrossConcatenatedArtifacts) {
+  const std::string bits = "11101001011000";
+  auto words = pack_words_lsb_first(bits);
+  const pixie::RmMTree original(words, bits.size(), 64);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  original.serialize(writer);
+  writer.finish();
+  const auto artifacts = output.take();
+  pixie::BinaryReader reader(artifacts);
+
+  const auto first = pixie::RmMTree::deserialize(words, reader);
+  EXPECT_FALSE(reader.empty());
+  const auto second = pixie::RmMTree::deserialize(words, reader);
+  EXPECT_TRUE(reader.empty());
+  EXPECT_EQ(first.range_min_query_pos(0, bits.size() - 1),
+            second.range_min_query_pos(0, bits.size() - 1));
+}
+
+TEST(RmMSerializationTest, SerializesDirectlyToMappedFile) {
+  const std::string bits = "1110100101100011010010110010";
+  auto words = pack_words_lsb_first(bits);
+  const pixie::RmMTree original(words, bits.size(), 64);
+  const auto path = std::filesystem::temp_directory_path() /
+                    "pixie_rmm_serialization_test.bin";
+  std::filesystem::remove(path);
+  {
+    pixie::io::FileOutputSink output(path);
+    std::array<std::byte, 13> staging{};
+    pixie::BinaryWriter writer(output, staging);
+    original.serialize(writer);
+    writer.finish();
+  }
+
+  pixie::io::MappedFile file(path);
+  for (const auto validation : {pixie::DeserializationValidation::kQuick,
+                                pixie::DeserializationValidation::kFull}) {
+    pixie::BinaryReader reader(file.as_bytes());
+    const pixie::RmMTree restored =
+        pixie::RmMTree::deserialize(words, reader, validation);
+    EXPECT_TRUE(reader.empty());
+    EXPECT_EQ(restored.range_min_query_pos(0, bits.size() - 1),
+              original.range_min_query_pos(0, bits.size() - 1));
+    EXPECT_EQ(restored.range_max_query_pos(0, bits.size() - 1),
+              original.range_max_query_pos(0, bits.size() - 1));
+  }
+  std::filesystem::remove(path);
+}
+
+TEST(RmMSerializationTest,
+     FullValidationRejectsSameLengthSourceMismatchTransactionally) {
+  const std::string bits = "1110100101100011010010110010";
+  auto words = pack_words_lsb_first(bits);
+  const pixie::RmMTree original(words, bits.size(), 64);
+  const std::vector<std::byte> artifact = serialize_rmm(original);
+  std::vector<std::uint64_t> different_words = words;
+  different_words[0] ^= std::uint64_t{1} << 7;
+
+  pixie::BinaryReader quick_reader(artifact);
+  EXPECT_NO_THROW((void)pixie::RmMTree::deserialize(
+      different_words, quick_reader, pixie::DeserializationValidation::kQuick));
+  EXPECT_TRUE(quick_reader.empty());
+
+  pixie::BinaryReader full_reader(artifact);
+  EXPECT_THROW((void)pixie::RmMTree::deserialize(
+                   different_words, full_reader,
+                   pixie::DeserializationValidation::kFull),
+               std::invalid_argument);
+  EXPECT_EQ(full_reader.position(), 0u);
+}
+
+TEST(RmMSerializationTest,
+     FullValidationRejectsExactLeafCorruptionTransactionally) {
+  const std::string bits(64, '1');
+  const auto words = pack_words_lsb_first(bits);
+  const pixie::RmMTree original(words, bits.size(), 64);
+  std::vector<std::byte> artifact = serialize_rmm(original);
+
+  pixie::BinaryReader layout_reader(artifact);
+  layout_reader.skip(8 * sizeof(std::uint64_t));
+  const std::size_t segment_count = layout_reader.read_size();
+  layout_reader.skip(segment_count * sizeof(std::uint32_t));
+  const std::size_t total_count = layout_reader.read_size();
+  ASSERT_EQ(total_count, 2u);
+  const std::size_t total_data = layout_reader.position();
+  overwrite_i32(artifact, total_data + sizeof(std::int32_t), 62);
+
+  pixie::BinaryReader quick_reader(artifact);
+  EXPECT_NO_THROW((void)pixie::RmMTree::deserialize(
+      words, quick_reader, pixie::DeserializationValidation::kQuick));
+  EXPECT_TRUE(quick_reader.empty());
+
+  pixie::BinaryReader full_reader(artifact);
+  EXPECT_THROW((void)pixie::RmMTree::deserialize(
+                   words, full_reader, pixie::DeserializationValidation::kFull),
+               std::invalid_argument);
+  EXPECT_EQ(full_reader.position(), 0u);
+}
+
+TEST(RmMSerializationTest,
+     FullValidationCoversBinaryUnaryAndEmptyInternalNodes) {
+  constexpr std::size_t kBitCount = 257;
+  const std::array<std::string, 3> inputs = {
+      std::string(kBitCount, '1'), std::string(kBitCount, '0'), [] {
+        std::string bits(kBitCount, '0');
+        for (std::size_t position = 0; position < bits.size(); position += 2) {
+          bits[position] = '1';
+        }
+        return bits;
+      }()};
+
+  for (const std::string& bits : inputs) {
+    const auto words = pack_words_lsb_first(bits);
+    const pixie::RmMTree original(words, bits.size(), 64);
+    const std::vector<std::byte> artifact = serialize_rmm(original);
+    pixie::BinaryReader reader(artifact);
+    const pixie::RmMTree restored = pixie::RmMTree::deserialize(
+        words, reader, pixie::DeserializationValidation::kFull);
+    EXPECT_TRUE(reader.empty());
+    EXPECT_EQ(restored.range_min_query_pos(0, bits.size() - 1),
+              original.range_min_query_pos(0, bits.size() - 1));
+  }
+}
+
+TEST(RmMSerializationTest,
+     FullValidationRejectsExactInternalCorruptionTransactionally) {
+  const std::string bits(257, '1');
+  const auto words = pack_words_lsb_first(bits);
+  const pixie::RmMTree original(words, bits.size(), 64);
+  std::vector<std::byte> artifact = serialize_rmm(original);
+
+  pixie::BinaryReader layout_reader(artifact);
+  layout_reader.skip(8 * sizeof(std::uint64_t));
+  const std::size_t segment_count = layout_reader.read_size();
+  layout_reader.skip(segment_count * sizeof(std::uint32_t));
+  const std::size_t total_count = layout_reader.read_size();
+  ASSERT_EQ(total_count, 13u);
+  const std::size_t total_data = layout_reader.position();
+  overwrite_i32(artifact, total_data + sizeof(std::int32_t), 255);
+
+  pixie::BinaryReader quick_reader(artifact);
+  EXPECT_NO_THROW((void)pixie::RmMTree::deserialize(
+      words, quick_reader, pixie::DeserializationValidation::kQuick));
+  EXPECT_TRUE(quick_reader.empty());
+
+  pixie::BinaryReader full_reader(artifact);
+  EXPECT_THROW((void)pixie::RmMTree::deserialize(
+                   words, full_reader, pixie::DeserializationValidation::kFull),
+               std::invalid_argument);
+  EXPECT_EQ(full_reader.position(), 0u);
+}
+
+TEST(RmMSerializationTest, RejectsCorruptionWithoutAdvancingInput) {
+  const std::string bits(257, '1');
+  auto words = pack_words_lsb_first(bits);
+  const pixie::RmMTree original(words, bits.size(), 128);
+  const auto valid = serialize_rmm(original);
+
+  const auto expect_rejected = [&](std::vector<std::byte> artifact) {
+    for (const auto validation : {pixie::DeserializationValidation::kQuick,
+                                  pixie::DeserializationValidation::kFull}) {
+      pixie::BinaryReader reader(artifact);
+      EXPECT_THROW((void)pixie::RmMTree::deserialize(words, reader, validation),
+                   std::exception);
+      EXPECT_EQ(reader.position(), 0u);
+    }
+  };
+  const auto overwrite = [](std::vector<std::byte>& artifact,
+                            std::size_t offset, auto value) {
+    using Value = decltype(value);
+    using Unsigned = std::make_unsigned_t<Value>;
+    const Unsigned encoded = static_cast<Unsigned>(value);
+    for (std::size_t byte = 0; byte < sizeof(Value); ++byte) {
+      artifact[offset + byte] =
+          static_cast<std::byte>((encoded >> (byte * 8)) & Unsigned{0xff});
+    }
+  };
+
+  auto bad_magic = valid;
+  bad_magic[0] ^= std::byte{1};
+  expect_rejected(std::move(bad_magic));
+
+  auto bad_version = valid;
+  overwrite(bad_version, 8, std::uint32_t{2});
+  expect_rejected(std::move(bad_version));
+
+  auto bad_source_count = valid;
+  overwrite(bad_source_count, 24, std::uint64_t{bits.size() + 1});
+  expect_rejected(std::move(bad_source_count));
+
+  auto impossible_vector = valid;
+  overwrite(impossible_vector, 64, std::numeric_limits<std::uint64_t>::max());
+  expect_rejected(std::move(impossible_vector));
+
+  std::span<const std::byte> truncated =
+      std::span<const std::byte>(valid).first(valid.size() - 1);
+  pixie::BinaryReader truncated_reader(truncated);
+  EXPECT_THROW((void)pixie::RmMTree::deserialize(words, truncated_reader),
+               std::invalid_argument);
+  EXPECT_EQ(truncated_reader.position(), 0u);
+
+  std::span<const std::uint64_t> short_words;
+  pixie::BinaryReader reader(valid);
+  EXPECT_THROW((void)pixie::RmMTree::deserialize(short_words, reader),
+               std::invalid_argument);
+  EXPECT_EQ(reader.position(), 0u);
 }
 
 TEST(RmMEdgeCases, MultiwordPattern10AcrossWordBoundaries) {

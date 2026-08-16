@@ -1,6 +1,8 @@
 # Benchmark Results
 
-These results were generated on 2026-05-18 from `build/release` binaries on the local benchmark host. JSON inputs are kept under `src/docs/benchmarks`.
+Unless a section says otherwise, these results were generated on 2026-05-18
+from optimized binaries on the local benchmark host. JSON inputs are kept
+under `src/docs/benchmarks`.
 
 ## Excess Positions
 
@@ -28,28 +30,6 @@ python3 scripts/excess_benchmark_table.py \
 | LUTAVX512 | 12.33 ns | 18.34 ns | 18.06 ns | 18.21 ns | 12.75 ns |
 | Scalar | 304.42 ns | 389.58 ns | 446.94 ns | 399.80 ns | 316.23 ns |
 
-## BitVector Size Sweep
-
-The BitVector plot uses the 50/50 fill variants for rank/select over the registered benchmark size grid. The benchmark definitions use fixed repeats, so the command-line repetition value is not used for this binary.
-
-Command:
-
-```sh
-./build/release/benchmarks \
-  --benchmark_filter='BM_(RankInterleaved|RankNonInterleaved|RankZeroNonInterleaved|SelectNonInterleaved|SelectZeroNonInterleaved)/' \
-  --benchmark_report_aggregates_only=true \
-  --benchmark_display_aggregates_only=true \
-  --benchmark_format=json \
-  --benchmark_out=src/docs/benchmarks/bitvector_size.json
-python3 scripts/plot_size_benchmarks.py \
-  src/docs/benchmarks/bitvector_size.json \
-  -o src/docs/images/benchmarks/bitvector_size.png \
-  --size-key n \
-  --title 'BitVector benchmark time vs size'
-```
-
-![BitVector benchmark time vs size](images/benchmarks/bitvector_size.png)
-
 ## RmM Tree Size Sweep
 
 The RmM comparison uses operations available in both Pixie and sdsl-lite over the same power-of-two tree sizes. Pixie's benchmark harness only constructs query pools needed by the selected operations.
@@ -57,7 +37,7 @@ The RmM comparison uses operations available in both Pixie and sdsl-lite over th
 Pixie command:
 
 ```sh
-./build/release/bench_rmm \
+./build/benchmarks/rmm_benchmarks \
   --ops=rank1,rank0,select1,excess,range_min_query_pos,range_min_query_val,close,open,enclose \
   --explicit_sizes=16384,32768,65536,131072,262144,524288,1048576,2097152,4194304 \
   --Q=32768 \
@@ -71,7 +51,7 @@ Pixie command:
 sdsl-lite command:
 
 ```sh
-./build/release/bench_rmm_sdsl \
+./build/benchmark-all-backends/rmm_sdsl_benchmarks \
   --ops=rank1,rank0,select1,excess,range_min_query_pos,range_min_query_val,close,open,enclose \
   --explicit_sizes=16384,32768,65536,131072,262144,524288,1048576,2097152,4194304 \
   --Q=32768 \

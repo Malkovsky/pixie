@@ -306,11 +306,11 @@ static inline uint64_t rank_512(const uint64_t* x, uint64_t count) {
 
 #else
 
-  uint64_t last_uint = count < 512 ? count >> 6 : 8;
+  size_t last_uint = count < 512 ? count >> 6 : 8;
 
   uint64_t pop_val = 0;
 
-  for (int i = 0; i < last_uint; i++) {
+  for (size_t i = 0; i < last_uint; i++) {
     pop_val += std::popcount(x[i]);
   }
 
@@ -412,7 +412,7 @@ template <bool Invert>
 static inline uint64_t select_512_scalar_impl(const uint64_t* x,
                                               uint64_t rank) {
   size_t word = 0;
-  int count;
+  uint64_t count;
   if constexpr (Invert) {
     count = std::popcount(~x[0]);
   } else {

@@ -342,7 +342,7 @@ TEST(ExcessPositions128, MinMatchesNaiveFixedCases) {
   }};
 
   for (const auto& s : cases) {
-    for (const auto [left, right] : ranges) {
+    for (const auto& [left, right] : ranges) {
       const ExcessResult result = excess_min_128(s.data(), left, right);
       const ExcessResult expected = naive_excess_min_128(s.data(), left, right);
       EXPECT_EQ(result.min_excess, expected.min_excess)
@@ -377,7 +377,7 @@ TEST(ExcessPositions64, MinMatchesNaiveFixedCases) {
   }};
 
   for (const auto& s : cases) {
-    for (const auto [left, right] : ranges) {
+    for (const auto& [left, right] : ranges) {
       const ExcessResult result = excess_min_64(s.data(), left, right);
       const ExcessResult expected = naive_excess_min_64(s.data(), left, right);
       EXPECT_EQ(result.min_excess, expected.min_excess)
@@ -527,7 +527,7 @@ TEST(ExcessPositions64, DisjointBoundaryPairMatchesIndependentFixedCases) {
 
   for (const auto& suffix : cases) {
     for (const auto& prefix : cases) {
-      for (const auto [suffix_left, prefix_right] : ranges) {
+      for (const auto& [suffix_left, prefix_right] : ranges) {
         const ExcessBoundaryPairResult result =
             excess_min_64_disjoint_suffix_prefix(suffix.data(), suffix_left,
                                                  prefix.data(), prefix_right);
@@ -575,7 +575,7 @@ TEST(ExcessPositions128, DisjointBoundaryPairMatchesIndependentFixedCases) {
 
   for (const auto& suffix : cases) {
     for (const auto& prefix : cases) {
-      for (const auto [suffix_left, prefix_right] : ranges) {
+      for (const auto& [suffix_left, prefix_right] : ranges) {
         check_boundary_pair_matches_independent(suffix, suffix_left, prefix,
                                                 prefix_right);
       }
@@ -630,7 +630,7 @@ TEST(ExcessPositions128Experimental, MinVariantsMatchNaive) {
 
   int case_id = 0;
   for (const auto& s : cases) {
-    for (const auto [left, right] : ranges) {
+    for (const auto& [left, right] : ranges) {
       check_min_matches_naive(excess_min_128_scalar_bits, "scalar_bits",
                               s.data(), left, right, case_id);
       check_min_matches_naive(excess_min_128_nibble_lut, "nibble_lut", s.data(),
@@ -729,7 +729,7 @@ TEST(ExcessPositions128Experimental, DeinterleavedSseBoundaryAndTieCases) {
 
   int case_id = 0;
   for (const auto& s : cases) {
-    for (const auto [left, right] : ranges) {
+    for (const auto& [left, right] : ranges) {
       check_min_matches_naive(excess_min_128_deinterleaved_sse,
                               "deinterleaved_sse", s.data(), left, right,
                               case_id);
