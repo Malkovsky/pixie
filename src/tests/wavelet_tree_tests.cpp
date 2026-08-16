@@ -32,6 +32,7 @@ struct WaveletNodeOffsets {
   std::size_t left_child;
   std::size_t right_child;
   std::size_t middle;
+  std::size_t rank_num_bits;
 };
 
 struct WaveletArtifactOffsets {
@@ -69,9 +70,10 @@ WaveletArtifactOffsets locate_wavelet_artifact(
     reader.skip(sizeof(std::uint64_t));
     const std::size_t middle = reader.position();
     reader.skip(sizeof(std::uint64_t));
-    nodes.push_back({parent, left_child, right_child, middle});
+    nodes.push_back({parent, left_child, right_child, middle, 0});
 
     skip_storage();
+    nodes.back().rank_num_bits = reader.position();
     reader.skip(7 * sizeof(std::uint64_t) + 2 * sizeof(std::uint32_t) +
                 8 * sizeof(std::uint64_t) + 32 * sizeof(std::uint16_t));
     for (std::size_t storage = 0; storage < 3; ++storage) {
@@ -242,29 +244,32 @@ TEST(WaveletTreeTest, SerializationSmoke) {
     orig_tree.serialize(writer);
     writer.finish();
     std::vector<std::byte> serialized_data = output.take();
-    pixie::BinaryReader reader(serialized_data);
-    auto view_tree = pixie::WaveletTreeView::deserialize(reader);
-    EXPECT_TRUE(reader.empty());
+    for (const auto validation : {pixie::DeserializationValidation::kQuick,
+                                  pixie::DeserializationValidation::kFull}) {
+      pixie::BinaryReader reader(serialized_data);
+      auto view_tree = pixie::WaveletTreeView::deserialize(reader, validation);
+      EXPECT_TRUE(reader.empty());
 
-    for (size_t i = 0; i <= data_size; i += 16) {
-      uint64_t symb = data[i == data_size ? 0 : i];
-      EXPECT_EQ(orig_tree.rank(symb, i), view_tree.rank(symb, i));
-    }
-
-    std::vector<size_t> count(alphabet_size, 0);
-    for (auto symb : data) {
-      count[symb]++;
-    }
-
-    for (uint64_t symb = 0; symb < alphabet_size; symb++) {
-      for (uint64_t rank = 1; rank <= count[symb]; rank++) {
-        EXPECT_EQ(orig_tree.select(symb, rank), view_tree.select(symb, rank));
+      for (size_t i = 0; i <= data_size; i += 16) {
+        uint64_t symb = data[i == data_size ? 0 : i];
+        EXPECT_EQ(orig_tree.rank(symb, i), view_tree.rank(symb, i));
       }
-    }
 
-    auto orig_segment = orig_tree.get_segment(0, data_size);
-    auto view_segment = view_tree.get_segment(0, data_size);
-    EXPECT_EQ(orig_segment, view_segment);
+      std::vector<size_t> count(alphabet_size, 0);
+      for (auto symb : data) {
+        count[symb]++;
+      }
+
+      for (uint64_t symb = 0; symb < alphabet_size; symb++) {
+        for (uint64_t rank = 1; rank <= count[symb]; rank++) {
+          EXPECT_EQ(orig_tree.select(symb, rank), view_tree.select(symb, rank));
+        }
+      }
+
+      auto orig_segment = orig_tree.get_segment(0, data_size);
+      auto view_segment = view_tree.get_segment(0, data_size);
+      EXPECT_EQ(orig_segment, view_segment);
+    }
   }
 }
 
@@ -320,11 +325,47 @@ TEST(WaveletTreeTest, SerializesDirectlyToMappedFile) {
   }
 
   pixie::io::MappedFile file(path);
-  pixie::BinaryReader reader(file.as_bytes());
-  const auto restored = pixie::WaveletTreeView::deserialize(reader);
-  EXPECT_TRUE(reader.empty());
-  EXPECT_EQ(restored.get_segment(0, data.size()), data);
+  for (const auto validation : {pixie::DeserializationValidation::kQuick,
+                                pixie::DeserializationValidation::kFull}) {
+    pixie::BinaryReader reader(file.as_bytes());
+    const auto restored =
+        pixie::WaveletTreeView::deserialize(reader, validation);
+    EXPECT_TRUE(reader.empty());
+    EXPECT_EQ(restored.get_segment(0, data.size()), data);
+  }
   std::filesystem::remove(path);
+}
+
+TEST(WaveletTreeTest,
+     FullValidationRejectsLeafAndChildLengthCorruptionTransactionally) {
+  const std::vector<std::uint64_t> data = {0, 1, 2, 3, 4, 5, 6, 7};
+  const WaveletTree original(8, data);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  const std::vector<std::byte> valid = output.take();
+  const WaveletArtifactOffsets layout = locate_wavelet_artifact(valid);
+
+  std::vector<std::byte> bad_leaf = valid;
+  overwrite_u64(bad_leaf, layout.leaves, 3);
+  pixie::BinaryReader leaf_quick_reader(bad_leaf);
+  EXPECT_NO_THROW((void)pixie::WaveletTreeView::deserialize(
+      leaf_quick_reader, pixie::DeserializationValidation::kQuick));
+  EXPECT_TRUE(leaf_quick_reader.empty());
+  pixie::BinaryReader leaf_full_reader(bad_leaf);
+  EXPECT_THROW((void)pixie::WaveletTreeView::deserialize(
+                   leaf_full_reader, pixie::DeserializationValidation::kFull),
+               std::invalid_argument);
+  EXPECT_EQ(leaf_full_reader.position(), 0u);
+
+  std::vector<std::byte> bad_child_length = valid;
+  overwrite_u64(bad_child_length, layout.nodes[1].rank_num_bits, 3);
+  pixie::BinaryReader child_full_reader(bad_child_length);
+  EXPECT_THROW((void)pixie::WaveletTreeView::deserialize(
+                   child_full_reader, pixie::DeserializationValidation::kFull),
+               std::invalid_argument);
+  EXPECT_EQ(child_full_reader.position(), 0u);
 }
 
 TEST(WaveletTreeTest, SerializationRejectsEveryTruncatedPrefixTransactionally) {
@@ -384,10 +425,14 @@ TEST(WaveletTreeTest, SerializationRejectsMalformedTopologyTransactionally) {
   ASSERT_EQ(nodes.size(), 7u);
 
   const auto expect_rejected = [&](std::vector<std::byte> artifact) {
-    pixie::BinaryReader reader(artifact);
-    EXPECT_THROW((void)pixie::WaveletTreeView::deserialize(reader),
-                 std::invalid_argument);
-    EXPECT_EQ(reader.position(), 0u);
+    for (const auto validation : {pixie::DeserializationValidation::kQuick,
+                                  pixie::DeserializationValidation::kFull}) {
+      pixie::BinaryReader reader(artifact);
+      EXPECT_THROW(
+          (void)pixie::WaveletTreeView::deserialize(reader, validation),
+          std::invalid_argument);
+      EXPECT_EQ(reader.position(), 0u);
+    }
   };
 
   auto root_with_parent = valid;
@@ -420,6 +465,22 @@ TEST(WaveletTreeTest, SerializationRejectsMalformedTopologyTransactionally) {
   auto invalid_middle = valid;
   overwrite_u64(invalid_middle, nodes[0].middle, 8);
   expect_rejected(std::move(invalid_middle));
+
+  auto zero_middle = valid;
+  overwrite_u64(zero_middle, nodes[0].middle, 0);
+  expect_rejected(std::move(zero_middle));
+
+  auto invalid_parent = valid;
+  overwrite_u64(invalid_parent, nodes[1].parent, nodes.size());
+  expect_rejected(std::move(invalid_parent));
+
+  auto invalid_left_child = valid;
+  overwrite_u64(invalid_left_child, nodes[0].left_child, nodes.size());
+  expect_rejected(std::move(invalid_left_child));
+
+  auto invalid_right_child = valid;
+  overwrite_u64(invalid_right_child, nodes[0].right_child, nodes.size());
+  expect_rejected(std::move(invalid_right_child));
 }
 
 TEST(WaveletTreeTest,
@@ -437,10 +498,14 @@ TEST(WaveletTreeTest,
   ASSERT_EQ(layout.nodes.size(), 7u);
 
   const auto expect_rejected = [&](std::vector<std::byte> artifact) {
-    pixie::BinaryReader reader(artifact);
-    EXPECT_THROW((void)pixie::WaveletTreeView::deserialize(reader),
-                 std::exception);
-    EXPECT_EQ(reader.position(), 0u);
+    for (const auto validation : {pixie::DeserializationValidation::kQuick,
+                                  pixie::DeserializationValidation::kFull}) {
+      pixie::BinaryReader reader(artifact);
+      EXPECT_THROW(
+          (void)pixie::WaveletTreeView::deserialize(reader, validation),
+          std::exception);
+      EXPECT_EQ(reader.position(), 0u);
+    }
   };
 
   auto incompatible_header = valid;
@@ -471,6 +536,10 @@ TEST(WaveletTreeTest,
   overwrite_u64(duplicate_permutation,
                 layout.permutation + sizeof(std::uint64_t), 0);
   expect_rejected(std::move(duplicate_permutation));
+
+  auto out_of_range_permutation = valid;
+  overwrite_u64(out_of_range_permutation, layout.permutation, 8);
+  expect_rejected(std::move(out_of_range_permutation));
 
   auto invalid_root = valid;
   overwrite_u64(invalid_root, layout.root, layout.nodes.size());

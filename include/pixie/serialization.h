@@ -23,6 +23,23 @@
 namespace pixie {
 
 /**
+ * @brief Validation strength used while restoring serialized indexes.
+ */
+enum class DeserializationValidation : std::uint8_t {
+  /**
+   * @brief Check framing, dimensions, references, and other conditions needed
+   * for memory-safe terminating queries without scanning large sources.
+   */
+  kQuick,
+
+  /**
+   * @brief Additionally authenticate all source-derived metadata against the
+   * supplied source contents.
+   */
+  kFull,
+};
+
+/**
  * @brief Error raised while decoding malformed serialized data.
  */
 class SerializationError : public std::invalid_argument {

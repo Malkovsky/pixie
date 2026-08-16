@@ -84,7 +84,8 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
     }
 
     /** @brief Construct one checked, non-owning node from @p reader. */
-    static WaveletNode deserialize(BinaryReader& reader)
+    static WaveletNode deserialize(BinaryReader& reader,
+                                   DeserializationValidation validation)
       requires(std::same_as<Storage, ReadOnlyStorageView>)
     {
       WaveletNode result;
@@ -94,7 +95,7 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
       result.middle = reader.read_u64();
       result.bit_vector_data = ReadOnlyStorageView::deserialize(reader);
       result.data = RankSelectSupport<Storage>::deserialize(
-          result.bit_vector_data.as_words64(), reader);
+          result.bit_vector_data.as_words64(), reader, validation);
       return result;
     }
   };
@@ -105,8 +106,15 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
   std::vector<node_index_t> leaves_;
   std::vector<size_t> permutation_, inverse_permutation_;
 
-  void validate_deserialized_topology() const {
+  void validate_deserialized_topology(
+      DeserializationValidation validation) const {
     if (root_ == npos) {
+      if (validation == DeserializationValidation::kFull &&
+          std::ranges::any_of(leaves_,
+                              [](node_index_t leaf) { return leaf != npos; })) {
+        throw std::invalid_argument(
+            "Invalid serialized empty wavelet-tree leaves");
+      }
       return;
     }
     if (nodes_[root_].parent != npos) {
@@ -140,18 +148,60 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
       }
     }
 
+    struct PendingNode {
+      node_index_t node;
+      std::size_t symbol_begin;
+      std::size_t symbol_end;
+    };
     std::vector<bool> reached(nodes_.size());
-    std::vector<node_index_t> pending = {root_};
+    std::vector<PendingNode> pending = {{root_, 0, alphabet_size_}};
     while (!pending.empty()) {
-      const node_index_t node = pending.back();
+      const PendingNode current = pending.back();
       pending.pop_back();
+      const node_index_t node = current.node;
       reached[node] = true;
-      if (nodes_[node].left_child != npos) {
-        pending.push_back(nodes_[node].left_child);
+      const WaveletNode& metadata = nodes_[node];
+      if (metadata.middle <= current.symbol_begin ||
+          metadata.middle >= current.symbol_end) {
+        throw std::invalid_argument(
+            "Serialized wavelet-tree split is outside its symbol range");
       }
-      if (nodes_[node].right_child != npos) {
-        pending.push_back(nodes_[node].right_child);
-      }
+
+      const std::size_t one_count =
+          validation == DeserializationValidation::kFull
+              ? metadata.data.rank(metadata.data.size())
+              : 0;
+      const std::size_t zero_count =
+          validation == DeserializationValidation::kFull
+              ? metadata.data.size() - one_count
+              : 0;
+      const auto validate_branch = [&](node_index_t child,
+                                       std::size_t symbol_begin,
+                                       std::size_t symbol_end,
+                                       std::size_t expected_size) {
+        if (child != npos) {
+          if (validation == DeserializationValidation::kFull &&
+              nodes_[child].data.size() != expected_size) {
+            throw std::invalid_argument(
+                "Serialized wavelet-tree child has the wrong length");
+          }
+          pending.push_back({child, symbol_begin, symbol_end});
+          return;
+        }
+        if (validation == DeserializationValidation::kFull) {
+          for (std::size_t symbol = symbol_begin; symbol < symbol_end;
+               ++symbol) {
+            if (leaves_[symbol] != node) {
+              throw std::invalid_argument(
+                  "Serialized wavelet-tree leaf map disagrees with topology");
+            }
+          }
+        }
+      };
+      validate_branch(metadata.left_child, current.symbol_begin,
+                      metadata.middle, zero_count);
+      validate_branch(metadata.right_child, metadata.middle, current.symbol_end,
+                      one_count);
     }
     if (std::ranges::find(reached, false) != reached.end()) {
       throw std::invalid_argument(
@@ -512,14 +562,20 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
    * @details The result retains views into the reader's backing bytes. Those
    * bytes must remain alive, immutable, and aligned for 64-bit access for the
    * result's lifetime. On success @p reader advances past exactly one framed
-   * artifact; on failure it is unchanged.
+   * artifact; on failure it is unchanged. @p validation selects quick
+   * structural checks or exact bitvector-derived metadata validation.
+   *
+   * @param reader Input cursor, advanced only after successful validation.
+   * @param validation Quick structural or full bitvector-derived validation.
    *
    * @throws std::invalid_argument for malformed, truncated, incompatible, or
    * structurally inconsistent metadata.
    * @throws std::length_error when an encoded count is not representable.
    */
   static WaveletTreeIndex<ReadOnlyStorageView> deserialize(
-      BinaryReader& reader) {
+      BinaryReader& reader,
+      DeserializationValidation validation =
+          DeserializationValidation::kQuick) {
     BinaryReader candidate = reader;
     if (reinterpret_cast<std::uintptr_t>(candidate.remaining_bytes().data()) %
             alignof(std::uint64_t) !=
@@ -557,7 +613,7 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
     }
     result.nodes_.resize(node_count);
     for (auto& node : result.nodes_) {
-      node = WaveletNode::deserialize(payload);
+      node = WaveletNode::deserialize(payload, validation);
     }
     const std::vector<node_index_t> empty_indices;
     if (result.alphabet_size_ > empty_indices.max_size() ||
@@ -605,7 +661,7 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
         throw std::invalid_argument("Invalid serialized wavelet-tree node");
       }
     }
-    result.validate_deserialized_topology();
+    result.validate_deserialized_topology(validation);
     if (result.root_ != npos &&
         result.nodes_[result.root_].data.size() != result.data_size_) {
       throw std::invalid_argument(
@@ -618,11 +674,15 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
 
   /**
    * @brief Restore one artifact from @p data and advance it on success.
+   * @param data Input bytes, advanced only after successful validation.
+   * @param validation Quick structural or full bitvector-derived validation.
    */
   static WaveletTreeIndex<ReadOnlyStorageView> deserialize(
-      std::span<const std::byte>& data) {
+      std::span<const std::byte>& data,
+      DeserializationValidation validation =
+          DeserializationValidation::kQuick) {
     BinaryReader reader(data);
-    auto result = deserialize(reader);
+    auto result = deserialize(reader, validation);
     data = data.subspan(reader.position());
     return result;
   }

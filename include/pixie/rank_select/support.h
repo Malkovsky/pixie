@@ -131,7 +131,7 @@ class RankSelectSupport
     }
   }
 
-  void validate_deserialized_state() const {
+  void validate_deserialized_state(DeserializationValidation validation) const {
     const std::size_t required_words =
         num_bits_ == 0 ? 0 : 1 + (num_bits_ - 1) / kWordSize;
     if (required_words > bits_.size()) {
@@ -189,6 +189,24 @@ class RankSelectSupport
       throw std::invalid_argument(
           "Invalid serialized rank/select sample metadata");
     }
+    for (std::size_t i = 0; i < 8; ++i) {
+      if (delta_super[i] != i * kSuperBlockSize) {
+        throw std::invalid_argument(
+            "Invalid serialized rank/select SIMD metadata");
+      }
+    }
+    for (std::size_t i = 0; i < 32; ++i) {
+      if (delta_basic[i] != i * kBasicBlockSize) {
+        throw std::invalid_argument(
+            "Invalid serialized rank/select SIMD metadata");
+      }
+    }
+
+    if (validation == DeserializationValidation::kFull) {
+      validate_full_source_metadata();
+      return;
+    }
+
     const auto samples = select_samples_.as_words64();
     const auto sample_values_fit = [samples, num_superblocks](
                                        std::size_t begin, std::size_t count) {
@@ -202,18 +220,102 @@ class RankSelectSupport
       throw std::invalid_argument(
           "Serialized rank/select sample references an invalid super block");
     }
+  }
 
-    for (std::size_t i = 0; i < 8; ++i) {
-      if (delta_super[i] != i * kSuperBlockSize) {
-        throw std::invalid_argument(
-            "Invalid serialized rank/select SIMD metadata");
+  void validate_full_source_metadata() const {
+    const auto super_blocks = super_block_rank_.as_words64();
+    const auto basic_blocks = basic_block_rank_.as_words16();
+    const auto samples = select_samples_.as_words64();
+    std::size_t next_select1 = select1_sample_begin_;
+    std::size_t next_select0 = select0_sample_begin_;
+    const std::size_t select1_end =
+        select1_sample_begin_ + select1_sample_count_;
+    const std::size_t select0_end =
+        select0_sample_begin_ + select0_sample_count_;
+
+    const auto check_initial_sample = [&](bool enabled, std::size_t& next,
+                                          std::size_t end) {
+      if (enabled) {
+        if (next == end || samples[next] != 0) {
+          throw std::invalid_argument("Invalid serialized rank/select samples");
+        }
+        ++next;
       }
+    };
+    check_initial_sample(builds_select1(select_support_), next_select1,
+                         select1_end);
+    check_initial_sample(builds_select0(select_support_), next_select0,
+                         select0_end);
+
+    std::uint64_t rank1 = 0;
+    std::uint64_t rank0 = 0;
+    std::uint64_t super_rank = 0;
+    std::uint64_t basic_rank = 0;
+    std::uint64_t select1_milestone = kSelectSampleFrequency;
+    std::uint64_t select0_milestone = kSelectSampleFrequency;
+    const std::size_t metadata_word_count =
+        basic_blocks.size() * kWordsPerBlock;
+    for (std::size_t word_index = 0; word_index < metadata_word_count;
+         ++word_index) {
+      const std::size_t bit_position = word_index * kWordSize;
+      if (bit_position % kSuperBlockSize == 0) {
+        super_rank += basic_rank;
+        if (super_blocks[bit_position / kSuperBlockSize] != super_rank) {
+          throw std::invalid_argument(
+              "Serialized rank/select super-block ranks disagree with source");
+        }
+        basic_rank = 0;
+      }
+      if (bit_position % kBasicBlockSize == 0 &&
+          basic_blocks[bit_position / kBasicBlockSize] != basic_rank) {
+        throw std::invalid_argument(
+            "Serialized rank/select basic-block ranks disagree with source");
+      }
+
+      if (word_index >= logical_word_count()) {
+        continue;
+      }
+      const std::uint64_t word = logical_word(word_index);
+      const std::size_t word_bits = logical_word_bits(word_index);
+      const std::uint64_t ones = std::popcount(word);
+      const std::uint64_t zeros = word_bits - ones;
+      if (builds_select1(select_support_) &&
+          rank1 + ones >= select1_milestone) {
+        const std::size_t position =
+            word_index * kWordSize +
+            select_64(word, select1_milestone - rank1 - 1);
+        const std::uint64_t expected = position / kSuperBlockSize;
+        if (next_select1 == select1_end || samples[next_select1] != expected) {
+          throw std::invalid_argument(
+              "Serialized rank/select one samples disagree with source");
+        }
+        ++next_select1;
+        select1_milestone += kSelectSampleFrequency;
+      }
+      if (builds_select0(select_support_) &&
+          rank0 + zeros >= select0_milestone) {
+        const std::uint64_t zero_word =
+            ~word & first_bits_mask(static_cast<std::uint32_t>(word_bits));
+        const std::size_t position =
+            word_index * kWordSize +
+            select_64(zero_word, select0_milestone - rank0 - 1);
+        const std::uint64_t expected = position / kSuperBlockSize;
+        if (next_select0 == select0_end || samples[next_select0] != expected) {
+          throw std::invalid_argument(
+              "Serialized rank/select zero samples disagree with source");
+        }
+        ++next_select0;
+        select0_milestone += kSelectSampleFrequency;
+      }
+      basic_rank += ones;
+      rank1 += ones;
+      rank0 += zeros;
     }
-    for (std::size_t i = 0; i < 32; ++i) {
-      if (delta_basic[i] != i * kBasicBlockSize) {
-        throw std::invalid_argument(
-            "Invalid serialized rank/select SIMD metadata");
-      }
+
+    if (super_rank + basic_rank != max_rank_ || rank1 != max_rank_ ||
+        next_select1 != select1_end || next_select0 != select0_end) {
+      throw std::invalid_argument(
+          "Serialized rank/select totals disagree with source");
     }
   }
 
@@ -1010,13 +1112,20 @@ class RankSelectSupport
    * `ReadOnlyStorageView` specialization retains views into the reader's
    * backing bytes, which must outlive the result. In both cases @p source_bits
    * remains non-owning and must outlive the result. The reader is unchanged on
-   * failure.
+   * failure. @p validation selects structural quick validation or exact
+   * source-derived metadata validation.
+   *
+   * @param source_bits Non-owning packed source words retained by the result.
+   * @param reader Input cursor, advanced only after successful validation.
+   * @param validation Quick structural or full source-derived validation.
    *
    * @throws std::invalid_argument for truncated or inconsistent metadata.
    * @throws std::length_error when an encoded size is not representable.
    */
-  static RankSelectSupport deserialize(std::span<const uint64_t> source_bits,
-                                       BinaryReader& reader)
+  static RankSelectSupport deserialize(
+      std::span<const uint64_t> source_bits,
+      BinaryReader& reader,
+      DeserializationValidation validation = DeserializationValidation::kQuick)
     requires(std::same_as<MetadataStorage, AlignedStorage> ||
              std::same_as<MetadataStorage, ReadOnlyStorageView>)
   {
@@ -1052,21 +1161,26 @@ class RankSelectSupport
     result.super_block_rank_ = deserialize_metadata_storage(candidate);
     result.basic_block_rank_ = deserialize_metadata_storage(candidate);
     result.select_samples_ = deserialize_metadata_storage(candidate);
-    result.validate_deserialized_state();
+    result.validate_deserialized_state(validation);
     reader = candidate;
     return result;
   }
 
   /**
    * @brief Restore metadata from @p data and advance the byte span on success.
+   * @param source_bits Non-owning packed source words retained by the result.
+   * @param data Input bytes, advanced only after successful validation.
+   * @param validation Quick structural or full source-derived validation.
    */
-  static RankSelectSupport deserialize(std::span<const uint64_t> source_bits,
-                                       std::span<const std::byte>& data)
+  static RankSelectSupport deserialize(
+      std::span<const uint64_t> source_bits,
+      std::span<const std::byte>& data,
+      DeserializationValidation validation = DeserializationValidation::kQuick)
     requires(std::same_as<MetadataStorage, AlignedStorage> ||
              std::same_as<MetadataStorage, ReadOnlyStorageView>)
   {
     BinaryReader reader(data);
-    RankSelectSupport result = deserialize(source_bits, reader);
+    RankSelectSupport result = deserialize(source_bits, reader, validation);
     data = data.subspan(reader.position());
     return result;
   }

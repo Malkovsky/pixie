@@ -130,7 +130,7 @@ class RmMTree : public RmMBase<RmMTree> {
    * eight-byte boundary.
    */
   void serialize(BinaryWriter& writer) const {
-    validate_serialized_state();
+    validate_serialized_state(DeserializationValidation::kQuick);
 
     const std::size_t artifact_begin = writer.size_bytes();
     detail::write_magic(writer, kSerializationMagic);
@@ -175,14 +175,21 @@ class RmMTree : public RmMBase<RmMTree> {
    * @details The result retains a non-owning view of @p words. The caller must
    * keep those words alive and immutable for the result's lifetime. On
    * success, @p reader advances past exactly one artifact; on failure it is
-   * unchanged.
+   * unchanged. @p validation selects quick structural checks or exact
+   * source-derived metadata validation.
+   *
+   * @param words Non-owning packed source words retained by the result.
+   * @param reader Input cursor, advanced only after successful validation.
+   * @param validation Quick structural or full source-derived validation.
    *
    * @throws std::invalid_argument for malformed, incompatible, truncated, or
    * structurally inconsistent metadata.
    * @throws std::length_error when an encoded size is not representable.
    */
   static RmMTree deserialize(std::span<const std::uint64_t> words,
-                             BinaryReader& reader) {
+                             BinaryReader& reader,
+                             DeserializationValidation validation =
+                                 DeserializationValidation::kQuick) {
     BinaryReader candidate = reader;
     const std::size_t available_size = candidate.remaining();
     detail::require_magic(candidate, kSerializationMagic);
@@ -218,18 +225,23 @@ class RmMTree : public RmMBase<RmMTree> {
       throw std::invalid_argument(
           "Serialized RmM source bit count is inconsistent");
     }
-    result.validate_serialized_state();
+    result.validate_serialized_state(validation);
     reader = candidate;
     return result;
   }
 
   /**
    * @brief Restore one artifact from @p data and advance it on success.
+   * @param words Non-owning packed source words retained by the result.
+   * @param data Input bytes, advanced only after successful validation.
+   * @param validation Quick structural or full source-derived validation.
    */
   static RmMTree deserialize(std::span<const std::uint64_t> words,
-                             std::span<const std::byte>& data) {
+                             std::span<const std::byte>& data,
+                             DeserializationValidation validation =
+                                 DeserializationValidation::kQuick) {
     BinaryReader reader(data);
-    RmMTree result = deserialize(words, reader);
+    RmMTree result = deserialize(words, reader, validation);
     data = data.subspan(reader.position());
     return result;
   }
@@ -1096,7 +1108,7 @@ class RmMTree : public RmMBase<RmMTree> {
   }
 
  private:
-  void validate_serialized_state() const {
+  void validate_serialized_state(DeserializationValidation validation) const {
     const std::size_t required_words =
         num_bits == 0 ? 0 : 1 + (num_bits - 1) / 64;
     if (required_words > bits.size()) {
@@ -1157,20 +1169,64 @@ class RmMTree : public RmMBase<RmMTree> {
       return;
     }
 
+    const auto signed_magnitude = [](std::int64_t value) {
+      return value < 0
+                 ? static_cast<std::uint64_t>(-(value + 1)) + std::uint64_t{1}
+                 : static_cast<std::uint64_t>(value);
+    };
+
     for (std::size_t leaf = 0; leaf < leaf_count; ++leaf) {
       const std::size_t node = first_leaf_index + leaf;
       const std::size_t begin = leaf * block_bits;
       const std::size_t expected_size = std::min(block_bits, num_bits - begin);
+      if (validation == DeserializationValidation::kFull) {
+        std::int64_t total = 0;
+        std::int64_t minimum = std::numeric_limits<std::int64_t>::max();
+        std::int64_t maximum = std::numeric_limits<std::int64_t>::min();
+        std::uint64_t minimum_count = 0;
+        std::uint64_t pattern10_count = 0;
+        std::uint8_t previous_bit = 0;
+        for (std::size_t position = begin; position < begin + expected_size;
+             ++position) {
+          const std::uint8_t current_bit =
+              static_cast<std::uint8_t>(bit(position));
+          if (position != begin && previous_bit == 1 && current_bit == 0) {
+            ++pattern10_count;
+          }
+          total += current_bit != 0 ? 1 : -1;
+          if (total < minimum) {
+            minimum = total;
+            minimum_count = 1;
+          } else if (total == minimum) {
+            ++minimum_count;
+          }
+          maximum = std::max(maximum, total);
+          previous_bit = current_bit;
+        }
+        if (segment_size_bits[node] != expected_size ||
+            node_total_excess[node] != total ||
+            node_min_prefix_excess[node] != minimum ||
+            node_max_prefix_excess[node] != maximum ||
+            node_min_count[node] != minimum_count ||
+            node_pattern10_count[node] != pattern10_count ||
+            node_first_bit[node] != bit(begin) ||
+            node_last_bit[node] != previous_bit) {
+          throw std::invalid_argument(
+              "Serialized RmM leaf metadata disagrees with source");
+        }
+        continue;
+      }
       const std::int64_t total = node_total_excess[node];
       const std::int64_t minimum = node_min_prefix_excess[node];
       const std::int64_t maximum = node_max_prefix_excess[node];
+      const std::int64_t expected_signed_size =
+          static_cast<std::int64_t>(expected_size);
       if (segment_size_bits[node] != expected_size ||
-          std::abs(total) > static_cast<std::int64_t>(expected_size) ||
-          ((static_cast<std::int64_t>(expected_size) + total) & 1) != 0 ||
-          minimum > total || maximum < total ||
-          minimum < -static_cast<std::int64_t>(expected_size) ||
-          maximum > static_cast<std::int64_t>(expected_size) ||
-          node_min_count[node] == 0 || node_min_count[node] > expected_size ||
+          signed_magnitude(total) > expected_size ||
+          ((expected_signed_size + total) & 1) != 0 || minimum > total ||
+          maximum < total || minimum < -expected_signed_size ||
+          maximum > expected_signed_size || node_min_count[node] == 0 ||
+          node_min_count[node] > expected_size ||
           node_pattern10_count[node] >= expected_size ||
           node_first_bit[node] > 1 || node_last_bit[node] > 1) {
         throw std::invalid_argument("Invalid serialized RmM leaf metadata");
@@ -1178,6 +1234,23 @@ class RmMTree : public RmMBase<RmMTree> {
     }
 
     for (std::size_t node = first_leaf_index; node-- > 1;) {
+      if (validation == DeserializationValidation::kQuick) {
+        const std::size_t size = segment_size_bits[node];
+        const std::int64_t minimum = node_min_prefix_excess[node];
+        const std::int64_t maximum = node_max_prefix_excess[node];
+        if (size > num_bits ||
+            signed_magnitude(node_total_excess[node]) > size ||
+            (minimum < 0 && signed_magnitude(minimum) > size) ||
+            (maximum > 0 && static_cast<std::uint64_t>(maximum) > size) ||
+            node_min_prefix_excess[node] > node_max_prefix_excess[node] ||
+            node_min_count[node] > segment_size_bits[node] ||
+            node_pattern10_count[node] > segment_size_bits[node] ||
+            node_first_bit[node] > 1 || node_last_bit[node] > 1) {
+          throw std::invalid_argument(
+              "Invalid serialized RmM internal metadata");
+        }
+        continue;
+      }
       const std::size_t left = node << 1;
       const std::size_t right = left | 1;
       const bool has_left = left < node_count && segment_size_bits[left] != 0;

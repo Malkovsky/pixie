@@ -25,6 +25,24 @@ void overwrite_u64(std::vector<std::byte>& bytes,
   }
 }
 
+void overwrite_u32(std::vector<std::byte>& bytes,
+                   std::size_t offset,
+                   std::uint32_t value) {
+  for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
+    bytes[offset + byte] =
+        static_cast<std::byte>((value >> (byte * 8)) & 0xffu);
+  }
+}
+
+void overwrite_u16(std::vector<std::byte>& bytes,
+                   std::size_t offset,
+                   std::uint16_t value) {
+  for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
+    bytes[offset + byte] =
+        static_cast<std::byte>((value >> (byte * 8)) & 0xffu);
+  }
+}
+
 struct RankSelectSampleLayout {
   std::size_t select1_begin;
   std::size_t select1_count;
@@ -161,6 +179,72 @@ TEST(RankSelectSupportTest, OwningMetadataDeserializationRoundTrips) {
   }
 }
 
+TEST(RankSelectSupportTest, QuickAndFullValidationAcceptValidMetadata) {
+  constexpr std::size_t kBitCount = 65537;
+  std::vector<std::uint64_t> words((kBitCount + 63) / 64);
+  std::mt19937_64 rng(20260816);
+  for (std::uint64_t& word : words) {
+    word = rng();
+  }
+  const pixie::RankSelectSupport<> original(words, kBitCount);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  const std::vector<std::byte> artifact = output.take();
+
+  for (const auto validation : {pixie::DeserializationValidation::kQuick,
+                                pixie::DeserializationValidation::kFull}) {
+    pixie::BinaryReader reader(artifact);
+    const auto restored =
+        pixie::RankSelectSupport<>::deserialize(words, reader, validation);
+    EXPECT_TRUE(reader.empty());
+    EXPECT_EQ(restored.rank(kBitCount), original.rank(kBitCount));
+  }
+}
+
+TEST(RankSelectSupportTest,
+     FullValidationRejectsSourceAndMetadataMismatchesTransactionally) {
+  constexpr std::size_t kBitCount = 4097;
+  std::vector<std::uint64_t> words((kBitCount + 63) / 64,
+                                   0xaaaaaaaaaaaaaaaaULL);
+  const pixie::RankSelectSupport<> original(words, kBitCount);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  const std::vector<std::byte> valid = output.take();
+
+  std::vector<std::uint64_t> different_words = words;
+  different_words[0] ^= 1;
+  pixie::BinaryReader quick_reader(valid);
+  EXPECT_NO_THROW((void)pixie::RankSelectSupport<>::deserialize(
+      different_words, quick_reader, pixie::DeserializationValidation::kQuick));
+  EXPECT_TRUE(quick_reader.empty());
+
+  pixie::BinaryReader full_reader(valid);
+  EXPECT_THROW((void)pixie::RankSelectSupport<>::deserialize(
+                   different_words, full_reader,
+                   pixie::DeserializationValidation::kFull),
+               std::invalid_argument);
+  EXPECT_EQ(full_reader.position(), 0u);
+
+  std::vector<std::byte> bad_rank = valid;
+  overwrite_u64(bad_rank, 2 * sizeof(std::uint64_t),
+                original.rank(kBitCount) + 1);
+  pixie::BinaryReader metadata_quick_reader(bad_rank);
+  EXPECT_NO_THROW((void)pixie::RankSelectSupport<>::deserialize(
+      words, metadata_quick_reader, pixie::DeserializationValidation::kQuick));
+  EXPECT_TRUE(metadata_quick_reader.empty());
+
+  pixie::BinaryReader metadata_full_reader(bad_rank);
+  EXPECT_THROW(
+      (void)pixie::RankSelectSupport<>::deserialize(
+          words, metadata_full_reader, pixie::DeserializationValidation::kFull),
+      std::invalid_argument);
+  EXPECT_EQ(metadata_full_reader.position(), 0u);
+}
+
 TEST(RankSelectSupportTest, SerializesDirectlyToMappedFile) {
   constexpr std::size_t kBitCount = 1025;
   std::vector<std::uint64_t> words((kBitCount + 63) / 64);
@@ -181,14 +265,17 @@ TEST(RankSelectSupportTest, SerializesDirectlyToMappedFile) {
   }
 
   pixie::io::MappedFile file(path);
-  pixie::BinaryReader reader(file.as_bytes());
-  const auto restored =
-      pixie::RankSelectSupport<pixie::ReadOnlyStorageView>::deserialize(words,
-                                                                        reader);
-  EXPECT_TRUE(reader.empty());
-  for (std::size_t position = 0; position <= kBitCount; position += 17) {
-    EXPECT_EQ(restored.rank(position), original.rank(position));
-    EXPECT_EQ(restored.rank0(position), original.rank0(position));
+  for (const auto validation : {pixie::DeserializationValidation::kQuick,
+                                pixie::DeserializationValidation::kFull}) {
+    pixie::BinaryReader reader(file.as_bytes());
+    const auto restored =
+        pixie::RankSelectSupport<pixie::ReadOnlyStorageView>::deserialize(
+            words, reader, validation);
+    EXPECT_TRUE(reader.empty());
+    for (std::size_t position = 0; position <= kBitCount; position += 17) {
+      EXPECT_EQ(restored.rank(position), original.rank(position));
+      EXPECT_EQ(restored.rank0(position), original.rank0(position));
+    }
   }
   std::filesystem::remove(path);
 }
@@ -214,22 +301,94 @@ TEST(RankSelectSupportTest,
                   layout.storage_offset + sample * sizeof(std::uint64_t),
                   std::numeric_limits<std::uint64_t>::max());
 
-    pixie::BinaryReader owning_reader(artifact);
-    EXPECT_THROW(
-        (void)pixie::RankSelectSupport<>::deserialize(words, owning_reader),
-        std::invalid_argument);
-    EXPECT_EQ(owning_reader.position(), 0u);
+    for (const auto validation : {pixie::DeserializationValidation::kQuick,
+                                  pixie::DeserializationValidation::kFull}) {
+      pixie::BinaryReader owning_reader(artifact);
+      EXPECT_THROW((void)pixie::RankSelectSupport<>::deserialize(
+                       words, owning_reader, validation),
+                   std::invalid_argument);
+      EXPECT_EQ(owning_reader.position(), 0u);
 
-    pixie::BinaryReader view_reader(artifact);
-    EXPECT_THROW(
-        (void)pixie::RankSelectSupport<pixie::ReadOnlyStorageView>::deserialize(
-            words, view_reader),
-        std::invalid_argument);
-    EXPECT_EQ(view_reader.position(), 0u);
+      pixie::BinaryReader view_reader(artifact);
+      EXPECT_THROW(
+          (void)
+              pixie::RankSelectSupport<pixie::ReadOnlyStorageView>::deserialize(
+                  words, view_reader, validation),
+          std::invalid_argument);
+      EXPECT_EQ(view_reader.position(), 0u);
+    }
   };
 
   expect_rejected(layout.select1_begin);
   expect_rejected(layout.select0_begin);
+}
+
+TEST(RankSelectSupportTest,
+     DeserializationRejectsMalformedFixedMetadataTransactionally) {
+  constexpr std::size_t kBitCount = 4097;
+  std::vector<std::uint64_t> words((kBitCount + 63) / 64,
+                                   0xaaaaaaaaaaaaaaaaULL);
+  const pixie::RankSelectSupport<> original(words, kBitCount);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  const std::vector<std::byte> valid = output.take();
+
+  const auto expect_rejected = [&](std::vector<std::byte> artifact) {
+    for (const auto validation : {pixie::DeserializationValidation::kQuick,
+                                  pixie::DeserializationValidation::kFull}) {
+      pixie::BinaryReader reader(artifact);
+      EXPECT_THROW((void)pixie::RankSelectSupport<>::deserialize(words, reader,
+                                                                 validation),
+                   std::invalid_argument);
+      EXPECT_EQ(reader.position(), 0u);
+    }
+  };
+
+  auto bad_padded_size = valid;
+  overwrite_u64(bad_padded_size, sizeof(std::uint64_t), 0);
+  expect_rejected(std::move(bad_padded_size));
+
+  auto excessive_rank = valid;
+  overwrite_u64(excessive_rank, 2 * sizeof(std::uint64_t), kBitCount + 1);
+  expect_rejected(std::move(excessive_rank));
+
+  auto invalid_select1_begin = valid;
+  overwrite_u64(invalid_select1_begin, 3 * sizeof(std::uint64_t),
+                std::numeric_limits<std::uint64_t>::max());
+  expect_rejected(std::move(invalid_select1_begin));
+
+  auto missing_select1_samples = valid;
+  overwrite_u64(missing_select1_samples, 4 * sizeof(std::uint64_t), 0);
+  expect_rejected(std::move(missing_select1_samples));
+
+  auto invalid_select0_begin = valid;
+  overwrite_u64(invalid_select0_begin, 5 * sizeof(std::uint64_t),
+                std::numeric_limits<std::uint64_t>::max());
+  expect_rejected(std::move(invalid_select0_begin));
+
+  auto missing_select0_samples = valid;
+  overwrite_u64(missing_select0_samples, 6 * sizeof(std::uint64_t), 0);
+  expect_rejected(std::move(missing_select0_samples));
+
+  auto invalid_support = valid;
+  overwrite_u32(invalid_support, 7 * sizeof(std::uint64_t), 4);
+  expect_rejected(std::move(invalid_support));
+
+  auto invalid_boolean = valid;
+  overwrite_u32(invalid_boolean,
+                7 * sizeof(std::uint64_t) + sizeof(std::uint32_t), 2);
+  expect_rejected(std::move(invalid_boolean));
+
+  auto invalid_super_delta = valid;
+  overwrite_u64(invalid_super_delta, 9 * sizeof(std::uint64_t), 0);
+  expect_rejected(std::move(invalid_super_delta));
+
+  auto invalid_basic_delta = valid;
+  overwrite_u16(invalid_basic_delta,
+                16 * sizeof(std::uint64_t) + sizeof(std::uint16_t), 0);
+  expect_rejected(std::move(invalid_basic_delta));
 }
 
 }  // namespace
