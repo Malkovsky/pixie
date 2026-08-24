@@ -3,6 +3,7 @@
 #include <pixie/serialization.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -153,6 +154,70 @@ TEST(FileArchiveTest, SupportsEmptyAndAllZeroContents) {
             std::vector<std::byte>(3, std::byte{0}));
 }
 
+TEST(FileArchiveTest, StreamsTypedBytesAcrossTwoBuildPasses) {
+  std::vector<pixie::FileArchiveSourceMetadata> sources = {
+      {.path = "text", .type = pixie::FileArchiveEntryType::kRegular},
+      {.path = "all-bytes", .type = pixie::FileArchiveEntryType::kRegular}};
+  std::array<std::size_t, 2> calls{};
+  const auto read_source = [&](const auto& source, auto&& consume) {
+    if (source.path == "text") {
+      ++calls[0];
+      const std::vector<std::byte> bytes = Bytes("x\xe2\x82\xac\n");
+      consume(std::span(bytes).first(2));
+      consume(std::span(bytes).subspan(2));
+      return;
+    }
+    ++calls[1];
+    std::vector<std::byte> bytes(256);
+    for (std::size_t value = 0; value < bytes.size(); ++value) {
+      bytes[value] = static_cast<std::byte>(value);
+    }
+    consume(std::span<const std::byte>(bytes));
+  };
+  const pixie::FileArchive archive(std::move(sources), read_source,
+                                   pixie::WaveletTreeBuildType::Huffman);
+
+  EXPECT_EQ(calls, (std::array<std::size_t, 2>{2, 2}));
+  EXPECT_EQ(String(archive.extract(*archive.find("text"))), "x\xe2\x82\xac\n");
+  EXPECT_TRUE(archive.entry(*archive.find("text")).is_text);
+  EXPECT_EQ(archive.entry(*archive.find("text")).line_count, 1u);
+  EXPECT_EQ(archive.extract(*archive.find("all-bytes")).size(), 256u);
+
+  const std::vector<std::byte> artifact = Serialize(archive);
+  pixie::BinaryReader reader(artifact);
+  const auto view = pixie::FileArchiveView::deserialize(
+      reader, pixie::DeserializationValidation::kFull);
+  EXPECT_TRUE(reader.empty());
+  EXPECT_EQ(view.logical_size_bytes(), 261u);
+}
+
+TEST(FileArchiveTest, RejectsContentChangedBetweenStreamingPasses) {
+  std::size_t pass = 0;
+  EXPECT_THROW(
+      (pixie::FileArchive(
+          {{.path = "changed", .type = pixie::FileArchiveEntryType::kRegular}},
+          [&](const auto&, auto&& consume) {
+            const std::vector<std::byte> bytes =
+                Bytes(pass++ == 0 ? "ab" : "ba");
+            consume(std::span<const std::byte>(bytes));
+          })),
+      std::invalid_argument);
+  EXPECT_EQ(pass, 2u);
+}
+
+TEST(FileArchiveTest, SerializesAnEmptyArchiveWithoutATerminalSymbol) {
+  const pixie::FileArchive archive(
+      std::vector<pixie::FileArchiveSourceMetadata>{},
+      [](const auto&, auto&&) { FAIL() << "empty archive read a source"; });
+  EXPECT_EQ(archive.logical_size_bytes(), 0u);
+  const std::vector<std::byte> artifact = Serialize(archive);
+  pixie::BinaryReader reader(artifact);
+  const auto view = pixie::FileArchiveView::deserialize(
+      reader, pixie::DeserializationValidation::kFull);
+  EXPECT_TRUE(view.empty());
+  EXPECT_EQ(view.logical_size_bytes(), 0u);
+}
+
 TEST(FileArchiveTest, RejectsInvalidSourcesAndRanges) {
   EXPECT_THROW(pixie::FileArchive({{.path = "", .content = {}}}),
                std::invalid_argument);
@@ -202,7 +267,7 @@ TEST(FileArchiveTest, RejectsMalformedMetadataTransactionally) {
       };
 
   auto bad_version = valid;
-  OverwriteU32(bad_version, 8, 5);
+  OverwriteU32(bad_version, 8, 6);
   expect_rejected(std::move(bad_version));
 
   auto bad_header_reserved = valid;

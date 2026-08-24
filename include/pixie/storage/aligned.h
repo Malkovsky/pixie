@@ -3,10 +3,13 @@
 #include <pixie/storage.h>
 #include <pixie/storage/read_only_view.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 namespace pixie {
@@ -43,6 +46,12 @@ class AlignedStorage : public StorageBase<AlignedStorage> {
   explicit AlignedStorage(std::size_t size_bits)
       : logical_size_bytes_(bytes_for_bits(size_bits)),
         data_(lines_for_bits(size_bits)) {}
+
+  /** @brief Copy complete 64-bit words into aligned owning storage. */
+  explicit AlignedStorage(std::span<const std::uint64_t> words)
+      : AlignedStorage(bit_size_for_words(words.size())) {
+    std::copy(words.begin(), words.end(), writable_words64_impl().begin());
+  }
 
   /** @brief Return the logical number of exposed bytes. */
   std::size_t size_bytes_impl() const { return logical_size_bytes_; }
@@ -122,6 +131,15 @@ class AlignedStorage : public StorageBase<AlignedStorage> {
   std::span<const CacheLine> as_lines() const { return data_; }
 
  private:
+  static std::size_t bit_size_for_words(std::size_t word_count) {
+    constexpr std::size_t kWordBits =
+        std::numeric_limits<std::uint64_t>::digits;
+    if (word_count > std::numeric_limits<std::size_t>::max() / kWordBits) {
+      throw std::length_error("Aligned storage word sequence is too large");
+    }
+    return word_count * kWordBits;
+  }
+
   static constexpr std::size_t bytes_for_bits(std::size_t size_bits) {
     return size_bits / 8 + (size_bits % 8 != 0);
   }

@@ -14,27 +14,37 @@
 #include <numeric>
 #include <queue>
 #include <span>
+#include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 namespace pixie {
 
-template <StorageImplementation Storage = AlignedStorage>
-class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
+/**
+ * @brief Storage-backed wavelet tree over an unsigned symbol type.
+ * @tparam Symbol Unsigned symbol type. Its value range must cover the dense
+ * alphabet `[0, alphabet_size)`.
+ * @tparam Storage Owning aligned storage or a non-owning read-only view.
+ */
+template <WaveletTreeSymbol Symbol,
+          StorageImplementation Storage = AlignedStorage>
+class WaveletTreeIndex
+    : public WaveletTreeBase<WaveletTreeIndex<Symbol, Storage>, Symbol> {
  private:
   using node_index_t = size_t;
   static constexpr node_index_t npos = std::numeric_limits<node_index_t>::max();
   static constexpr std::array<std::uint8_t, 8> kSerializationMagic = {
       'P', 'X', 'W', 'A', 'V', 'E', 'T', '\0'};
-  static constexpr std::uint32_t kSerializationVersion = 4;
+  static constexpr std::uint32_t kSerializationVersion = 5;
   static constexpr std::size_t kSerializationHeaderBytes = 24;
 
   struct PreWaveletNode {
     node_index_t parent = npos;
     node_index_t left_child = npos;
     node_index_t right_child = npos;
-    uint64_t middle;
+    std::size_t middle;
     PackedBitBuilder stream;
-    explicit PreWaveletNode(uint64_t middle) : middle(middle) {}
+    explicit PreWaveletNode(std::size_t middle) : middle(middle) {}
   };
 
   /**
@@ -47,17 +57,9 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
    */
   struct WaveletNode {
     node_index_t parent, left_child, right_child;
-    uint64_t middle;
+    std::size_t middle;
     Storage bit_vector_data;
     RankSelectSupport<Storage> data;
-
-    /** @brief Manually turns std::vector<uint64_t> into AlignedStorage */
-    static AlignedStorage align(std::vector<uint64_t>&& data) {
-      AlignedStorage result(data.size() * 64);
-      auto view = result.writable_words64();
-      std::copy(data.begin(), data.end(), view.begin());
-      return result;
-    }
 
     WaveletNode() = default;
 
@@ -68,7 +70,8 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
           right_child(node.right_child),
           middle(node.middle) {
       const std::size_t bit_count = node.stream.size_bits();
-      bit_vector_data = align(node.stream.take_words());
+      const std::vector<std::uint64_t> words = node.stream.take_words();
+      bit_vector_data = AlignedStorage(std::span<const std::uint64_t>(words));
       data =
           RankSelectSupport<Storage>(bit_vector_data.as_words64(), bit_count);
     }
@@ -100,8 +103,9 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
     }
   };
 
-  size_t alphabet_size_, data_size_;
-  node_index_t root_;
+  size_t alphabet_size_ = 0;
+  size_t data_size_ = 0;
+  node_index_t root_ = npos;
   std::vector<WaveletNode> nodes_;
   std::vector<node_index_t> leaves_;
   std::vector<size_t> permutation_, inverse_permutation_;
@@ -277,8 +281,8 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
   void copy_segment_content(node_index_t node,
                             size_t begin,
                             size_t end,
-                            std::span<uint64_t> dst,
-                            std::span<uint64_t> tmp) const {
+                            std::span<Symbol> dst,
+                            std::span<Symbol> tmp) const {
     if (begin == end) {
       return;
     }
@@ -287,15 +291,16 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
                  left = (end - begin) - right;
 
     if (nodes_[node].left_child == npos) {
-      std::fill_n(tmp.begin(), static_cast<long long>(left),
-                  inverse_permutation_[nodes_[node].middle - 1]);
+      std::fill_n(
+          tmp.begin(), static_cast<long long>(left),
+          static_cast<Symbol>(inverse_permutation_[nodes_[node].middle - 1]));
     } else {
       copy_segment_content(nodes_[node].left_child, rank0, rank0 + left,
                            tmp.subspan(0, left), dst.subspan(0, left));
     }
     if (nodes_[node].right_child == npos) {
       std::fill(tmp.begin() + static_cast<long long>(left), tmp.end(),
-                inverse_permutation_[nodes_[node].middle]);
+                static_cast<Symbol>(inverse_permutation_[nodes_[node].middle]));
     } else {
       copy_segment_content(nodes_[node].right_child, rank, rank + right,
                            tmp.subspan(left, right), dst.subspan(left, right));
@@ -312,124 +317,206 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
     }
   }
 
-  WaveletTreeIndex() = default;
+  static void validate_alphabet_size(std::size_t alphabet_size) {
+    if (alphabet_size != 0 &&
+        alphabet_size - 1 >
+            static_cast<std::size_t>(std::numeric_limits<Symbol>::max())) {
+      throw std::invalid_argument(
+          "Wavelet-tree alphabet does not fit its symbol type");
+    }
+  }
 
- public:
-  /**
-   * @param alphabet_size Size of the alphabet
-   * @param data Original text. Its characters are from the
-   * range [0, alphabet_size)
-   * @param build_type Either Standard or Huffman. This effects on how the
-   * wavelet tree builds: like segment tree on trivially sorted characters or
-   * like in Huffman algorithm
-   *
-   * @details
-   * Standard: Just calls build_node
-   * Huffman: Reorders characters with respect to Huffman algorithm and then
-   * calls build_node with specific get_middle function
-   *
-   */
-  WaveletTreeIndex(
-      size_t alphabet_size,
-      std::span<const uint64_t> data,
-      const WaveletTreeBuildType build_type = WaveletTreeBuildType::Standard)
+  static std::size_t checked_symbol_index(Symbol symbol,
+                                          std::size_t alphabet_size) {
+    const std::size_t index = static_cast<std::size_t>(symbol);
+    if (index >= alphabet_size) {
+      throw std::invalid_argument(
+          "Wavelet-tree symbol is outside the alphabet");
+    }
+    return index;
+  }
+
+  template <class ForEachSymbol>
+  void build_from_counts(std::size_t alphabet_size,
+                         std::span<const std::size_t> symbol_counts,
+                         ForEachSymbol&& for_each_symbol,
+                         WaveletTreeBuildType build_type)
     requires(std::same_as<Storage, AlignedStorage>)
-      : alphabet_size_(alphabet_size),
-        data_size_(data.size()),
-        leaves_(alphabet_size_, npos) {
-    if (alphabet_size == 0) {
-      root_ = npos;
-      return;
+  {
+    validate_alphabet_size(alphabet_size);
+    if (symbol_counts.size() != alphabet_size) {
+      throw std::invalid_argument(
+          "Wavelet-tree symbol counts must match the alphabet size");
     }
+    alphabet_size_ = alphabet_size;
+    for (const std::size_t count : symbol_counts) {
+      if (count > std::numeric_limits<std::size_t>::max() - data_size_) {
+        throw std::length_error("Wavelet-tree input is too large");
+      }
+      data_size_ += count;
+    }
+    leaves_.assign(alphabet_size_, npos);
+
     std::vector<PreWaveletNode> nodes;
-    nodes.reserve(alphabet_size_);
-    std::vector<size_t> nodes_structure;
-    nodes_structure.reserve(alphabet_size_);
+    std::vector<std::size_t> nodes_structure;
+    if (alphabet_size_ != 0) {
+      nodes.reserve(alphabet_size_);
+      nodes_structure.reserve(alphabet_size_);
 
-    if (build_type == WaveletTreeBuildType::Standard) {
-      permutation_.resize(alphabet_size);
-      inverse_permutation_.resize(alphabet_size);
-      std::iota(permutation_.begin(), permutation_.end(), 0);
-      std::iota(inverse_permutation_.begin(), inverse_permutation_.end(), 0);
-      nodes_structure.resize(alphabet_size_, npos);
-    } else {
-      struct Node {
-        size_t size, left, right;
-      };
-      std::vector<Node> huffman_nodes(alphabet_size_, {0, 0, 0});
-      for (auto symb : data) {
-        huffman_nodes[symb].size++;
+      if (build_type == WaveletTreeBuildType::Standard) {
+        permutation_.resize(alphabet_size_);
+        inverse_permutation_.resize(alphabet_size_);
+        std::iota(permutation_.begin(), permutation_.end(), 0);
+        std::iota(inverse_permutation_.begin(), inverse_permutation_.end(), 0);
+        nodes_structure.resize(alphabet_size_, npos);
+      } else {
+        struct HuffmanNode {
+          std::size_t size;
+          std::size_t left;
+          std::size_t right;
+        };
+        std::vector<HuffmanNode> huffman_nodes(alphabet_size_, {0, 0, 0});
+        for (std::size_t symbol = 0; symbol < alphabet_size_; ++symbol) {
+          huffman_nodes[symbol].size = symbol_counts[symbol];
+        }
+
+        using QueueElement = std::pair<std::size_t, std::size_t>;
+        std::priority_queue<QueueElement, std::vector<QueueElement>,
+                            std::greater<>>
+            queue;
+        for (std::size_t symbol = 0; symbol < alphabet_size_; ++symbol) {
+          queue.emplace(huffman_nodes[symbol].size, symbol);
+        }
+        while (queue.size() >= 2) {
+          const std::size_t right = queue.top().second;
+          queue.pop();
+          const std::size_t left = queue.top().second;
+          queue.pop();
+          huffman_nodes.push_back(
+              {huffman_nodes[left].size + huffman_nodes[right].size, left + 1,
+               right + 1});
+          queue.emplace(huffman_nodes.back().size, huffman_nodes.size() - 1);
+        }
+
+        std::function<std::size_t(std::size_t)> enumerate =
+            [&](std::size_t index) -> std::size_t {
+          const auto& [size, left, right] = huffman_nodes[index];
+          if (left == 0 || right == 0) {
+            permutation_[index] = inverse_permutation_.size();
+            inverse_permutation_.push_back(index);
+            return 1;
+          }
+          const std::size_t node = nodes_structure.size();
+          std::size_t subtree = 0;
+          if (size > 0) {
+            nodes_structure.push_back(0);
+          }
+          subtree += enumerate(left - 1);
+          if (size > 0) {
+            nodes_structure[node] = subtree;
+          }
+          subtree += enumerate(right - 1);
+          return subtree;
+        };
+
+        permutation_.resize(alphabet_size_);
+        inverse_permutation_.reserve(alphabet_size_);
+        enumerate(huffman_nodes.size() - 1);
       }
 
-      using elem_t = std::pair<size_t, size_t>;
-      std::priority_queue<elem_t, std::vector<elem_t>, std::greater<>> queue;
-      for (size_t i = 0; i < alphabet_size_; i++) {
-        queue.emplace(huffman_nodes[i].size, i);
+      std::vector<std::size_t> prefix_sum(alphabet_size_ + 1);
+      for (std::size_t symbol = 0; symbol < alphabet_size_; ++symbol) {
+        prefix_sum[permutation_[symbol] + 1] = symbol_counts[symbol];
       }
-      while (queue.size() >= 2) {
-        auto right = queue.top().second;
-        queue.pop();
-        auto left = queue.top().second;
-        queue.pop();
-        huffman_nodes.push_back(
-            {huffman_nodes[left].size + huffman_nodes[right].size, left + 1,
-             right + 1});
-        queue.emplace(huffman_nodes.back().size, huffman_nodes.size() - 1);
+      std::partial_sum(prefix_sum.begin(), prefix_sum.end(),
+                       prefix_sum.begin());
+      root_ = build_node(
+          0, alphabet_size_, npos,
+          [&](node_index_t node) { return nodes_structure[node]; }, prefix_sum,
+          nodes);
+    }
+
+    std::vector<std::size_t> actual_counts(alphabet_size_);
+    for_each_symbol([&](Symbol symbol) {
+      const std::size_t original = checked_symbol_index(symbol, alphabet_size_);
+      if (actual_counts[original] == std::numeric_limits<std::size_t>::max()) {
+        throw std::length_error("Wavelet-tree symbol count is too large");
       }
-
-      std::function<size_t(size_t)> enumerate = [&](size_t index) -> size_t {
-        const auto& [size, left, right] = huffman_nodes[index];
-        if (left == 0 || right == 0) {
-          permutation_[index] = inverse_permutation_.size();
-          inverse_permutation_.push_back(index);
-          return 1;
-        }
-        size_t ind = nodes_structure.size(), subtree = 0;
-        if (size > 0) {
-          nodes_structure.push_back(0);
-        }
-        subtree += enumerate(left - 1);
-        if (size > 0) {
-          nodes_structure[ind] = subtree;
-        }
-        subtree += enumerate(right - 1);
-        return subtree;
-      };
-
-      permutation_.resize(alphabet_size_);
-      inverse_permutation_.reserve(alphabet_size_);
-      enumerate(huffman_nodes.size() - 1);
-    }
-
-    std::vector<size_t> prefix_sum(alphabet_size + 1);
-    for (auto symbol : data) {
-      prefix_sum[permutation_[symbol] + 1]++;
-    }
-    for (size_t i = 0; i < alphabet_size_; i++) {
-      prefix_sum[i + 1] += prefix_sum[i];
-    }
-
-    root_ = build_node(
-        0, alphabet_size_, npos,
-        [&](node_index_t node) { return nodes_structure[node]; }, prefix_sum,
-        nodes);
-    for (auto symbol : data) {
-      auto index = permutation_[symbol];
+      ++actual_counts[original];
+      const std::size_t permuted = permutation_[original];
       for (node_index_t current = root_; current != npos;) {
         auto& node = nodes[current];
-        bool go_right = index >= node.middle;
+        const bool go_right = permuted >= node.middle;
         node.stream.write_bit(go_right);
-        if (go_right) {
-          current = node.right_child;
-        } else {
-          current = node.left_child;
-        }
+        current = go_right ? node.right_child : node.left_child;
       }
+    });
+    if (!std::ranges::equal(actual_counts, symbol_counts)) {
+      throw std::invalid_argument(
+          "Wavelet-tree emitted symbols do not match their counts");
     }
+
     nodes_.reserve(nodes.size());
     for (auto& node : nodes) {
       nodes_.emplace_back(std::move(node));
     }
+  }
+
+  WaveletTreeIndex() = default;
+
+ public:
+  using symbol_type = Symbol;
+
+  /**
+   * @brief Construct from a contiguous sequence of typed symbols.
+   * @param alphabet_size Dense alphabet size; every symbol must be smaller.
+   * @param data Input symbols retained only for the duration of construction.
+   * @param build_type Standard or Huffman-shaped construction.
+   * @throws std::invalid_argument if the alphabet or a symbol is invalid.
+   */
+  WaveletTreeIndex(
+      std::size_t alphabet_size,
+      std::span<const Symbol> data,
+      const WaveletTreeBuildType build_type = WaveletTreeBuildType::Standard)
+    requires(std::same_as<Storage, AlignedStorage>)
+  {
+    validate_alphabet_size(alphabet_size);
+    std::vector<std::size_t> counts(alphabet_size);
+    for (const Symbol symbol : data) {
+      ++counts[checked_symbol_index(symbol, alphabet_size)];
+    }
+    build_from_counts(
+        alphabet_size, counts,
+        [&](auto&& emit) {
+          for (const Symbol symbol : data) {
+            emit(symbol);
+          }
+        },
+        build_type);
+  }
+
+  /**
+   * @brief Construct from counts and one streamed pass over the symbols.
+   * @details @p for_each_symbol is invoked exactly once with a consumer that
+   * accepts one `Symbol`. Emitted symbols must exactly match @p symbol_counts;
+   * this permits callers to scan a replayable source once for counts and once
+   * for construction without materializing the sequence.
+   * @param alphabet_size Dense alphabet size.
+   * @param symbol_counts Count for every symbol in alphabet order.
+   * @param for_each_symbol Callable accepting the construction consumer.
+   * @param build_type Standard or Huffman-shaped construction.
+   * @throws std::invalid_argument for invalid or inconsistent input.
+   */
+  template <class ForEachSymbol>
+  WaveletTreeIndex(
+      std::size_t alphabet_size,
+      std::span<const std::size_t> symbol_counts,
+      ForEachSymbol&& for_each_symbol,
+      const WaveletTreeBuildType build_type = WaveletTreeBuildType::Standard)
+    requires(std::same_as<Storage, AlignedStorage>)
+  {
+    build_from_counts(alphabet_size, symbol_counts,
+                      std::forward<ForEachSymbol>(for_each_symbol), build_type);
   }
 
   /**
@@ -440,14 +527,15 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
    * @return Number of specified symbols in [0, pos)
    *
    */
-  size_t rank_impl(uint64_t symbol, size_t pos) const {
-    if (symbol >= alphabet_size_) [[unlikely]] {
+  size_t rank_impl(Symbol symbol, size_t pos) const {
+    std::size_t symbol_index = static_cast<std::size_t>(symbol);
+    if (symbol_index >= alphabet_size_) [[unlikely]] {
       return 0;
     }
-    symbol = permutation_[symbol];
+    symbol_index = permutation_[symbol_index];
     for (node_index_t current = root_; current != npos;) {
       const WaveletNode& node = nodes_[current];
-      if (symbol < node.middle) {
+      if (symbol_index < node.middle) {
         pos = node.data.rank0(pos);
         current = node.left_child;
       } else {
@@ -466,15 +554,16 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
    * @return Symbol index, or size() if rank is out of range
    *
    */
-  size_t select_impl(uint64_t symbol, size_t rank) const {
-    if (symbol >= alphabet_size_ || data_size_ == 0) [[unlikely]] {
+  size_t select_impl(Symbol symbol, size_t rank) const {
+    std::size_t symbol_index = static_cast<std::size_t>(symbol);
+    if (symbol_index >= alphabet_size_ || data_size_ == 0) [[unlikely]] {
       return data_size_;
     }
-    symbol = permutation_[symbol];
-    node_index_t current = leaves_[symbol];
+    symbol_index = permutation_[symbol_index];
+    node_index_t current = leaves_[symbol_index];
     for (; current != npos; current = nodes_[current].parent) {
       const WaveletNode& node = nodes_[current];
-      if (symbol < node.middle) {
+      if (symbol_index < node.middle) {
         rank = node.data.select0(rank) + 1;
       } else {
         rank = node.data.select(rank) + 1;
@@ -494,18 +583,20 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
    * through the node storage. A deserialized view does not consult or retain
    * its `BinaryReader`. The current implementation materializes the requested
    * output and an equally sized temporary buffer, for peak auxiliary and
-   * result storage of two `uint64_t` values per returned symbol.
+   * result storage of two `Symbol` values per returned symbol.
    *
    */
-  std::vector<uint64_t> get_segment_impl(size_t begin, size_t end) const {
+  std::vector<Symbol> get_segment_impl(size_t begin, size_t end) const {
     if (alphabet_size_ == 0 || data_size_ == 0 || begin >= end) [[unlikely]] {
       return {};
     }
-    auto length = static_cast<long long>(end - begin);
-    std::vector<uint64_t> result(2 * length);
-    copy_segment_content(root_, begin, end,
-                         std::span{result.begin(), result.begin() + length},
-                         std::span{result.begin() + length, result.end()});
+    const std::size_t length = end - begin;
+    if (length > std::vector<Symbol>().max_size() / 2) {
+      throw std::length_error("Wavelet-tree segment is too large");
+    }
+    std::vector<Symbol> result(2 * length);
+    copy_segment_content(root_, begin, end, std::span(result).first(length),
+                         std::span(result).subspan(length));
     result.resize(length);
     return result;
   }
@@ -530,7 +621,7 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
     const std::size_t artifact_begin = writer.size_bytes();
     detail::write_magic(writer, kSerializationMagic);
     writer.write_u32(kSerializationVersion);
-    writer.write_u32(0);
+    writer.write_u32(std::numeric_limits<Symbol>::digits);
     const std::size_t artifact_size_position = writer.write_u64_placeholder();
 
     writer.write_size(alphabet_size_);
@@ -572,7 +663,7 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
    * structurally inconsistent metadata.
    * @throws std::length_error when an encoded count is not representable.
    */
-  static WaveletTreeIndex<ReadOnlyStorageView> deserialize(
+  static WaveletTreeIndex<Symbol, ReadOnlyStorageView> deserialize(
       BinaryReader& reader,
       DeserializationValidation validation =
           DeserializationValidation::kQuick) {
@@ -586,7 +677,7 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
     const std::size_t available_size = candidate.remaining();
     detail::require_magic(candidate, kSerializationMagic);
     if (candidate.read_u32() != kSerializationVersion ||
-        candidate.read_u32() != 0) {
+        candidate.read_u32() != std::numeric_limits<Symbol>::digits) {
       throw std::invalid_argument(
           "Incompatible serialized wavelet-tree artifact");
     }
@@ -595,8 +686,9 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
     BinaryReader payload =
         candidate.read_subreader(artifact_size - kSerializationHeaderBytes);
 
-    WaveletTreeIndex<ReadOnlyStorageView> result;
+    WaveletTreeIndex<Symbol, ReadOnlyStorageView> result;
     result.alphabet_size_ = payload.read_size();
+    result.validate_alphabet_size(result.alphabet_size_);
     result.data_size_ = payload.read_size();
     result.root_ = payload.read_size();
     const std::size_t node_count = payload.read_size();
@@ -677,7 +769,7 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
    * @param data Input bytes, advanced only after successful validation.
    * @param validation Quick structural or full bitvector-derived validation.
    */
-  static WaveletTreeIndex<ReadOnlyStorageView> deserialize(
+  static WaveletTreeIndex<Symbol, ReadOnlyStorageView> deserialize(
       std::span<const std::byte>& data,
       DeserializationValidation validation =
           DeserializationValidation::kQuick) {
@@ -688,7 +780,10 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
   }
 };
 
-using WaveletTree = WaveletTreeIndex<AlignedStorage>;
-using WaveletTreeView = WaveletTreeIndex<ReadOnlyStorageView>;
+template <WaveletTreeSymbol Symbol>
+using WaveletTree = WaveletTreeIndex<Symbol, AlignedStorage>;
+
+template <WaveletTreeSymbol Symbol>
+using WaveletTreeView = WaveletTreeIndex<Symbol, ReadOnlyStorageView>;
 
 }  // namespace pixie

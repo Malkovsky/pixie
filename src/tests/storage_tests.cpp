@@ -126,6 +126,18 @@ TEST(AlignedStorageTest, PadsResizesAndProvidesWritableStorage) {
   storage.shrink_to_fit();
 }
 
+TEST(AlignedStorageTest, CopiesCompleteWordsIntoAlignedStorage) {
+  std::array<std::uint64_t, 3> words = {1, 2, 3};
+  const pixie::AlignedStorage storage{std::span<const std::uint64_t>(words)};
+  words[0] = 4;
+
+  EXPECT_EQ(storage.size_bytes(), 3 * sizeof(std::uint64_t));
+  EXPECT_TRUE(std::ranges::equal(storage.as_words64(),
+                                 std::array<std::uint64_t, 3>{1, 2, 3}));
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(storage.as_bytes().data()) % 64,
+            0u);
+}
+
 TEST(ReadOnlyStorageViewTest, MutatingOperationsAreNotAvailable) {
   static_assert(!HasWritableBytes<pixie::ReadOnlyStorageView>);
   static_assert(!HasResize<pixie::ReadOnlyStorageView>);

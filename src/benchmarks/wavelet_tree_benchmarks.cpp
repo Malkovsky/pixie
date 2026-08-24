@@ -4,7 +4,7 @@
 
 #include <random>
 
-using pixie::WaveletTree;
+using WaveletTree = pixie::WaveletTree<std::uint64_t>;
 
 static void BM_WaveletTreeSelect(benchmark::State& state) {
   size_t data_size = state.range(0), alphabet_size = 1024, query = data_size;
@@ -94,7 +94,7 @@ static void BM_WaveletTreeViewSelect(benchmark::State& state) {
 
     state.ResumeTiming();
 
-    auto view_tree = pixie::WaveletTreeView::deserialize(reader);
+    auto view_tree = pixie::WaveletTreeView<std::uint64_t>::deserialize(reader);
     benchmark::DoNotOptimize(view_tree);
 
     for (size_t i = 0; i < query; i++) {
@@ -128,7 +128,7 @@ static void BM_WaveletTreeViewRank(benchmark::State& state) {
 
     state.ResumeTiming();
 
-    auto view_tree = pixie::WaveletTreeView::deserialize(reader);
+    auto view_tree = pixie::WaveletTreeView<std::uint64_t>::deserialize(reader);
     benchmark::DoNotOptimize(view_tree);
 
     for (size_t i = 0; i < query; i++) {
@@ -161,7 +161,7 @@ static void BM_WaveletTreeViewSegment(benchmark::State& state) {
 
     state.ResumeTiming();
 
-    auto view_tree = pixie::WaveletTreeView::deserialize(reader);
+    auto view_tree = pixie::WaveletTreeView<std::uint64_t>::deserialize(reader);
     benchmark::DoNotOptimize(view_tree);
 
     for (size_t i = 0; i < query; i++) {
