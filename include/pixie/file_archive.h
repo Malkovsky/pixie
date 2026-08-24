@@ -297,6 +297,17 @@ class FileArchive : public FileArchiveBase<FileArchive> {
   FileArchive() = delete;
 
   /**
+   * @brief Owning archives are move-only.
+   * @details Internal rank indexes retain views into their wavelet-node bit
+   * storage, so copying without rebuilding those indexes would leave views
+   * bound to the source archive.
+   */
+  FileArchive(const FileArchive&) = delete;
+  FileArchive& operator=(const FileArchive&) = delete;
+  FileArchive(FileArchive&&) noexcept = default;
+  FileArchive& operator=(FileArchive&&) noexcept = default;
+
+  /**
    * @brief Construct an archive from file and symlink sources.
    * @details Sources are sorted by path. Paths must be non-empty, unique,
    * valid UTF-8 strings. Content is preserved byte-for-byte.

@@ -6,8 +6,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -65,6 +67,11 @@ std::vector<pixie::FileArchiveSource> Sources() {
 
 }  // namespace
 
+static_assert(!std::is_copy_constructible_v<pixie::FileArchive>);
+static_assert(!std::is_copy_assignable_v<pixie::FileArchive>);
+static_assert(std::is_nothrow_move_constructible_v<pixie::FileArchive>);
+static_assert(std::is_nothrow_move_assignable_v<pixie::FileArchive>);
+
 TEST(FileArchiveTest, FindsAndExtractsSortedEntries) {
   for (const auto build_type : {pixie::WaveletTreeBuildType::Standard,
                                 pixie::WaveletTreeBuildType::Huffman}) {
@@ -95,6 +102,25 @@ TEST(FileArchiveTest, FindsAndExtractsSortedEntries) {
     EXPECT_EQ(String(archive.extract(symlink)), "src/main.cpp");
     EXPECT_THROW(archive.extract_lines(symlink, 0, 0), std::invalid_argument);
   }
+}
+
+TEST(FileArchiveTest, RetainsInternalViewsAcrossMoves) {
+  std::optional<pixie::FileArchive> source(std::in_place, Sources());
+  pixie::FileArchive moved(std::move(*source));
+  source.reset();
+
+  const std::size_t source_index = *moved.find("src/main.cpp");
+  EXPECT_EQ(String(moved.extract_lines(source_index, 1, 4)), "one\n\ntwo");
+
+  pixie::FileArchive assigned(
+      {{.path = "placeholder", .content = Bytes("unused")}});
+  std::optional<pixie::FileArchive> assignment_source(std::in_place, Sources());
+  assigned = std::move(*assignment_source);
+  assignment_source.reset();
+
+  const std::size_t assigned_index = *assigned.find("src/main.cpp");
+  EXPECT_EQ(String(assigned.extract_lines(assigned_index, 0, 2)),
+            "zero\none\n");
 }
 
 TEST(FileArchiveTest, SerializesOwningAndReadOnlyQueries) {
