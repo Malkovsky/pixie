@@ -74,8 +74,7 @@ WaveletArtifactOffsets locate_wavelet_artifact(
 
     skip_storage();
     nodes.back().rank_num_bits = reader.position();
-    reader.skip(7 * sizeof(std::uint64_t) + 2 * sizeof(std::uint32_t) +
-                8 * sizeof(std::uint64_t) + 32 * sizeof(std::uint16_t));
+    reader.skip(7 * sizeof(std::uint64_t) + 2 * sizeof(std::uint32_t));
     for (std::size_t storage = 0; storage < 3; ++storage) {
       skip_storage();
     }

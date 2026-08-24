@@ -25,7 +25,7 @@ class WaveletTreeIndex : public WaveletTreeBase<WaveletTreeIndex<Storage>> {
   static constexpr node_index_t npos = std::numeric_limits<node_index_t>::max();
   static constexpr std::array<std::uint8_t, 8> kSerializationMagic = {
       'P', 'X', 'W', 'A', 'V', 'E', 'T', '\0'};
-  static constexpr std::uint32_t kSerializationVersion = 1;
+  static constexpr std::uint32_t kSerializationVersion = 4;
   static constexpr std::size_t kSerializationHeaderBytes = 24;
 
   struct PreWaveletNode {

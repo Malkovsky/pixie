@@ -26,7 +26,11 @@ namespace pixie {
 template <class Impl>
 class StorageBase {
  public:
-  /** @brief Return the exposed storage size in bytes. */
+  /**
+   * @brief Return the logical exposed storage size in bytes.
+   * @details An owning implementation may reserve or pad more memory; use
+   * `allocated_bytes()` when that physical allocation size is required.
+   */
   std::size_t size_bytes() const { return impl().size_bytes_impl(); }
 
   /** @brief Return the exposed storage size in bits. */
@@ -35,7 +39,7 @@ class StorageBase {
   /** @brief Check whether the storage is empty. */
   bool empty() const { return size_bytes() == 0; }
 
-  /** @brief Return a read-only view of all exposed bytes. */
+  /** @brief Return a read-only view of all logical exposed bytes. */
   std::span<const std::byte> as_bytes() const { return impl().as_bytes_impl(); }
 
   /**

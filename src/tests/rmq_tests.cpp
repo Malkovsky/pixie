@@ -300,8 +300,7 @@ static RmqArtifactLayout locate_rmq_artifact(
   result.has_rank_index = reader.position();
   const bool has_rank_index = reader.read_u8() != 0;
   if (has_rank_index) {
-    reader.skip(7 * sizeof(std::uint64_t) + 2 * sizeof(std::uint32_t) +
-                8 * sizeof(std::uint64_t) + 32 * sizeof(std::uint16_t));
+    reader.skip(7 * sizeof(std::uint64_t) + 2 * sizeof(std::uint32_t));
     for (std::size_t storage = 0; storage < 3; ++storage) {
       reader.skip(reader.read_size());
     }
@@ -496,7 +495,7 @@ TEST(RmqSerializationTest, RejectsCorruptionWithoutAdvancingInput) {
   expect_rejected(std::move(bad_magic));
 
   auto bad_version = valid;
-  overwrite(bad_version, 8, std::uint32_t{2});
+  overwrite(bad_version, 8, std::uint32_t{5});
   expect_rejected(std::move(bad_version));
 
   auto bad_leaf_size = valid;

@@ -84,7 +84,9 @@ TEST(StorageSerializationTest, OwningStorageAndViewSerializeIdentically) {
   storage.view().serialize(view_writer);
   owning_writer.finish();
   view_writer.finish();
-  EXPECT_EQ(owning_output.take(), view_output.take());
+  const std::vector<std::byte> owning_bytes = owning_output.take();
+  EXPECT_EQ(owning_bytes.size(), sizeof(std::uint64_t) + 1);
+  EXPECT_EQ(owning_bytes, view_output.take());
 }
 
 TEST(StorageSerializationTest, ReadOnlyViewRoundTripsAndAdvancesInput) {
@@ -103,10 +105,16 @@ TEST(StorageSerializationTest, ReadOnlyViewRoundTripsAndAdvancesInput) {
 
 TEST(AlignedStorageTest, PadsResizesAndProvidesWritableStorage) {
   pixie::AlignedStorage storage(1);
-  EXPECT_EQ(storage.size_bytes(), pixie::kAlignedStorageLineBytes);
-  EXPECT_EQ(storage.size_bits(), pixie::kAlignedStorageLineBits);
+  EXPECT_EQ(storage.size_bytes(), 1u);
+  EXPECT_EQ(storage.logical_size_bytes(), 1u);
+  EXPECT_EQ(storage.size_bits(), 8u);
+  EXPECT_EQ(storage.padded_size_bytes(), pixie::kAlignedStorageLineBytes);
   EXPECT_EQ(reinterpret_cast<std::uintptr_t>(storage.as_bytes().data()) % 64,
             0u);
+  storage.writable_bytes()[0] = std::byte{42};
+  EXPECT_EQ(storage.as_bytes()[0], std::byte{42});
+  storage.resize(64);
+  EXPECT_EQ(storage.size_bytes(), sizeof(std::uint64_t));
   storage.writable_words64()[0] = 42;
   EXPECT_EQ(storage.as_words64()[0], 42u);
   storage.resize(0);

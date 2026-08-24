@@ -7,6 +7,7 @@
 #include <pixie/storage/read_only_view.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <concepts>
 #include <cstdint>
@@ -75,8 +76,21 @@ class RankSelectSupport
   constexpr static size_t kBlocksPerSuperBlock = 128;
   constexpr static size_t kSelectSampleFrequency = 16384;
 
-  alignas(64) uint64_t delta_super[8]{};
-  alignas(64) uint16_t delta_basic[32]{};
+  alignas(64) inline static constexpr std::array<uint64_t, 8> kDeltaSuper = [] {
+    std::array<uint64_t, 8> result{};
+    for (size_t i = 0; i < result.size(); ++i) {
+      result[i] = i * kSuperBlockSize;
+    }
+    return result;
+  }();
+  alignas(64) inline static constexpr std::array<uint16_t, 32> kDeltaBasic =
+      [] {
+        std::array<uint16_t, 32> result{};
+        for (size_t i = 0; i < result.size(); ++i) {
+          result[i] = static_cast<uint16_t>(i * kBasicBlockSize);
+        }
+        return result;
+      }();
 
   MetadataStorage super_block_rank_;  // 64-bit global prefix sums
   MetadataStorage basic_block_rank_;  // 16-bit local prefix sums
@@ -118,10 +132,6 @@ class RankSelectSupport
       }
       return ReadOnlyStorageView(bytes);
     } else {
-      if (size % kAlignedStorageLineBytes != 0) {
-        throw std::invalid_argument(
-            "Serialized rank/select storage is not cache-line aligned");
-      }
       if (size > std::numeric_limits<std::size_t>::max() / 8) {
         throw std::length_error("Serialized rank/select storage is too large");
       }
@@ -153,22 +163,12 @@ class RankSelectSupport
           "Invalid serialized rank/select configuration");
     }
 
-    std::size_t num_superblocks =
-        8 + (padded_size_ == 0 ? 0 : (padded_size_ - 1) / kSuperBlockSize);
-    if (num_superblocks > std::numeric_limits<std::size_t>::max() - 7) {
-      throw std::length_error(
-          "Serialized rank/select super-block count is too large");
-    }
-    num_superblocks = ((num_superblocks + 7) / 8) * 8;
-    if (num_superblocks > std::numeric_limits<std::size_t>::max() /
-                              (kBlocksPerSuperBlock * sizeof(std::uint16_t))) {
-      throw std::length_error(
-          "Serialized rank/select basic-block count is too large");
-    }
+    const std::size_t data_superblocks = data_superblock_count();
+    const std::size_t super_entries = data_superblocks + 1;
     const std::size_t expected_super_bytes =
-        num_superblocks * sizeof(std::uint64_t);
+        super_entries * sizeof(std::uint64_t);
     const std::size_t expected_basic_bytes =
-        num_superblocks * kBlocksPerSuperBlock * sizeof(std::uint16_t);
+        stored_basicblock_count() * sizeof(std::uint16_t);
     if (super_block_rank_.size_bytes() != expected_super_bytes ||
         basic_block_rank_.size_bytes() != expected_basic_bytes ||
         select_samples_.size_bytes() % sizeof(std::uint64_t) != 0) {
@@ -189,30 +189,19 @@ class RankSelectSupport
       throw std::invalid_argument(
           "Invalid serialized rank/select sample metadata");
     }
-    for (std::size_t i = 0; i < 8; ++i) {
-      if (delta_super[i] != i * kSuperBlockSize) {
-        throw std::invalid_argument(
-            "Invalid serialized rank/select SIMD metadata");
-      }
-    }
-    for (std::size_t i = 0; i < 32; ++i) {
-      if (delta_basic[i] != i * kBasicBlockSize) {
-        throw std::invalid_argument(
-            "Invalid serialized rank/select SIMD metadata");
-      }
-    }
-
     if (validation == DeserializationValidation::kFull) {
       validate_full_source_metadata();
       return;
     }
 
     const auto samples = select_samples_.as_words64();
-    const auto sample_values_fit = [samples, num_superblocks](
+    const auto sample_values_fit = [samples, data_superblocks](
                                        std::size_t begin, std::size_t count) {
       return std::ranges::all_of(samples.subspan(begin, count),
-                                 [num_superblocks](std::uint64_t sample) {
-                                   return sample < num_superblocks;
+                                 [data_superblocks](std::uint64_t sample) {
+                                   return data_superblocks == 0
+                                              ? sample == 0
+                                              : sample < data_superblocks;
                                  });
     };
     if (!sample_values_fit(select1_sample_begin_, select1_sample_count_) ||
@@ -312,7 +301,8 @@ class RankSelectSupport
       rank0 += zeros;
     }
 
-    if (super_rank + basic_rank != max_rank_ || rank1 != max_rank_ ||
+    if (super_blocks.back() != max_rank_ ||
+        super_rank + basic_rank != max_rank_ || rank1 != max_rank_ ||
         next_select1 != select1_end || next_select0 != select0_end) {
       throw std::invalid_argument(
           "Serialized rank/select totals disagree with source");
@@ -321,6 +311,18 @@ class RankSelectSupport
 
   size_t logical_word_count() const {
     return (num_bits_ + kWordSize - 1) / kWordSize;
+  }
+
+  size_t data_superblock_count() const {
+    return num_bits_ == 0 ? 0 : 1 + (num_bits_ - 1) / kSuperBlockSize;
+  }
+
+  size_t stored_basicblock_count() const {
+    if (num_bits_ == 0) {
+      return 0;
+    }
+    const size_t data_basicblocks = 1 + (num_bits_ - 1) / kBasicBlockSize;
+    return (data_basicblocks + 31) / 32 * 32;
   }
 
   size_t logical_word_bits(size_t word_index) const {
@@ -550,14 +552,13 @@ class RankSelectSupport
   void build_rank_select(SelectSupport support,
                          std::optional<size_t> one_count) {
     select_support_ = support;
-    size_t num_superblocks =
-        8 + (padded_size_ == 0 ? 0 : (padded_size_ - 1) / kSuperBlockSize);
-    // Add more blocks to ease SIMD processing
-    // num_basicblocks to fully cover superblock, i.e. 128
-    // This reduces branching in select
-    num_superblocks = ((num_superblocks + 7) / 8) * 8;
-    size_t num_basicblocks = num_superblocks * kBlocksPerSuperBlock;
-    super_block_rank_.resize(num_superblocks * 64);
+    const size_t data_superblocks = data_superblock_count();
+    // Keep complete 32-entry SIMD chunks. Full 128-entry superblock padding is
+    // unnecessary because only the terminal superblock can be partial. The
+    // extra super entry is the cumulative-rank sentinel used by interpolation
+    // search.
+    const size_t num_basicblocks = stored_basicblock_count();
+    super_block_rank_.resize((data_superblocks + 1) * 64);
     basic_block_rank_.resize(num_basicblocks * 16);
 
     auto super_block_rank = super_block_rank_.writable_words64();
@@ -616,14 +617,8 @@ class RankSelectSupport
       }
     }
     max_rank_ = super_block_sum + basic_block_sum;
+    super_block_rank[data_superblocks] = max_rank_;
     finalize_select_sample_writers(select_writers);
-
-    for (size_t i = 0; i < 8; ++i) {
-      delta_super[i] = i * kSuperBlockSize;
-    }
-    for (size_t i = 0; i < 32; ++i) {
-      delta_basic[i] = i * kBasicBlockSize;
-    }
   }
 
   /**
@@ -667,16 +662,18 @@ class RankSelectSupport
     uint64_t left = select0_sample(rank0 / kSelectSampleFrequency);
 
     while (left + 7 < super_block_rank.size()) {
-      auto len = lower_bound_delta_8x64(&super_block_rank[left], rank0,
-                                        delta_super, kSuperBlockSize * left);
+      auto len =
+          lower_bound_delta_8x64(&super_block_rank[left], rank0,
+                                 kDeltaSuper.data(), kSuperBlockSize * left);
       if (len < 8) {
         return left + len - 1;
       }
       left += 8;
     }
     if (left + 3 < super_block_rank.size()) {
-      auto len = lower_bound_delta_4x64(&super_block_rank[left], rank0,
-                                        delta_super, kSuperBlockSize * left);
+      auto len =
+          lower_bound_delta_4x64(&super_block_rank[left], rank0,
+                                 kDeltaSuper.data(), kSuperBlockSize * left);
       if (len < 4) {
         return left + len - 1;
       }
@@ -702,15 +699,18 @@ class RankSelectSupport
    */
   uint64_t find_basicblock(uint16_t local_rank, uint64_t s_block) const {
     auto basic_block_rank = basic_block_rank_.as_words16();
+    const size_t block_begin = kBlocksPerSuperBlock * s_block;
+    const size_t block_count =
+        std::min(kBlocksPerSuperBlock, basic_block_rank.size() - block_begin);
 
-    for (size_t pos = 0; pos < kBlocksPerSuperBlock; pos += 32) {
-      auto count = lower_bound_32x16(
-          &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank);
+    for (size_t pos = 0; pos < block_count; pos += 32) {
+      auto count =
+          lower_bound_32x16(&basic_block_rank[block_begin + pos], local_rank);
       if (count < 32) {
-        return kBlocksPerSuperBlock * s_block + pos + count - 1;
+        return block_begin + pos + count - 1;
       }
     }
-    return kBlocksPerSuperBlock * s_block + kBlocksPerSuperBlock - 1;
+    return block_begin + block_count - 1;
   }
 
   /**
@@ -726,15 +726,18 @@ class RankSelectSupport
    */
   uint64_t find_basicblock_zeros(uint16_t local_rank0, uint64_t s_block) const {
     auto basic_block_rank = basic_block_rank_.as_words16();
-    for (size_t pos = 0; pos < kBlocksPerSuperBlock; pos += 32) {
-      auto count = lower_bound_delta_32x16(
-          &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank0,
-          delta_basic, kBasicBlockSize * pos);
+    const size_t block_begin = kBlocksPerSuperBlock * s_block;
+    const size_t block_count =
+        std::min(kBlocksPerSuperBlock, basic_block_rank.size() - block_begin);
+    for (size_t pos = 0; pos < block_count; pos += 32) {
+      auto count = lower_bound_delta_32x16(&basic_block_rank[block_begin + pos],
+                                           local_rank0, kDeltaBasic.data(),
+                                           kBasicBlockSize * pos);
       if (count < 32) {
-        return kBlocksPerSuperBlock * s_block + pos + count - 1;
+        return block_begin + pos + count - 1;
       }
     }
-    return kBlocksPerSuperBlock * s_block + kBlocksPerSuperBlock - 1;
+    return block_begin + block_count - 1;
   }
 
   /**
@@ -757,31 +760,35 @@ class RankSelectSupport
   uint64_t find_basicblock_is(uint16_t local_rank, uint64_t s_block) const {
     auto super_block_rank = super_block_rank_.as_words64();
     auto basic_block_rank = basic_block_rank_.as_words16();
+    const size_t block_begin = kBlocksPerSuperBlock * s_block;
+    const size_t block_count =
+        std::min(kBlocksPerSuperBlock, basic_block_rank.size() - block_begin);
+    const size_t last_group = block_count - 32;
 
     auto lower = super_block_rank[s_block];
     auto upper = super_block_rank[s_block + 1];
 
-    uint64_t pos = kBlocksPerSuperBlock * local_rank / (upper - lower);
+    uint64_t pos = block_count * local_rank / (upper - lower);
     pos = pos + 16 < 32 ? 0 : (pos - 16);
-    pos = pos > 96 ? 96 : pos;
-    while (pos < 96) {
-      auto count = lower_bound_32x16(
-          &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank);
+    pos = std::min<uint64_t>(pos, last_group);
+    while (pos < last_group) {
+      auto count =
+          lower_bound_32x16(&basic_block_rank[block_begin + pos], local_rank);
       if (count == 0) {
         return find_basicblock(local_rank, s_block);
       }
       if (count < 32) {
-        return kBlocksPerSuperBlock * s_block + pos + count - 1;
+        return block_begin + pos + count - 1;
       }
       pos += 32;
     }
-    pos = 96;
-    auto count = lower_bound_32x16(
-        &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank);
+    pos = last_group;
+    auto count =
+        lower_bound_32x16(&basic_block_rank[block_begin + pos], local_rank);
     if (count == 0) {
       return find_basicblock(local_rank, s_block);
     }
-    return kBlocksPerSuperBlock * s_block + pos + count - 1;
+    return block_begin + pos + count - 1;
   }
 
   /**
@@ -797,22 +804,25 @@ class RankSelectSupport
                                     uint64_t s_block) const {
     auto super_block_rank = super_block_rank_.as_words64();
     auto basic_block_rank = basic_block_rank_.as_words16();
+    const size_t block_begin = kBlocksPerSuperBlock * s_block;
+    const size_t block_count =
+        std::min(kBlocksPerSuperBlock, basic_block_rank.size() - block_begin);
+    const size_t last_group = block_count - 32;
 
     auto lower = kSuperBlockSize * s_block - super_block_rank[s_block];
     auto upper =
         kSuperBlockSize * (s_block + 1) - super_block_rank[s_block + 1];
 
-    uint64_t interpolation =
-        kBlocksPerSuperBlock * local_rank0 / (upper - lower);
+    uint64_t interpolation = block_count * local_rank0 / (upper - lower);
     // Random data usually places the interpolation estimate in the target
     // block. Validate it from existing one-prefix metadata before the SIMD
     // derived-zero scan.
     const uint64_t block_offset =
-        std::min(interpolation, kBlocksPerSuperBlock - 1);
-    const uint64_t block = kBlocksPerSuperBlock * s_block + block_offset;
+        std::min<uint64_t>(interpolation, block_count - 1);
+    const uint64_t block = block_begin + block_offset;
     const uint64_t zero_before =
         kBasicBlockSize * block_offset - basic_block_rank[block];
-    const uint64_t zero_after = block_offset + 1 == kBlocksPerSuperBlock
+    const uint64_t zero_after = block_offset + 1 == block_count
                                     ? upper - lower
                                     : kBasicBlockSize * (block_offset + 1) -
                                           basic_block_rank[block + 1];
@@ -822,27 +832,27 @@ class RankSelectSupport
 
     uint64_t pos = interpolation;
     pos = pos + 16 < 32 ? 0 : (pos - 16);
-    pos = pos > 96 ? 96 : pos;
-    while (pos < 96) {
-      auto count = lower_bound_delta_32x16(
-          &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank0,
-          delta_basic, kBasicBlockSize * pos);
+    pos = std::min<uint64_t>(pos, last_group);
+    while (pos < last_group) {
+      auto count = lower_bound_delta_32x16(&basic_block_rank[block_begin + pos],
+                                           local_rank0, kDeltaBasic.data(),
+                                           kBasicBlockSize * pos);
       if (count == 0) {
         return find_basicblock_zeros(local_rank0, s_block);
       }
       if (count < 32) {
-        return kBlocksPerSuperBlock * s_block + pos + count - 1;
+        return block_begin + pos + count - 1;
       }
       pos += 32;
     }
-    pos = 96;
-    auto count = lower_bound_delta_32x16(
-        &basic_block_rank[kBlocksPerSuperBlock * s_block + pos], local_rank0,
-        delta_basic, kBasicBlockSize * pos);
+    pos = last_group;
+    auto count = lower_bound_delta_32x16(&basic_block_rank[block_begin + pos],
+                                         local_rank0, kDeltaBasic.data(),
+                                         kBasicBlockSize * pos);
     if (count == 0) {
       return find_basicblock_zeros(local_rank0, s_block);
     }
-    return kBlocksPerSuperBlock * s_block + pos + count - 1;
+    return block_begin + pos + count - 1;
   }
 
  public:
@@ -1094,12 +1104,6 @@ class RankSelectSupport
     writer.write_size(select0_sample_count_);
     writer.write_u32(static_cast<std::uint32_t>(select_support_));
     writer.write_u32(static_cast<std::uint32_t>(select0_samples_reversed_));
-    for (const uint64_t delta : delta_super) {
-      writer.write_u64(delta);
-    }
-    for (const uint16_t delta : delta_basic) {
-      writer.write_u16(delta);
-    }
     super_block_rank_.serialize(writer);
     basic_block_rank_.serialize(writer);
     select_samples_.serialize(writer);
@@ -1152,12 +1156,6 @@ class RankSelectSupport
           "Invalid serialized rank/select boolean value");
     }
     result.select0_samples_reversed_ = reversed != 0;
-    for (uint64_t& delta : result.delta_super) {
-      delta = candidate.read_u64();
-    }
-    for (uint16_t& delta : result.delta_basic) {
-      delta = candidate.read_u16();
-    }
     result.super_block_rank_ = deserialize_metadata_storage(candidate);
     result.basic_block_rank_ = deserialize_metadata_storage(candidate);
     result.select_samples_ = deserialize_metadata_storage(candidate);
