@@ -138,6 +138,20 @@ TEST(RankSelectSupportTest, AcceptsStorageSourceWithoutCopying) {
   EXPECT_EQ(support[2], 0);
 }
 
+TEST(RankSelectSupportTest, AcceptsPartialWordAlignedStorageSource) {
+  pixie::AlignedStorage storage(1);
+  storage.writable_bytes()[0] = std::byte{1};
+
+  const pixie::RankSelectSupport support(storage, 1);
+
+  EXPECT_EQ(support.size(), 1u);
+  EXPECT_EQ(support.rank(1), 1u);
+  EXPECT_EQ(support.select(1), 0u);
+
+  const pixie::RankSelectSupport clamped(storage, 65);
+  EXPECT_EQ(clamped.size(), 8u);
+}
+
 TEST(RankSelectSupportTest, OwningMetadataDeserializationRoundTrips) {
   constexpr std::size_t kBitCount = 4097;
   std::vector<std::uint64_t> words((kBitCount + 63) / 64);

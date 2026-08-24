@@ -317,6 +317,16 @@ class RankSelectSupport
     return num_bits_ == 0 ? 0 : 1 + (num_bits_ - 1) / kSuperBlockSize;
   }
 
+  template <StorageImplementation SourceStorage>
+  static ReadOnlyStorageView complete_word_view(
+      const SourceStorage& source_storage) {
+    if constexpr (requires { source_storage.padded_view(); }) {
+      return source_storage.padded_view();
+    } else {
+      return source_storage.view();
+    }
+  }
+
   size_t stored_basicblock_count() const {
     if (num_bits_ == 0) {
       return 0;
@@ -963,8 +973,8 @@ class RankSelectSupport
       size_t num_bits,
       SelectSupport select_support = SelectSupport::kBoth,
       std::optional<size_t> one_count = std::nullopt)
-      : RankSelectSupport(source_storage.view(),
-                          num_bits,
+      : RankSelectSupport(complete_word_view(source_storage),
+                          std::min(num_bits, source_storage.size_bits()),
                           select_support,
                           one_count) {}
 

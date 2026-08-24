@@ -109,6 +109,8 @@ TEST(AlignedStorageTest, PadsResizesAndProvidesWritableStorage) {
   EXPECT_EQ(storage.logical_size_bytes(), 1u);
   EXPECT_EQ(storage.size_bits(), 8u);
   EXPECT_EQ(storage.padded_size_bytes(), pixie::kAlignedStorageLineBytes);
+  EXPECT_EQ(storage.padded_view().size_bytes(),
+            pixie::kAlignedStorageLineBytes);
   EXPECT_EQ(reinterpret_cast<std::uintptr_t>(storage.as_bytes().data()) % 64,
             0u);
   storage.writable_bytes()[0] = std::byte{42};
@@ -119,6 +121,7 @@ TEST(AlignedStorageTest, PadsResizesAndProvidesWritableStorage) {
   EXPECT_EQ(storage.as_words64()[0], 42u);
   storage.resize(0);
   EXPECT_TRUE(storage.empty());
+  EXPECT_TRUE(storage.padded_view().empty());
   EXPECT_GE(storage.allocated_bytes(), storage.size_bytes());
   storage.shrink_to_fit();
 }

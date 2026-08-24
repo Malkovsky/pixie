@@ -2,10 +2,13 @@
 #include <pixie/file_archive/implementations.h>
 #include <pixie/serialization.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -25,6 +28,24 @@ std::vector<std::byte> Serialize(const pixie::FileArchive& archive) {
   archive.serialize(writer);
   writer.finish();
   return sink.take();
+}
+
+void OverwriteU32(std::vector<std::byte>& bytes,
+                  std::size_t offset,
+                  std::uint32_t value) {
+  for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
+    bytes[offset + byte] =
+        static_cast<std::byte>((value >> (8 * byte)) & 0xffU);
+  }
+}
+
+void OverwriteU64(std::vector<std::byte>& bytes,
+                  std::size_t offset,
+                  std::uint64_t value) {
+  for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
+    bytes[offset + byte] =
+        static_cast<std::byte>((value >> (8 * byte)) & 0xffU);
+  }
 }
 
 std::vector<pixie::FileArchiveSource> Sources() {
@@ -118,6 +139,116 @@ TEST(FileArchiveTest, RejectsInvalidSourcesAndRanges) {
   EXPECT_THROW(archive.extract_lines(source, 3, 2), std::out_of_range);
   EXPECT_THROW(archive.extract_lines(source, 0, 5), std::out_of_range);
   EXPECT_THROW(archive.entry(archive.size()), std::out_of_range);
+}
+
+TEST(FileArchiveTest, ValidatesUtf8PathsAndEntryTypes) {
+  const auto make_archive = [](std::string path) {
+    return pixie::FileArchive({{.path = std::move(path), .content = {}}});
+  };
+
+  EXPECT_NO_THROW(make_archive("ascii-\xc2\xa2-\xe2\x82\xac-\xf0\x9f\x98\x80"));
+  EXPECT_THROW(make_archive(std::string("nul\0path", 8)),
+               std::invalid_argument);
+  EXPECT_THROW(make_archive("\x80"), std::invalid_argument);
+  EXPECT_THROW(make_archive("\xc2x"), std::invalid_argument);
+  EXPECT_THROW(make_archive("\xe0\x80\x80"), std::invalid_argument);
+  EXPECT_THROW(make_archive("\xed\xa0\x80"), std::invalid_argument);
+  EXPECT_THROW(make_archive("\xf4\x90\x80\x80"), std::invalid_argument);
+  EXPECT_THROW(make_archive("\xf0"), std::invalid_argument);
+  EXPECT_THROW(pixie::FileArchive(
+                   {{.path = "invalid-type",
+                     .content = {},
+                     .type = static_cast<pixie::FileArchiveEntryType>(2)}}),
+               std::invalid_argument);
+}
+
+TEST(FileArchiveTest, RejectsMalformedMetadataTransactionally) {
+  const pixie::FileArchive archive(Sources());
+  const std::vector<std::byte> valid = Serialize(archive);
+  const auto expect_rejected =
+      [](std::vector<std::byte> bytes,
+         pixie::DeserializationValidation validation =
+             pixie::DeserializationValidation::kQuick) {
+        pixie::BinaryReader reader(bytes);
+        EXPECT_THROW(pixie::FileArchiveView::deserialize(reader, validation),
+                     std::invalid_argument);
+        EXPECT_EQ(reader.position(), 0u);
+      };
+
+  auto bad_version = valid;
+  OverwriteU32(bad_version, 8, 5);
+  expect_rejected(std::move(bad_version));
+
+  auto bad_header_reserved = valid;
+  OverwriteU32(bad_header_reserved, 12, 1);
+  expect_rejected(std::move(bad_header_reserved));
+
+  auto bad_build_type = valid;
+  OverwriteU32(bad_build_type, 24, 2);
+  expect_rejected(std::move(bad_build_type));
+
+  auto bad_payload_reserved = valid;
+  OverwriteU32(bad_payload_reserved, 28, 1);
+  expect_rejected(std::move(bad_payload_reserved));
+
+  auto bad_section_size = valid;
+  OverwriteU64(bad_section_size, 48, 0);
+  expect_rejected(std::move(bad_section_size));
+
+  constexpr std::size_t kFirstRecord = 72;
+  auto bad_type = valid;
+  bad_type[kFirstRecord + 52] = std::byte{2};
+  expect_rejected(std::move(bad_type));
+
+  auto bad_text_flag = valid;
+  bad_text_flag[kFirstRecord + 53] = std::byte{2};
+  expect_rejected(std::move(bad_text_flag));
+
+  auto bad_record_reserved = valid;
+  bad_record_reserved[kFirstRecord + 54] = std::byte{1};
+  expect_rejected(std::move(bad_record_reserved));
+
+  const std::size_t padding_begin =
+      72 + archive.file_table_bytes() + archive.path_storage_bytes();
+  ASSERT_LT(padding_begin, archive.metadata_bytes());
+  auto bad_padding = valid;
+  bad_padding[padding_begin] = std::byte{1};
+  expect_rejected(std::move(bad_padding));
+
+  auto bad_logical_size = valid;
+  OverwriteU64(bad_logical_size, 40, std::numeric_limits<std::uint64_t>::max());
+  expect_rejected(std::move(bad_logical_size));
+
+  auto bad_path_bounds = valid;
+  OverwriteU64(bad_path_bounds, kFirstRecord + 8,
+               std::numeric_limits<std::uint64_t>::max());
+  expect_rejected(std::move(bad_path_bounds));
+
+  auto empty_path = valid;
+  OverwriteU64(empty_path, kFirstRecord + 8, 0);
+  expect_rejected(std::move(empty_path),
+                  pixie::DeserializationValidation::kFull);
+
+  auto wrong_derived_text = valid;
+  wrong_derived_text[kFirstRecord + 53] = std::byte{1};
+  expect_rejected(std::move(wrong_derived_text),
+                  pixie::DeserializationValidation::kFull);
+}
+
+TEST(FileArchiveTest, RejectsUnalignedSerializationAndDeserialization) {
+  const pixie::FileArchive archive(Sources());
+  pixie::VectorOutputSink sink;
+  pixie::BinaryWriter writer(sink);
+  writer.write_u8(0);
+  EXPECT_THROW(archive.serialize(writer), std::invalid_argument);
+
+  const std::vector<std::byte> valid = Serialize(archive);
+  std::vector<std::byte> unaligned(valid.size() + 1);
+  std::ranges::copy(valid, unaligned.begin() + 1);
+  pixie::BinaryReader reader(std::span<const std::byte>(unaligned).subspan(1));
+  EXPECT_THROW(pixie::FileArchiveView::deserialize(reader),
+               std::invalid_argument);
+  EXPECT_EQ(reader.position(), 0u);
 }
 
 TEST(FileArchiveTest, RejectsTrailingAndTruncatedArtifacts) {

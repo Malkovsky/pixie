@@ -55,6 +55,17 @@ class AlignedStorage : public StorageBase<AlignedStorage> {
     return data_.size() * kAlignedStorageLineBytes;
   }
 
+  /**
+   * @brief Return a non-owning view of the complete cache-line backing.
+   * @details This view includes allocation padding and is intended for
+   * word-oriented indexes that require a complete final word. Serialization
+   * and ordinary storage views continue to expose only logical bytes.
+   */
+  ReadOnlyStorageView padded_view() const {
+    return ReadOnlyStorageView(
+        std::as_bytes(std::span<const CacheLine>(data_)));
+  }
+
   /** @brief Return the logical bytes as a read-only span. */
   std::span<const std::byte> as_bytes_impl() const {
     return std::as_bytes(std::span<const CacheLine>(data_))

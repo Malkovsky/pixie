@@ -144,6 +144,13 @@ inline void RequireZeroBytes(std::span<const std::byte> bytes,
 
 /**
  * @brief CRTP facade for file-archive lookup and extraction.
+ * @details `Impl` must provide stable record and path views, a queryable
+ * wavelet tree whose symbols cover all logical content followed by terminal
+ * symbol 256, the logical content size, construction type, and path-storage
+ * size. Views returned by an implementation must remain valid for the facade
+ * object's lifetime. Owning implementations own this state; read-only
+ * implementations may retain non-owning views whose backing storage must
+ * outlive the facade.
  * @tparam Impl Owning or read-only concrete archive implementation.
  */
 template <class Impl>
@@ -198,7 +205,10 @@ class FileArchiveBase {
     return static_cast<std::size_t>(position - records.begin());
   }
 
-  /** @brief Return checked metadata for an entry. */
+  /**
+   * @brief Return metadata for an entry.
+   * @throws std::out_of_range if @p index is not an archived entry.
+   */
   FileArchiveEntry entry(std::size_t index) const {
     const auto records = impl().records_impl();
     if (index >= records.size()) {
@@ -215,7 +225,11 @@ class FileArchiveBase {
             .is_text = record.is_text};
   }
 
-  /** @brief Reconstruct the complete byte content of one entry. */
+  /**
+   * @brief Reconstruct the complete byte content of one entry.
+   * @throws std::out_of_range if @p index is not an archived entry.
+   * @throws std::logic_error if archive content contains a non-byte symbol.
+   */
   std::vector<std::byte> extract(std::size_t index) const {
     const FileArchiveEntry metadata = entry(index);
     return extract_range(metadata.content_offset,
@@ -226,6 +240,9 @@ class FileArchiveBase {
    * @brief Reconstruct zero-based half-open line range `[left, right)`.
    * @details LF terminators are retained. Empty intervals are allowed. A
    * trailing LF does not create an additional line.
+   * @throws std::out_of_range if @p index or `[left, right)` is out of range.
+   * @throws std::invalid_argument if the entry is not a regular text file.
+   * @throws std::logic_error if archive content contains a non-byte symbol.
    */
   std::vector<std::byte> extract_lines(std::size_t index,
                                        std::size_t left,
@@ -379,19 +396,26 @@ class FileArchive : public FileArchiveBase<FileArchive> {
   }
 
  private:
+  /** @brief Permit the facade to use the documented extension points. */
   friend class FileArchiveBase<FileArchive>;
 
+  /** @brief Return a stable view of sorted records owned by this archive. */
   std::span<const file_archive_detail::FileRecord> records_impl() const {
     return records_;
   }
+  /** @brief Return the path slice identified by a valid record. */
   std::string_view path_impl(
       const file_archive_detail::FileRecord& record) const {
     return std::string_view(paths_).substr(record.path_offset,
                                            record.path_size);
   }
+  /** @brief Return the initialized tree containing content plus terminal. */
   const WaveletTree& tree_impl() const { return *tree_; }
+  /** @brief Return content bytes excluding the terminal symbol. */
   std::size_t logical_size_impl() const { return logical_size_; }
+  /** @brief Return the tree construction strategy. */
   WaveletTreeBuildType build_type_impl() const { return build_type_; }
+  /** @brief Return bytes occupied by concatenated paths. */
   std::size_t path_storage_size_impl() const { return paths_.size(); }
 
   std::vector<file_archive_detail::FileRecord> records_;
@@ -495,6 +519,7 @@ class FileArchiveView : public FileArchiveBase<FileArchiveView> {
   }
 
  private:
+  /** @brief Permit the facade to use the documented extension points. */
   friend class FileArchiveBase<FileArchiveView>;
 
   void validate(bool full) const {
@@ -556,16 +581,22 @@ class FileArchiveView : public FileArchiveBase<FileArchiveView> {
     }
   }
 
+  /** @brief Return a stable view of validated, sorted records. */
   std::span<const file_archive_detail::FileRecord> records_impl() const {
     return records_;
   }
+  /** @brief Return the path slice identified by a validated record. */
   std::string_view path_impl(
       const file_archive_detail::FileRecord& record) const {
     return paths_.substr(record.path_offset, record.path_size);
   }
+  /** @brief Return the view-backed tree containing content plus terminal. */
   const WaveletTreeView& tree_impl() const { return *tree_; }
+  /** @brief Return content bytes excluding the terminal symbol. */
   std::size_t logical_size_impl() const { return logical_size_; }
+  /** @brief Return the serialized tree construction strategy. */
   WaveletTreeBuildType build_type_impl() const { return build_type_; }
+  /** @brief Return bytes occupied by the retained path blob. */
   std::size_t path_storage_size_impl() const { return paths_.size(); }
 
   std::vector<file_archive_detail::FileRecord> records_;
