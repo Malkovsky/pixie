@@ -4,9 +4,9 @@
  * @file implementations.h
  * @brief All wavelet-tree implementations provided by Pixie.
  *
- * - `WaveletTreeIndex<Storage>`: storage-parameterized wavelet tree.
- * - `WaveletTree`: owning aligned-storage alias.
- * - `WaveletTreeView`: non-owning read-only storage view alias.
+ * - `WaveletTreeIndex<Symbol, Storage>`: typed, storage-parameterized tree.
+ * - `WaveletTree<Symbol>`: owning aligned-storage alias.
+ * - `WaveletTreeView<Symbol>`: non-owning read-only storage view alias.
  */
 
 #include <pixie/wavelet_tree.h>

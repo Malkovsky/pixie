@@ -130,7 +130,8 @@ call the inherited public facade, not SDSL-specific methods.
 
 int main() {
   const std::array<std::uint64_t, 6> text = {2, 0, 1, 2, 1, 0};
-  pixie::WaveletTree tree(3, std::span<const std::uint64_t>(text));
+  pixie::WaveletTree<std::uint64_t> tree(
+      3, std::span<const std::uint64_t>(text));
 
   const auto ones_before_five = tree.rank(1, 5);  // 2
   const auto second_two = tree.select(2, 2);      // 3

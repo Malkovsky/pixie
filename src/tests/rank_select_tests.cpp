@@ -34,20 +34,14 @@ void overwrite_u32(std::vector<std::byte>& bytes,
   }
 }
 
-void overwrite_u16(std::vector<std::byte>& bytes,
-                   std::size_t offset,
-                   std::uint16_t value) {
-  for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
-    bytes[offset + byte] =
-        static_cast<std::byte>((value >> (byte * 8)) & 0xffu);
-  }
-}
-
 struct RankSelectSampleLayout {
   std::size_t select1_begin;
   std::size_t select1_count;
   std::size_t select0_begin;
   std::size_t select0_count;
+  std::size_t super_bytes;
+  std::size_t basic_bytes;
+  std::size_t sample_bytes;
   std::size_t storage_offset;
 };
 
@@ -60,14 +54,14 @@ RankSelectSampleLayout locate_rank_select_samples(
   result.select1_count = reader.read_size();
   result.select0_begin = reader.read_size();
   result.select0_count = reader.read_size();
-  reader.skip(2 * sizeof(std::uint32_t) + 8 * sizeof(std::uint64_t) +
-              32 * sizeof(std::uint16_t));
-  for (std::size_t storage = 0; storage < 2; ++storage) {
-    reader.skip(reader.read_size());
-  }
-  const std::size_t sample_bytes = reader.read_size();
+  reader.skip(2 * sizeof(std::uint32_t));
+  result.super_bytes = reader.read_size();
+  reader.skip(result.super_bytes);
+  result.basic_bytes = reader.read_size();
+  reader.skip(result.basic_bytes);
+  result.sample_bytes = reader.read_size();
   result.storage_offset = reader.position();
-  reader.skip(sample_bytes);
+  reader.skip(result.sample_bytes);
   return result;
 }
 
@@ -144,6 +138,20 @@ TEST(RankSelectSupportTest, AcceptsStorageSourceWithoutCopying) {
   EXPECT_EQ(support[2], 0);
 }
 
+TEST(RankSelectSupportTest, AcceptsPartialWordAlignedStorageSource) {
+  pixie::AlignedStorage storage(1);
+  storage.writable_bytes()[0] = std::byte{1};
+
+  const pixie::RankSelectSupport support(storage, 1);
+
+  EXPECT_EQ(support.size(), 1u);
+  EXPECT_EQ(support.rank(1), 1u);
+  EXPECT_EQ(support.select(1), 0u);
+
+  const pixie::RankSelectSupport clamped(storage, 65);
+  EXPECT_EQ(clamped.size(), 8u);
+}
+
 TEST(RankSelectSupportTest, OwningMetadataDeserializationRoundTrips) {
   constexpr std::size_t kBitCount = 4097;
   std::vector<std::uint64_t> words((kBitCount + 63) / 64);
@@ -176,6 +184,32 @@ TEST(RankSelectSupportTest, OwningMetadataDeserializationRoundTrips) {
   }
   for (std::size_t rank = 1; rank <= zeros + 1; ++rank) {
     EXPECT_EQ(restored.select0(rank), original.select0(rank));
+  }
+}
+
+TEST(RankSelectSupportTest, SerializesOnlySimdRoundedBasicBlockMetadata) {
+  constexpr std::array<std::size_t, 6> bit_counts = {
+      0, 1, 32 * 512, 32 * 512 + 1, 65536, 65537};
+  for (const std::size_t bit_count : bit_counts) {
+    SCOPED_TRACE(bit_count);
+    const std::vector<std::uint64_t> words((bit_count + 63) / 64);
+    const pixie::RankSelectSupport<> support(
+        words, bit_count, pixie::RankSelectSupport<>::SelectSupport::kNone);
+    pixie::VectorOutputSink output;
+    pixie::BinaryWriter writer(output);
+    support.serialize(writer);
+    writer.finish();
+    const std::vector<std::byte> artifact = output.take();
+    const RankSelectSampleLayout layout = locate_rank_select_samples(artifact);
+    const std::size_t data_superblocks =
+        bit_count == 0 ? 0 : 1 + (bit_count - 1) / 65536;
+    const std::size_t data_basicblocks =
+        bit_count == 0 ? 0 : 1 + (bit_count - 1) / 512;
+    const std::size_t stored_basicblocks = (data_basicblocks + 31) / 32 * 32;
+    EXPECT_EQ(layout.super_bytes,
+              (data_superblocks + 1) * sizeof(std::uint64_t));
+    EXPECT_EQ(layout.basic_bytes, stored_basicblocks * sizeof(std::uint16_t));
+    EXPECT_EQ(layout.sample_bytes, 0u);
   }
 }
 
@@ -380,15 +414,6 @@ TEST(RankSelectSupportTest,
   overwrite_u32(invalid_boolean,
                 7 * sizeof(std::uint64_t) + sizeof(std::uint32_t), 2);
   expect_rejected(std::move(invalid_boolean));
-
-  auto invalid_super_delta = valid;
-  overwrite_u64(invalid_super_delta, 9 * sizeof(std::uint64_t), 0);
-  expect_rejected(std::move(invalid_super_delta));
-
-  auto invalid_basic_delta = valid;
-  overwrite_u16(invalid_basic_delta,
-                16 * sizeof(std::uint64_t) + sizeof(std::uint16_t), 0);
-  expect_rejected(std::move(invalid_basic_delta));
 }
 
 }  // namespace

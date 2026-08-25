@@ -487,7 +487,7 @@ void BM_RmqDeserializeImpl(benchmark::State& state) {
 void BM_WaveletTreeSerialize(benchmark::State& state) {
   const std::size_t symbol_count = static_cast<std::size_t>(state.range(0));
   const std::vector<std::uint64_t> symbols = make_symbols(symbol_count);
-  const pixie::WaveletTree index(kWaveletAlphabetSize, symbols);
+  const pixie::WaveletTree<std::uint64_t> index(kWaveletAlphabetSize, symbols);
   const std::vector<std::byte> artifact = serialize_to_vector(index);
   std::vector<std::byte> destination(artifact.size());
   std::vector<std::byte> staging(kDefaultStagingBytes);
@@ -500,12 +500,13 @@ template <pixie::DeserializationValidation Validation>
 void BM_WaveletTreeDeserializeViewImpl(benchmark::State& state) {
   const std::size_t symbol_count = static_cast<std::size_t>(state.range(0));
   const std::vector<std::uint64_t> symbols = make_symbols(symbol_count);
-  const pixie::WaveletTree index(kWaveletAlphabetSize, symbols);
+  const pixie::WaveletTree<std::uint64_t> index(kWaveletAlphabetSize, symbols);
   const std::vector<std::byte> serialized = serialize_to_vector(index);
   const AlignedArtifact artifact(as_const_span(serialized));
   deserialize_iterations(
       state, artifact.bytes(), [](pixie::BinaryReader& reader) {
-        return pixie::WaveletTreeView::deserialize(reader, Validation);
+        return pixie::WaveletTreeView<std::uint64_t>::deserialize(reader,
+                                                                  Validation);
       });
   set_artifact_counters(state, symbol_count, artifact.bytes().size());
 }

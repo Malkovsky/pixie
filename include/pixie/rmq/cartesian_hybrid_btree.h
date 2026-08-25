@@ -1781,7 +1781,7 @@ class CartesianHybridBTree
 
   static constexpr std::array<std::uint8_t, 8> kSerializationMagic = {
       'P', 'I', 'X', 'I', 'E', 'R', 'M', 'Q'};
-  static constexpr std::uint32_t kSerializationVersion = 1;
+  static constexpr std::uint32_t kSerializationVersion = 4;
   static constexpr std::size_t kSerializationHeaderBytes = 48;
 
  public:
@@ -2158,10 +2158,6 @@ class CartesianHybridBTree
       BinaryReader& reader) {
     const std::size_t size = reader.read_size();
     const std::span<const std::byte> bytes = reader.read_bytes(size);
-    if (size % kAlignedStorageLineBytes != 0) {
-      throw std::invalid_argument(
-          "Serialized RMQ storage is not cache-line aligned");
-    }
     if (size > std::numeric_limits<std::size_t>::max() / 8) {
       throw std::length_error("Serialized RMQ storage is too large");
     }
