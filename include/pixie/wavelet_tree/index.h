@@ -63,6 +63,32 @@ class WaveletTreeIndex
 
     WaveletNode() = default;
 
+    WaveletNode(const WaveletNode& node)
+        : parent(node.parent),
+          left_child(node.left_child),
+          right_child(node.right_child),
+          middle(node.middle),
+          bit_vector_data(node.bit_vector_data),
+          data([&] {
+            if constexpr (std::same_as<Storage, AlignedStorage>) {
+              return RankSelectSupport<Storage>(bit_vector_data.as_words64(),
+                                                node.data.size());
+            } else {
+              return node.data;
+            }
+          }()) {}
+
+    WaveletNode& operator=(const WaveletNode& node) {
+      if (this != &node) {
+        WaveletNode copy(node);
+        *this = std::move(copy);
+      }
+      return *this;
+    }
+
+    WaveletNode(WaveletNode&&) noexcept = default;
+    WaveletNode& operator=(WaveletNode&&) noexcept = default;
+
     WaveletNode(PreWaveletNode&& node)
       requires(std::same_as<Storage, AlignedStorage>)
         : parent(node.parent),
@@ -591,6 +617,10 @@ class WaveletTreeIndex
       return {};
     }
     const std::size_t length = end - begin;
+    if (root_ == npos) [[unlikely]] {
+      return std::vector<Symbol>(
+          length, static_cast<Symbol>(inverse_permutation_.front()));
+    }
     if (length > std::vector<Symbol>().max_size() / 2) {
       throw std::length_error("Wavelet-tree segment is too large");
     }

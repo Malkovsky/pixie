@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <random>
 #include <span>
 #include <vector>
@@ -143,6 +144,48 @@ TEST(WaveletTreeTest, BasicSegment) {
         EXPECT_EQ(segment[i], data[begin + i]);
       }
     }
+  }
+}
+
+TEST(WaveletTreeTest, SingleSymbolSupportsQueriesAndSerialization) {
+  const std::vector<std::uint8_t> data = {0, 0, 0, 0};
+  for (const auto build_type : {pixie::WaveletTreeBuildType::Standard,
+                                pixie::WaveletTreeBuildType::Huffman}) {
+    const pixie::WaveletTree<std::uint8_t> tree(1, data, build_type);
+    EXPECT_EQ(tree.rank(0, 3), 3u);
+    EXPECT_EQ(tree.select(0, 4), 3u);
+    EXPECT_EQ(tree.select(0, 5), tree.size());
+    EXPECT_EQ(tree.get_segment(1, 4), (std::vector<std::uint8_t>{0, 0, 0}));
+
+    pixie::VectorOutputSink output;
+    pixie::BinaryWriter writer(output);
+    tree.serialize(writer);
+    writer.finish();
+    const std::vector<std::byte> artifact = output.take();
+    pixie::BinaryReader reader(artifact);
+    const auto restored =
+        pixie::WaveletTreeView<std::uint8_t>::deserialize(reader);
+    EXPECT_TRUE(reader.empty());
+    EXPECT_EQ(restored.get_segment(0, data.size()), data);
+  }
+}
+
+TEST(WaveletTreeTest, OwningCopiesRetainIndependentRankSources) {
+  const std::vector<std::uint8_t> data = {0, 1, 0, 1};
+  const std::vector<std::uint8_t> initial_data = {1, 1, 0, 0};
+  std::unique_ptr<pixie::WaveletTree<std::uint8_t>> constructed_copy;
+  pixie::WaveletTree<std::uint8_t> assigned_copy(2, initial_data);
+  {
+    const pixie::WaveletTree<std::uint8_t> original(2, data);
+    constructed_copy =
+        std::make_unique<pixie::WaveletTree<std::uint8_t>>(original);
+    assigned_copy = original;
+  }
+
+  for (const auto* copy : {constructed_copy.get(), &assigned_copy}) {
+    EXPECT_EQ(copy->rank(1, 3), 1u);
+    EXPECT_EQ(copy->select(1, 2), 3u);
+    EXPECT_EQ(copy->get_segment(0, data.size()), data);
   }
 }
 
