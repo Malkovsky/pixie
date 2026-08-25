@@ -677,4 +677,88 @@ class BinaryReader {
   std::size_t origin_ = 0;
 };
 
+/**
+ * @brief CRTP facade for optional binary serialization and deserialization.
+ *
+ * @details A derived type opts into serialization by providing
+ * `serialize_impl(BinaryWriter&) const`, and opts into restoration for a
+ * context by providing a static `deserialize_impl(BinaryReader&, context...)`
+ * returning exactly the derived type. Deserialization is transactional: the
+ * caller's cursor (or mutable input span) advances only after the complete
+ * implementation succeeds.
+ *
+ * @tparam Derived Concrete serializable type.
+ */
+template <class Derived>
+class SerializationBase {
+ public:
+  /** @brief Serialize this value through its concrete implementation. */
+  void serialize(BinaryWriter& writer) const
+    requires requires(const Derived& value, BinaryWriter& output) {
+      { value.serialize_impl(output) } -> std::same_as<void>;
+    }
+  {
+    derived().serialize_impl(writer);
+  }
+
+  /**
+   * @brief Restore exactly `Derived` and advance @p reader on success.
+   * @details Any contextual arguments follow the reader. The reader is
+   * unchanged if parsing, allocation, or validation throws.
+   */
+  template <class... Context>
+  static Derived deserialize(BinaryReader& reader, Context&&... context)
+    requires requires(BinaryReader& input, Context&&... arguments) {
+      {
+        Derived::deserialize_impl(input, std::forward<Context>(arguments)...)
+      } -> std::same_as<Derived>;
+    }
+  {
+    BinaryReader candidate = reader;
+    Derived result =
+        Derived::deserialize_impl(candidate, std::forward<Context>(context)...);
+    reader = candidate;
+    return result;
+  }
+
+  /**
+   * @brief Restore exactly `Derived` and advance a mutable byte span.
+   * @details This shared convenience overload has the same transactional
+   * behavior as the `BinaryReader` overload.
+   */
+  template <class... Context>
+  static Derived deserialize(std::span<const std::byte>& data,
+                             Context&&... context)
+    requires requires(BinaryReader& input, Context&&... arguments) {
+      {
+        Derived::deserialize_impl(input, std::forward<Context>(arguments)...)
+      } -> std::same_as<Derived>;
+    }
+  {
+    BinaryReader reader(data);
+    Derived result = deserialize(reader, std::forward<Context>(context)...);
+    data = data.subspan(reader.position());
+    return result;
+  }
+
+ private:
+  const Derived& derived() const { return static_cast<const Derived&>(*this); }
+};
+
+/** @brief Type exposing the common binary serialization operation. */
+template <class T>
+concept Serializable = requires(const T& value, BinaryWriter& writer) {
+  { value.serialize(writer) } -> std::same_as<void>;
+};
+
+/**
+ * @brief Type restorable exactly from a reader and the listed context types.
+ */
+template <class T, class... Context>
+concept Deserializable = requires(BinaryReader& reader, Context&&... context) {
+  {
+    T::deserialize(reader, std::forward<Context>(context)...)
+  } -> std::same_as<T>;
+};
+
 }  // namespace pixie

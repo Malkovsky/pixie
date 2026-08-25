@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -25,7 +26,8 @@ std::string String(std::span<const std::byte> bytes) {
   return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
 }
 
-std::vector<std::byte> Serialize(const pixie::FileArchive& archive) {
+template <class Archive>
+std::vector<std::byte> Serialize(const Archive& archive) {
   pixie::VectorOutputSink sink;
   pixie::BinaryWriter writer(sink);
   archive.serialize(writer);
@@ -72,6 +74,17 @@ static_assert(!std::is_copy_constructible_v<pixie::FileArchive>);
 static_assert(!std::is_copy_assignable_v<pixie::FileArchive>);
 static_assert(std::is_nothrow_move_constructible_v<pixie::FileArchive>);
 static_assert(std::is_nothrow_move_assignable_v<pixie::FileArchive>);
+static_assert(std::is_copy_constructible_v<pixie::FileArchiveView>);
+static_assert(std::is_copy_assignable_v<pixie::FileArchiveView>);
+static_assert(std::same_as<pixie::FileArchive,
+                           pixie::FileArchiveIndex<pixie::AlignedStorage>>);
+static_assert(
+    std::same_as<pixie::FileArchiveView,
+                 pixie::FileArchiveIndex<pixie::ReadOnlyStorageView>>);
+static_assert(pixie::Deserializable<pixie::FileArchive>);
+static_assert(pixie::Deserializable<pixie::FileArchiveView>);
+static_assert(!std::constructible_from<pixie::FileArchiveView,
+                                       std::vector<pixie::FileArchiveSource>>);
 
 TEST(FileArchiveTest, FindsAndExtractsSortedEntries) {
   for (const auto build_type : {pixie::WaveletTreeBuildType::Standard,
@@ -142,6 +155,34 @@ TEST(FileArchiveTest, SerializesOwningAndReadOnlyQueries) {
         full_reader, pixie::DeserializationValidation::kFull);
     EXPECT_EQ(String(full.extract(*full.find("current"))), "src/main.cpp");
   }
+}
+
+TEST(FileArchiveTest, OwningRestorationCopiesAndSerializesIdentically) {
+  const pixie::FileArchive original(Sources());
+  std::vector<std::byte> artifact = Serialize(original);
+  const std::vector<std::byte> expected = artifact;
+  pixie::BinaryReader reader(artifact);
+  pixie::FileArchive restored = pixie::FileArchive::deserialize(
+      reader, pixie::DeserializationValidation::kFull);
+  EXPECT_TRUE(reader.empty());
+
+  artifact.clear();
+  artifact.shrink_to_fit();
+  EXPECT_EQ(String(restored.extract(*restored.find("src/main.cpp"))),
+            "zero\none\n\ntwo");
+  EXPECT_EQ(Serialize(restored), expected);
+}
+
+TEST(FileArchiveTest, OwnerAndViewSerializeIdentically) {
+  const pixie::FileArchive original(Sources());
+  const std::vector<std::byte> bytes = Serialize(original);
+  pixie::BinaryReader owner_reader(bytes);
+  pixie::BinaryReader view_reader(bytes);
+  const pixie::FileArchive owner =
+      pixie::FileArchive::deserialize(owner_reader);
+  const pixie::FileArchiveView view =
+      pixie::FileArchiveView::deserialize(view_reader);
+  EXPECT_EQ(Serialize(owner), Serialize(view));
 }
 
 TEST(FileArchiveTest, SupportsEmptyAndAllZeroContents) {

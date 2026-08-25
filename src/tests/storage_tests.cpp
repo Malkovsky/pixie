@@ -12,6 +12,7 @@
 #include <span>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -101,6 +102,53 @@ TEST(StorageSerializationTest, ReadOnlyViewRoundTripsAndAdvancesInput) {
   const auto restored = pixie::ReadOnlyStorageView::deserialize(reader);
   EXPECT_TRUE(std::ranges::equal(restored.as_bytes(), storage.as_bytes()));
   EXPECT_TRUE(reader.empty());
+}
+
+TEST(StorageSerializationTest, OwningRestoreCopiesInputAndReturnsExactType) {
+  static_assert(pixie::Serializable<pixie::AlignedStorage>);
+  static_assert(pixie::Deserializable<pixie::AlignedStorage>);
+  static_assert(pixie::Deserializable<pixie::ReadOnlyStorageView>);
+  static_assert(std::same_as<decltype(pixie::AlignedStorage::deserialize(
+                                 std::declval<pixie::BinaryReader&>())),
+                             pixie::AlignedStorage>);
+
+  pixie::AlignedStorage restored;
+  {
+    pixie::AlignedStorage original(24);
+    original.writable_bytes()[0] = std::byte{1};
+    original.writable_bytes()[1] = std::byte{2};
+    original.writable_bytes()[2] = std::byte{3};
+    pixie::VectorOutputSink output;
+    pixie::BinaryWriter writer(output);
+    original.serialize(writer);
+    writer.finish();
+    std::vector<std::byte> artifact = output.take();
+    pixie::BinaryReader reader(artifact);
+    restored = pixie::AlignedStorage::deserialize(reader);
+    EXPECT_TRUE(reader.empty());
+  }
+  EXPECT_TRUE(
+      std::ranges::equal(restored.as_bytes(),
+                         std::array{std::byte{1}, std::byte{2}, std::byte{3}}));
+}
+
+TEST(StorageSerializationTest, BothRestorationsRollbackOnTruncation) {
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  writer.write_size(1);
+  writer.finish();
+  const auto bytes = output.take();
+  for (const auto restore :
+       {+[](pixie::BinaryReader& reader) {
+          (void)pixie::AlignedStorage::deserialize(reader);
+        },
+        +[](pixie::BinaryReader& reader) {
+          (void)pixie::ReadOnlyStorageView::deserialize(reader);
+        }}) {
+    pixie::BinaryReader reader(bytes);
+    EXPECT_THROW(restore(reader), std::invalid_argument);
+    EXPECT_EQ(reader.position(), 0u);
+  }
 }
 
 TEST(AlignedStorageTest, PadsResizesAndProvidesWritableStorage) {

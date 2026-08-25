@@ -24,7 +24,7 @@ namespace pixie {
  * @tparam Impl Concrete storage implementation.
  */
 template <class Impl>
-class StorageBase {
+class StorageBase : public SerializationBase<Impl> {
  public:
   /**
    * @brief Return the logical exposed storage size in bytes.
@@ -76,7 +76,7 @@ class StorageBase {
   /**
    * @brief Serialize the exposed bytes with a 64-bit little-endian size prefix.
    */
-  void serialize(BinaryWriter& writer) const {
+  void serialize_impl(BinaryWriter& writer) const {
     writer.write_size(size_bytes());
     writer.write_bytes(as_bytes());
   }

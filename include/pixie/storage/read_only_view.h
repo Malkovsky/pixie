@@ -45,25 +45,9 @@ class ReadOnlyStorageView : public StorageBase<ReadOnlyStorageView> {
    * @throws std::invalid_argument if the size prefix or payload is truncated.
    * @throws std::length_error if the encoded size is not representable.
    */
-  static ReadOnlyStorageView deserialize(BinaryReader& reader) {
-    BinaryReader candidate = reader;
-    const std::size_t size = candidate.read_size();
-    ReadOnlyStorageView result(candidate.read_bytes(size));
-    reader = candidate;
-    return result;
-  }
-
-  /**
-   * @brief Deserialize from @p data and advance it past the storage payload.
-   *
-   * @details This compatibility overload has the same lifetime and failure
-   * behavior as the `BinaryReader` overload.
-   */
-  static ReadOnlyStorageView deserialize(std::span<const std::byte>& data) {
-    BinaryReader reader(data);
-    ReadOnlyStorageView result = deserialize(reader);
-    data = data.subspan(reader.position());
-    return result;
+  static ReadOnlyStorageView deserialize_impl(BinaryReader& reader) {
+    const std::size_t size = reader.read_size();
+    return ReadOnlyStorageView(reader.read_bytes(size));
   }
 
  private:

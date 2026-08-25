@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <random>
 #include <span>
 #include <vector>
@@ -372,6 +373,59 @@ TEST(WaveletTreeTest, SerializationSmoke) {
       EXPECT_EQ(orig_segment, view_segment);
     }
   }
+}
+
+TEST(WaveletTreeTest, OwningRestorationSurvivesArtifactDestruction) {
+  static_assert(std::same_as<
+                pixie::WaveletTree<std::uint8_t>,
+                pixie::WaveletTreeIndex<std::uint8_t, pixie::AlignedStorage>>);
+  static_assert(
+      std::same_as<
+          pixie::WaveletTreeView<std::uint8_t>,
+          pixie::WaveletTreeIndex<std::uint8_t, pixie::ReadOnlyStorageView>>);
+  static_assert(pixie::Deserializable<pixie::WaveletTree<std::uint8_t>>);
+  static_assert(pixie::Deserializable<pixie::WaveletTreeView<std::uint8_t>>);
+
+  const std::vector<std::uint8_t> data = {3, 2, 0, 3, 1, 1, 2};
+  std::optional<pixie::WaveletTree<std::uint8_t>> restored;
+  std::vector<std::byte> canonical;
+  {
+    const pixie::WaveletTree<std::uint8_t> original(4, data);
+    pixie::VectorOutputSink output;
+    pixie::BinaryWriter writer(output);
+    original.serialize(writer);
+    writer.finish();
+    canonical = output.take();
+    pixie::BinaryReader reader(canonical);
+    restored.emplace(pixie::WaveletTree<std::uint8_t>::deserialize(
+        reader, pixie::DeserializationValidation::kFull));
+    EXPECT_TRUE(reader.empty());
+  }
+  const std::vector<std::byte> expected = canonical;
+  canonical.clear();
+  canonical.shrink_to_fit();
+  EXPECT_EQ(restored->get_segment(0, data.size()), data);
+
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  restored->serialize(writer);
+  writer.finish();
+  EXPECT_EQ(output.take(), expected);
+}
+
+TEST(WaveletTreeTest, OwningRestorationAcceptsUnalignedArtifact) {
+  const std::vector<std::uint8_t> data = {3, 2, 0, 3, 1, 1, 2};
+  const pixie::WaveletTree<std::uint8_t> original(4, data);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  const std::vector<std::byte> artifact = output.take();
+  std::vector<std::byte> unaligned(artifact.size() + 1);
+  std::ranges::copy(artifact, unaligned.begin() + 1);
+  pixie::BinaryReader reader(std::span<const std::byte>(unaligned).subspan(1));
+  const auto restored = pixie::WaveletTree<std::uint8_t>::deserialize(reader);
+  EXPECT_EQ(restored.get_segment(0, data.size()), data);
 }
 
 TEST(WaveletTreeTest, SerializationAdvancesAcrossFramedArtifacts) {

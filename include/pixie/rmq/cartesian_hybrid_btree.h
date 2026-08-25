@@ -1757,7 +1757,12 @@ class CartesianHybridBTree
                                           Index,
                                           LeafSize,
                                           UseTopSparseOverlay>,
-                     T> {
+                     T>,
+      public SerializationBase<CartesianHybridBTree<T,
+                                                    Compare,
+                                                    Index,
+                                                    LeafSize,
+                                                    UseTopSparseOverlay>> {
  private:
   using BpDepthRmq = detail::HybridBTreePlusMinusOne<Index, LeafSize, true, 1>;
 
@@ -1830,7 +1835,7 @@ class CartesianHybridBTree
    * are not serialized. The artifact is versioned, canonical little-endian,
    * and padded to an eight-byte boundary.
    */
-  void serialize(BinaryWriter& writer) const
+  void serialize_impl(BinaryWriter& writer) const
     requires(kSerializationSupported)
   {
     validate_serialized_state(DeserializationValidation::kQuick);
@@ -1882,17 +1887,17 @@ class CartesianHybridBTree
    * unchanged. @p validation selects quick structural checks or exact
    * source-derived metadata validation.
    *
-   * @param values Non-owning values retained by the result.
    * @param reader Input cursor, advanced only after successful validation.
+   * @param values Non-owning values retained by the result.
    * @param validation Quick structural or full source-derived validation.
    *
    * @throws std::invalid_argument for malformed, incompatible, truncated, or
    * structurally inconsistent metadata.
    * @throws std::length_error when an encoded size is not representable.
    */
-  static Self deserialize(
-      std::span<const std::int64_t> values,
+  static Self deserialize_impl(
       BinaryReader& reader,
+      std::span<const std::int64_t> values,
       DeserializationValidation validation = DeserializationValidation::kQuick)
     requires(kSerializationSupported)
   {
@@ -1950,7 +1955,7 @@ class CartesianHybridBTree
     }
     if (has_rank_index != 0) {
       state.bp_index_ = RankSelectSupport<>::deserialize(
-          state.bp_bits_.as_words64().first(bp_word_count), payload,
+          payload, state.bp_bits_.as_words64().first(bp_word_count),
           validation);
     }
 
@@ -1968,24 +1973,6 @@ class CartesianHybridBTree
     validate_loaded_state(values, state, validation);
     reader = candidate;
     return Self(LoadTag{}, values, std::move(state));
-  }
-
-  /**
-   * @brief Restore one artifact from @p data and advance it on success.
-   * @param values Non-owning values retained by the result.
-   * @param data Input bytes, advanced only after successful validation.
-   * @param validation Quick structural or full source-derived validation.
-   */
-  static Self deserialize(
-      std::span<const std::int64_t> values,
-      std::span<const std::byte>& data,
-      DeserializationValidation validation = DeserializationValidation::kQuick)
-    requires(kSerializationSupported)
-  {
-    BinaryReader reader(data);
-    Self result = deserialize(values, reader, validation);
-    data = data.subspan(reader.position());
-    return result;
   }
 
   /**

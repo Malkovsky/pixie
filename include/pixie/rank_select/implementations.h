@@ -6,6 +6,7 @@
  *
  * - `RankSelectSupport<MetadataStorage>`: non-owning source bits with
  *   storage-backed rank/select metadata.
+ * - `RankSelectSupportView`: non-owning source bits with read-only metadata.
  */
 
 // clang-format off

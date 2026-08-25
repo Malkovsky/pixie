@@ -54,7 +54,8 @@ namespace pixie {
  */
 template <StorageImplementation MetadataStorage = AlignedStorage>
 class RankSelectSupport
-    : public RankSelectBase<RankSelectSupport<MetadataStorage>> {
+    : public RankSelectBase<RankSelectSupport<MetadataStorage>>,
+      public SerializationBase<RankSelectSupport<MetadataStorage>> {
  public:
   /**
    * @brief Select directions to index during construction.
@@ -1104,7 +1105,7 @@ class RankSelectSupport
    * @details A zero-copy `ReadOnlyStorageView` deserializer also requires each
    * embedded metadata payload to begin at an address aligned for 64-bit words.
    */
-  void serialize(BinaryWriter& writer) const {
+  void serialize_impl(BinaryWriter& writer) const {
     writer.write_size(num_bits_);
     writer.write_size(padded_size_);
     writer.write_size(max_rank_);
@@ -1129,16 +1130,16 @@ class RankSelectSupport
    * failure. @p validation selects structural quick validation or exact
    * source-derived metadata validation.
    *
-   * @param source_bits Non-owning packed source words retained by the result.
    * @param reader Input cursor, advanced only after successful validation.
+   * @param source_bits Non-owning packed source words retained by the result.
    * @param validation Quick structural or full source-derived validation.
    *
    * @throws std::invalid_argument for truncated or inconsistent metadata.
    * @throws std::length_error when an encoded size is not representable.
    */
-  static RankSelectSupport deserialize(
-      std::span<const uint64_t> source_bits,
+  static RankSelectSupport deserialize_impl(
       BinaryReader& reader,
+      std::span<const uint64_t> source_bits,
       DeserializationValidation validation = DeserializationValidation::kQuick)
     requires(std::same_as<MetadataStorage, AlignedStorage> ||
              std::same_as<MetadataStorage, ReadOnlyStorageView>)
@@ -1173,25 +1174,9 @@ class RankSelectSupport
     reader = candidate;
     return result;
   }
-
-  /**
-   * @brief Restore metadata from @p data and advance the byte span on success.
-   * @param source_bits Non-owning packed source words retained by the result.
-   * @param data Input bytes, advanced only after successful validation.
-   * @param validation Quick structural or full source-derived validation.
-   */
-  static RankSelectSupport deserialize(
-      std::span<const uint64_t> source_bits,
-      std::span<const std::byte>& data,
-      DeserializationValidation validation = DeserializationValidation::kQuick)
-    requires(std::same_as<MetadataStorage, AlignedStorage> ||
-             std::same_as<MetadataStorage, ReadOnlyStorageView>)
-  {
-    BinaryReader reader(data);
-    RankSelectSupport result = deserialize(source_bits, reader, validation);
-    data = data.subspan(reader.position());
-    return result;
-  }
 };
+
+/** @brief Non-owning source bits with zero-copy read-only metadata. */
+using RankSelectSupportView = RankSelectSupport<ReadOnlyStorageView>;
 
 }  // namespace pixie

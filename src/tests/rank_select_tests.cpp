@@ -168,7 +168,7 @@ TEST(RankSelectSupportTest, OwningMetadataDeserializationRoundTrips) {
   std::vector<std::byte> artifact = output.take();
   pixie::BinaryReader reader(artifact);
   const pixie::RankSelectSupport<> restored =
-      pixie::RankSelectSupport<>::deserialize(words, reader);
+      pixie::RankSelectSupport<>::deserialize(reader, words);
   EXPECT_TRUE(reader.empty());
 
   artifact.clear();
@@ -231,7 +231,7 @@ TEST(RankSelectSupportTest, QuickAndFullValidationAcceptValidMetadata) {
                                 pixie::DeserializationValidation::kFull}) {
     pixie::BinaryReader reader(artifact);
     const auto restored =
-        pixie::RankSelectSupport<>::deserialize(words, reader, validation);
+        pixie::RankSelectSupport<>::deserialize(reader, words, validation);
     EXPECT_TRUE(reader.empty());
     EXPECT_EQ(restored.rank(kBitCount), original.rank(kBitCount));
   }
@@ -253,12 +253,12 @@ TEST(RankSelectSupportTest,
   different_words[0] ^= 1;
   pixie::BinaryReader quick_reader(valid);
   EXPECT_NO_THROW((void)pixie::RankSelectSupport<>::deserialize(
-      different_words, quick_reader, pixie::DeserializationValidation::kQuick));
+      quick_reader, different_words, pixie::DeserializationValidation::kQuick));
   EXPECT_TRUE(quick_reader.empty());
 
   pixie::BinaryReader full_reader(valid);
   EXPECT_THROW((void)pixie::RankSelectSupport<>::deserialize(
-                   different_words, full_reader,
+                   full_reader, different_words,
                    pixie::DeserializationValidation::kFull),
                std::invalid_argument);
   EXPECT_EQ(full_reader.position(), 0u);
@@ -268,13 +268,13 @@ TEST(RankSelectSupportTest,
                 original.rank(kBitCount) + 1);
   pixie::BinaryReader metadata_quick_reader(bad_rank);
   EXPECT_NO_THROW((void)pixie::RankSelectSupport<>::deserialize(
-      words, metadata_quick_reader, pixie::DeserializationValidation::kQuick));
+      metadata_quick_reader, words, pixie::DeserializationValidation::kQuick));
   EXPECT_TRUE(metadata_quick_reader.empty());
 
   pixie::BinaryReader metadata_full_reader(bad_rank);
   EXPECT_THROW(
       (void)pixie::RankSelectSupport<>::deserialize(
-          words, metadata_full_reader, pixie::DeserializationValidation::kFull),
+          metadata_full_reader, words, pixie::DeserializationValidation::kFull),
       std::invalid_argument);
   EXPECT_EQ(metadata_full_reader.position(), 0u);
 }
@@ -304,7 +304,7 @@ TEST(RankSelectSupportTest, SerializesDirectlyToMappedFile) {
     pixie::BinaryReader reader(file.as_bytes());
     const auto restored =
         pixie::RankSelectSupport<pixie::ReadOnlyStorageView>::deserialize(
-            words, reader, validation);
+            reader, words, validation);
     EXPECT_TRUE(reader.empty());
     for (std::size_t position = 0; position <= kBitCount; position += 17) {
       EXPECT_EQ(restored.rank(position), original.rank(position));
@@ -339,7 +339,7 @@ TEST(RankSelectSupportTest,
                                   pixie::DeserializationValidation::kFull}) {
       pixie::BinaryReader owning_reader(artifact);
       EXPECT_THROW((void)pixie::RankSelectSupport<>::deserialize(
-                       words, owning_reader, validation),
+                       owning_reader, words, validation),
                    std::invalid_argument);
       EXPECT_EQ(owning_reader.position(), 0u);
 
@@ -347,7 +347,7 @@ TEST(RankSelectSupportTest,
       EXPECT_THROW(
           (void)
               pixie::RankSelectSupport<pixie::ReadOnlyStorageView>::deserialize(
-                  words, view_reader, validation),
+                  view_reader, words, validation),
           std::invalid_argument);
       EXPECT_EQ(view_reader.position(), 0u);
     }
@@ -373,7 +373,7 @@ TEST(RankSelectSupportTest,
     for (const auto validation : {pixie::DeserializationValidation::kQuick,
                                   pixie::DeserializationValidation::kFull}) {
       pixie::BinaryReader reader(artifact);
-      EXPECT_THROW((void)pixie::RankSelectSupport<>::deserialize(words, reader,
+      EXPECT_THROW((void)pixie::RankSelectSupport<>::deserialize(reader, words,
                                                                  validation),
                    std::invalid_argument);
       EXPECT_EQ(reader.position(), 0u);

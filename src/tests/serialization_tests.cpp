@@ -6,14 +6,79 @@
 
 #include <algorithm>
 #include <array>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <span>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace {
+
+struct SerializeOnly : pixie::SerializationBase<SerializeOnly> {
+  void serialize_impl(pixie::BinaryWriter& writer) const { writer.write_u8(7); }
+};
+
+struct DeserializeOnly : pixie::SerializationBase<DeserializeOnly> {
+  std::uint8_t value = 0;
+
+  static DeserializeOnly deserialize_impl(pixie::BinaryReader& reader) {
+    DeserializeOnly result;
+    result.value = reader.read_u8();
+    return result;
+  }
+};
+
+struct ThrowingDeserializer : pixie::SerializationBase<ThrowingDeserializer> {
+  static ThrowingDeserializer deserialize_impl(pixie::BinaryReader& reader) {
+    (void)reader.read_u8();
+    throw std::invalid_argument("rejected");
+  }
+};
+
+struct WrongReturnDeserializer
+    : pixie::SerializationBase<WrongReturnDeserializer> {
+  static int deserialize_impl(pixie::BinaryReader&) { return 0; }
+};
+
+static_assert(pixie::Serializable<SerializeOnly>);
+static_assert(!pixie::Deserializable<SerializeOnly>);
+static_assert(!pixie::Serializable<DeserializeOnly>);
+static_assert(pixie::Deserializable<DeserializeOnly>);
+static_assert(!pixie::Deserializable<WrongReturnDeserializer>);
+static_assert(std::same_as<decltype(DeserializeOnly::deserialize(
+                               std::declval<pixie::BinaryReader&>())),
+                           DeserializeOnly>);
+
+TEST(SerializationBaseTest, DelegatesSupportedOperationsExactly) {
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  SerializeOnly{}.serialize(writer);
+  writer.finish();
+
+  pixie::BinaryReader reader(output.bytes());
+  const DeserializeOnly result = DeserializeOnly::deserialize(reader);
+  EXPECT_EQ(result.value, 7);
+  EXPECT_TRUE(reader.empty());
+}
+
+TEST(SerializationBaseTest, MutableSpanAndReaderRollbackAreTransactional) {
+  const std::array bytes = {std::byte{7}};
+  pixie::BinaryReader reader(bytes);
+  EXPECT_THROW(ThrowingDeserializer::deserialize(reader),
+               std::invalid_argument);
+  EXPECT_EQ(reader.position(), 0u);
+
+  std::span<const std::byte> data(bytes);
+  EXPECT_THROW(ThrowingDeserializer::deserialize(data), std::invalid_argument);
+  EXPECT_EQ(data.size(), bytes.size());
+
+  const DeserializeOnly result = DeserializeOnly::deserialize(data);
+  EXPECT_EQ(result.value, 7);
+  EXPECT_TRUE(data.empty());
+}
 
 TEST(BinarySerializationTest, UsesCanonicalLittleEndianIntegerEncoding) {
   pixie::VectorOutputSink output;

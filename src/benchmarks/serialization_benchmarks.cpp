@@ -412,7 +412,7 @@ void BM_RankSelectDeserializeOwningImpl(benchmark::State& state) {
   deserialize_iterations(state, as_const_span(artifact),
                          [&](pixie::BinaryReader& reader) {
                            return pixie::RankSelectSupport<>::deserialize(
-                               words, reader, Validation);
+                               reader, words, Validation);
                          });
   set_artifact_counters(state, bit_count, artifact.size());
 }
@@ -424,11 +424,11 @@ void BM_RankSelectDeserializeViewImpl(benchmark::State& state) {
   const pixie::RankSelectSupport<> index(words, bit_count);
   const std::vector<std::byte> serialized = serialize_to_vector(index);
   const AlignedArtifact artifact(as_const_span(serialized));
-  deserialize_iterations(
-      state, artifact.bytes(), [&](pixie::BinaryReader& reader) {
-        return pixie::RankSelectSupport<
-            pixie::ReadOnlyStorageView>::deserialize(words, reader, Validation);
-      });
+  deserialize_iterations(state, artifact.bytes(),
+                         [&](pixie::BinaryReader& reader) {
+                           return pixie::RankSelectSupportView::deserialize(
+                               reader, words, Validation);
+                         });
   set_artifact_counters(state, bit_count, artifact.bytes().size());
 }
 
@@ -452,7 +452,7 @@ void BM_RmMDeserializeImpl(benchmark::State& state) {
   const std::vector<std::byte> artifact = serialize_to_vector(index);
   deserialize_iterations(
       state, as_const_span(artifact), [&](pixie::BinaryReader& reader) {
-        return pixie::RmMTree::deserialize(words, reader, Validation);
+        return pixie::RmMTree::deserialize(reader, words, Validation);
       });
   set_artifact_counters(state, bit_count, artifact.size());
 }
@@ -479,7 +479,7 @@ void BM_RmqDeserializeImpl(benchmark::State& state) {
   const std::vector<std::byte> artifact = serialize_to_vector(index);
   deserialize_iterations(
       state, as_const_span(artifact), [&](pixie::BinaryReader& reader) {
-        return RmqIndex::deserialize(values, reader, Validation);
+        return RmqIndex::deserialize(reader, values, Validation);
       });
   set_artifact_counters(state, value_count, artifact.size());
 }

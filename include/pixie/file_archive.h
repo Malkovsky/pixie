@@ -324,30 +324,48 @@ class FileArchiveBase {
   }
 };
 
-/** @brief Owning byte-oriented file archive. */
-class FileArchive : public FileArchiveBase<FileArchive> {
+/**
+ * @brief Storage-backed byte-oriented file archive.
+ * @tparam Storage Owning aligned storage or a non-owning read-only view.
+ */
+template <StorageImplementation Storage>
+class FileArchiveIndex : public FileArchiveBase<FileArchiveIndex<Storage>>,
+                         public SerializationBase<FileArchiveIndex<Storage>> {
  public:
-  FileArchive() = delete;
+  FileArchiveIndex()
+    requires(std::same_as<Storage, ReadOnlyStorageView>)
+  = default;
 
   /**
-   * @brief Owning archives are move-only.
+   * @brief Owning archives are move-only; archive views are copyable.
    * @details Internal rank indexes retain views into their wavelet-node bit
    * storage, so copying without rebuilding those indexes would leave views
    * bound to the source archive.
    */
-  FileArchive(const FileArchive&) = delete;
-  FileArchive& operator=(const FileArchive&) = delete;
-  FileArchive(FileArchive&&) noexcept = default;
-  FileArchive& operator=(FileArchive&&) noexcept = default;
+  FileArchiveIndex(const FileArchiveIndex&)
+    requires(std::same_as<Storage, ReadOnlyStorageView>)
+  = default;
+  FileArchiveIndex& operator=(const FileArchiveIndex&)
+    requires(std::same_as<Storage, ReadOnlyStorageView>)
+  = default;
+  FileArchiveIndex(const FileArchiveIndex&)
+    requires(std::same_as<Storage, AlignedStorage>)
+  = delete;
+  FileArchiveIndex& operator=(const FileArchiveIndex&)
+    requires(std::same_as<Storage, AlignedStorage>)
+  = delete;
+  FileArchiveIndex(FileArchiveIndex&&) noexcept = default;
+  FileArchiveIndex& operator=(FileArchiveIndex&&) noexcept = default;
 
   /**
    * @brief Construct an archive from file and symlink sources.
    * @details Sources are sorted by path. Paths must be non-empty, unique,
    * valid UTF-8 strings. Content is preserved byte-for-byte.
    */
-  explicit FileArchive(
+  explicit FileArchiveIndex(
       std::vector<FileArchiveSource> sources,
       WaveletTreeBuildType build_type = WaveletTreeBuildType::Huffman)
+    requires(std::same_as<Storage, AlignedStorage>)
       : build_type_(build_type) {
     build_sources(sources, [](const FileArchiveSource& source, auto&& consume) {
       consume(std::span<const std::byte>(source.content));
@@ -364,15 +382,17 @@ class FileArchive : public FileArchiveBase<FileArchive> {
    * @throws std::invalid_argument for invalid metadata or changed content.
    */
   template <class ReadSource>
-  FileArchive(std::vector<FileArchiveSourceMetadata> sources,
-              ReadSource&& read_source,
-              WaveletTreeBuildType build_type = WaveletTreeBuildType::Huffman)
+  FileArchiveIndex(
+      std::vector<FileArchiveSourceMetadata> sources,
+      ReadSource&& read_source,
+      WaveletTreeBuildType build_type = WaveletTreeBuildType::Huffman)
+    requires(std::same_as<Storage, AlignedStorage>)
       : build_type_(build_type) {
     build_sources(sources, read_source);
   }
 
   /** @brief Serialize one native, framed Pixie file archive. */
-  void serialize(BinaryWriter& writer) const {
+  void serialize_impl(BinaryWriter& writer) const {
     if (writer.size_bytes() % alignof(std::uint64_t) != 0) {
       throw std::invalid_argument(
           "File-archive serialization requires an aligned writer offset");
@@ -387,7 +407,7 @@ class FileArchive : public FileArchiveBase<FileArchive> {
     writer.write_size(records_.size());
     writer.write_size(logical_size_);
     writer.write_size(records_.size() * file_archive_detail::kRecordBytes);
-    writer.write_size(paths_.size());
+    writer.write_size(paths_.size_bytes());
     writer.write_size(0);
     for (const auto& record : records_) {
       writer.write_size(record.path_offset);
@@ -401,7 +421,7 @@ class FileArchive : public FileArchiveBase<FileArchive> {
       writer.write_u8(static_cast<std::uint8_t>(record.is_text));
       writer.write_u16(0);
     }
-    writer.write_bytes(std::as_bytes(std::span(paths_)));
+    writer.write_bytes(paths_.as_bytes());
     writer.align_to(alignof(std::uint64_t));
     if (!tree_.has_value()) {
       throw std::logic_error("Cannot serialize an uninitialized file archive");
@@ -412,165 +432,37 @@ class FileArchive : public FileArchiveBase<FileArchive> {
                      static_cast<std::uint64_t>(writer.size_bytes() - begin));
   }
 
- private:
-  template <class Source, class ReadSource>
-  void build_sources(std::vector<Source>& sources, ReadSource&& read_source) {
-    std::sort(sources.begin(), sources.end(),
-              [](const auto& left, const auto& right) {
-                return left.path < right.path;
-              });
-    std::array<std::size_t, file_archive_detail::kByteAlphabetSize>
-        symbol_counts{};
-    std::vector<std::uint64_t> content_hashes;
-    content_hashes.reserve(sources.size());
-    std::size_t newline_rank = 0;
-    for (const Source& source : sources) {
-      if (source.path.empty() ||
-          !file_archive_detail::IsUtf8(source.path, true)) {
-        throw std::invalid_argument(
-            "File-archive paths must be non-empty UTF-8 strings");
-      }
-      if (!records_.empty() && path_impl(records_.back()) == source.path) {
-        throw std::invalid_argument("File-archive paths must be unique");
-      }
-      if (source.type != FileArchiveEntryType::kRegular &&
-          source.type != FileArchiveEntryType::kSymlink) {
-        throw std::invalid_argument("Invalid file-archive entry type");
-      }
-
-      file_archive_detail::FileRecord record;
-      record.path_offset = paths_.size();
-      record.path_size = source.path.size();
-      record.content_offset = logical_size_;
-      record.newline_rank_base = newline_rank;
-      record.mode = source.mode;
-      record.type = source.type;
-      paths_.append(source.path);
-
-      file_archive_detail::Utf8Validator utf8(/*reject_nul=*/true);
-      std::size_t newlines = 0;
-      bool has_content = false;
-      std::uint8_t last_byte = 0;
-      std::uint64_t content_hash = 14695981039346656037ULL;
-      read_source(source, [&](std::span<const std::byte> chunk) {
-        if (chunk.size() >
-            std::numeric_limits<std::size_t>::max() - logical_size_) {
-          throw std::length_error("File-archive content is too large");
-        }
-        logical_size_ += chunk.size();
-        utf8.Consume(chunk);
-        for (const std::byte byte : chunk) {
-          const std::uint8_t value = std::to_integer<std::uint8_t>(byte);
-          ++symbol_counts[value];
-          newlines += value == '\n' ? 1U : 0U;
-          has_content = true;
-          last_byte = value;
-          content_hash ^= value;
-          content_hash *= 1099511628211ULL;
-        }
-      });
-      record.content_size = logical_size_ - record.content_offset;
-      record.is_text = utf8.valid();
-      if (source.type == FileArchiveEntryType::kRegular && has_content) {
-        record.line_count =
-            newlines + static_cast<std::size_t>(last_byte != '\n');
-      }
-      newline_rank += newlines;
-      records_.push_back(record);
-      content_hashes.push_back(content_hash);
-    }
-
-    tree_.emplace(
-        file_archive_detail::kByteAlphabetSize, symbol_counts,
-        [&](auto&& emit) {
-          for (std::size_t index = 0; index < sources.size(); ++index) {
-            std::size_t content_size = 0;
-            std::uint64_t content_hash = 14695981039346656037ULL;
-            read_source(sources[index], [&](std::span<const std::byte> chunk) {
-              if (content_size > records_[index].content_size ||
-                  chunk.size() > records_[index].content_size - content_size) {
-                throw std::invalid_argument(
-                    "File-archive source changed between build passes");
-              }
-              content_size += chunk.size();
-              for (const std::byte byte : chunk) {
-                const std::uint8_t value = std::to_integer<std::uint8_t>(byte);
-                content_hash ^= value;
-                content_hash *= 1099511628211ULL;
-                emit(value);
-              }
-            });
-            if (content_size != records_[index].content_size ||
-                content_hash != content_hashes[index]) {
-              throw std::invalid_argument(
-                  "File-archive source changed between build passes");
-            }
-          }
-        },
-        build_type_);
-  }
-
-  /** @brief Permit the facade to use the documented extension points. */
-  friend class FileArchiveBase<FileArchive>;
-
-  /** @brief Return a stable view of sorted records owned by this archive. */
-  std::span<const file_archive_detail::FileRecord> records_impl() const {
-    return records_;
-  }
-  /** @brief Return the path slice identified by a valid record. */
-  std::string_view path_impl(
-      const file_archive_detail::FileRecord& record) const {
-    return std::string_view(paths_).substr(record.path_offset,
-                                           record.path_size);
-  }
-  /** @brief Return the initialized byte tree containing archive content. */
-  const WaveletTree<std::uint8_t>& tree_impl() const { return *tree_; }
-  /** @brief Return the number of archived content bytes. */
-  std::size_t logical_size_impl() const { return logical_size_; }
-  /** @brief Return the tree construction strategy. */
-  WaveletTreeBuildType build_type_impl() const { return build_type_; }
-  /** @brief Return bytes occupied by concatenated paths. */
-  std::size_t path_storage_size_impl() const { return paths_.size(); }
-
-  std::vector<file_archive_detail::FileRecord> records_;
-  std::string paths_;
-  std::optional<WaveletTree<std::uint8_t>> tree_;
-  std::size_t logical_size_ = 0;
-  WaveletTreeBuildType build_type_ = WaveletTreeBuildType::Huffman;
-};
-
-/** @brief Read-only file archive retaining views into serialized WT storage. */
-class FileArchiveView : public FileArchiveBase<FileArchiveView> {
- public:
-  FileArchiveView() = default;
-
   /**
-   * @brief Deserialize one framed archive and advance @p reader on success.
-   * @details The result retains views into the reader's backing bytes. The
-   * backing storage must outlive the returned archive.
+   * @brief Deserialize one framed archive using this specialization's storage.
+   * @details Owners copy paths and all wavelet-tree storage. Views retain
+   * slices of the reader's backing bytes, which must outlive the result.
    */
-  static FileArchiveView deserialize(BinaryReader& reader,
-                                     DeserializationValidation validation =
-                                         DeserializationValidation::kQuick) {
-    BinaryReader candidate = reader;
-    if (reinterpret_cast<std::uintptr_t>(candidate.remaining_bytes().data()) %
-            alignof(std::uint64_t) !=
-        0) {
-      throw std::invalid_argument(
-          "Serialized file archive is not word aligned");
+  static FileArchiveIndex deserialize_impl(
+      BinaryReader& reader,
+      DeserializationValidation validation = DeserializationValidation::kQuick)
+    requires(std::same_as<Storage, AlignedStorage> ||
+             std::same_as<Storage, ReadOnlyStorageView>)
+  {
+    if constexpr (std::same_as<Storage, ReadOnlyStorageView>) {
+      if (reinterpret_cast<std::uintptr_t>(reader.remaining_bytes().data()) %
+              alignof(std::uint64_t) !=
+          0) {
+        throw std::invalid_argument(
+            "Serialized file archive is not word aligned");
+      }
     }
-    const std::size_t available = candidate.remaining();
-    detail::require_magic(candidate, file_archive_detail::kMagic);
-    if (candidate.read_u32() != file_archive_detail::kVersion ||
-        candidate.read_u32() != 0) {
+    const std::size_t available = reader.remaining();
+    detail::require_magic(reader, file_archive_detail::kMagic);
+    if (reader.read_u32() != file_archive_detail::kVersion ||
+        reader.read_u32() != 0) {
       throw std::invalid_argument("Incompatible serialized file archive");
     }
     const std::size_t artifact_size = detail::checked_artifact_size(
-        candidate.read_u64(), file_archive_detail::kHeaderBytes, available);
-    BinaryReader payload = candidate.read_subreader(
+        reader.read_u64(), file_archive_detail::kHeaderBytes, available);
+    BinaryReader payload = reader.read_subreader(
         artifact_size - file_archive_detail::kHeaderBytes);
 
-    FileArchiveView result;
+    FileArchiveIndex result(LoadTag{});
     const std::uint32_t build_type = payload.read_u32();
     if (build_type >
         static_cast<std::uint32_t>(WaveletTreeBuildType::Huffman)) {
@@ -615,9 +507,7 @@ class FileArchiveView : public FileArchiveBase<FileArchiveView> {
     if (!records_reader.empty()) {
       throw std::invalid_argument("Invalid file-archive record section");
     }
-    const std::span<const std::byte> paths = payload.read_bytes(paths_bytes);
-    result.paths_ = std::string_view(
-        reinterpret_cast<const char*>(paths.data()), paths.size());
+    result.paths_ = MakeStorage(payload.read_bytes(paths_bytes));
     const std::size_t padding =
         (alignof(std::uint64_t) -
          payload.byte_offset() % alignof(std::uint64_t)) %
@@ -625,17 +515,136 @@ class FileArchiveView : public FileArchiveBase<FileArchiveView> {
     const std::size_t padding_offset = payload.byte_offset();
     file_archive_detail::RequireZeroBytes(payload.read_bytes(padding),
                                           padding_offset);
-    result.tree_.emplace(
-        WaveletTreeView<std::uint8_t>::deserialize(payload, validation));
+    result.tree_.emplace(WaveletTreeIndex<std::uint8_t, Storage>::deserialize(
+        payload, validation));
     payload.require_zero_padding(alignof(std::uint64_t) - 1);
     result.validate(validation == DeserializationValidation::kFull);
-    reader = candidate;
     return result;
   }
 
  private:
+  struct LoadTag {};
+
+  explicit FileArchiveIndex(LoadTag) {}
+
+  static Storage MakeStorage(std::span<const std::byte> bytes) {
+    if constexpr (std::same_as<Storage, ReadOnlyStorageView>) {
+      return ReadOnlyStorageView(bytes);
+    } else {
+      if (bytes.size() > std::numeric_limits<std::size_t>::max() / 8) {
+        throw std::length_error("File-archive path storage is too large");
+      }
+      AlignedStorage result(bytes.size() * 8);
+      std::ranges::copy(bytes, result.writable_bytes().begin());
+      return result;
+    }
+  }
+
+  template <class Source, class ReadSource>
+  void build_sources(std::vector<Source>& sources, ReadSource&& read_source) {
+    std::sort(sources.begin(), sources.end(),
+              [](const auto& left, const auto& right) {
+                return left.path < right.path;
+              });
+    std::array<std::size_t, file_archive_detail::kByteAlphabetSize>
+        symbol_counts{};
+    std::vector<std::uint64_t> content_hashes;
+    content_hashes.reserve(sources.size());
+    std::string paths;
+    std::size_t newline_rank = 0;
+    for (std::size_t source_index = 0; source_index < sources.size();
+         ++source_index) {
+      const Source& source = sources[source_index];
+      if (source.path.empty() ||
+          !file_archive_detail::IsUtf8(source.path, true)) {
+        throw std::invalid_argument(
+            "File-archive paths must be non-empty UTF-8 strings");
+      }
+      if (source_index != 0 && sources[source_index - 1].path == source.path) {
+        throw std::invalid_argument("File-archive paths must be unique");
+      }
+      if (source.type != FileArchiveEntryType::kRegular &&
+          source.type != FileArchiveEntryType::kSymlink) {
+        throw std::invalid_argument("Invalid file-archive entry type");
+      }
+
+      file_archive_detail::FileRecord record;
+      record.path_offset = paths.size();
+      record.path_size = source.path.size();
+      record.content_offset = logical_size_;
+      record.newline_rank_base = newline_rank;
+      record.mode = source.mode;
+      record.type = source.type;
+      paths.append(source.path);
+
+      file_archive_detail::Utf8Validator utf8(/*reject_nul=*/true);
+      std::size_t newlines = 0;
+      bool has_content = false;
+      std::uint8_t last_byte = 0;
+      std::uint64_t content_hash = 14695981039346656037ULL;
+      read_source(source, [&](std::span<const std::byte> chunk) {
+        if (chunk.size() >
+            std::numeric_limits<std::size_t>::max() - logical_size_) {
+          throw std::length_error("File-archive content is too large");
+        }
+        logical_size_ += chunk.size();
+        utf8.Consume(chunk);
+        for (const std::byte byte : chunk) {
+          const std::uint8_t value = std::to_integer<std::uint8_t>(byte);
+          ++symbol_counts[value];
+          newlines += value == '\n' ? 1U : 0U;
+          has_content = true;
+          last_byte = value;
+          content_hash ^= value;
+          content_hash *= 1099511628211ULL;
+        }
+      });
+      record.content_size = logical_size_ - record.content_offset;
+      record.is_text = utf8.valid();
+      if (source.type == FileArchiveEntryType::kRegular && has_content) {
+        record.line_count =
+            newlines + static_cast<std::size_t>(last_byte != '\n');
+      }
+      newline_rank += newlines;
+      records_.push_back(record);
+      content_hashes.push_back(content_hash);
+    }
+
+    paths_ = MakeStorage(
+        std::as_bytes(std::span<const char>(paths.data(), paths.size())));
+
+    tree_.emplace(
+        file_archive_detail::kByteAlphabetSize, symbol_counts,
+        [&](auto&& emit) {
+          for (std::size_t index = 0; index < sources.size(); ++index) {
+            std::size_t content_size = 0;
+            std::uint64_t content_hash = 14695981039346656037ULL;
+            read_source(sources[index], [&](std::span<const std::byte> chunk) {
+              if (content_size > records_[index].content_size ||
+                  chunk.size() > records_[index].content_size - content_size) {
+                throw std::invalid_argument(
+                    "File-archive source changed between build passes");
+              }
+              content_size += chunk.size();
+              for (const std::byte byte : chunk) {
+                const std::uint8_t value = std::to_integer<std::uint8_t>(byte);
+                content_hash ^= value;
+                content_hash *= 1099511628211ULL;
+                emit(value);
+              }
+            });
+            if (content_size != records_[index].content_size ||
+                content_hash != content_hashes[index]) {
+              throw std::invalid_argument(
+                  "File-archive source changed between build passes");
+            }
+          }
+        },
+        build_type_);
+  }
+
   /** @brief Permit the facade to use the documented extension points. */
-  friend class FileArchiveBase<FileArchiveView>;
+  friend class FileArchiveBase<FileArchiveIndex>;
 
   void validate(bool full) const {
     if (tree_->size() != logical_size_) {
@@ -647,8 +656,8 @@ class FileArchiveView : public FileArchiveBase<FileArchiveView> {
     std::string_view previous_path;
     for (std::size_t index = 0; index < records_.size(); ++index) {
       const auto& record = records_[index];
-      if (record.path_offset > paths_.size() ||
-          record.path_size > paths_.size() - record.path_offset ||
+      if (record.path_offset > paths_.size_bytes() ||
+          record.path_size > paths_.size_bytes() - record.path_offset ||
           record.content_offset > logical_size_ ||
           record.content_size > logical_size_ - record.content_offset ||
           record.newline_rank_base > newline_count ||
@@ -667,7 +676,7 @@ class FileArchiveView : public FileArchiveBase<FileArchiveView> {
           record.newline_rank_base != expected_newline_rank) {
         throw std::invalid_argument("Invalid file-archive entry metadata");
       }
-      const std::vector<std::byte> content = extract(index);
+      const std::vector<std::byte> content = this->extract(index);
       const bool is_text = file_archive_detail::IsUtf8(content, true);
       std::size_t newlines = 0;
       for (const std::byte byte : content) {
@@ -697,22 +706,36 @@ class FileArchiveView : public FileArchiveBase<FileArchiveView> {
   /** @brief Return the path slice identified by a validated record. */
   std::string_view path_impl(
       const file_archive_detail::FileRecord& record) const {
-    return paths_.substr(record.path_offset, record.path_size);
+    const std::span<const std::byte> bytes = paths_.as_bytes();
+    const std::string_view paths =
+        bytes.empty()
+            ? std::string_view{}
+            : std::string_view(reinterpret_cast<const char*>(bytes.data()),
+                               bytes.size());
+    return paths.substr(record.path_offset, record.path_size);
   }
-  /** @brief Return the view-backed byte tree containing archive content. */
-  const WaveletTreeView<std::uint8_t>& tree_impl() const { return *tree_; }
+  /** @brief Return the storage-backed byte tree containing archive content. */
+  const WaveletTreeIndex<std::uint8_t, Storage>& tree_impl() const {
+    return *tree_;
+  }
   /** @brief Return the number of archived content bytes. */
   std::size_t logical_size_impl() const { return logical_size_; }
   /** @brief Return the serialized tree construction strategy. */
   WaveletTreeBuildType build_type_impl() const { return build_type_; }
   /** @brief Return bytes occupied by the retained path blob. */
-  std::size_t path_storage_size_impl() const { return paths_.size(); }
+  std::size_t path_storage_size_impl() const { return paths_.size_bytes(); }
 
   std::vector<file_archive_detail::FileRecord> records_;
-  std::string_view paths_;
-  std::optional<WaveletTreeView<std::uint8_t>> tree_;
+  Storage paths_;
+  std::optional<WaveletTreeIndex<std::uint8_t, Storage>> tree_;
   std::size_t logical_size_ = 0;
   WaveletTreeBuildType build_type_ = WaveletTreeBuildType::Huffman;
 };
+
+/** @brief Owning aligned-storage file archive. */
+using FileArchive = FileArchiveIndex<AlignedStorage>;
+
+/** @brief Read-only file archive retaining serialized storage views. */
+using FileArchiveView = FileArchiveIndex<ReadOnlyStorageView>;
 
 }  // namespace pixie

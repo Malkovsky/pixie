@@ -29,7 +29,8 @@ namespace pixie {
 template <WaveletTreeSymbol Symbol,
           StorageImplementation Storage = AlignedStorage>
 class WaveletTreeIndex
-    : public WaveletTreeBase<WaveletTreeIndex<Symbol, Storage>, Symbol> {
+    : public WaveletTreeBase<WaveletTreeIndex<Symbol, Storage>, Symbol>,
+      public SerializationBase<WaveletTreeIndex<Symbol, Storage>> {
  private:
   using node_index_t = size_t;
   static constexpr node_index_t npos = std::numeric_limits<node_index_t>::max();
@@ -112,19 +113,17 @@ class WaveletTreeIndex
       data.serialize(writer);
     }
 
-    /** @brief Construct one checked, non-owning node from @p reader. */
+    /** @brief Construct one checked node from @p reader. */
     static WaveletNode deserialize(BinaryReader& reader,
-                                   DeserializationValidation validation)
-      requires(std::same_as<Storage, ReadOnlyStorageView>)
-    {
+                                   DeserializationValidation validation) {
       WaveletNode result;
       result.parent = reader.read_size();
       result.left_child = reader.read_size();
       result.right_child = reader.read_size();
       result.middle = reader.read_u64();
-      result.bit_vector_data = ReadOnlyStorageView::deserialize(reader);
+      result.bit_vector_data = Storage::deserialize(reader);
       result.data = RankSelectSupport<Storage>::deserialize(
-          result.bit_vector_data.as_words64(), reader, validation);
+          reader, result.bit_vector_data.as_words64(), validation);
       return result;
     }
   };
@@ -643,7 +642,7 @@ class WaveletTreeIndex
    * @throws std::invalid_argument if the artifact would not begin at an
    * eight-byte-aligned writer offset required by zero-copy deserialization.
    */
-  void serialize(BinaryWriter& writer) const {
+  void serialize_impl(BinaryWriter& writer) const {
     if (writer.size_bytes() % alignof(std::uint64_t) != 0) {
       throw std::invalid_argument(
           "Wavelet-tree serialization requires an aligned writer offset");
@@ -678,13 +677,14 @@ class WaveletTreeIndex
   }
 
   /**
-   * @brief Restore one checked, non-owning wavelet-tree artifact.
+   * @brief Restore one checked wavelet-tree artifact.
    *
-   * @details The result retains views into the reader's backing bytes. Those
-   * bytes must remain alive, immutable, and aligned for 64-bit access for the
-   * result's lifetime. On success @p reader advances past exactly one framed
-   * artifact; on failure it is unchanged. @p validation selects quick
-   * structural checks or exact bitvector-derived metadata validation.
+   * @details The aligned-storage specialization copies all restored metadata.
+   * The read-only specialization retains views into the reader's backing
+   * bytes, which must remain alive, immutable, and aligned for 64-bit access.
+   * On success @p reader advances past exactly one framed artifact; on failure
+   * it is unchanged. @p validation selects quick structural checks or exact
+   * bitvector-derived metadata validation.
    *
    * @param reader Input cursor, advanced only after successful validation.
    * @param validation Quick structural or full bitvector-derived validation.
@@ -693,16 +693,20 @@ class WaveletTreeIndex
    * structurally inconsistent metadata.
    * @throws std::length_error when an encoded count is not representable.
    */
-  static WaveletTreeIndex<Symbol, ReadOnlyStorageView> deserialize(
+  static WaveletTreeIndex deserialize_impl(
       BinaryReader& reader,
-      DeserializationValidation validation =
-          DeserializationValidation::kQuick) {
+      DeserializationValidation validation = DeserializationValidation::kQuick)
+    requires(std::same_as<Storage, AlignedStorage> ||
+             std::same_as<Storage, ReadOnlyStorageView>)
+  {
     BinaryReader candidate = reader;
-    if (reinterpret_cast<std::uintptr_t>(candidate.remaining_bytes().data()) %
-            alignof(std::uint64_t) !=
-        0) {
-      throw std::invalid_argument(
-          "Serialized wavelet-tree artifact is not word aligned");
+    if constexpr (std::same_as<Storage, ReadOnlyStorageView>) {
+      if (reinterpret_cast<std::uintptr_t>(candidate.remaining_bytes().data()) %
+              alignof(std::uint64_t) !=
+          0) {
+        throw std::invalid_argument(
+            "Serialized wavelet-tree artifact is not word aligned");
+      }
     }
     const std::size_t available_size = candidate.remaining();
     detail::require_magic(candidate, kSerializationMagic);
@@ -716,7 +720,7 @@ class WaveletTreeIndex
     BinaryReader payload =
         candidate.read_subreader(artifact_size - kSerializationHeaderBytes);
 
-    WaveletTreeIndex<Symbol, ReadOnlyStorageView> result;
+    WaveletTreeIndex result;
     result.alphabet_size_ = payload.read_size();
     result.validate_alphabet_size(result.alphabet_size_);
     result.data_size_ = payload.read_size();
@@ -791,21 +795,6 @@ class WaveletTreeIndex
     }
     payload.require_zero_padding(sizeof(std::uint64_t) - 1);
     reader = candidate;
-    return result;
-  }
-
-  /**
-   * @brief Restore one artifact from @p data and advance it on success.
-   * @param data Input bytes, advanced only after successful validation.
-   * @param validation Quick structural or full bitvector-derived validation.
-   */
-  static WaveletTreeIndex<Symbol, ReadOnlyStorageView> deserialize(
-      std::span<const std::byte>& data,
-      DeserializationValidation validation =
-          DeserializationValidation::kQuick) {
-    BinaryReader reader(data);
-    auto result = deserialize(reader, validation);
-    data = data.subspan(reader.position());
     return result;
   }
 };

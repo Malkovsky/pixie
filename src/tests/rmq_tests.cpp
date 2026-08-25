@@ -222,7 +222,7 @@ concept HasRmqSerialization =
 template <class Rmq>
 concept HasRmqDeserialization = requires(std::span<const std::int64_t> values,
                                          pixie::BinaryReader& reader) {
-  { Rmq::deserialize(values, reader) } -> std::same_as<Rmq>;
+  { Rmq::deserialize(reader, values) } -> std::same_as<Rmq>;
 };
 
 using SerializableRmq = pixie::rmq::CartesianHybridBTree<std::int64_t>;
@@ -380,7 +380,7 @@ static void expect_rmq_serialization_round_trip(
   std::vector<std::byte> artifact = serialize_rmq(original);
   pixie::BinaryReader reader(artifact);
   const SerializableRmq restored =
-      SerializableRmq::deserialize(values, reader, validation);
+      SerializableRmq::deserialize(reader, values, validation);
 
   EXPECT_TRUE(reader.empty());
   EXPECT_EQ(restored.size(), values.size());
@@ -424,9 +424,9 @@ TEST(RmqSerializationTest, AdvancesAcrossConcatenatedArtifacts) {
   const auto artifacts = output.take();
   pixie::BinaryReader reader(artifacts);
 
-  const auto first = SerializableRmq::deserialize(values, reader);
+  const auto first = SerializableRmq::deserialize(reader, values);
   EXPECT_FALSE(reader.empty());
-  const auto second = SerializableRmq::deserialize(values, reader);
+  const auto second = SerializableRmq::deserialize(reader, values);
   EXPECT_TRUE(reader.empty());
   EXPECT_EQ(first.arg_min(0, values.size()), second.arg_min(0, values.size()));
 }
@@ -453,7 +453,7 @@ TEST(RmqSerializationTest, SerializesDirectlyToMappedFile) {
                                 pixie::DeserializationValidation::kFull}) {
     pixie::BinaryReader reader(file.as_bytes());
     const SerializableRmq restored =
-        SerializableRmq::deserialize(values, reader, validation);
+        SerializableRmq::deserialize(reader, values, validation);
     EXPECT_TRUE(reader.empty());
     check_all_ranges(restored, std::span<const std::int64_t>(values),
                      std::less<std::int64_t>());
@@ -474,7 +474,7 @@ TEST(RmqSerializationTest, RejectsCorruptionWithoutAdvancingInput) {
                                   pixie::DeserializationValidation::kFull}) {
       pixie::BinaryReader reader(artifact);
       EXPECT_THROW(
-          (void)SerializableRmq::deserialize(values, reader, validation),
+          (void)SerializableRmq::deserialize(reader, values, validation),
           std::exception);
       EXPECT_EQ(reader.position(), 0u);
     }
@@ -513,25 +513,25 @@ TEST(RmqSerializationTest, RejectsCorruptionWithoutAdvancingInput) {
   std::span<const std::byte> truncated =
       std::span<const std::byte>(valid).first(valid.size() - 1);
   pixie::BinaryReader truncated_reader(truncated);
-  EXPECT_THROW((void)SerializableRmq::deserialize(values, truncated_reader),
+  EXPECT_THROW((void)SerializableRmq::deserialize(truncated_reader, values),
                std::invalid_argument);
   EXPECT_EQ(truncated_reader.position(), 0u);
 
   std::span<const std::int64_t> short_values(values.data(), values.size() - 1);
   pixie::BinaryReader reader(valid);
-  EXPECT_THROW((void)SerializableRmq::deserialize(short_values, reader),
+  EXPECT_THROW((void)SerializableRmq::deserialize(reader, short_values),
                std::invalid_argument);
   EXPECT_EQ(reader.position(), 0u);
 
   std::vector<std::int64_t> different_values(values.size(), -1);
   pixie::BinaryReader different_reader(valid);
   EXPECT_NO_THROW(
-      (void)SerializableRmq::deserialize(different_values, different_reader));
+      (void)SerializableRmq::deserialize(different_reader, different_values));
   EXPECT_TRUE(different_reader.empty());
 
   pixie::BinaryReader different_full_reader(valid);
   EXPECT_THROW((void)SerializableRmq::deserialize(
-                   different_values, different_full_reader,
+                   different_full_reader, different_values,
                    pixie::DeserializationValidation::kFull),
                std::invalid_argument);
   EXPECT_EQ(different_full_reader.position(), 0u);
@@ -562,7 +562,7 @@ TEST(RmqSerializationTest, RejectsMalformedBpEncodingAndPadding) {
     const auto expect_rejected = [&](std::vector<std::byte> artifact) {
       pixie::BinaryReader reader(artifact);
       EXPECT_THROW((void)SerializableRmq::deserialize(
-                       values, reader, pixie::DeserializationValidation::kFull),
+                       reader, values, pixie::DeserializationValidation::kFull),
                    std::invalid_argument);
       EXPECT_EQ(reader.position(), 0u);
     };
@@ -592,7 +592,7 @@ TEST(RmqSerializationTest, RejectsMalformedBpEncodingAndPadding) {
   }
   pixie::BinaryReader reader(negative_later);
   EXPECT_THROW((void)SerializableRmq::deserialize(
-                   values, reader, pixie::DeserializationValidation::kFull),
+                   reader, values, pixie::DeserializationValidation::kFull),
                std::invalid_argument);
   EXPECT_EQ(reader.position(), 0u);
 }
@@ -613,7 +613,7 @@ TEST(RmqSerializationTest, RejectsMalformedIndexMetadataTransactionally) {
                                   pixie::DeserializationValidation::kFull}) {
       pixie::BinaryReader reader(artifact);
       EXPECT_THROW(
-          (void)SerializableRmq::deserialize(values, reader, validation),
+          (void)SerializableRmq::deserialize(reader, values, validation),
           std::invalid_argument);
       EXPECT_EQ(reader.position(), 0u);
     }
@@ -669,12 +669,12 @@ TEST(RmqSerializationTest, RejectsMalformedIndexMetadataTransactionally) {
                 alternate_candidate);
   pixie::BinaryReader exact_quick_reader(wrong_exact_block_minimum);
   EXPECT_NO_THROW((void)SerializableRmq::deserialize(
-      values, exact_quick_reader, pixie::DeserializationValidation::kQuick));
+      exact_quick_reader, values, pixie::DeserializationValidation::kQuick));
   EXPECT_TRUE(exact_quick_reader.empty());
   pixie::BinaryReader exact_full_reader(wrong_exact_block_minimum);
   EXPECT_THROW(
       (void)SerializableRmq::deserialize(
-          values, exact_full_reader, pixie::DeserializationValidation::kFull),
+          exact_full_reader, values, pixie::DeserializationValidation::kFull),
       std::invalid_argument);
   EXPECT_EQ(exact_full_reader.position(), 0u);
 
@@ -682,11 +682,11 @@ TEST(RmqSerializationTest, RejectsMalformedIndexMetadataTransactionally) {
   wrong_depth_selector[layout.depth_selectors] ^= std::byte{1};
   pixie::BinaryReader selector_quick_reader(wrong_depth_selector);
   EXPECT_NO_THROW((void)SerializableRmq::deserialize(
-      values, selector_quick_reader, pixie::DeserializationValidation::kQuick));
+      selector_quick_reader, values, pixie::DeserializationValidation::kQuick));
   EXPECT_TRUE(selector_quick_reader.empty());
   pixie::BinaryReader selector_full_reader(wrong_depth_selector);
   EXPECT_THROW((void)SerializableRmq::deserialize(
-                   values, selector_full_reader,
+                   selector_full_reader, values,
                    pixie::DeserializationValidation::kFull),
                std::invalid_argument);
   EXPECT_EQ(selector_full_reader.position(), 0u);
@@ -697,7 +697,7 @@ TEST(RmqSerializationTest, RejectsMalformedIndexMetadataTransactionally) {
   pixie::BinaryReader depth_full_reader(wrong_depth_minimum);
   EXPECT_THROW(
       (void)SerializableRmq::deserialize(
-          values, depth_full_reader, pixie::DeserializationValidation::kFull),
+          depth_full_reader, values, pixie::DeserializationValidation::kFull),
       std::invalid_argument);
   EXPECT_EQ(depth_full_reader.position(), 0u);
 
@@ -707,7 +707,7 @@ TEST(RmqSerializationTest, RejectsMalformedIndexMetadataTransactionally) {
   const RmqArtifactLayout empty_layout = locate_rmq_artifact(invalid_empty);
   overwrite_u64(invalid_empty, empty_layout.top_block_size, 1);
   pixie::BinaryReader empty_reader(invalid_empty);
-  EXPECT_THROW((void)SerializableRmq::deserialize(empty_values, empty_reader),
+  EXPECT_THROW((void)SerializableRmq::deserialize(empty_reader, empty_values),
                std::invalid_argument);
   EXPECT_EQ(empty_reader.position(), 0u);
 }

@@ -36,7 +36,7 @@ namespace pixie {
  *  non-owning view of those words; callers must keep the backing storage alive
  *  and immutable for the lifetime of the tree.
  */
-class RmMTree : public RmMBase<RmMTree> {
+class RmMTree : public RmMBase<RmMTree>, public SerializationBase<RmMTree> {
   static constexpr std::array<std::uint8_t, 8> kSerializationMagic = {
       'P', 'I', 'X', 'I', 'E', 'R', 'M', 'M'};
   static constexpr std::uint32_t kSerializationVersion = 1;
@@ -129,7 +129,7 @@ class RmMTree : public RmMBase<RmMTree> {
    * artifact is versioned, canonical little-endian, and padded to an
    * eight-byte boundary.
    */
-  void serialize(BinaryWriter& writer) const {
+  void serialize_impl(BinaryWriter& writer) const {
     validate_serialized_state(DeserializationValidation::kQuick);
 
     const std::size_t artifact_begin = writer.size_bytes();
@@ -178,18 +178,18 @@ class RmMTree : public RmMBase<RmMTree> {
    * unchanged. @p validation selects quick structural checks or exact
    * source-derived metadata validation.
    *
-   * @param words Non-owning packed source words retained by the result.
    * @param reader Input cursor, advanced only after successful validation.
+   * @param words Non-owning packed source words retained by the result.
    * @param validation Quick structural or full source-derived validation.
    *
    * @throws std::invalid_argument for malformed, incompatible, truncated, or
    * structurally inconsistent metadata.
    * @throws std::length_error when an encoded size is not representable.
    */
-  static RmMTree deserialize(std::span<const std::uint64_t> words,
-                             BinaryReader& reader,
-                             DeserializationValidation validation =
-                                 DeserializationValidation::kQuick) {
+  static RmMTree deserialize_impl(BinaryReader& reader,
+                                  std::span<const std::uint64_t> words,
+                                  DeserializationValidation validation =
+                                      DeserializationValidation::kQuick) {
     BinaryReader candidate = reader;
     const std::size_t available_size = candidate.remaining();
     detail::require_magic(candidate, kSerializationMagic);
@@ -227,22 +227,6 @@ class RmMTree : public RmMBase<RmMTree> {
     }
     result.validate_serialized_state(validation);
     reader = candidate;
-    return result;
-  }
-
-  /**
-   * @brief Restore one artifact from @p data and advance it on success.
-   * @param words Non-owning packed source words retained by the result.
-   * @param data Input bytes, advanced only after successful validation.
-   * @param validation Quick structural or full source-derived validation.
-   */
-  static RmMTree deserialize(std::span<const std::uint64_t> words,
-                             std::span<const std::byte>& data,
-                             DeserializationValidation validation =
-                                 DeserializationValidation::kQuick) {
-    BinaryReader reader(data);
-    RmMTree result = deserialize(words, reader, validation);
-    data = data.subspan(reader.position());
     return result;
   }
 

@@ -130,6 +130,18 @@ class AlignedStorage : public StorageBase<AlignedStorage> {
   /** @brief Return read-only cache-line blocks. */
   std::span<const CacheLine> as_lines() const { return data_; }
 
+  /** @brief Restore an owning copy of one size-prefixed byte sequence. */
+  static AlignedStorage deserialize_impl(BinaryReader& reader) {
+    const std::size_t size = reader.read_size();
+    if (size > std::numeric_limits<std::size_t>::max() / 8) {
+      throw std::length_error("Serialized aligned storage is too large");
+    }
+    AlignedStorage result(size * 8);
+    const std::span<const std::byte> bytes = reader.read_bytes(size);
+    std::ranges::copy(bytes, result.writable_bytes().begin());
+    return result;
+  }
+
  private:
   static std::size_t bit_size_for_words(std::size_t word_count) {
     constexpr std::size_t kWordBits =

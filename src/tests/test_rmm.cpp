@@ -561,7 +561,7 @@ static void expect_rmm_serialization_round_trip(const std::string& bits) {
                                 /*leaf_block_bits=*/128);
   std::vector<std::byte> artifact = serialize_rmm(original);
   pixie::BinaryReader reader(artifact);
-  const pixie::RmMTree restored = pixie::RmMTree::deserialize(words, reader);
+  const pixie::RmMTree restored = pixie::RmMTree::deserialize(reader, words);
 
   EXPECT_TRUE(reader.empty());
   EXPECT_EQ(serialize_rmm(restored), artifact);
@@ -609,9 +609,9 @@ TEST(RmMSerializationTest, AdvancesAcrossConcatenatedArtifacts) {
   const auto artifacts = output.take();
   pixie::BinaryReader reader(artifacts);
 
-  const auto first = pixie::RmMTree::deserialize(words, reader);
+  const auto first = pixie::RmMTree::deserialize(reader, words);
   EXPECT_FALSE(reader.empty());
-  const auto second = pixie::RmMTree::deserialize(words, reader);
+  const auto second = pixie::RmMTree::deserialize(reader, words);
   EXPECT_TRUE(reader.empty());
   EXPECT_EQ(first.range_min_query_pos(0, bits.size() - 1),
             second.range_min_query_pos(0, bits.size() - 1));
@@ -637,7 +637,7 @@ TEST(RmMSerializationTest, SerializesDirectlyToMappedFile) {
                                 pixie::DeserializationValidation::kFull}) {
     pixie::BinaryReader reader(file.as_bytes());
     const pixie::RmMTree restored =
-        pixie::RmMTree::deserialize(words, reader, validation);
+        pixie::RmMTree::deserialize(reader, words, validation);
     EXPECT_TRUE(reader.empty());
     EXPECT_EQ(restored.range_min_query_pos(0, bits.size() - 1),
               original.range_min_query_pos(0, bits.size() - 1));
@@ -658,12 +658,12 @@ TEST(RmMSerializationTest,
 
   pixie::BinaryReader quick_reader(artifact);
   EXPECT_NO_THROW((void)pixie::RmMTree::deserialize(
-      different_words, quick_reader, pixie::DeserializationValidation::kQuick));
+      quick_reader, different_words, pixie::DeserializationValidation::kQuick));
   EXPECT_TRUE(quick_reader.empty());
 
   pixie::BinaryReader full_reader(artifact);
   EXPECT_THROW((void)pixie::RmMTree::deserialize(
-                   different_words, full_reader,
+                   full_reader, different_words,
                    pixie::DeserializationValidation::kFull),
                std::invalid_argument);
   EXPECT_EQ(full_reader.position(), 0u);
@@ -687,12 +687,12 @@ TEST(RmMSerializationTest,
 
   pixie::BinaryReader quick_reader(artifact);
   EXPECT_NO_THROW((void)pixie::RmMTree::deserialize(
-      words, quick_reader, pixie::DeserializationValidation::kQuick));
+      quick_reader, words, pixie::DeserializationValidation::kQuick));
   EXPECT_TRUE(quick_reader.empty());
 
   pixie::BinaryReader full_reader(artifact);
   EXPECT_THROW((void)pixie::RmMTree::deserialize(
-                   words, full_reader, pixie::DeserializationValidation::kFull),
+                   full_reader, words, pixie::DeserializationValidation::kFull),
                std::invalid_argument);
   EXPECT_EQ(full_reader.position(), 0u);
 }
@@ -715,7 +715,7 @@ TEST(RmMSerializationTest,
     const std::vector<std::byte> artifact = serialize_rmm(original);
     pixie::BinaryReader reader(artifact);
     const pixie::RmMTree restored = pixie::RmMTree::deserialize(
-        words, reader, pixie::DeserializationValidation::kFull);
+        reader, words, pixie::DeserializationValidation::kFull);
     EXPECT_TRUE(reader.empty());
     EXPECT_EQ(restored.range_min_query_pos(0, bits.size() - 1),
               original.range_min_query_pos(0, bits.size() - 1));
@@ -740,12 +740,12 @@ TEST(RmMSerializationTest,
 
   pixie::BinaryReader quick_reader(artifact);
   EXPECT_NO_THROW((void)pixie::RmMTree::deserialize(
-      words, quick_reader, pixie::DeserializationValidation::kQuick));
+      quick_reader, words, pixie::DeserializationValidation::kQuick));
   EXPECT_TRUE(quick_reader.empty());
 
   pixie::BinaryReader full_reader(artifact);
   EXPECT_THROW((void)pixie::RmMTree::deserialize(
-                   words, full_reader, pixie::DeserializationValidation::kFull),
+                   full_reader, words, pixie::DeserializationValidation::kFull),
                std::invalid_argument);
   EXPECT_EQ(full_reader.position(), 0u);
 }
@@ -760,7 +760,7 @@ TEST(RmMSerializationTest, RejectsCorruptionWithoutAdvancingInput) {
     for (const auto validation : {pixie::DeserializationValidation::kQuick,
                                   pixie::DeserializationValidation::kFull}) {
       pixie::BinaryReader reader(artifact);
-      EXPECT_THROW((void)pixie::RmMTree::deserialize(words, reader, validation),
+      EXPECT_THROW((void)pixie::RmMTree::deserialize(reader, words, validation),
                    std::exception);
       EXPECT_EQ(reader.position(), 0u);
     }
@@ -795,13 +795,13 @@ TEST(RmMSerializationTest, RejectsCorruptionWithoutAdvancingInput) {
   std::span<const std::byte> truncated =
       std::span<const std::byte>(valid).first(valid.size() - 1);
   pixie::BinaryReader truncated_reader(truncated);
-  EXPECT_THROW((void)pixie::RmMTree::deserialize(words, truncated_reader),
+  EXPECT_THROW((void)pixie::RmMTree::deserialize(truncated_reader, words),
                std::invalid_argument);
   EXPECT_EQ(truncated_reader.position(), 0u);
 
   std::span<const std::uint64_t> short_words;
   pixie::BinaryReader reader(valid);
-  EXPECT_THROW((void)pixie::RmMTree::deserialize(short_words, reader),
+  EXPECT_THROW((void)pixie::RmMTree::deserialize(reader, short_words),
                std::invalid_argument);
   EXPECT_EQ(reader.position(), 0u);
 }
