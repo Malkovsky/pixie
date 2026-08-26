@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include <pixie/bits.h>
-#include <pixie/rank_select/implementations.h>
+#include <pixie/rank_select/support.h>
 
 #include <numeric>
 #include <random>

@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include <pixie/file_archive/implementations.h>
+#include <pixie/file_archive.h>
 #include <pixie/serialization.h>
 
 #include <algorithm>

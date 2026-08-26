@@ -1,9 +1,17 @@
 #include <gtest/gtest.h>
 #include <pixie/io/file_output_sink.h>
 #include <pixie/io/mapped_file.h>
-#include <pixie/rmq/implementations.h>
+#include <pixie/rmq/cartesian_hybrid_btree.h>
+#include <pixie/rmq/cartesian_rmm.h>
+#include <pixie/rmq/hybrid_btree.h>
+#include <pixie/rmq/segment_tree.h>
+#include <pixie/rmq/sparse_table.h>
 #include <pixie/rmq/utils/succinct_monotone_stack.h>
 #include <pixie/storage/aligned.h>
+
+#ifdef SDSL_SUPPORT
+#include <pixie/rmq/sdsl_sct.h>
+#endif
 
 #include <algorithm>
 #include <array>
