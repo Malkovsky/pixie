@@ -1,8 +1,13 @@
 #include <gtest/gtest.h>
 #include <pixie/io/file_output_sink.h>
 #include <pixie/io/mapped_file.h>
-#include <pixie/rmm/implementations.h>
+#include <pixie/rmm/btree.h>
+#include <pixie/rmm/tree.h>
 #include <references/naive_rmm_tree.h>
+
+#ifdef SDSL_SUPPORT
+#include <pixie/rmm/sdsl.h>
+#endif
 
 #include <algorithm>
 #include <array>

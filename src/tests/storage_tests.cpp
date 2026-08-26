@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <pixie/io/mapped_file.h>
-#include <pixie/storage/implementations.h>
+#include <pixie/storage/aligned.h>
+#include <pixie/storage/read_only_view.h>
 
 #include <algorithm>
 #include <array>
