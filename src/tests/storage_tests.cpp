@@ -40,14 +40,40 @@ concept HasWritableBytes = requires(Storage value) { value.writable_bytes(); };
 template <class Storage>
 concept HasResize = requires(Storage value) { value.resize(1); };
 
+template <class Storage>
+concept HasMutableSegments = requires(Storage& value) {
+  { value.segments() } -> std::same_as<pixie::SplitSpan<std::byte>>;
+};
+
+template <class Storage>
+concept HasContiguousBytes = requires(const Storage& value) {
+  { value.as_bytes() } -> std::same_as<std::span<const std::byte>>;
+};
+
+template <class Byte>
+std::vector<std::byte> collect_segments(
+    const pixie::SplitSpan<Byte>& segments) {
+  std::vector<std::byte> result;
+  result.reserve(segments.size());
+  for (const std::span<Byte> segment : segments) {
+    result.insert(result.end(), segment.begin(), segment.end());
+  }
+  return result;
+}
+
 TYPED_TEST(StorageSpecificationTest, EmptyStorageHasConsistentViews) {
   const std::array<std::byte, 0> bytes{};
   auto storage = make_storage<TypeParam>(bytes);
   EXPECT_TRUE(storage.empty());
   EXPECT_EQ(storage.size_bytes(), 0u);
   EXPECT_EQ(storage.size_bits(), 0u);
+  EXPECT_EQ(storage.begin_position(), 0u);
+  EXPECT_EQ(storage.end_position(), 0u);
+  EXPECT_TRUE(storage.contains(0, 0));
   EXPECT_TRUE(storage.as_bytes().empty());
   EXPECT_TRUE(storage.view().empty());
+  EXPECT_TRUE(storage.segments().empty());
+  EXPECT_EQ(storage.segments().segment_count(), 0u);
 }
 
 TYPED_TEST(StorageSpecificationTest, SupportsByteAndNestedViews) {
@@ -60,7 +86,33 @@ TYPED_TEST(StorageSpecificationTest, SupportsByteAndNestedViews) {
   EXPECT_EQ(middle.as_bytes()[0], std::byte{2});
   EXPECT_EQ(nested.as_bytes()[0], std::byte{3});
   EXPECT_EQ(nested.as_bytes()[1], std::byte{4});
+  EXPECT_EQ(storage.begin_position(), 0u);
+  EXPECT_EQ(storage.end_position(), bytes.size());
+  EXPECT_TRUE(storage.contains(2, 4));
+  EXPECT_FALSE(storage.contains(7, 2));
+  const auto segments = storage.segments(2, 4);
+  ASSERT_EQ(segments.segment_count(), 1u);
+  EXPECT_EQ(segments.size(), 4u);
+  EXPECT_TRUE(std::ranges::equal(*segments.begin(), middle.as_bytes()));
   EXPECT_THROW(storage.view(storage.size_bytes(), 1), std::out_of_range);
+  EXPECT_THROW(storage.segments(storage.size_bytes(), 1), std::out_of_range);
+}
+
+TEST(SplitSpanTest, CanonicalizesAndIteratesTwoSegmentsInLogicalOrder) {
+  const std::array first = {1, 2};
+  const std::array second = {3, 4, 5};
+  const pixie::SplitSpan<const int> split(first, second);
+
+  EXPECT_EQ(split.size(), 5u);
+  EXPECT_EQ(split.segment_count(), 2u);
+  auto segment = split.begin();
+  EXPECT_TRUE(std::ranges::equal(*segment++, first));
+  EXPECT_TRUE(std::ranges::equal(*segment++, second));
+  EXPECT_EQ(segment, split.end());
+
+  const pixie::SplitSpan<const int> canonical({}, second);
+  ASSERT_EQ(canonical.segment_count(), 1u);
+  EXPECT_TRUE(std::ranges::equal(*canonical.begin(), second));
 }
 
 TYPED_TEST(StorageSpecificationTest, ProvidesAlignedWordViewsWhenValid) {
@@ -174,6 +226,24 @@ TEST(AlignedStorageTest, PadsResizesAndProvidesWritableStorage) {
   storage.shrink_to_fit();
 }
 
+TEST(AlignedStorageTest, MutableSegmentsModifyTheBackingStorage) {
+  static_assert(HasMutableSegments<pixie::AlignedStorage>);
+  static_assert(
+      std::same_as<
+          decltype(std::declval<const pixie::AlignedStorage&>().segments()),
+          pixie::SplitSpan<const std::byte>>);
+
+  pixie::AlignedStorage storage(4 * 8);
+  auto segments = storage.segments(1, 2);
+  ASSERT_EQ(segments.segment_count(), 1u);
+  (*segments.begin())[0] = std::byte{42};
+  (*segments.begin())[1] = std::byte{43};
+
+  EXPECT_EQ(storage.as_bytes()[1], std::byte{42});
+  EXPECT_EQ(storage.as_bytes()[2], std::byte{43});
+  EXPECT_THROW(storage.segments(storage.size_bytes(), 1), std::out_of_range);
+}
+
 TEST(AlignedStorageTest, CopiesCompleteWordsIntoAlignedStorage) {
   std::array<std::uint64_t, 3> words = {1, 2, 3};
   const pixie::AlignedStorage storage{std::span<const std::uint64_t>(words)};
@@ -189,6 +259,11 @@ TEST(AlignedStorageTest, CopiesCompleteWordsIntoAlignedStorage) {
 TEST(ReadOnlyStorageViewTest, MutatingOperationsAreNotAvailable) {
   static_assert(!HasWritableBytes<pixie::ReadOnlyStorageView>);
   static_assert(!HasResize<pixie::ReadOnlyStorageView>);
+  static_assert(!HasMutableSegments<pixie::ReadOnlyStorageView>);
+  static_assert(
+      std::same_as<
+          decltype(std::declval<pixie::ReadOnlyStorageView&>().segments()),
+          pixie::SplitSpan<const std::byte>>);
 }
 
 TEST(ReadOnlyStorageViewTest, DeserializeRejectsTruncatedInput) {
@@ -201,6 +276,147 @@ TEST(ReadOnlyStorageViewTest, DeserializeRejectsTruncatedInput) {
   EXPECT_THROW(pixie::ReadOnlyStorageView::deserialize(reader),
                std::invalid_argument);
   EXPECT_EQ(reader.position(), 0u);
+}
+
+TEST(SlidingWindowStorageTest, AppendsAndExposesAbsolutePositions) {
+  pixie::SlidingWindowStorage storage(8);
+  const std::array bytes = {std::byte{1}, std::byte{2}, std::byte{3}};
+  storage.append(bytes);
+
+  EXPECT_EQ(storage.capacity_bytes(), 8u);
+  EXPECT_EQ(storage.allocated_bytes(), 8u);
+  EXPECT_EQ(storage.begin_position(), 0u);
+  EXPECT_EQ(storage.end_position(), 3u);
+  EXPECT_EQ(storage.size_bytes(), 3u);
+  EXPECT_TRUE(storage.contains(0, 3));
+  EXPECT_TRUE(storage.contains(3, 0));
+  EXPECT_FALSE(storage.contains(3, 1));
+  EXPECT_EQ(collect_segments(std::as_const(storage).segments()),
+            std::vector<std::byte>(bytes.begin(), bytes.end()));
+}
+
+TEST(SlidingWindowStorageTest, WrapsEvictsAndRejectsExpiredRanges) {
+  pixie::SlidingWindowStorage storage(5);
+  const std::array first = {std::byte{0}, std::byte{1}, std::byte{2}};
+  const std::array second = {std::byte{3}, std::byte{4}, std::byte{5},
+                             std::byte{6}};
+  storage.append(first);
+  storage.append(second);
+
+  EXPECT_EQ(storage.begin_position(), 2u);
+  EXPECT_EQ(storage.end_position(), 7u);
+  EXPECT_EQ(storage.size_bytes(), 5u);
+  EXPECT_EQ(storage.segments().segment_count(), 2u);
+  EXPECT_EQ(collect_segments(std::as_const(storage).segments()),
+            (std::vector{std::byte{2}, std::byte{3}, std::byte{4}, std::byte{5},
+                         std::byte{6}}));
+  EXPECT_THROW(storage.segments(1, 1), std::out_of_range);
+  EXPECT_THROW(storage.segments(6, 2), std::out_of_range);
+  EXPECT_NO_THROW(storage.segments(storage.end_position(), 0));
+}
+
+TEST(SlidingWindowStorageTest, SupportsMutableRangesAcrossTheWrapPoint) {
+  pixie::SlidingWindowStorage storage(5);
+  const std::array bytes = {std::byte{0}, std::byte{1}, std::byte{2},
+                            std::byte{3}, std::byte{4}, std::byte{5},
+                            std::byte{6}};
+  storage.append(bytes);
+
+  auto segments = storage.segments(4, 3);
+  ASSERT_EQ(segments.segment_count(), 2u);
+  std::byte replacement = std::byte{40};
+  for (const std::span<std::byte> segment : segments) {
+    for (std::byte& value : segment) {
+      value = replacement;
+      replacement =
+          static_cast<std::byte>(static_cast<unsigned char>(replacement) + 10);
+    }
+  }
+
+  EXPECT_EQ(collect_segments(std::as_const(storage).segments()),
+            (std::vector{std::byte{2}, std::byte{3}, std::byte{40},
+                         std::byte{50}, std::byte{60}}));
+}
+
+TEST(SlidingWindowStorageTest, RetainedSegmentsKeepTheirAddresses) {
+  pixie::SlidingWindowStorage storage(6);
+  const std::array initial = {std::byte{0}, std::byte{1}, std::byte{2},
+                              std::byte{3}, std::byte{4}, std::byte{5}};
+  storage.append(initial);
+  const auto retained = std::as_const(storage).segments(1, 2);
+  const std::byte* const address = retained.begin()->data();
+
+  const std::array next = {std::byte{6}};
+  storage.append(next);
+
+  ASSERT_TRUE(storage.contains(1, 2));
+  EXPECT_EQ(retained.begin()->data(), address);
+  EXPECT_EQ((*retained.begin())[0], std::byte{1});
+  EXPECT_EQ((*retained.begin())[1], std::byte{2});
+}
+
+TEST(SlidingWindowStorageTest, OversizedAppendRetainsOnlyItsSuffix) {
+  pixie::SlidingWindowStorage storage(4);
+  const std::array bytes = {std::byte{0}, std::byte{1}, std::byte{2},
+                            std::byte{3}, std::byte{4}, std::byte{5}};
+  storage.append(bytes);
+
+  EXPECT_EQ(storage.begin_position(), 2u);
+  EXPECT_EQ(storage.end_position(), 6u);
+  EXPECT_EQ(
+      collect_segments(std::as_const(storage).segments()),
+      (std::vector{std::byte{2}, std::byte{3}, std::byte{4}, std::byte{5}}));
+}
+
+TEST(SlidingWindowStorageTest, SerializesRetainedBytesInLogicalOrder) {
+  pixie::SlidingWindowStorage storage(4);
+  const std::array bytes = {std::byte{0}, std::byte{1}, std::byte{2},
+                            std::byte{3}, std::byte{4}, std::byte{5}};
+  storage.append(bytes);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  storage.serialize(writer);
+  writer.finish();
+
+  const std::vector<std::byte> artifact = output.take();
+  pixie::BinaryReader reader(artifact);
+  EXPECT_EQ(reader.read_size(), 4u);
+  EXPECT_TRUE(std::ranges::equal(
+      reader.read_bytes(4),
+      std::array{std::byte{2}, std::byte{3}, std::byte{4}, std::byte{5}}));
+  EXPECT_TRUE(reader.empty());
+}
+
+TEST(SlidingWindowStorageTest, HasFixedCapacityAndIndependentCopies) {
+  static_assert(pixie::StorageImplementation<pixie::SlidingWindowStorage>);
+  static_assert(HasMutableSegments<pixie::SlidingWindowStorage>);
+  static_assert(!HasContiguousBytes<pixie::SlidingWindowStorage>);
+  static_assert(!HasWritableBytes<pixie::SlidingWindowStorage>);
+  static_assert(!HasResize<pixie::SlidingWindowStorage>);
+  static_assert(std::is_copy_constructible_v<pixie::SlidingWindowStorage>);
+  static_assert(std::is_move_constructible_v<pixie::SlidingWindowStorage>);
+  static_assert(!std::is_copy_assignable_v<pixie::SlidingWindowStorage>);
+  static_assert(!std::is_move_assignable_v<pixie::SlidingWindowStorage>);
+
+  pixie::SlidingWindowStorage original(3);
+  const std::array bytes = {std::byte{1}, std::byte{2}};
+  original.append(bytes);
+  pixie::SlidingWindowStorage copy(original);
+  (*copy.segments(0, 1).begin())[0] = std::byte{9};
+
+  EXPECT_EQ((*std::as_const(original).segments(0, 1).begin())[0], std::byte{1});
+  EXPECT_EQ((*std::as_const(copy).segments(0, 1).begin())[0], std::byte{9});
+}
+
+TEST(SlidingWindowStorageTest, ZeroCapacityAcceptsOnlyEmptyAppends) {
+  pixie::SlidingWindowStorage storage(0);
+  const std::array<std::byte, 0> empty{};
+  storage.append(empty);
+  EXPECT_TRUE(storage.empty());
+  EXPECT_TRUE(storage.segments().empty());
+
+  const std::array nonempty = {std::byte{1}};
+  EXPECT_THROW(storage.append(nonempty), std::length_error);
 }
 
 TEST(MappedFileTest, MapsContentsAndIsMoveOnly) {

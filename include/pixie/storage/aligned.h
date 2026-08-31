@@ -56,6 +56,12 @@ class AlignedStorage : public StorageBase<AlignedStorage> {
   /** @brief Return the logical number of exposed bytes. */
   std::size_t size_bytes_impl() const { return logical_size_bytes_; }
 
+  /** @brief Return the first logical byte position. */
+  position_type begin_position_impl() const { return 0; }
+
+  /** @brief Return the position one past the final logical byte. */
+  position_type end_position_impl() const { return logical_size_bytes_; }
+
   /** @brief Return the logical number of exposed bytes. */
   std::size_t logical_size_bytes() const { return logical_size_bytes_; }
 
@@ -79,6 +85,18 @@ class AlignedStorage : public StorageBase<AlignedStorage> {
   std::span<const std::byte> as_bytes_impl() const {
     return std::as_bytes(std::span<const CacheLine>(data_))
         .first(logical_size_bytes_);
+  }
+
+  /** @brief Return a checked logical byte range as one physical segment. */
+  SplitSpan<const std::byte> segments_impl(std::size_t offset_bytes,
+                                           std::size_t count_bytes) const {
+    return SplitSpan(as_bytes_impl().subspan(offset_bytes, count_bytes));
+  }
+
+  /** @brief Return a checked logical byte range as one writable segment. */
+  SplitSpan<std::byte> segments_impl(std::size_t offset_bytes,
+                                     std::size_t count_bytes) {
+    return SplitSpan(writable_bytes_impl().subspan(offset_bytes, count_bytes));
   }
 
   /** @brief Return a checked read-only byte subrange. */
