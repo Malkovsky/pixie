@@ -22,6 +22,25 @@ namespace pixie {
 /**
  * @brief CRTP facade for byte-addressable storage.
  *
+ * @details `Impl` must provide `size_bytes_impl()`,
+ * `begin_position_impl()`, `end_position_impl()`, and the const overload of
+ * `segments_impl(position, count_bytes)`. The positions describe one absolute
+ * half-open logical range `[begin_position_impl(), end_position_impl())` and
+ * must satisfy `end_position_impl() - begin_position_impl() ==
+ * size_bytes_impl()`.
+ *
+ * `segments_impl()` is called only with a range contained in that logical
+ * range. It must return the requested bytes in logical order, split into at
+ * most two physical spans whose combined size is exactly `count_bytes`.
+ * Returned spans borrow the implementation's backing storage and remain valid
+ * according to that storage's documented lifetime and invalidation rules.
+ *
+ * Mutable implementations may provide a writable `segments_impl()` overload.
+ * They may also provide `prepare_segments_impl(position, count_bytes)` to make
+ * a future writable range available before validation. This preparation hook
+ * must either make the complete range available or throw without changing the
+ * implementation.
+ *
  * @tparam Impl Concrete storage implementation.
  */
 template <class Impl>
@@ -90,9 +109,12 @@ class StorageBase : public SerializationBase<Impl> {
 
   /**
    * @brief Return a checked writable logical byte range as one or two spans.
+   * @details An implementation with a preparation hook may make a future range
+   * available before checking it. Any newly exposed bytes remain the caller's
+   * responsibility to initialize.
    * @param position First logical byte position in the range.
    * @param count_bytes Number of logical bytes in the range.
-   * @throws std::out_of_range if the range is outside this storage.
+   * @throws std::out_of_range if the range cannot be made available.
    */
   SplitSpan<std::byte> segments(position_type position, std::size_t count_bytes)
     requires requires(Impl& value) {
@@ -101,6 +123,11 @@ class StorageBase : public SerializationBase<Impl> {
       } -> std::same_as<SplitSpan<std::byte>>;
     }
   {
+    if constexpr (requires(Impl& value) {
+                    value.prepare_segments_impl(position_type{}, std::size_t{});
+                  }) {
+      impl().prepare_segments_impl(position, count_bytes);
+    }
     validate_range(position, count_bytes);
     return impl().segments_impl(position, count_bytes);
   }

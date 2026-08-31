@@ -22,9 +22,12 @@ namespace pixie {
  * @brief Owning fixed-capacity storage over a monotonically positioned window.
  *
  * @details The complete backing ring is allocated during construction and is
- * never resized. Appending advances `end_position()` and evicts the oldest
- * bytes as necessary. Mutable and const access use absolute logical positions
- * and return at most two physical spans.
+ * never resized. Extending advances `end_position()` and evicts the oldest
+ * bytes as necessary without initializing the newly exposed storage. Mutable
+ * and const access use absolute logical positions and return at most two
+ * physical spans. Requesting a future mutable range extends the window through
+ * that range automatically; the caller remains responsible for assigning its
+ * contents.
  *
  * Segments remain valid while their complete logical range remains inside the
  * working window. Moving or destroying the storage invalidates all segments.
@@ -66,36 +69,56 @@ class SlidingWindowStorage : public StorageBase<SlidingWindowStorage> {
   std::size_t allocated_bytes_impl() const { return data_.capacity(); }
 
   /**
-   * @brief Append bytes and evict the oldest bytes beyond capacity.
+   * @brief Advance the logical end by a number of bytes.
+   * @details Newly exposed bytes are not initialized. Advancing beyond the
+   * capacity evicts the oldest logical bytes while retaining the fixed backing
+   * allocation.
    * @throws std::length_error if the logical position would overflow or if a
-   * nonempty sequence is appended to a zero-capacity window.
+   * nonzero extension is requested for a zero-capacity window.
    */
-  void append(std::span<const std::byte> bytes) {
-    if (bytes.empty()) {
+  void extend(std::size_t count_bytes) {
+    if (count_bytes == 0) {
       return;
     }
     if (capacity_bytes_ == 0) {
-      throw std::length_error(
-          "Cannot append to a zero-capacity sliding window");
+      throw std::length_error("Cannot extend a zero-capacity sliding window");
     }
-    if (bytes.size() >
+    if (count_bytes >
         std::numeric_limits<position_type>::max() - end_position_) {
       throw std::length_error("Sliding-window position overflow");
     }
 
-    const position_type new_end = end_position_ + bytes.size();
-    if (bytes.size() >= capacity_bytes_) {
-      const std::span<const std::byte> suffix = bytes.last(capacity_bytes_);
-      const position_type suffix_position = new_end - capacity_bytes_;
-      copy_into_ring(suffix_position, suffix);
-      begin_position_ = suffix_position;
-    } else {
-      copy_into_ring(end_position_, bytes);
-      const position_type retained_size =
-          std::min<position_type>(new_end, capacity_bytes_);
-      begin_position_ = std::max(begin_position_, new_end - retained_size);
-    }
+    const position_type new_end = end_position_ + count_bytes;
+    begin_position_ = new_end > capacity_bytes_ ? new_end - capacity_bytes_ : 0;
     end_position_ = new_end;
+  }
+
+  /**
+   * @brief Extend through a requested future writable range when necessary.
+   * @throws std::out_of_range if the requested range cannot fit in the window.
+   * @throws std::length_error if the requested logical range overflows.
+   */
+  void prepare_segments_impl(position_type position, std::size_t count_bytes) {
+    if (count_bytes == 0 || (position <= end_position_ &&
+                             count_bytes <= end_position_ - position)) {
+      return;
+    }
+    if (count_bytes > std::numeric_limits<position_type>::max() - position) {
+      throw std::length_error("Sliding-window range overflow");
+    }
+
+    const position_type requested_end = position + count_bytes;
+    if (count_bytes > capacity_bytes_ || position < begin_position_) {
+      throw std::out_of_range(
+          "Storage range cannot fit inside the working window");
+    }
+    const position_type extension = requested_end - end_position_;
+    if constexpr (sizeof(position_type) > sizeof(std::size_t)) {
+      if (extension > std::numeric_limits<std::size_t>::max()) {
+        throw std::length_error("Sliding-window extension is too large");
+      }
+    }
+    extend(static_cast<std::size_t>(extension));
   }
 
   /** @brief Return a retained logical range as writable physical segments. */
@@ -135,17 +158,6 @@ class SlidingWindowStorage : public StorageBase<SlidingWindowStorage> {
         std::min(count_bytes, capacity_bytes_ - physical_begin);
     return SplitSpan<Byte>(data.subspan(physical_begin, first_size),
                            data.first(count_bytes - first_size));
-  }
-
-  void copy_into_ring(position_type position,
-                      std::span<const std::byte> bytes) {
-    SplitSpan<std::byte> destination =
-        physical_segments(position, bytes.size(), std::span<std::byte>(data_));
-    std::size_t copied = 0;
-    for (const std::span<std::byte> segment : destination) {
-      std::ranges::copy(bytes.subspan(copied, segment.size()), segment.begin());
-      copied += segment.size();
-    }
   }
 
   std::size_t capacity_bytes_;

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <span>
 #include <type_traits>
 #include <utility>
@@ -59,6 +60,18 @@ std::vector<std::byte> collect_segments(
     result.insert(result.end(), segment.begin(), segment.end());
   }
   return result;
+}
+
+void assign_segments(pixie::SlidingWindowStorage& storage,
+                     pixie::SlidingWindowStorage::position_type position,
+                     std::span<const std::byte> bytes) {
+  const pixie::SplitSpan<std::byte> destination =
+      storage.segments(position, bytes.size());
+  std::size_t copied = 0;
+  for (const std::span<std::byte> segment : destination) {
+    std::ranges::copy(bytes.subspan(copied, segment.size()), segment.begin());
+    copied += segment.size();
+  }
 }
 
 TYPED_TEST(StorageSpecificationTest, EmptyStorageHasConsistentViews) {
@@ -278,10 +291,11 @@ TEST(ReadOnlyStorageViewTest, DeserializeRejectsTruncatedInput) {
   EXPECT_EQ(reader.position(), 0u);
 }
 
-TEST(SlidingWindowStorageTest, AppendsAndExposesAbsolutePositions) {
+TEST(SlidingWindowStorageTest, ExtendsAndExposesAbsolutePositions) {
   pixie::SlidingWindowStorage storage(8);
   const std::array bytes = {std::byte{1}, std::byte{2}, std::byte{3}};
-  storage.append(bytes);
+  storage.extend(bytes.size());
+  assign_segments(storage, 0, bytes);
 
   EXPECT_EQ(storage.capacity_bytes(), 8u);
   EXPECT_EQ(storage.allocated_bytes(), 8u);
@@ -300,8 +314,8 @@ TEST(SlidingWindowStorageTest, WrapsEvictsAndRejectsExpiredRanges) {
   const std::array first = {std::byte{0}, std::byte{1}, std::byte{2}};
   const std::array second = {std::byte{3}, std::byte{4}, std::byte{5},
                              std::byte{6}};
-  storage.append(first);
-  storage.append(second);
+  assign_segments(storage, 0, first);
+  assign_segments(storage, first.size(), second);
 
   EXPECT_EQ(storage.begin_position(), 2u);
   EXPECT_EQ(storage.end_position(), 7u);
@@ -311,8 +325,38 @@ TEST(SlidingWindowStorageTest, WrapsEvictsAndRejectsExpiredRanges) {
             (std::vector{std::byte{2}, std::byte{3}, std::byte{4}, std::byte{5},
                          std::byte{6}}));
   EXPECT_THROW(storage.segments(1, 1), std::out_of_range);
-  EXPECT_THROW(storage.segments(6, 2), std::out_of_range);
+  EXPECT_THROW(std::as_const(storage).segments(6, 2), std::out_of_range);
   EXPECT_NO_THROW(storage.segments(storage.end_position(), 0));
+}
+
+TEST(SlidingWindowStorageTest, FutureWritableRangeExtendsAutomatically) {
+  pixie::SlidingWindowStorage storage(5);
+  const std::array bytes = {std::byte{3}, std::byte{4}, std::byte{5}};
+  assign_segments(storage, 2, bytes);
+
+  EXPECT_EQ(storage.begin_position(), 0u);
+  EXPECT_EQ(storage.end_position(), 5u);
+  EXPECT_EQ(collect_segments(std::as_const(storage).segments(2, 3)),
+            std::vector<std::byte>(bytes.begin(), bytes.end()));
+}
+
+TEST(SlidingWindowStorageTest, InvalidFutureRangeDoesNotExtend) {
+  pixie::SlidingWindowStorage storage(4);
+  storage.extend(2);
+
+  EXPECT_THROW(storage.segments(2, 5), std::out_of_range);
+  EXPECT_EQ(storage.begin_position(), 0u);
+  EXPECT_EQ(storage.end_position(), 2u);
+}
+
+TEST(SlidingWindowStorageTest, OverflowingFutureRangeDoesNotExtend) {
+  pixie::SlidingWindowStorage storage(4);
+  constexpr auto max_position =
+      std::numeric_limits<pixie::SlidingWindowStorage::position_type>::max();
+
+  EXPECT_THROW(storage.segments(max_position - 1, 3), std::length_error);
+  EXPECT_EQ(storage.begin_position(), 0u);
+  EXPECT_EQ(storage.end_position(), 0u);
 }
 
 TEST(SlidingWindowStorageTest, SupportsMutableRangesAcrossTheWrapPoint) {
@@ -320,7 +364,7 @@ TEST(SlidingWindowStorageTest, SupportsMutableRangesAcrossTheWrapPoint) {
   const std::array bytes = {std::byte{0}, std::byte{1}, std::byte{2},
                             std::byte{3}, std::byte{4}, std::byte{5},
                             std::byte{6}};
-  storage.append(bytes);
+  assign_segments(storage, 2, std::span(bytes).subspan(2));
 
   auto segments = storage.segments(4, 3);
   ASSERT_EQ(segments.segment_count(), 2u);
@@ -342,12 +386,13 @@ TEST(SlidingWindowStorageTest, RetainedSegmentsKeepTheirAddresses) {
   pixie::SlidingWindowStorage storage(6);
   const std::array initial = {std::byte{0}, std::byte{1}, std::byte{2},
                               std::byte{3}, std::byte{4}, std::byte{5}};
-  storage.append(initial);
+  assign_segments(storage, 0, initial);
   const auto retained = std::as_const(storage).segments(1, 2);
   const std::byte* const address = retained.begin()->data();
 
   const std::array next = {std::byte{6}};
-  storage.append(next);
+  storage.extend(next.size());
+  assign_segments(storage, 6, next);
 
   ASSERT_TRUE(storage.contains(1, 2));
   EXPECT_EQ(retained.begin()->data(), address);
@@ -355,11 +400,12 @@ TEST(SlidingWindowStorageTest, RetainedSegmentsKeepTheirAddresses) {
   EXPECT_EQ((*retained.begin())[1], std::byte{2});
 }
 
-TEST(SlidingWindowStorageTest, OversizedAppendRetainsOnlyItsSuffix) {
+TEST(SlidingWindowStorageTest, ExtensionBeyondCapacityRetainsNewestPositions) {
   pixie::SlidingWindowStorage storage(4);
   const std::array bytes = {std::byte{0}, std::byte{1}, std::byte{2},
                             std::byte{3}, std::byte{4}, std::byte{5}};
-  storage.append(bytes);
+  storage.extend(bytes.size());
+  assign_segments(storage, 2, std::span(bytes).subspan(2));
 
   EXPECT_EQ(storage.begin_position(), 2u);
   EXPECT_EQ(storage.end_position(), 6u);
@@ -372,7 +418,8 @@ TEST(SlidingWindowStorageTest, SerializesRetainedBytesInLogicalOrder) {
   pixie::SlidingWindowStorage storage(4);
   const std::array bytes = {std::byte{0}, std::byte{1}, std::byte{2},
                             std::byte{3}, std::byte{4}, std::byte{5}};
-  storage.append(bytes);
+  storage.extend(bytes.size());
+  assign_segments(storage, 2, std::span(bytes).subspan(2));
   pixie::VectorOutputSink output;
   pixie::BinaryWriter writer(output);
   storage.serialize(writer);
@@ -400,7 +447,7 @@ TEST(SlidingWindowStorageTest, HasFixedCapacityAndIndependentCopies) {
 
   pixie::SlidingWindowStorage original(3);
   const std::array bytes = {std::byte{1}, std::byte{2}};
-  original.append(bytes);
+  assign_segments(original, 0, bytes);
   pixie::SlidingWindowStorage copy(original);
   (*copy.segments(0, 1).begin())[0] = std::byte{9};
 
@@ -408,15 +455,13 @@ TEST(SlidingWindowStorageTest, HasFixedCapacityAndIndependentCopies) {
   EXPECT_EQ((*std::as_const(copy).segments(0, 1).begin())[0], std::byte{9});
 }
 
-TEST(SlidingWindowStorageTest, ZeroCapacityAcceptsOnlyEmptyAppends) {
+TEST(SlidingWindowStorageTest, ZeroCapacityAcceptsOnlyEmptyExtensions) {
   pixie::SlidingWindowStorage storage(0);
-  const std::array<std::byte, 0> empty{};
-  storage.append(empty);
+  storage.extend(0);
   EXPECT_TRUE(storage.empty());
   EXPECT_TRUE(storage.segments().empty());
 
-  const std::array nonempty = {std::byte{1}};
-  EXPECT_THROW(storage.append(nonempty), std::length_error);
+  EXPECT_THROW(storage.extend(1), std::length_error);
 }
 
 TEST(MappedFileTest, MapsContentsAndIsMoveOnly) {
