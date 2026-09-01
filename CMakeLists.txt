@@ -131,12 +131,17 @@ if (PIXIE_TESTS)
     include(GoogleTest)
 endif ()
 
-# Downstream consumers link this target; Pixie itself remains header-only.
+# PivCo-Huffman is Pixie's compiled codec backend.
+include(cmake/PivCo.cmake)
+
+# Downstream consumers link this target. Most Pixie implementations remain
+# header-only; the Huffman codec is carried as a transitive static dependency.
 add_library(pixie INTERFACE)
 add_library(pixie::pixie ALIAS pixie)
 target_compile_features(pixie INTERFACE cxx_std_20)
 target_include_directories(pixie INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_link_libraries(pixie INTERFACE pixie::pivco)
 
 # Keep Pixie's own targets warning-clean without imposing -Werror on consumers.
 function (pixie_enable_project_warnings target)
@@ -300,6 +305,15 @@ if (PIXIE_TESTS)
                 PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
     endif ()
 
+    add_executable(huffman_tests
+            src/tests/huffman_tests.cpp)
+    target_link_libraries(huffman_tests
+            PRIVATE
+            pixie::pixie
+            gtest
+            gtest_main
+            ${PIXIE_DIAGNOSTICS_LIBS})
+
     set(PIXIE_TEST_TARGETS
             bit_algorithms_unittests
             rank_select_unittests
@@ -314,7 +328,8 @@ if (PIXIE_TESTS)
             excess_positions_tests
             select512_experimental_tests
             excess_record_lows_tests
-            rmq_tests)
+            rmq_tests
+            huffman_tests)
     foreach (test_target IN LISTS PIXIE_TEST_TARGETS)
         pixie_enable_project_warnings(${test_target})
         gtest_discover_tests(${test_target}
@@ -475,6 +490,14 @@ if (PIXIE_BENCHMARKS)
             benchmark_main
             ${PIXIE_DIAGNOSTICS_LIBS})
 
+    add_executable(huffman_file_benchmarks
+            src/benchmarks/huffman_file_benchmarks.cpp)
+    target_link_libraries(huffman_file_benchmarks
+            PRIVATE
+            pixie::pixie
+            benchmark
+            ${PIXIE_DIAGNOSTICS_LIBS})
+
     set(PIXIE_BENCHMARK_TARGETS
             rank_select_benchmarks
             rmm_benchmarks
@@ -488,7 +511,8 @@ if (PIXIE_BENCHMARKS)
             dfuds_tree_benchmarks
             alignment_comparison_benchmarks
             excess_positions_benchmarks
-            select512_benchmarks)
+            select512_benchmarks
+            huffman_file_benchmarks)
     if (PIXIE_THIRD_PARTY_BACKENDS)
         list(APPEND PIXIE_BENCHMARK_TARGETS
                 rmm_sdsl_benchmarks)
