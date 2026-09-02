@@ -22,24 +22,42 @@ namespace pixie {
 /**
  * @brief CRTP facade for byte-addressable storage.
  *
- * @details `Impl` must provide `size_bytes_impl()`,
- * `begin_position_impl()`, `end_position_impl()`, and the const overload of
- * `segments_impl(position, count_bytes)`. The positions describe one absolute
- * half-open logical range `[begin_position_impl(), end_position_impl())` and
- * must satisfy `end_position_impl() - begin_position_impl() ==
- * size_bytes_impl()`.
+ * @details `Impl` must provide `size_bytes_impl()` and the following required
+ * extension points.
  *
- * `segments_impl()` is called only with a range contained in that logical
- * range. It must return the requested bytes in logical order, split into at
- * most two physical spans whose combined size is exactly `count_bytes`.
- * Returned spans borrow the implementation's backing storage and remain valid
- * according to that storage's documented lifetime and invalidation rules.
+ * @par Required: `begin_position_impl() const`
+ * Returns the absolute logical position of the first exposed byte as a
+ * `position_type`. The result may advance when an implementation evicts bytes,
+ * but positions of retained bytes do not change.
  *
- * Mutable implementations may provide a writable `segments_impl()` overload.
- * They may also provide `prepare_segments_impl(position, count_bytes)` to make
- * a future writable range available before validation. This preparation hook
- * must either make the complete range available or throw without changing the
- * implementation.
+ * @par Required: `end_position_impl() const`
+ * Returns the absolute logical position one past the last exposed byte as a
+ * `position_type`. It must be at least `begin_position_impl()`, and their
+ * difference must be representable by `std::size_t` and equal
+ * `size_bytes_impl()`.
+ *
+ * @par Required: `segments_impl(position, count_bytes) const`
+ * Accepts a `position_type` and a `std::size_t` and returns
+ * `SplitSpan<const std::byte>` containing exactly the bytes in `[position,
+ * position + count_bytes)`. The physical spans are ordered by logical position
+ * and their combined size equals `count_bytes`. Before calling this hook, the
+ * facade verifies without overflow that `position` is in the closed range from
+ * `begin_position_impl()` through `end_position_impl()` and that `count_bytes
+ * <= end_position_impl() - position`; an empty range at the end position is
+ * valid. The returned spans borrow the implementation's backing storage. The
+ * implementation must document the backing storage's ownership requirements
+ * and the operations that invalidate its spans.
+ *
+ * @par Optional: `segments_impl(position, count_bytes)`
+ * A mutable implementation may provide this extension point to enable
+ * writable segment access. It accepts the same parameter types as the const
+ * overload and returns `SplitSpan<std::byte>`. It has the same range, ordering,
+ * size, lifetime, and invalidation contract as the const overload, and writes
+ * through the returned spans modify the corresponding logical bytes. If the
+ * implementation also provides `prepare_segments_impl(position, count_bytes)`,
+ * the facade calls that hook before validating the range. The preparation hook
+ * must make the complete requested range available or throw without changing
+ * the implementation.
  *
  * @tparam Impl Concrete storage implementation.
  */
