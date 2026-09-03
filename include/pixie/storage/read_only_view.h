@@ -22,8 +22,20 @@ class ReadOnlyStorageView : public StorageBase<ReadOnlyStorageView> {
   /** @brief Return the number of viewed bytes. */
   std::size_t size_bytes_impl() const { return data_.size(); }
 
+  /** @brief Return the first logical byte position. */
+  position_type begin_position_impl() const { return 0; }
+
+  /** @brief Return the position one past the final logical byte. */
+  position_type end_position_impl() const { return data_.size(); }
+
   /** @brief Return the viewed bytes. */
   std::span<const std::byte> as_bytes_impl() const { return data_; }
+
+  /** @brief Return a checked viewed byte range as one physical segment. */
+  SplitSpan<const std::byte> segments_impl(std::size_t offset_bytes,
+                                           std::size_t count_bytes) const {
+    return SplitSpan(data_.subspan(offset_bytes, count_bytes));
+  }
 
   /** @brief Return a checked read-only byte subrange. */
   ReadOnlyStorageView view_impl(std::size_t offset_bytes,

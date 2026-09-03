@@ -5,6 +5,7 @@
 #include <pixie/rmm/implementations.h>
 #include <pixie/rmq/implementations.h>
 #include <pixie/serialization.h>
+#include <pixie/split_span.h>
 #include <pixie/wavelet_tree/implementations.h>
 
 #include <algorithm>
@@ -249,6 +250,74 @@ void BM_BinaryWriterBytesSpan(benchmark::State& state) {
     benchmark::ClobberMemory();
   }
   set_throughput(state, payload_bytes);
+}
+
+template <bool Split>
+void BM_BinaryWriterBytesSplitSpanImpl(benchmark::State& state) {
+  const std::size_t payload_bytes = static_cast<std::size_t>(state.range(0));
+  const std::vector<std::byte> source = make_payload(payload_bytes);
+  std::vector<std::byte> destination(payload_bytes);
+  std::vector<std::byte> staging(kDefaultStagingBytes);
+  const std::size_t split_position = Split ? payload_bytes / 2 : payload_bytes;
+  for (auto _ : state) {
+    (void)_;
+    pixie::SpanOutputSink sink(as_writable_span(destination));
+    pixie::BinaryWriter writer(sink, as_writable_span(staging));
+    const pixie::SplitSpan<const std::byte> segments(
+        as_const_span(source).first(split_position),
+        as_const_span(source).subspan(split_position));
+    for (const std::span<const std::byte> segment : segments) {
+      writer.write_bytes(segment);
+    }
+    writer.finish();
+    benchmark::DoNotOptimize(sink.size_bytes());
+    benchmark::ClobberMemory();
+  }
+  set_throughput(state, payload_bytes);
+}
+
+void BM_BinaryWriterBytesSplitSpanOne(benchmark::State& state) {
+  BM_BinaryWriterBytesSplitSpanImpl<false>(state);
+}
+
+void BM_BinaryWriterBytesSplitSpanTwo(benchmark::State& state) {
+  BM_BinaryWriterBytesSplitSpanImpl<true>(state);
+}
+
+void BM_SpanDescriptor(benchmark::State& state) {
+  const std::vector<std::byte> source = make_payload(64);
+  for (auto _ : state) {
+    (void)_;
+    const std::span<const std::byte> segment = as_const_span(source);
+    benchmark::DoNotOptimize(segment.data());
+    benchmark::DoNotOptimize(segment.size());
+  }
+}
+
+template <bool Split>
+void BM_SplitSpanDescriptorImpl(benchmark::State& state) {
+  const std::vector<std::byte> source = make_payload(64);
+  constexpr std::size_t kSplitPosition = Split ? 32 : 64;
+  for (auto _ : state) {
+    (void)_;
+    const pixie::SplitSpan<const std::byte> segments(
+        as_const_span(source).first(kSplitPosition),
+        as_const_span(source).subspan(kSplitPosition));
+    std::size_t size = 0;
+    for (const std::span<const std::byte> segment : segments) {
+      benchmark::DoNotOptimize(segment.data());
+      size += segment.size();
+    }
+    benchmark::DoNotOptimize(size);
+  }
+}
+
+void BM_SplitSpanDescriptorOne(benchmark::State& state) {
+  BM_SplitSpanDescriptorImpl<false>(state);
+}
+
+void BM_SplitSpanDescriptorTwo(benchmark::State& state) {
+  BM_SplitSpanDescriptorImpl<true>(state);
 }
 
 void BM_BinaryWriterBytesVector(benchmark::State& state) {
@@ -544,11 +613,35 @@ BENCHMARK(BM_BinaryReaderU64)
     ->PIXIE_SERIALIZATION_TIMING();
 
 BENCHMARK(BM_BinaryWriterBytesSpan)
+    ->Arg(1)
+    ->Arg(2)
+    ->Arg(64)
     ->Arg(4 * kKiB)
     ->Arg(1 * kMiB)
     ->Arg(64 * kMiB)
     ->ArgName("payload_bytes")
     ->PIXIE_SERIALIZATION_TIMING();
+
+BENCHMARK(BM_BinaryWriterBytesSplitSpanOne)
+    ->Arg(1)
+    ->Arg(2)
+    ->Arg(64)
+    ->Arg(4 * kKiB)
+    ->Arg(1 * kMiB)
+    ->ArgName("payload_bytes")
+    ->PIXIE_SERIALIZATION_TIMING();
+
+BENCHMARK(BM_BinaryWriterBytesSplitSpanTwo)
+    ->Arg(2)
+    ->Arg(64)
+    ->Arg(4 * kKiB)
+    ->Arg(1 * kMiB)
+    ->ArgName("payload_bytes")
+    ->PIXIE_SERIALIZATION_TIMING();
+
+BENCHMARK(BM_SpanDescriptor)->PIXIE_SERIALIZATION_TIMING();
+BENCHMARK(BM_SplitSpanDescriptorOne)->PIXIE_SERIALIZATION_TIMING();
+BENCHMARK(BM_SplitSpanDescriptorTwo)->PIXIE_SERIALIZATION_TIMING();
 
 BENCHMARK(BM_BinaryWriterBytesVector)
     ->Arg(4 * kKiB)
