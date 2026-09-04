@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
-#include <pixie/tree/implementations.h>
+#include <pixie/tree/bp.h>
+#include <pixie/tree/dfuds.h>
+#include <pixie/tree/louds.h>
 #include <pixie/utils.h>
 
 #include <cstddef>

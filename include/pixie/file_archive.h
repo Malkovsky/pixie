@@ -7,7 +7,7 @@
 
 #include <pixie/detail/serialization.h>
 #include <pixie/storage/read_only_view.h>
-#include <pixie/wavelet_tree/implementations.h>
+#include <pixie/wavelet_tree/index.h>
 
 #include <algorithm>
 #include <array>
