@@ -19,7 +19,8 @@ jobs:
       - name: Run clang-format check
         run: |
           # Find all C/C++ files and check formatting
-          FILES=$(find . -regex '.*\.\(cpp\|hpp\|cc\|c\|h\)')
+          FILES=$(find . -path './third_party' -prune -o \
+            -regex '.*\.\(cpp\|hpp\|cc\|c\|h\)' -print)
           echo "Checking formatting on:"
           echo "$FILES"
           clang-format --version
