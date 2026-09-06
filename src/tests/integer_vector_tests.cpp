@@ -3,6 +3,7 @@
 #include <pixie/io/file_output_sink.h>
 #include <pixie/io/mapped_file.h>
 #include <pixie/serialization.h>
+#include <pixie/storage/aligned.h>
 
 #include <algorithm>
 #include <array>
@@ -75,29 +76,6 @@ std::vector<std::byte> serialize_to_bytes(const Serializable& value) {
   return sink.take();
 }
 
-class AlignedArtifact {
- public:
-  explicit AlignedArtifact(std::span<const std::byte> bytes)
-      : words_((bytes.size() + sizeof(std::uint64_t) - 1) /
-               sizeof(std::uint64_t)),
-        size_(bytes.size()) {
-    std::ranges::copy(bytes, writable_bytes().begin());
-  }
-
-  std::span<const std::byte> bytes() const {
-    return std::as_bytes(std::span<const std::uint64_t>(words_)).first(size_);
-  }
-
-  std::span<std::byte> writable_bytes() {
-    return std::as_writable_bytes(std::span<std::uint64_t>(words_))
-        .first(size_);
-  }
-
- private:
-  std::vector<std::uint64_t> words_;
-  std::size_t size_;
-};
-
 template <class Integer>
 void overwrite_little_endian(std::span<std::byte> bytes,
                              std::size_t offset,
@@ -113,7 +91,7 @@ void overwrite_little_endian(std::span<std::byte> bytes,
 
 template <class Vector>
 struct VectorHolder {
-  std::shared_ptr<AlignedArtifact> backing;
+  std::shared_ptr<pixie::AlignedStorage> backing;
   Vector vector;
 };
 
@@ -148,9 +126,9 @@ struct PackedViewCase {
   static VectorHolder<Vector> make_from_owner(
       const pixie::PackedIntegerVector<>& owner) {
     const std::vector<std::byte> serialized = serialize_to_bytes(owner);
-    auto backing = std::make_shared<AlignedArtifact>(
+    auto backing = std::make_shared<pixie::AlignedStorage>(
         std::span<const std::byte>(serialized));
-    pixie::BinaryReader reader(backing->bytes());
+    pixie::BinaryReader reader(backing->as_bytes());
     Vector vector =
         Vector::deserialize(reader, pixie::DeserializationValidation::kFull);
     EXPECT_TRUE(reader.empty());
@@ -334,7 +312,7 @@ TEST(IntegerVectorSerializationTest, PackedOwnerAndViewRoundTrip) {
       0, 1, 2, 3, 127, 128, std::numeric_limits<std::uint64_t>::max()};
   const pixie::PackedIntegerVector<> original(values);
   std::vector<std::byte> bytes = serialize_to_bytes(original);
-  AlignedArtifact aligned(bytes);
+  const pixie::AlignedStorage aligned(bytes);
 
   for (const auto validation : {pixie::DeserializationValidation::kQuick,
                                 pixie::DeserializationValidation::kFull}) {
@@ -342,7 +320,7 @@ TEST(IntegerVectorSerializationTest, PackedOwnerAndViewRoundTrip) {
     auto owner =
         pixie::PackedIntegerVector<>::deserialize(owner_reader, validation);
     EXPECT_TRUE(owner_reader.empty());
-    pixie::BinaryReader view_reader(aligned.bytes());
+    pixie::BinaryReader view_reader(aligned.as_bytes());
     auto view =
         pixie::PackedIntegerVectorView<>::deserialize(view_reader, validation);
     EXPECT_TRUE(view_reader.empty());
@@ -518,17 +496,37 @@ TEST(IntegerVectorSerializationTest, PackedViewRequiresAlignedPayload) {
       (void)pixie::PackedIntegerVector<>::deserialize(owner_reader));
 }
 
+TEST(IntegerVectorSerializationTest,
+     WidthZeroViewDoesNotRequireAlignedEmptyPayload) {
+  const std::array<std::uint64_t, 3> zeros{};
+  const auto bytes = serialize_to_bytes(pixie::PackedIntegerVector<>(zeros));
+  std::vector<std::byte> unaligned(bytes.size() + 1);
+  std::ranges::copy(bytes, unaligned.begin() + 1);
+  const std::span<const std::byte> artifact(unaligned.data() + 1, bytes.size());
+
+  pixie::BinaryReader reader(artifact);
+  const auto view = pixie::PackedIntegerVectorView<>::deserialize(
+      reader, pixie::DeserializationValidation::kFull);
+  EXPECT_TRUE(reader.empty());
+  EXPECT_EQ(view.width(), 0u);
+  EXPECT_EQ(view[1], 0u);
+  std::array<std::uint64_t, 3> copy{};
+  view.copy_to(0, copy);
+  EXPECT_EQ(copy, zeros);
+  EXPECT_EQ(serialize_to_bytes(view), bytes);
+}
+
 TEST(IntegerVectorSerializationTest, MonotoneWrapperRoundTripsOwnerAndView) {
   const std::vector<std::uint64_t> values = {0, 1, 1, 7, 7, 7, 1000};
   const pixie::PackedMonotoneIntegerVector<> original{
       pixie::PackedIntegerVector<>(values)};
   const auto bytes = serialize_to_bytes(original);
-  AlignedArtifact aligned(bytes);
+  const pixie::AlignedStorage aligned(bytes);
 
   pixie::BinaryReader owner_reader(bytes);
   const auto owner = pixie::PackedMonotoneIntegerVector<>::deserialize(
       owner_reader, pixie::DeserializationValidation::kFull);
-  pixie::BinaryReader view_reader(aligned.bytes());
+  pixie::BinaryReader view_reader(aligned.as_bytes());
   const auto view = pixie::PackedMonotoneIntegerVectorView<>::deserialize(
       view_reader, pixie::DeserializationValidation::kFull);
   EXPECT_TRUE(owner_reader.empty());

@@ -20,10 +20,10 @@ namespace pixie {
 
 /** @brief An unsigned integer-vector value type no wider than 64 bits. */
 template <class Value>
-concept IntegerVectorValue = std::unsigned_integral<Value> &&
-                             std::same_as<Value, std::remove_cv_t<Value>> &&
-                             !std::same_as<std::remove_cv_t<Value>, bool> &&
-                             (std::numeric_limits<Value>::digits <= 64);
+concept IntegerVectorValue =
+    std::unsigned_integral<Value> &&
+    std::same_as<Value, std::remove_cv_t<Value>> &&
+    !std::same_as<Value, bool> && (std::numeric_limits<Value>::digits <= 64);
 
 /**
  * @brief CRTP facade for an immutable positional integer vector.
@@ -82,7 +82,8 @@ class IntegerVectorBase {
    * @throws std::out_of_range if the requested source range is invalid.
    */
   void copy_to(size_type begin, std::span<value_type> output) const {
-    if (begin > size() || output.size() > size() - begin) {
+    const size_type vector_size = size();
+    if (begin > vector_size || output.size() > vector_size - begin) {
       throw std::out_of_range("Integer-vector copy range is out of bounds");
     }
     impl().copy_to_impl(begin, output);

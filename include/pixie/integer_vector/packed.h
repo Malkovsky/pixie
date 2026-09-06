@@ -65,7 +65,7 @@ class BasicPackedIntegerVector
     requires std::same_as<Storage, AlignedStorage>
       : BasicPackedIntegerVector(values,
                                  inferred_width(values),
-                                 InferredTag{}) {}
+                                 ExplicitTag{}) {}
 
   /**
    * @brief Pack @p values after validating an explicit maximum @p width.
@@ -143,8 +143,9 @@ class BasicPackedIntegerVector
     const auto words = logical_words();
     for (std::size_t i = 0; i < dimensions.word_count; ++i) {
       std::uint64_t word = words[i];
-      if (i + 1 == dimensions.word_count && dimensions.bit_count % 64 != 0) {
-        word &= low_bits_mask(dimensions.bit_count % 64);
+      if (i + 1 == dimensions.word_count &&
+          dimensions.bit_count % kWordBits != 0) {
+        word &= low_bits_mask(dimensions.bit_count % kWordBits);
       }
       writer.write_u64(word);
     }
@@ -202,8 +203,9 @@ class BasicPackedIntegerVector
       for (std::size_t i = 0; i < dimensions.word_count; ++i) {
         const std::uint64_t word = validation_reader.read_u64();
         has_nonzero_word = has_nonzero_word || word != 0;
-        if (i + 1 == dimensions.word_count && dimensions.bit_count % 64 != 0 &&
-            (word & ~low_bits_mask(dimensions.bit_count % 64)) != 0) {
+        if (i + 1 == dimensions.word_count &&
+            dimensions.bit_count % kWordBits != 0 &&
+            (word & ~low_bits_mask(dimensions.bit_count % kWordBits)) != 0) {
           throw std::invalid_argument(
               "Serialized packed integer vector has non-zero unused bits");
         }
@@ -253,7 +255,6 @@ class BasicPackedIntegerVector
     std::size_t word_count;
     std::size_t byte_count;
   };
-  struct InferredTag {};
   struct ExplicitTag {};
   struct LoadTag {};
 
@@ -263,12 +264,8 @@ class BasicPackedIntegerVector
   static constexpr std::size_t kSerializationHeaderBytes = 32;
   static constexpr std::size_t kValueDigits =
       std::numeric_limits<value_type>::digits;
-
-  BasicPackedIntegerVector(std::span<const value_type> values,
-                           size_type width,
-                           InferredTag)
-    requires std::same_as<Storage, AlignedStorage>
-      : BasicPackedIntegerVector(values, width, ExplicitTag{}) {}
+  static constexpr size_type kWordBits =
+      std::numeric_limits<std::uint64_t>::digits;
 
   BasicPackedIntegerVector(std::span<const value_type> values,
                            size_type width,
@@ -306,8 +303,8 @@ class BasicPackedIntegerVector
   }
 
   static constexpr std::uint64_t low_bits_mask(size_type count) {
-    return count >= 64 ? std::numeric_limits<std::uint64_t>::max()
-                       : (std::uint64_t{1} << count) - 1;
+    return count >= kWordBits ? std::numeric_limits<std::uint64_t>::max()
+                              : (std::uint64_t{1} << count) - 1;
   }
 
   static size_type inferred_width(std::span<const value_type> values) {
@@ -326,7 +323,8 @@ class BasicPackedIntegerVector
       throw std::length_error("Packed integer-vector bit count is too large");
     }
     const size_type bit_count = count * width;
-    const size_type word_count = bit_count == 0 ? 0 : 1 + (bit_count - 1) / 64;
+    const size_type word_count =
+        bit_count == 0 ? 0 : 1 + (bit_count - 1) / kWordBits;
     if (word_count >
         std::numeric_limits<size_type>::max() / sizeof(std::uint64_t)) {
       throw std::length_error("Packed integer-vector payload is too large");
@@ -335,7 +333,6 @@ class BasicPackedIntegerVector
   }
 
   static size_type word_aligned_bit_count(size_type word_count) {
-    constexpr size_type kWordBits = std::numeric_limits<std::uint64_t>::digits;
     if (word_count > std::numeric_limits<size_type>::max() / kWordBits) {
       throw std::length_error("Packed integer-vector storage is too large");
     }
@@ -343,6 +340,9 @@ class BasicPackedIntegerVector
   }
 
   std::span<const std::uint64_t> logical_words() const {
+    if (width_ == 0) {
+      return {};
+    }
     const Dimensions dimensions = checked_dimensions(size_, width_);
     return storage_.as_words64().first(dimensions.word_count);
   }
@@ -353,15 +353,15 @@ class BasicPackedIntegerVector
     if (width == 0) {
       return 0;
     }
-    if (width == 64) {
+    if (width == kWordBits) {
       return static_cast<value_type>(words[position]);
     }
     const size_type bit_position = position * width;
-    const size_type word = bit_position / 64;
-    const size_type offset = bit_position % 64;
+    const size_type word = bit_position / kWordBits;
+    const size_type offset = bit_position % kWordBits;
     std::uint64_t value = words[word] >> offset;
-    if (offset + width > 64) {
-      value |= words[word + 1] << (64 - offset);
+    if (offset + width > kWordBits) {
+      value |= words[word + 1] << (kWordBits - offset);
     }
     return static_cast<value_type>(value & low_bits_mask(width));
   }
@@ -373,16 +373,17 @@ class BasicPackedIntegerVector
     if (width == 0) {
       return;
     }
-    if (width == 64) {
+    if (width == kWordBits) {
       words[position] = static_cast<std::uint64_t>(value);
       return;
     }
     const size_type bit_position = position * width;
-    const size_type word = bit_position / 64;
-    const size_type offset = bit_position % 64;
+    const size_type word = bit_position / kWordBits;
+    const size_type offset = bit_position % kWordBits;
     words[word] |= static_cast<std::uint64_t>(value) << offset;
-    if (offset + width > 64) {
-      words[word + 1] |= static_cast<std::uint64_t>(value) >> (64 - offset);
+    if (offset + width > kWordBits) {
+      words[word + 1] |=
+          static_cast<std::uint64_t>(value) >> (kWordBits - offset);
     }
   }
 

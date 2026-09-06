@@ -79,36 +79,12 @@ class MonotoneIntegerVector
 
   /** @brief Return the first index whose value is at least @p x. */
   size_type lower_bound_index_impl(value_type x) const {
-    size_type first = 0;
-    size_type count = vector_.size();
-    while (count != 0) {
-      const size_type step = count / 2;
-      const size_type middle = first + step;
-      if (vector_[middle] < x) {
-        first = middle + 1;
-        count -= step + 1;
-      } else {
-        count = step;
-      }
-    }
-    return first;
+    return partition_point_index([x](value_type value) { return value < x; });
   }
 
   /** @brief Return the first index whose value is greater than @p x. */
   size_type upper_bound_index_impl(value_type x) const {
-    size_type first = 0;
-    size_type count = vector_.size();
-    while (count != 0) {
-      const size_type step = count / 2;
-      const size_type middle = first + step;
-      if (x < vector_[middle]) {
-        count = step;
-      } else {
-        first = middle + 1;
-        count -= step + 1;
-      }
-    }
-    return first;
+    return partition_point_index([x](value_type value) { return value <= x; });
   }
 
   /**
@@ -181,12 +157,36 @@ class MonotoneIntegerVector
   MonotoneIntegerVector(Vector vector, TrustedTag)
       : vector_(std::move(vector)) {}
 
+  template <class GoesBefore>
+  size_type partition_point_index(GoesBefore goes_before) const {
+    size_type first = 0;
+    size_type count = vector_.size();
+    while (count != 0) {
+      const size_type step = count / 2;
+      const size_type middle = first + step;
+      if (goes_before(vector_[middle])) {
+        first = middle + 1;
+        count -= step + 1;
+      } else {
+        count = step;
+      }
+    }
+    return first;
+  }
+
   void validate_monotone() const {
-    for (size_type i = 1; i < vector_.size(); ++i) {
-      if (vector_[i] < vector_[i - 1]) {
+    const size_type size = vector_.size();
+    if (size == 0) {
+      return;
+    }
+    value_type previous = vector_[0];
+    for (size_type i = 1; i < size; ++i) {
+      const value_type value = vector_[i];
+      if (value < previous) {
         throw std::invalid_argument(
             "Monotone integer vector contains a decreasing pair");
       }
+      previous = value;
     }
   }
 

@@ -47,11 +47,19 @@ class AlignedStorage : public StorageBase<AlignedStorage> {
       : logical_size_bytes_(bytes_for_bits(size_bits)),
         data_(lines_for_bits(size_bits)) {}
 
+  /**
+   * @brief Copy @p bytes into aligned owning storage.
+   * @details The new storage does not retain a view of the source bytes.
+   */
+  explicit AlignedStorage(std::span<const std::byte> bytes)
+      : logical_size_bytes_(bytes.size()),
+        data_(lines_for_bytes(bytes.size())) {
+    std::ranges::copy(bytes, writable_bytes_impl().begin());
+  }
+
   /** @brief Copy complete 64-bit words into aligned owning storage. */
   explicit AlignedStorage(std::span<const std::uint64_t> words)
-      : AlignedStorage(bit_size_for_words(words.size())) {
-    std::copy(words.begin(), words.end(), writable_words64_impl().begin());
-  }
+      : AlignedStorage(std::as_bytes(words)) {}
 
   /** @brief Return the logical number of exposed bytes. */
   std::size_t size_bytes_impl() const { return logical_size_bytes_; }
@@ -161,22 +169,17 @@ class AlignedStorage : public StorageBase<AlignedStorage> {
   }
 
  private:
-  static std::size_t bit_size_for_words(std::size_t word_count) {
-    constexpr std::size_t kWordBits =
-        std::numeric_limits<std::uint64_t>::digits;
-    if (word_count > std::numeric_limits<std::size_t>::max() / kWordBits) {
-      throw std::length_error("Aligned storage word sequence is too large");
-    }
-    return word_count * kWordBits;
-  }
-
   static constexpr std::size_t bytes_for_bits(std::size_t size_bits) {
     return size_bits / 8 + (size_bits % 8 != 0);
   }
 
   static constexpr std::size_t lines_for_bits(std::size_t size_bits) {
-    return size_bits / kAlignedStorageLineBits +
-           (size_bits % kAlignedStorageLineBits != 0);
+    return lines_for_bytes(bytes_for_bits(size_bits));
+  }
+
+  static constexpr std::size_t lines_for_bytes(std::size_t size_bytes) {
+    return size_bytes / kAlignedStorageLineBytes +
+           (size_bytes % kAlignedStorageLineBytes != 0);
   }
 
   std::size_t logical_size_bytes_ = 0;

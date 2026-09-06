@@ -2,6 +2,7 @@
 #include <pixie/io/mapped_file.h>
 #include <pixie/storage/aligned.h>
 #include <pixie/storage/read_only_view.h>
+#include <pixie/storage/sliding_window.h>
 
 #include <algorithm>
 #include <array>
@@ -266,6 +267,18 @@ TEST(AlignedStorageTest, CopiesCompleteWordsIntoAlignedStorage) {
   EXPECT_EQ(storage.size_bytes(), 3 * sizeof(std::uint64_t));
   EXPECT_TRUE(std::ranges::equal(storage.as_words64(),
                                  std::array<std::uint64_t, 3>{1, 2, 3}));
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(storage.as_bytes().data()) % 64,
+            0u);
+}
+
+TEST(AlignedStorageTest, CopiesBytesIntoAlignedStorage) {
+  std::array bytes = {std::byte{1}, std::byte{2}, std::byte{3}};
+  const pixie::AlignedStorage storage{std::span<const std::byte>(bytes)};
+  bytes[0] = std::byte{4};
+
+  EXPECT_TRUE(
+      std::ranges::equal(storage.as_bytes(),
+                         std::array{std::byte{1}, std::byte{2}, std::byte{3}}));
   EXPECT_EQ(reinterpret_cast<std::uintptr_t>(storage.as_bytes().data()) % 64,
             0u);
 }

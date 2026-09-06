@@ -1,6 +1,7 @@
 #include <benchmark/benchmark.h>
 #include <pixie/integer_vector/implementations.h>
 #include <pixie/serialization.h>
+#include <pixie/storage/aligned.h>
 
 #include <algorithm>
 #include <array>
@@ -107,27 +108,6 @@ std::vector<std::byte> serialize_to_vector(const Serializable& value) {
   return sink.take();
 }
 
-class AlignedArtifact {
- public:
-  explicit AlignedArtifact(std::span<const std::byte> bytes)
-      : words_((bytes.size() + 7) / 8), size_(bytes.size()) {
-    std::ranges::copy(bytes, writable_bytes().begin());
-  }
-
-  std::span<const std::byte> bytes() const {
-    return std::as_bytes(std::span<const std::uint64_t>(words_)).first(size_);
-  }
-
- private:
-  std::span<std::byte> writable_bytes() {
-    return std::as_writable_bytes(std::span<std::uint64_t>(words_))
-        .first(size_);
-  }
-
-  std::vector<std::uint64_t> words_;
-  std::size_t size_;
-};
-
 Dataset selected_dataset(const benchmark::State& state) {
   return static_cast<Dataset>(state.range(1));
 }
@@ -173,13 +153,13 @@ void BM_PackedViewConstruction(benchmark::State& state) {
   const auto values = make_values(size, selected_dataset(state));
   const pixie::PackedIntegerVector<> owner(values);
   const auto serialized = serialize_to_vector(owner);
-  const AlignedArtifact artifact(serialized);
+  const pixie::AlignedStorage artifact(serialized);
   for (auto _ : state) {
-    pixie::BinaryReader reader(artifact.bytes());
+    pixie::BinaryReader reader(artifact.as_bytes());
     auto view = pixie::PackedIntegerVectorView<>::deserialize(reader);
     benchmark::DoNotOptimize(view);
   }
-  set_counters(state, size, owner.width(), artifact.bytes().size(), 0);
+  set_counters(state, size, owner.width(), artifact.size_bytes(), 0);
   state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(size));
 }
 
@@ -189,8 +169,8 @@ void BM_PackedAccess(benchmark::State& state) {
   const auto values = make_values(size, selected_dataset(state));
   const pixie::PackedIntegerVector<> owner(values);
   const auto serialized = serialize_to_vector(owner);
-  const AlignedArtifact artifact(serialized);
-  pixie::BinaryReader reader(artifact.bytes());
+  const pixie::AlignedStorage artifact(serialized);
+  pixie::BinaryReader reader(artifact.as_bytes());
   const auto view = pixie::PackedIntegerVectorView<>::deserialize(reader);
   const auto positions = make_positions(size);
   std::size_t query = 0;
@@ -202,7 +182,7 @@ void BM_PackedAccess(benchmark::State& state) {
       benchmark::DoNotOptimize(owner[position]);
     }
   }
-  set_counters(state, size, owner.width(), artifact.bytes().size(),
+  set_counters(state, size, owner.width(), artifact.size_bytes(),
                View ? 0 : owner.memory_usage_bytes() - sizeof(owner));
   state.SetItemsProcessed(state.iterations());
 }
@@ -230,8 +210,8 @@ void BM_PackedCopy(benchmark::State& state) {
   const auto values = make_values(size, selected_dataset(state));
   const pixie::PackedIntegerVector<> owner(values);
   const auto serialized = serialize_to_vector(owner);
-  const AlignedArtifact artifact(serialized);
-  pixie::BinaryReader reader(artifact.bytes());
+  const pixie::AlignedStorage artifact(serialized);
+  pixie::BinaryReader reader(artifact.as_bytes());
   const auto view = pixie::PackedIntegerVectorView<>::deserialize(reader);
   constexpr std::size_t kCopyCount = 256;
   std::vector<std::uint64_t> output(kCopyCount);
@@ -246,7 +226,7 @@ void BM_PackedCopy(benchmark::State& state) {
     }
     benchmark::ClobberMemory();
   }
-  set_counters(state, size, owner.width(), artifact.bytes().size(),
+  set_counters(state, size, owner.width(), artifact.size_bytes(),
                View ? 0 : owner.memory_usage_bytes() - sizeof(owner));
   state.SetItemsProcessed(state.iterations() * kCopyCount);
 }
@@ -258,8 +238,8 @@ void BM_MonotoneBound(benchmark::State& state) {
   const pixie::PackedMonotoneIntegerVector<> owner{
       pixie::PackedIntegerVector<>(values)};
   const auto serialized = serialize_to_vector(owner);
-  const AlignedArtifact artifact(serialized);
-  pixie::BinaryReader reader(artifact.bytes());
+  const pixie::AlignedStorage artifact(serialized);
+  pixie::BinaryReader reader(artifact.as_bytes());
   const auto view =
       pixie::PackedMonotoneIntegerVectorView<>::deserialize(reader);
   std::vector<std::uint64_t> queries(kQueryCount);
@@ -284,7 +264,7 @@ void BM_MonotoneBound(benchmark::State& state) {
     }
   }
   const std::size_t width = values.empty() ? 0 : std::bit_width(values.back());
-  set_counters(state, size, width, artifact.bytes().size(),
+  set_counters(state, size, width, artifact.size_bytes(),
                View ? 0 : owner.memory_usage_bytes() - sizeof(owner));
   state.SetItemsProcessed(state.iterations());
 }
