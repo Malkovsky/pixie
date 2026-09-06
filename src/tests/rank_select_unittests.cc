@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include <pixie/rank_select/implementations.h>
+#include <pixie/rank_select/support.h>
 
 #include <algorithm>
 #include <cstddef>

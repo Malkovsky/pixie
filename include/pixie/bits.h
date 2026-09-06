@@ -1,15 +1,5 @@
 #pragma once
 
-#include <immintrin.h>
-
-#include <algorithm>
-#include <array>
-#include <bit>
-#include <cstddef>
-#include <cstdint>
-#include <limits>
-#include <numeric>
-
 #if defined(__AVX512VPOPCNTDQ__) && defined(__AVX512F__) && \
     defined(__AVX512BW__)
 #define PIXIE_AVX512_SUPPORT
@@ -21,6 +11,26 @@
 
 #ifdef __AVX2__
 #define PIXIE_AVX2_SUPPORT
+#endif
+
+#if defined(__SSSE3__) && defined(__SSE4_1__)
+#define PIXIE_SSE41_SUPPORT
+#endif
+
+#if defined(PIXIE_AVX512_SUPPORT) || defined(PIXIE_BMI2_SUPPORT) || \
+    defined(PIXIE_AVX2_SUPPORT) || defined(PIXIE_SSE41_SUPPORT)
+#include <immintrin.h>
+#endif
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <numeric>
+
+#ifdef PIXIE_AVX2_SUPPORT
 // Lookup table for 4-bit popcount
 // This table maps each 4-bit value (0-15) to its population count
 // clang-format off
@@ -54,8 +64,7 @@ static inline const __m256i mask_first_half = _mm256_setr_epi8(
 static inline constexpr int8_t excess_nibble_min_offset[16] = {
     4, 4, 4, 4, 2, 2, 1, 1, 3, 3, 1, 1, 2, 2, 1, 1};
 
-#if defined(__SSSE3__) && defined(__SSE4_1__)
-#define PIXIE_SSE41_SUPPORT
+#ifdef PIXIE_SSE41_SUPPORT
 // clang-format off
 static inline const __m128i excess_lut_delta_sse = _mm_setr_epi8(
     -4, -2, -2,  0,

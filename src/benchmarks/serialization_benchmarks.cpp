@@ -1,4 +1,5 @@
 #include <benchmark/benchmark.h>
+#include <pixie/integer_vector/implementations.h>
 #include <pixie/io/file_output_sink.h>
 #include <pixie/io/mapped_file.h>
 #include <pixie/rank_select/implementations.h>
@@ -6,6 +7,7 @@
 #include <pixie/rmq/implementations.h>
 #include <pixie/serialization.h>
 #include <pixie/split_span.h>
+#include <pixie/storage/aligned.h>
 #include <pixie/wavelet_tree/implementations.h>
 
 #include <algorithm>
@@ -84,29 +86,6 @@ std::vector<std::byte> serialize_to_vector(const Serializable& value) {
   writer.finish();
   return sink.take();
 }
-
-class AlignedArtifact {
- public:
-  explicit AlignedArtifact(std::span<const std::byte> bytes)
-      : words_((bytes.size() + sizeof(std::uint64_t) - 1) /
-               sizeof(std::uint64_t)),
-        size_bytes_(bytes.size()) {
-    std::ranges::copy(bytes, writable_bytes().begin());
-  }
-
-  std::span<const std::byte> bytes() const {
-    return std::as_bytes(std::span<const std::uint64_t>(words_))
-        .first(size_bytes_);
-  }
-
- private:
-  std::span<std::byte> writable_bytes() {
-    return std::as_writable_bytes(std::span<std::uint64_t>(words_));
-  }
-
-  std::vector<std::uint64_t> words_;
-  std::size_t size_bytes_;
-};
 
 class ScopedTemporaryPath {
  public:
@@ -492,13 +471,13 @@ void BM_RankSelectDeserializeViewImpl(benchmark::State& state) {
   const std::vector<std::uint64_t> words = make_words(bit_count);
   const pixie::RankSelectSupport<> index(words, bit_count);
   const std::vector<std::byte> serialized = serialize_to_vector(index);
-  const AlignedArtifact artifact(as_const_span(serialized));
-  deserialize_iterations(state, artifact.bytes(),
+  const pixie::AlignedStorage artifact(as_const_span(serialized));
+  deserialize_iterations(state, artifact.as_bytes(),
                          [&](pixie::BinaryReader& reader) {
                            return pixie::RankSelectSupportView::deserialize(
                                reader, words, Validation);
                          });
-  set_artifact_counters(state, bit_count, artifact.bytes().size());
+  set_artifact_counters(state, bit_count, artifact.size_bytes());
 }
 
 void BM_RmMSerialize(benchmark::State& state) {
@@ -565,19 +544,147 @@ void BM_WaveletTreeSerialize(benchmark::State& state) {
   set_artifact_counters(state, symbol_count, artifact.size());
 }
 
+std::vector<std::uint64_t> make_integer_vector_values(std::size_t size,
+                                                      bool monotone) {
+  std::vector<std::uint64_t> values(size);
+  for (std::size_t i = 0; i < size; ++i) {
+    values[i] = (i * 0x9e3779b97f4a7c15ULL) >> 56;
+  }
+  if (monotone) {
+    std::ranges::sort(values);
+  }
+  return values;
+}
+
+template <class Owner>
+Owner make_integer_vector_owner(std::size_t size);
+
+template <>
+pixie::PackedIntegerVector<> make_integer_vector_owner(std::size_t size) {
+  const auto values = make_integer_vector_values(size, false);
+  return pixie::PackedIntegerVector<>(values);
+}
+
+template <>
+pixie::PackedMonotoneIntegerVector<> make_integer_vector_owner(
+    std::size_t size) {
+  const auto values = make_integer_vector_values(size, true);
+  return pixie::PackedMonotoneIntegerVector<>{
+      pixie::PackedIntegerVector<>(values)};
+}
+
+template <class Owner>
+void integer_vector_serialize_owner(benchmark::State& state) {
+  const std::size_t size = static_cast<std::size_t>(state.range(0));
+  const Owner owner = make_integer_vector_owner<Owner>(size);
+  const std::vector<std::byte> artifact = serialize_to_vector(owner);
+  std::vector<std::byte> destination(artifact.size());
+  std::vector<std::byte> staging(kDefaultStagingBytes);
+  serialize_iterations(state, owner, as_writable_span(destination),
+                       as_writable_span(staging));
+  set_artifact_counters(state, size, artifact.size());
+}
+
+template <class Owner, class View>
+void integer_vector_serialize_view(benchmark::State& state) {
+  const std::size_t size = static_cast<std::size_t>(state.range(0));
+  const Owner owner = make_integer_vector_owner<Owner>(size);
+  const std::vector<std::byte> serialized = serialize_to_vector(owner);
+  const pixie::AlignedStorage artifact(as_const_span(serialized));
+  pixie::BinaryReader reader(artifact.as_bytes());
+  const View view = View::deserialize(reader);
+  std::vector<std::byte> destination(serialized.size());
+  std::vector<std::byte> staging(kDefaultStagingBytes);
+  serialize_iterations(state, view, as_writable_span(destination),
+                       as_writable_span(staging));
+  set_artifact_counters(state, size, serialized.size());
+}
+
+void BM_PackedIntegerVectorSerializeOwning(benchmark::State& state) {
+  integer_vector_serialize_owner<pixie::PackedIntegerVector<>>(state);
+}
+
+void BM_PackedIntegerVectorSerializeView(benchmark::State& state) {
+  integer_vector_serialize_view<pixie::PackedIntegerVector<>,
+                                pixie::PackedIntegerVectorView<>>(state);
+}
+
+void BM_PackedMonotoneIntegerVectorSerializeOwning(benchmark::State& state) {
+  integer_vector_serialize_owner<pixie::PackedMonotoneIntegerVector<>>(state);
+}
+
+void BM_PackedMonotoneIntegerVectorSerializeView(benchmark::State& state) {
+  integer_vector_serialize_view<pixie::PackedMonotoneIntegerVector<>,
+                                pixie::PackedMonotoneIntegerVectorView<>>(
+      state);
+}
+
+template <class Owner, pixie::DeserializationValidation Validation>
+void integer_vector_deserialize_owner(benchmark::State& state) {
+  const std::size_t size = static_cast<std::size_t>(state.range(0));
+  const Owner owner = make_integer_vector_owner<Owner>(size);
+  const std::vector<std::byte> artifact = serialize_to_vector(owner);
+  deserialize_iterations(state, as_const_span(artifact),
+                         [](pixie::BinaryReader& reader) {
+                           return Owner::deserialize(reader, Validation);
+                         });
+  set_artifact_counters(state, size, artifact.size());
+}
+
+template <class Owner, class View, pixie::DeserializationValidation Validation>
+void integer_vector_deserialize_view(benchmark::State& state) {
+  const std::size_t size = static_cast<std::size_t>(state.range(0));
+  const Owner owner = make_integer_vector_owner<Owner>(size);
+  const std::vector<std::byte> serialized = serialize_to_vector(owner);
+  const pixie::AlignedStorage artifact(as_const_span(serialized));
+  deserialize_iterations(state, artifact.as_bytes(),
+                         [](pixie::BinaryReader& reader) {
+                           return View::deserialize(reader, Validation);
+                         });
+  set_artifact_counters(state, size, artifact.size_bytes());
+}
+
+template <pixie::DeserializationValidation Validation>
+void BM_PackedIntegerVectorDeserializeOwningImpl(benchmark::State& state) {
+  integer_vector_deserialize_owner<pixie::PackedIntegerVector<>, Validation>(
+      state);
+}
+
+template <pixie::DeserializationValidation Validation>
+void BM_PackedIntegerVectorDeserializeViewImpl(benchmark::State& state) {
+  integer_vector_deserialize_view<pixie::PackedIntegerVector<>,
+                                  pixie::PackedIntegerVectorView<>, Validation>(
+      state);
+}
+
+template <pixie::DeserializationValidation Validation>
+void BM_PackedMonotoneIntegerVectorDeserializeOwningImpl(
+    benchmark::State& state) {
+  integer_vector_deserialize_owner<pixie::PackedMonotoneIntegerVector<>,
+                                   Validation>(state);
+}
+
+template <pixie::DeserializationValidation Validation>
+void BM_PackedMonotoneIntegerVectorDeserializeViewImpl(
+    benchmark::State& state) {
+  integer_vector_deserialize_view<pixie::PackedMonotoneIntegerVector<>,
+                                  pixie::PackedMonotoneIntegerVectorView<>,
+                                  Validation>(state);
+}
+
 template <pixie::DeserializationValidation Validation>
 void BM_WaveletTreeDeserializeViewImpl(benchmark::State& state) {
   const std::size_t symbol_count = static_cast<std::size_t>(state.range(0));
   const std::vector<std::uint64_t> symbols = make_symbols(symbol_count);
   const pixie::WaveletTree<std::uint64_t> index(kWaveletAlphabetSize, symbols);
   const std::vector<std::byte> serialized = serialize_to_vector(index);
-  const AlignedArtifact artifact(as_const_span(serialized));
+  const pixie::AlignedStorage artifact(as_const_span(serialized));
   deserialize_iterations(
-      state, artifact.bytes(), [](pixie::BinaryReader& reader) {
+      state, artifact.as_bytes(), [](pixie::BinaryReader& reader) {
         return pixie::WaveletTreeView<std::uint64_t>::deserialize(reader,
                                                                   Validation);
       });
-  set_artifact_counters(state, symbol_count, artifact.bytes().size());
+  set_artifact_counters(state, symbol_count, artifact.size_bytes());
 }
 
 #define PIXIE_DESERIALIZATION_WRAPPERS(name)                     \
@@ -593,6 +700,10 @@ PIXIE_DESERIALIZATION_WRAPPERS(BM_RankSelectDeserializeView)
 PIXIE_DESERIALIZATION_WRAPPERS(BM_RmMDeserialize)
 PIXIE_DESERIALIZATION_WRAPPERS(BM_RmqDeserialize)
 PIXIE_DESERIALIZATION_WRAPPERS(BM_WaveletTreeDeserializeView)
+PIXIE_DESERIALIZATION_WRAPPERS(BM_PackedIntegerVectorDeserializeOwning)
+PIXIE_DESERIALIZATION_WRAPPERS(BM_PackedIntegerVectorDeserializeView)
+PIXIE_DESERIALIZATION_WRAPPERS(BM_PackedMonotoneIntegerVectorDeserializeOwning)
+PIXIE_DESERIALIZATION_WRAPPERS(BM_PackedMonotoneIntegerVectorDeserializeView)
 
 #undef PIXIE_DESERIALIZATION_WRAPPERS
 
@@ -706,6 +817,18 @@ PIXIE_STRUCTURE_BENCHMARK(BM_RmqDeserializeFull);
 PIXIE_STRUCTURE_BENCHMARK(BM_WaveletTreeSerialize);
 PIXIE_STRUCTURE_BENCHMARK(BM_WaveletTreeDeserializeViewQuick);
 PIXIE_STRUCTURE_BENCHMARK(BM_WaveletTreeDeserializeViewFull);
+PIXIE_STRUCTURE_BENCHMARK(BM_PackedIntegerVectorSerializeOwning);
+PIXIE_STRUCTURE_BENCHMARK(BM_PackedIntegerVectorSerializeView);
+PIXIE_STRUCTURE_BENCHMARK(BM_PackedIntegerVectorDeserializeOwningQuick);
+PIXIE_STRUCTURE_BENCHMARK(BM_PackedIntegerVectorDeserializeOwningFull);
+PIXIE_STRUCTURE_BENCHMARK(BM_PackedIntegerVectorDeserializeViewQuick);
+PIXIE_STRUCTURE_BENCHMARK(BM_PackedIntegerVectorDeserializeViewFull);
+PIXIE_STRUCTURE_BENCHMARK(BM_PackedMonotoneIntegerVectorSerializeOwning);
+PIXIE_STRUCTURE_BENCHMARK(BM_PackedMonotoneIntegerVectorSerializeView);
+PIXIE_STRUCTURE_BENCHMARK(BM_PackedMonotoneIntegerVectorDeserializeOwningQuick);
+PIXIE_STRUCTURE_BENCHMARK(BM_PackedMonotoneIntegerVectorDeserializeOwningFull);
+PIXIE_STRUCTURE_BENCHMARK(BM_PackedMonotoneIntegerVectorDeserializeViewQuick);
+PIXIE_STRUCTURE_BENCHMARK(BM_PackedMonotoneIntegerVectorDeserializeViewFull);
 
 #undef PIXIE_STRUCTURE_BENCHMARK
 #undef PIXIE_SERIALIZATION_TIMING

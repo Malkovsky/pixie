@@ -9,6 +9,7 @@ space usage close to the theoretical minimum.
 Current library families are:
 
 - rank/select support over packed bit sequences;
+- positional and monotone packed integer vectors;
 - range min-max (RmM) indexes;
 - static range-minimum-query (RMQ) indexes;
 - rooted-tree encodings (LOUDS, balanced parentheses, and DFUDS);
@@ -48,10 +49,11 @@ adds Pixie context; it does not replace the shared guidance.
 - **`include/pixie/<family>.h`**: Lightweight CRTP contract for one library
   family, such as `rank_select.h`, `rmq.h`, or `storage.h`.
 - **`include/pixie/<family>/`**: Concrete implementations for that family.
-- **`include/pixie/<family>/implementations.h`**: Catalog and umbrella include
-  for the family's concrete implementations. It is the single family-level
-  include for tests and benchmarks; a concrete implementation must not include
-  its own catalog.
+- **`include/pixie/<family>/implementations.h`**: Reference catalog for family
+  benchmark translation units. It includes the contract and every concrete
+  implementation and retains current benchmark snapshots where applicable.
+  Tests and public consumers include specific headers; a concrete
+  implementation must not include its own catalog.
 - **`include/pixie/experimental/`**: Isolated experimental primitives and
   implementations. Do not promote an experiment without tests and a registered
   benchmark where performance is relevant.
@@ -70,8 +72,8 @@ adds Pixie context; it does not replace the shared guidance.
 ### Family Interface Pattern
 
 Public data-structure families use CRTP contracts. The current contracts are
-`RankSelectBase`, `RmMBase`, `pixie::rmq::RmqBase`, `TreeBase`, `StorageBase`,
-and `WaveletTreeBase`.
+`IntegerVectorBase`, `MonotoneIntegerVectorBase`, `RankSelectBase`, `RmMBase`,
+`pixie::rmq::RmqBase`, `TreeBase`, `StorageBase`, and `WaveletTreeBase`.
 
 1. Define or extend the public contract in `include/pixie/<family>.h`.
    Public facade methods delegate to a clearly named `*_impl()` method on the
@@ -80,8 +82,9 @@ and `WaveletTreeBase`.
    the required `*_impl()` methods. Do not add virtual dispatch for this API.
 3. Add the concrete header to the corresponding `implementations.h` catalog.
    The catalog includes the contract and concrete headers, not the reverse.
-4. Include the catalog in the family test and benchmark harness, then put every
-   compatible implementation through the same typed specification suite.
+4. Include concrete headers directly in the family test harness and include the
+   catalog in the benchmark harness. Put every compatible implementation
+   through the same typed specification suite.
 
 The contract is the source of truth for observable semantics. Every public
 facade operation and every extension-point requirement needs Doxygen
@@ -244,9 +247,9 @@ ctest --preset release -L rank_select_tests
 The registered test executables are `bit_algorithms_unittests`,
 `rank_select_unittests`, `rank_select_tests`, `benchmark_tests`, `test_rmm`,
 `tree_tests`, `wavelet_tree_tests`, `storage_tests`,
-`serialization_tests`, `excess_positions_tests`, `excess_record_lows_tests`,
-and `rmq_tests`. Run an executable directly only when debugging a focused
-Google Test filter.
+`serialization_tests`, `integer_vector_tests`, `excess_positions_tests`,
+`excess_record_lows_tests`, and `rmq_tests`. Run an executable directly only
+when debugging a focused Google Test filter.
 
 ### Test Configuration via Environment Variables
 
@@ -312,8 +315,9 @@ The script configures and builds the `coverage` preset, deletes stale
 5. Be aware of alignment. Prefer the 64-byte-aligned storage facilities where
    a hot data structure benefits from cache-line alignment rather than adding
    ad hoc aligned allocation code.
-6. Keep public contracts lightweight. Do not include a family catalog from a
-   concrete header, and do not add compatibility forwarding headers unless the
+6. Keep public contracts lightweight. Only benchmark translation units include
+   family catalogs; tests and public consumers include specific contract or
+   concrete headers. Do not add compatibility forwarding headers unless the
    user explicitly requests a compatibility layer.
 
 ## CI/CD Workflows

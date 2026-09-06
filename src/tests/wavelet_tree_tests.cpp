@@ -2,7 +2,7 @@
 #include <pixie/io/file_output_sink.h>
 #include <pixie/io/mapped_file.h>
 #include <pixie/utils.h>
-#include <pixie/wavelet_tree/implementations.h>
+#include <pixie/wavelet_tree/index.h>
 
 #include <algorithm>
 #include <array>
