@@ -16,6 +16,8 @@
 - **Range min-max tree**: fundamental primitive for efficient computation of excess queries mainly for navigation in balanced parenthesis sequences.
 - **Succinct trees**: static variants of $2$-bit per entry trees, i.e. LOUDS, DFUDS, BP (Based on Euler tour and Ferrada-Navarro style).
 - **Wavelet tree**, i.e. static structure that supposts rank/select on arbitrary finite alphabets, supports building a Huffman archieve with fast extraction of arbitrary segment.
+- **PivCo-Huffman codec** with scalar, AVX2, AVX-512, and NEON kernels selected
+  for the build host.
 - Succinct **cartesian tree** and a state of the art solution to static **RMQ** (array is immutable, queries are not known in advance).
 
 ---
@@ -143,5 +145,5 @@ int main() {
 
 Copyright 2026 Pixie contributors.
 
-Pixie is licensed under the [Apache License 2.0](LICENSE). Optional
-third-party benchmark and backend integrations retain their own licenses.
+Pixie is licensed under the [Apache License 2.0](LICENSE). Vendored components
+and optional backend integrations retain their own license notices.
