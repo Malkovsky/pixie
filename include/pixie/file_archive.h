@@ -5,6 +5,7 @@
  * @brief Self-contained byte-oriented file archives with line extraction.
  */
 
+#include <pixie/detail/byte_histogram.h>
 #include <pixie/detail/serialization.h>
 #include <pixie/storage/read_only_view.h>
 #include <pixie/wavelet_tree/implementations.h>
@@ -360,7 +361,8 @@ class FileArchive : public FileArchiveBase<FileArchive> {
    * receives `(const FileArchiveSourceMetadata&, consumer)` and must pass the
    * same immutable content to `consumer` as byte spans on both calls. The
    * first pass derives metadata and symbol counts; the second constructs the
-   * tree without retaining complete source contents.
+   * tree without retaining original source buffers. A nontrivial wavelet tree
+   * temporarily owns two byte buffers, each as large as the logical content.
    * @throws std::invalid_argument for invalid metadata or changed content.
    */
   template <class ReadSource>
@@ -419,8 +421,7 @@ class FileArchive : public FileArchiveBase<FileArchive> {
               [](const auto& left, const auto& right) {
                 return left.path < right.path;
               });
-    std::array<std::size_t, file_archive_detail::kByteAlphabetSize>
-        symbol_counts{};
+    detail::ByteHistogram histogram;
     std::vector<std::uint64_t> content_hashes;
     content_hashes.reserve(sources.size());
     std::size_t newline_rank = 0;
@@ -459,9 +460,9 @@ class FileArchive : public FileArchiveBase<FileArchive> {
         }
         logical_size_ += chunk.size();
         utf8.Consume(chunk);
+        histogram.add(chunk);
         for (const std::byte byte : chunk) {
           const std::uint8_t value = std::to_integer<std::uint8_t>(byte);
-          ++symbol_counts[value];
           newlines += value == '\n' ? 1U : 0U;
           has_content = true;
           last_byte = value;
@@ -479,6 +480,8 @@ class FileArchive : public FileArchiveBase<FileArchive> {
       records_.push_back(record);
       content_hashes.push_back(content_hash);
     }
+
+    const auto symbol_counts = histogram.counts();
 
     tree_.emplace(
         file_archive_detail::kByteAlphabetSize, symbol_counts,

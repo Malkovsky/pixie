@@ -1,6 +1,7 @@
 #pragma once
 
 #include <pixie/detail/serialization.h>
+#include <pixie/detail/wavelet_partition.h>
 #include <pixie/packed_bit_builder.h>
 #include <pixie/rank_select/support.h>
 #include <pixie/wavelet_tree.h>
@@ -43,6 +44,7 @@ class WaveletTreeIndex
     node_index_t left_child = npos;
     node_index_t right_child = npos;
     std::size_t middle;
+    std::size_t left_size = 0;
     PackedBitBuilder stream;
     explicit PreWaveletNode(std::size_t middle) : middle(middle) {}
   };
@@ -279,6 +281,7 @@ class WaveletTreeIndex
     middle = begin + (middle == npos ? (end - begin) / 2 : middle);
 
     nodes.emplace_back(middle);
+    nodes[result].left_size = prefix_sum[middle] - prefix_sum[begin];
     nodes[result].stream.reserve_bits(prefix_sum[end] - prefix_sum[begin]);
     nodes[result].parent = parent;
     nodes[result].left_child =
@@ -287,6 +290,60 @@ class WaveletTreeIndex
         build_node(middle, end, result, get_middle, prefix_sum, nodes);
 
     return result;
+  }
+
+  void build_node_streams(node_index_t node,
+                          std::span<Symbol> input,
+                          std::span<Symbol> output,
+                          std::vector<PreWaveletNode>& nodes)
+    requires(std::same_as<Storage, AlignedStorage>)
+  {
+    PreWaveletNode& current = nodes[node];
+    detail::partition_wavelet_ranks(std::span<const Symbol>(input),
+                                    static_cast<Symbol>(current.middle), output,
+                                    current.left_size, current.stream);
+
+    if (current.left_child != npos) {
+      build_node_streams(current.left_child, output.first(current.left_size),
+                         input.first(current.left_size), nodes);
+    }
+    if (current.right_child != npos) {
+      build_node_streams(current.right_child, output.subspan(current.left_size),
+                         input.subspan(current.left_size), nodes);
+    }
+  }
+
+  template <class ForEachSymbol>
+  void build_bit_streams(std::span<const std::size_t> symbol_counts,
+                         ForEachSymbol& for_each_symbol,
+                         std::vector<PreWaveletNode>& nodes)
+    requires(std::same_as<Storage, AlignedStorage>)
+  {
+    std::vector<std::size_t> actual_counts(alphabet_size_);
+    std::vector<Symbol> ranks;
+    if (root_ != npos) {
+      ranks.reserve(data_size_);
+    }
+    for_each_symbol([&](Symbol symbol) {
+      const std::size_t original = checked_symbol_index(symbol, alphabet_size_);
+      if (actual_counts[original] == std::numeric_limits<std::size_t>::max()) {
+        throw std::length_error("Wavelet-tree symbol count is too large");
+      }
+      ++actual_counts[original];
+      if (root_ != npos) {
+        ranks.push_back(static_cast<Symbol>(permutation_[original]));
+      }
+    });
+    if (!std::ranges::equal(actual_counts, symbol_counts)) {
+      throw std::invalid_argument(
+          "Wavelet-tree emitted symbols do not match their counts");
+    }
+    if (root_ == npos) {
+      return;
+    }
+
+    std::vector<Symbol> scratch(data_size_);
+    build_node_streams(root_, ranks, scratch, nodes);
   }
 
   /**
@@ -462,25 +519,7 @@ class WaveletTreeIndex
           nodes);
     }
 
-    std::vector<std::size_t> actual_counts(alphabet_size_);
-    for_each_symbol([&](Symbol symbol) {
-      const std::size_t original = checked_symbol_index(symbol, alphabet_size_);
-      if (actual_counts[original] == std::numeric_limits<std::size_t>::max()) {
-        throw std::length_error("Wavelet-tree symbol count is too large");
-      }
-      ++actual_counts[original];
-      const std::size_t permuted = permutation_[original];
-      for (node_index_t current = root_; current != npos;) {
-        auto& node = nodes[current];
-        const bool go_right = permuted >= node.middle;
-        node.stream.write_bit(go_right);
-        current = go_right ? node.right_child : node.left_child;
-      }
-    });
-    if (!std::ranges::equal(actual_counts, symbol_counts)) {
-      throw std::invalid_argument(
-          "Wavelet-tree emitted symbols do not match their counts");
-    }
+    build_bit_streams(symbol_counts, for_each_symbol, nodes);
 
     nodes_.reserve(nodes.size());
     for (auto& node : nodes) {
@@ -495,6 +534,9 @@ class WaveletTreeIndex
 
   /**
    * @brief Construct from a contiguous sequence of typed symbols.
+   * @details Construction of a nontrivial tree temporarily owns two buffers
+   * of one `Symbol` per input symbol. The buffers are released before the
+   * permanent node indexes are materialized.
    * @param alphabet_size Dense alphabet size; every symbol must be smaller.
    * @param data Input symbols retained only for the duration of construction.
    * @param build_type Standard or Huffman-shaped construction.
@@ -526,7 +568,10 @@ class WaveletTreeIndex
    * @details @p for_each_symbol is invoked exactly once with a consumer that
    * accepts one `Symbol`. Emitted symbols must exactly match @p symbol_counts;
    * this permits callers to scan a replayable source once for counts and once
-   * for construction without materializing the sequence.
+   * for construction without materializing the sequence themselves.
+   * Construction of a nontrivial tree temporarily owns two buffers of one
+   * `Symbol` per emitted symbol. The buffers are released before the permanent
+   * node indexes are materialized.
    * @param alphabet_size Dense alphabet size.
    * @param symbol_counts Count for every symbol in alphabet order.
    * @param for_each_symbol Callable accepting the construction consumer.

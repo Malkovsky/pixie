@@ -218,6 +218,33 @@ TEST(WaveletTreeTest, TypedByteSymbolsRoundTripWithoutWidening) {
   EXPECT_EQ(wrong_symbol_reader.position(), 0u);
 }
 
+TEST(WaveletTreeTest, HuffmanByteBuildHandlesSkewAndPackedBlockTails) {
+  std::vector<std::uint8_t> data;
+  const std::array<std::size_t, 9> frequencies = {129, 65, 33, 17, 9,
+                                                  5,   3,  2,  1};
+  for (std::size_t symbol = 0; symbol < frequencies.size(); ++symbol) {
+    for (std::size_t occurrence = 0; occurrence < frequencies[symbol];
+         ++occurrence) {
+      data.push_back(static_cast<std::uint8_t>(symbol));
+    }
+  }
+  std::mt19937_64 rng(42);
+  std::shuffle(data.begin(), data.end(), rng);
+
+  const pixie::WaveletTree<std::uint8_t> tree(
+      256, data, pixie::WaveletTreeBuildType::Huffman);
+  EXPECT_EQ(tree.get_segment(0, data.size()), data);
+  for (std::size_t symbol = 0; symbol < frequencies.size(); ++symbol) {
+    EXPECT_EQ(tree.rank(static_cast<std::uint8_t>(symbol), data.size()),
+              frequencies[symbol]);
+    EXPECT_LT(
+        tree.select(static_cast<std::uint8_t>(symbol), frequencies[symbol]),
+        data.size());
+  }
+  EXPECT_EQ(tree.rank(255, data.size()), 0u);
+  EXPECT_EQ(tree.select(255, 1), data.size());
+}
+
 TEST(WaveletTreeTest, BuildsFromCountsAndOneStreamedPass) {
   const std::vector<std::uint8_t> data = {3, 0, 1, 3, 2, 1, 0};
   const std::array<std::size_t, 4> counts = {2, 2, 1, 2};
