@@ -219,6 +219,47 @@ TEST(WaveletTreeTest, TypedByteSymbolsRoundTripWithoutWidening) {
   EXPECT_EQ(wrong_symbol_reader.position(), 0u);
 }
 
+TEST(WaveletTreeTest, ByteBuildHandlesSkewAndPackedBlockTails) {
+  std::vector<std::uint8_t> data;
+  const std::array<std::size_t, 9> frequencies = {129, 65, 33, 17, 9,
+                                                  5,   3,  2,  2};
+  for (std::size_t symbol = 0; symbol < frequencies.size(); ++symbol) {
+    data.insert(data.end(), frequencies[symbol],
+                static_cast<std::uint8_t>(symbol));
+  }
+  std::mt19937_64 rng(42);
+  std::shuffle(data.begin(), data.end(), rng);
+
+  for (const auto build_type : {pixie::WaveletTreeBuildType::Standard,
+                                pixie::WaveletTreeBuildType::Huffman}) {
+    const pixie::WaveletTree<std::uint8_t> tree(256, data, build_type);
+    EXPECT_EQ(tree.get_segment(0, data.size()), data);
+    for (std::size_t symbol = 0; symbol < frequencies.size(); ++symbol) {
+      EXPECT_EQ(tree.rank(static_cast<std::uint8_t>(symbol), data.size()),
+                frequencies[symbol]);
+      EXPECT_LT(
+          tree.select(static_cast<std::uint8_t>(symbol), frequencies[symbol]),
+          data.size());
+    }
+  }
+
+  for (const std::size_t size : {7u, 8u, 9u, 15u, 16u, 17u, 63u, 64u, 65u}) {
+    for (std::size_t left_size = 0; left_size <= size; ++left_size) {
+      SCOPED_TRACE(testing::Message()
+                   << "size=" << size << ", left_size=" << left_size);
+      std::vector<std::uint8_t> boundary_data(size);
+      for (std::size_t index = 0; index < size; ++index) {
+        boundary_data[index] = static_cast<std::uint8_t>(
+            index < left_size ? index % 2 : 2 + index % 2);
+      }
+      std::shuffle(boundary_data.begin(), boundary_data.end(), rng);
+      const pixie::WaveletTree<std::uint8_t> tree(
+          4, boundary_data, pixie::WaveletTreeBuildType::Standard);
+      EXPECT_EQ(tree.get_segment(0, boundary_data.size()), boundary_data);
+    }
+  }
+}
+
 TEST(WaveletTreeTest, BuildsFromCountsAndOneStreamedPass) {
   const std::vector<std::uint8_t> data = {3, 0, 1, 3, 2, 1, 0};
   const std::array<std::size_t, 4> counts = {2, 2, 1, 2};
