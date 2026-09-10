@@ -1,5 +1,7 @@
 #pragma once
 
+#include <pixie/detail/byte_histogram.h>
+#include <pixie/detail/huffman_build_table.h>
 #include <pixie/detail/serialization.h>
 #include <pixie/detail/wavelet_partition.h>
 #include <pixie/packed_bit_builder.h>
@@ -39,6 +41,11 @@ class WaveletTreeIndex
       'P', 'X', 'W', 'A', 'V', 'E', 'T', '\0'};
   static constexpr std::uint32_t kSerializationVersion = 5;
   static constexpr std::size_t kSerializationHeaderBytes = 24;
+#if defined(__APPLE__) && defined(__aarch64__)
+  static constexpr std::size_t kByteConstructionBlockSize = 16 * 1024;
+#else
+  static constexpr std::size_t kByteConstructionBlockSize = 32 * 1024;
+#endif
 
   struct PreWaveletNode {
     node_index_t parent = npos;
@@ -220,12 +227,19 @@ class WaveletTreeIndex
           return;
         }
         if (validation == DeserializationValidation::kFull) {
+          bool has_mapped_symbol = false;
           for (std::size_t symbol = symbol_begin; symbol < symbol_end;
                ++symbol) {
-            if (leaves_[symbol] != node) {
+            if (leaves_[symbol] == node) {
+              has_mapped_symbol = true;
+            } else if (leaves_[symbol] != npos) {
               throw std::invalid_argument(
                   "Serialized wavelet-tree leaf map disagrees with topology");
             }
+          }
+          if (expected_size != 0 && !has_mapped_symbol) {
+            throw std::invalid_argument(
+                "Serialized wavelet-tree leaf is missing from its map");
           }
         }
       };
@@ -291,6 +305,82 @@ class WaveletTreeIndex
     return result;
   }
 
+  static std::size_t count_huffman_subtree(
+      const detail::HuffmanBuildTable& table,
+      std::int16_t source_node,
+      std::span<const std::size_t> symbol_counts,
+      std::array<std::size_t, detail::kMaximumHuffmanNodes>& subtree_counts) {
+    const detail::HuffmanBuildNode& node = table.tree[source_node];
+    if (node.symbol >= 0) {
+      return subtree_counts[source_node] = symbol_counts[node.symbol];
+    }
+    const std::size_t left =
+        count_huffman_subtree(table, node.left, symbol_counts, subtree_counts);
+    const std::size_t right =
+        count_huffman_subtree(table, node.right, symbol_counts, subtree_counts);
+    return subtree_counts[source_node] = left + right;
+  }
+
+  node_index_t materialize_huffman_node(
+      const detail::HuffmanBuildTable& table,
+      std::int16_t source_node,
+      node_index_t parent,
+      const std::array<std::size_t, detail::kMaximumHuffmanNodes>&
+          subtree_counts,
+      std::vector<PreWaveletNode>& nodes)
+    requires(std::same_as<Symbol, std::uint8_t> &&
+             std::same_as<Storage, AlignedStorage>)
+  {
+    const detail::HuffmanBuildNode& source = table.tree[source_node];
+    if (source.symbol >= 0) {
+      leaves_[table.symbol_to_rank[source.symbol]] = parent;
+      return npos;
+    }
+
+    const node_index_t result = nodes.size();
+    const std::size_t middle =
+        static_cast<std::size_t>(table.split_rank[source_node]) + 1;
+    nodes.emplace_back(middle);
+    nodes[result].parent = parent;
+    nodes[result].left_size = subtree_counts[source.left];
+    nodes[result].stream.reserve_bits(subtree_counts[source_node]);
+    nodes[result].left_child = materialize_huffman_node(
+        table, source.left, result, subtree_counts, nodes);
+    nodes[result].right_child = materialize_huffman_node(
+        table, source.right, result, subtree_counts, nodes);
+    return result;
+  }
+
+  void build_huffman_byte_topology(std::span<const std::size_t> symbol_counts,
+                                   std::vector<PreWaveletNode>& nodes)
+    requires(std::same_as<Symbol, std::uint8_t> &&
+             std::same_as<Storage, AlignedStorage>)
+  {
+    const detail::HuffmanBuildTable table =
+        detail::build_huffman_table(symbol_counts);
+    permutation_.resize(alphabet_size_);
+    inverse_permutation_.resize(alphabet_size_);
+
+    std::size_t unused_rank = table.symbol_count;
+    for (std::size_t symbol = 0; symbol < alphabet_size_; ++symbol) {
+      const std::size_t rank = symbol_counts[symbol] == 0
+                                   ? unused_rank++
+                                   : table.symbol_to_rank[symbol];
+      permutation_[symbol] = rank;
+      inverse_permutation_[rank] = symbol;
+    }
+    if (table.symbol_count < 2) {
+      root_ = npos;
+      return;
+    }
+
+    std::array<std::size_t, detail::kMaximumHuffmanNodes> subtree_counts{};
+    count_huffman_subtree(table, table.root, symbol_counts, subtree_counts);
+    nodes.reserve(table.symbol_count - 1);
+    root_ = materialize_huffman_node(table, table.root, npos, subtree_counts,
+                                     nodes);
+  }
+
   void build_node_streams(node_index_t node,
                           std::span<Symbol> input,
                           std::span<Symbol> output,
@@ -313,10 +403,117 @@ class WaveletTreeIndex
     }
   }
 
+  // PivCo-style block walk: keep the left subsequence in place, put the right
+  // subsequence in scratch, and omit scatter for leaf children. Separate node
+  // builders make every block append bit-contiguously without wire padding.
+  void build_byte_block_streams(node_index_t node,
+                                std::span<std::uint8_t> ranks,
+                                std::span<std::uint8_t> scratch,
+                                std::vector<PreWaveletNode>& nodes)
+    requires(std::same_as<Symbol, std::uint8_t> &&
+             std::same_as<Storage, AlignedStorage>)
+  {
+    PreWaveletNode& current = nodes[node];
+    const bool write_left = current.left_child != npos;
+    const bool write_right = current.right_child != npos;
+    const std::size_t left_size = detail::partition_wavelet_byte_block(
+        ranks, static_cast<std::uint8_t>(current.middle), scratch, write_left,
+        write_right, current.stream);
+    const std::size_t right_size = ranks.size() - left_size;
+
+    if (write_left && left_size != 0) {
+      build_byte_block_streams(current.left_child, ranks.first(left_size),
+                               scratch.subspan(right_size, left_size), nodes);
+    }
+    if (write_right && right_size != 0) {
+      build_byte_block_streams(current.right_child, scratch.first(right_size),
+                               ranks.first(right_size), nodes);
+    }
+  }
+
   template <class ForEachSymbol>
-  void build_bit_streams(std::span<const std::size_t> symbol_counts,
-                         ForEachSymbol& for_each_symbol,
-                         std::vector<PreWaveletNode>& nodes)
+  void build_byte_bit_streams(std::span<const std::size_t> symbol_counts,
+                              ForEachSymbol& for_each_symbol,
+                              std::vector<PreWaveletNode>& nodes)
+    requires(std::same_as<Symbol, std::uint8_t> &&
+             std::same_as<Storage, AlignedStorage>)
+  {
+    std::array<std::uint8_t, detail::kByteAlphabetSize> symbol_to_rank{};
+    std::array<std::uint16_t, detail::kByteAlphabetSize> symbol_to_high_rank{};
+    for (std::size_t symbol = 0; symbol < alphabet_size_; ++symbol) {
+      const auto rank = static_cast<std::uint8_t>(permutation_[symbol]);
+      symbol_to_rank[symbol] = rank;
+      symbol_to_high_rank[symbol] = static_cast<std::uint16_t>(rank) << 8;
+    }
+
+    const std::size_t block_capacity = std::min(
+        kByteConstructionBlockSize, std::max<std::size_t>(data_size_, 1));
+    std::vector<std::uint8_t> block;
+    std::vector<std::uint8_t> scratch(block_capacity);
+    block.reserve(block_capacity);
+    detail::ByteHistogram actual_histogram;
+    const auto encode_block = [&] {
+      if (block.empty()) {
+        return;
+      }
+      if (root_ != npos) {
+        build_byte_block_streams(root_, block,
+                                 std::span(scratch).first(block.size()), nodes);
+      }
+      block.clear();
+    };
+
+    std::size_t emitted_size = 0;
+    const auto append_symbols = [&](std::span<const Symbol> symbols) {
+      if (emitted_size > data_size_ ||
+          symbols.size() > data_size_ - emitted_size) {
+        throw std::invalid_argument(
+            "Wavelet-tree emitted symbols do not match their counts");
+      }
+      emitted_size += symbols.size();
+      actual_histogram.add(std::as_bytes(symbols));
+      while (!symbols.empty()) {
+        const std::size_t copied =
+            std::min(block_capacity - block.size(), symbols.size());
+        const std::size_t destination = block.size();
+        block.resize(destination + copied);
+        detail::map_wavelet_byte_ranks(
+            symbols.first(copied),
+            std::span(block).subspan(destination, copied), symbol_to_rank,
+            symbol_to_high_rank);
+        symbols = symbols.subspan(copied);
+        if (block.size() == block_capacity) {
+          encode_block();
+        }
+      }
+    };
+    for_each_symbol([&](auto&& emitted) {
+      using Emitted = std::remove_cvref_t<decltype(emitted)>;
+      if constexpr (std::same_as<Emitted, Symbol>) {
+        append_symbols(std::span<const Symbol>(&emitted, 1));
+      } else {
+        append_symbols(std::span<const Symbol>(emitted));
+      }
+    });
+    encode_block();
+
+    const auto actual_counts = actual_histogram.counts();
+    if (emitted_size != data_size_ ||
+        !std::ranges::equal(actual_counts.begin(),
+                            actual_counts.begin() + alphabet_size_,
+                            symbol_counts.begin(), symbol_counts.end()) ||
+        std::ranges::any_of(actual_counts.begin() + alphabet_size_,
+                            actual_counts.end(),
+                            [](std::size_t count) { return count != 0; })) {
+      throw std::invalid_argument(
+          "Wavelet-tree emitted symbols do not match their counts");
+    }
+  }
+
+  template <class ForEachSymbol>
+  void build_generic_bit_streams(std::span<const std::size_t> symbol_counts,
+                                 ForEachSymbol& for_each_symbol,
+                                 std::vector<PreWaveletNode>& nodes)
     requires(std::same_as<Storage, AlignedStorage>)
   {
     std::vector<std::size_t> actual_counts(alphabet_size_);
@@ -347,6 +544,19 @@ class WaveletTreeIndex
         root.left_child != npos || root.right_child != npos;
     std::vector<Symbol> scratch(root_needs_output ? data_size_ : 0);
     build_node_streams(root_, ranks, scratch, nodes);
+  }
+
+  template <class ForEachSymbol>
+  void build_bit_streams(std::span<const std::size_t> symbol_counts,
+                         ForEachSymbol& for_each_symbol,
+                         std::vector<PreWaveletNode>& nodes)
+    requires(std::same_as<Storage, AlignedStorage>)
+  {
+    if constexpr (std::same_as<Symbol, std::uint8_t>) {
+      build_byte_bit_streams(symbol_counts, for_each_symbol, nodes);
+    } else {
+      build_generic_bit_streams(symbol_counts, for_each_symbol, nodes);
+    }
   }
 
   /**
@@ -444,6 +654,20 @@ class WaveletTreeIndex
     leaves_.assign(alphabet_size_, npos);
 
     std::vector<PreWaveletNode> nodes;
+    if constexpr (std::same_as<Symbol, std::uint8_t>) {
+      if (build_type == WaveletTreeBuildType::Huffman) {
+        if (alphabet_size_ != 0) {
+          build_huffman_byte_topology(symbol_counts, nodes);
+        }
+        build_bit_streams(symbol_counts, for_each_symbol, nodes);
+        nodes_.reserve(nodes.size());
+        for (auto& node : nodes) {
+          nodes_.emplace_back(std::move(node));
+        }
+        return;
+      }
+    }
+
     std::vector<std::size_t> nodes_structure;
     if (alphabet_size_ != 0) {
       nodes.reserve(alphabet_size_);
@@ -552,15 +776,33 @@ class WaveletTreeIndex
     requires(std::same_as<Storage, AlignedStorage>)
   {
     validate_alphabet_size(alphabet_size);
-    std::vector<std::size_t> counts(alphabet_size);
-    for (const Symbol symbol : data) {
-      ++counts[checked_symbol_index(symbol, alphabet_size)];
+    std::vector<std::size_t> counts;
+    if constexpr (std::same_as<Symbol, std::uint8_t>) {
+      detail::ByteHistogram histogram;
+      histogram.add(std::as_bytes(data));
+      const auto byte_counts = histogram.counts();
+      if (std::ranges::any_of(byte_counts.begin() + alphabet_size,
+                              byte_counts.end(),
+                              [](std::size_t count) { return count != 0; })) {
+        throw std::invalid_argument(
+            "Wavelet-tree symbol is outside the alphabet");
+      }
+      counts.assign(byte_counts.begin(), byte_counts.begin() + alphabet_size);
+    } else {
+      counts.assign(alphabet_size, 0);
+      for (const Symbol symbol : data) {
+        ++counts[checked_symbol_index(symbol, alphabet_size)];
+      }
     }
     build_from_counts(
         alphabet_size, counts,
         [&](auto&& emit) {
-          for (const Symbol symbol : data) {
-            emit(symbol);
+          if constexpr (requires { emit(data); }) {
+            emit(data);
+          } else {
+            for (const Symbol symbol : data) {
+              emit(symbol);
+            }
           }
         },
         build_type);
@@ -607,6 +849,12 @@ class WaveletTreeIndex
       return 0;
     }
     symbol_index = permutation_[symbol_index];
+    if (root_ == npos) [[unlikely]] {
+      return data_size_ != 0 && symbol_index == 0 ? pos : 0;
+    }
+    if (leaves_[symbol_index] == npos) [[unlikely]] {
+      return 0;
+    }
     for (node_index_t current = root_; current != npos;) {
       const WaveletNode& node = nodes_[current];
       if (symbol_index < node.middle) {
@@ -630,10 +878,17 @@ class WaveletTreeIndex
    */
   size_t select_impl(Symbol symbol, size_t rank) const {
     std::size_t symbol_index = static_cast<std::size_t>(symbol);
-    if (symbol_index >= alphabet_size_ || data_size_ == 0) [[unlikely]] {
+    if (symbol_index >= alphabet_size_ || data_size_ == 0 || rank == 0)
+        [[unlikely]] {
       return data_size_;
     }
     symbol_index = permutation_[symbol_index];
+    if (root_ == npos) [[unlikely]] {
+      return symbol_index == 0 && rank <= data_size_ ? rank - 1 : data_size_;
+    }
+    if (leaves_[symbol_index] == npos) [[unlikely]] {
+      return data_size_;
+    }
     node_index_t current = leaves_[symbol_index];
     for (; current != npos; current = nodes_[current].parent) {
       const WaveletNode& node = nodes_[current];

@@ -260,6 +260,69 @@ TEST(WaveletTreeTest, ByteBuildHandlesSkewAndPackedBlockTails) {
   }
 }
 
+TEST(WaveletTreeTest, HuffmanByteBuildStitchesBlocksAndMarksAbsentSymbols) {
+  constexpr std::size_t kBlockSize = 32 * 1024;
+  std::vector<std::uint8_t> data(2 * kBlockSize + 137);
+  const std::array<std::uint8_t, 3> used = {0, 10, 255};
+  std::array<std::vector<std::size_t>, 3> positions;
+  for (std::size_t index = 0; index < data.size(); ++index) {
+    const std::size_t choice = (index * 17 + index / 11) % used.size();
+    data[index] = used[choice];
+    positions[choice].push_back(index);
+  }
+
+  const pixie::WaveletTree<std::uint8_t> tree(
+      256, data, pixie::WaveletTreeBuildType::Huffman);
+  EXPECT_EQ(tree.get_segment(0, data.size()), data);
+  for (std::size_t choice = 0; choice < used.size(); ++choice) {
+    EXPECT_EQ(tree.rank(used[choice], data.size()), positions[choice].size());
+    EXPECT_EQ(tree.select(used[choice], positions[choice].size()),
+              positions[choice].back());
+  }
+  EXPECT_EQ(tree.rank(42, data.size()), 0u);
+  EXPECT_EQ(tree.select(42, 1), data.size());
+
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  tree.serialize(writer);
+  writer.finish();
+  const std::vector<std::byte> artifact = output.take();
+  pixie::BinaryReader reader(artifact);
+  const auto restored = pixie::WaveletTreeView<std::uint8_t>::deserialize(
+      reader, pixie::DeserializationValidation::kFull);
+  EXPECT_TRUE(reader.empty());
+  EXPECT_EQ(restored.get_segment(kBlockSize - 3, kBlockSize + 3),
+            std::vector<std::uint8_t>(data.begin() + kBlockSize - 3,
+                                      data.begin() + kBlockSize + 3));
+  EXPECT_EQ(restored.rank(42, restored.size()), 0u);
+}
+
+TEST(WaveletTreeTest, HuffmanByteBuildLimitsDeepCodes) {
+  constexpr std::size_t kUsedSymbols = 20;
+  std::array<std::size_t, kUsedSymbols> frequencies{};
+  frequencies[0] = 1;
+  frequencies[1] = 1;
+  for (std::size_t symbol = 2; symbol < frequencies.size(); ++symbol) {
+    frequencies[symbol] = frequencies[symbol - 1] + frequencies[symbol - 2];
+  }
+
+  std::vector<std::uint8_t> data;
+  for (std::size_t symbol = 0; symbol < frequencies.size(); ++symbol) {
+    data.insert(data.end(), frequencies[symbol],
+                static_cast<std::uint8_t>(symbol));
+  }
+  std::mt19937_64 random(831);
+  std::shuffle(data.begin(), data.end(), random);
+
+  const pixie::WaveletTree<std::uint8_t> tree(
+      256, data, pixie::WaveletTreeBuildType::Huffman);
+  EXPECT_EQ(tree.get_segment(0, data.size()), data);
+  for (std::size_t symbol = 0; symbol < frequencies.size(); ++symbol) {
+    EXPECT_EQ(tree.rank(static_cast<std::uint8_t>(symbol), data.size()),
+              frequencies[symbol]);
+  }
+}
+
 TEST(WaveletTreeTest, BuildsFromCountsAndOneStreamedPass) {
   const std::vector<std::uint8_t> data = {3, 0, 1, 3, 2, 1, 0};
   const std::array<std::size_t, 4> counts = {2, 2, 1, 2};
@@ -275,6 +338,15 @@ TEST(WaveletTreeTest, BuildsFromCountsAndOneStreamedPass) {
       pixie::WaveletTreeBuildType::Huffman);
   EXPECT_EQ(passes, 1u);
   EXPECT_EQ(tree.get_segment(0, data.size()), data);
+
+  const pixie::WaveletTree<std::uint8_t> batched_tree(
+      4, counts,
+      [&](auto&& emit) {
+        emit(std::span(data).first(3));
+        emit(std::span(data).subspan(3));
+      },
+      pixie::WaveletTreeBuildType::Huffman);
+  EXPECT_EQ(batched_tree.get_segment(0, data.size()), data);
 
   const std::array<std::size_t, 4> wrong_counts = {2, 2, 2, 1};
   EXPECT_THROW((pixie::WaveletTree<std::uint8_t>(

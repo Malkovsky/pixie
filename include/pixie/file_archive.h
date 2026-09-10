@@ -630,12 +630,15 @@ class FileArchiveIndex : public FileArchiveBase<FileArchiveIndex<Storage>>,
                     "File-archive source changed between build passes");
               }
               content_size += chunk.size();
+              const auto symbols = std::span<const std::uint8_t>(
+                  reinterpret_cast<const std::uint8_t*>(chunk.data()),
+                  chunk.size());
               for (const std::byte byte : chunk) {
                 const std::uint8_t value = std::to_integer<std::uint8_t>(byte);
                 content_hash ^= value;
                 content_hash *= 1099511628211ULL;
-                emit(value);
               }
+              emit(symbols);
             });
             if (content_size != records_[index].content_size ||
                 content_hash != content_hashes[index]) {
