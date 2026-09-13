@@ -7,6 +7,8 @@
  * - `RankSelectSupport<MetadataStorage>`: non-owning source bits with
  *   storage-backed rank/select metadata.
  * - `RankSelectSupportView`: non-owning source bits with read-only metadata.
+ * - `PastaRankSelectSupport`: optional Pasta backend owning a converted source
+ *   copy and its rank/select metadata.
  */
 
 // clang-format off
@@ -81,3 +83,7 @@
 
 #include <pixie/rank_select.h>
 #include <pixie/rank_select/support.h>
+
+#ifdef PIXIE_PASTA_SUPPORT
+#include <pixie/rank_select/pasta.h>
+#endif

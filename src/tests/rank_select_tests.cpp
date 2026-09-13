@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include <pixie/io/file_output_sink.h>
 #include <pixie/io/mapped_file.h>
-#include <pixie/rank_select/support.h>
+#include <pixie/rank_select/implementations.h>
 
 #include <array>
 #include <bit>
@@ -68,7 +68,12 @@ RankSelectSampleLayout locate_rank_select_samples(
 template <class Support>
 class RankSelectSpecificationTest : public testing::Test {};
 
+#ifdef PIXIE_PASTA_SUPPORT
+using RankSelectImplementations =
+    testing::Types<pixie::RankSelectSupport<>, pixie::PastaRankSelectSupport>;
+#else
 using RankSelectImplementations = testing::Types<pixie::RankSelectSupport<>>;
+#endif
 TYPED_TEST_SUITE(RankSelectSpecificationTest, RankSelectImplementations);
 
 TYPED_TEST(RankSelectSpecificationTest, EmptySequence) {

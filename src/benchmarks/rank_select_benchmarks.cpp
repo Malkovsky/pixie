@@ -3,6 +3,10 @@
 #include <pixie/rmq/utils/succinct_monotone_stack.h>
 #include <pixie/storage/implementations.h>
 
+#ifdef PIXIE_3STAR_SUPPORT
+#include "three_star_adapter.h"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -29,9 +33,7 @@ constexpr std::array<std::size_t, 7> kSizes = {
 // expose large-source behavior while retaining the existing scaling points.
 constexpr std::array<std::size_t, 6> kFnbpSizes = {
     1ull << 10, 1ull << 14, 1ull << 18, 1ull << 22, 1ull << 26, 1ull << 30};
-using RankSelect = pixie::RankSelectSupport<>;
-constexpr RankSelect::SelectSupport kMeasuredSelectSupport =
-    RankSelect::SelectSupport::kBoth;
+using PixieRankSelect = pixie::RankSelectSupport<>;
 
 static_assert(kQueryCount > 0 && (kQueryCount & (kQueryCount - 1)) == 0);
 
@@ -237,6 +239,42 @@ class FnbpDataset {
   std::size_t size_ = 0;
 };
 
+template <class Support, class Dataset>
+Support make_support(const Dataset& dataset) {
+  return Support(dataset.source().padded_view().as_words64(), dataset.size());
+}
+
+template <class Support>
+constexpr bool backend_owns_source() {
+  return requires(const Support& support) { support.source_copy_bytes(); };
+}
+
+template <class Support>
+std::size_t index_logical_bytes(const Support& support) {
+  if constexpr (requires { support.index_logical_bytes(); }) {
+    return support.index_logical_bytes();
+  }
+  return support.memory_usage_bytes();
+}
+
+template <class Support>
+std::size_t source_copy_bytes(const Support& support) {
+  if constexpr (requires { support.source_copy_bytes(); }) {
+    return support.source_copy_bytes();
+  }
+  return 0;
+}
+
+template <class Support>
+bool supports_select1(const Support& support) {
+  return support.supports_select1();
+}
+
+template <class Support>
+bool supports_select0(const Support& support) {
+  return support.supports_select0();
+}
+
 std::vector<std::size_t> make_query_pool(std::size_t first,
                                          std::size_t last,
                                          std::uint64_t seed) {
@@ -252,60 +290,81 @@ std::vector<std::size_t> make_query_pool(std::size_t first,
 void set_common_counters(benchmark::State& state,
                          std::size_t size,
                          Fill fill,
-                         std::size_t auxiliary_bytes,
+                         std::size_t index_bytes,
+                         std::size_t owned_bytes,
+                         std::size_t source_copy_bytes,
+                         bool owns_source,
+                         bool select1_enabled,
+                         bool select0_enabled,
                          std::uint64_t repetition_index) {
   const double input_bytes = static_cast<double>((size + 7) / 8);
-  const double auxiliary_bytes_as_double = static_cast<double>(auxiliary_bytes);
+  const double index_bytes_as_double = static_cast<double>(index_bytes);
   state.counters["N"] = static_cast<double>(size);
   state.counters["one_fill_percent"] =
       fill_spec(fill).expected_one_fill_percent;
   state.counters["input_bytes"] = input_bytes;
-  state.counters["aux_bytes"] = auxiliary_bytes_as_double;
-  state.counters["aux_mib"] = auxiliary_bytes_as_double / (1024.0 * 1024.0);
+  state.counters["aux_bytes"] = index_bytes_as_double;
+  state.counters["aux_mib"] = index_bytes_as_double / (1024.0 * 1024.0);
   state.counters["aux_bits_per_input_bit"] =
-      size == 0 ? 0.0 : 8.0 * auxiliary_bytes_as_double / size;
-  state.counters["select1_enabled"] = 1.0;
-  state.counters["select0_enabled"] = 1.0;
+      size == 0 ? 0.0 : 8.0 * index_bytes_as_double / size;
+  state.counters["backend_owned_bytes"] = static_cast<double>(owned_bytes);
+  state.counters["source_copy_bytes"] = static_cast<double>(source_copy_bytes);
+  state.counters["select1_enabled"] = select1_enabled ? 1.0 : 0.0;
+  state.counters["select0_enabled"] = select0_enabled ? 1.0 : 0.0;
   state.counters["seed_repetition"] = static_cast<double>(repetition_index);
+  state.counters["backend_owns_source"] = owns_source ? 1.0 : 0.0;
 }
 
 void set_fnbp_counters(benchmark::State& state,
                        std::size_t size,
-                       std::size_t auxiliary_bytes,
+                       std::size_t index_bytes,
+                       std::size_t owned_bytes,
+                       std::size_t source_copy_bytes,
+                       bool owns_source,
+                       bool select1_enabled,
+                       bool select0_enabled,
                        std::uint64_t repetition_index) {
-  set_common_counters(state, size, Fill::k50, auxiliary_bytes,
-                      repetition_index);
+  set_common_counters(state, size, Fill::k50, index_bytes, owned_bytes,
+                      source_copy_bytes, owns_source, select1_enabled,
+                      select0_enabled, repetition_index);
   state.counters["fnbp_source"] = 1.0;
 }
 
-template <Fill fill>
+template <class Support, Fill fill>
 void run_build(benchmark::State& state) {
   const std::size_t size = static_cast<std::size_t>(state.range(0));
   const SeedContext seeds = make_seed_context(state, size, fill);
   const BitDataset dataset(size, fill, seeds.source_seed);
-  std::size_t auxiliary_bytes = 0;
+  std::size_t index_bytes = 0;
+  std::size_t owned_bytes = 0;
+  std::size_t copied_source_bytes = 0;
+  bool select1_enabled = false;
+  bool select0_enabled = false;
 
   for (auto _ : state) {
-    RankSelect support(dataset.source(), dataset.size(),
-                       kMeasuredSelectSupport);
-    auxiliary_bytes = support.memory_usage_bytes();
-    benchmark::DoNotOptimize(auxiliary_bytes);
+    Support support = make_support<Support>(dataset);
+    index_bytes = index_logical_bytes(support);
+    owned_bytes = support.memory_usage_bytes();
+    copied_source_bytes = source_copy_bytes(support);
+    select1_enabled = supports_select1(support);
+    select0_enabled = supports_select0(support);
+    benchmark::DoNotOptimize(owned_bytes);
     benchmark::ClobberMemory();
   }
 
-  set_common_counters(state, size, fill, auxiliary_bytes,
-                      seeds.repetition_index);
+  set_common_counters(state, size, fill, index_bytes, owned_bytes,
+                      copied_source_bytes, backend_owns_source<Support>(),
+                      select1_enabled, select0_enabled, seeds.repetition_index);
   state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()) *
                           static_cast<std::int64_t>(size));
 }
 
-template <Fill fill, QueryOperation operation>
+template <class Support, Fill fill, QueryOperation operation>
 void run_query(benchmark::State& state) {
   const std::size_t size = static_cast<std::size_t>(state.range(0));
   const SeedContext seeds = make_seed_context(state, size, fill);
   const BitDataset dataset(size, fill, seeds.source_seed);
-  const RankSelect support(dataset.source(), dataset.size(),
-                           kMeasuredSelectSupport);
+  const Support support = make_support<Support>(dataset);
   const std::size_t one_count = support.rank(support.size());
   const std::size_t zero_count = support.rank0(support.size());
 
@@ -341,37 +400,48 @@ void run_query(benchmark::State& state) {
     }
   }
 
-  set_common_counters(state, size, fill, support.memory_usage_bytes(),
-                      seeds.repetition_index);
+  set_common_counters(state, size, fill, index_logical_bytes(support),
+                      support.memory_usage_bytes(), source_copy_bytes(support),
+                      backend_owns_source<Support>(), supports_select1(support),
+                      supports_select0(support), seeds.repetition_index);
   state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()));
 }
 
+template <class Support>
 void run_fnbp_build(benchmark::State& state) {
   const std::size_t size = static_cast<std::size_t>(state.range(0));
   const SeedContext seeds = make_seed_context(state, size, Fill::k50);
   const FnbpDataset dataset(size, seeds.source_seed);
-  std::size_t auxiliary_bytes = 0;
+  std::size_t index_bytes = 0;
+  std::size_t owned_bytes = 0;
+  std::size_t copied_source_bytes = 0;
+  bool select1_enabled = false;
+  bool select0_enabled = false;
 
   for (auto _ : state) {
-    RankSelect support(dataset.source(), dataset.size(),
-                       kMeasuredSelectSupport);
-    auxiliary_bytes = support.memory_usage_bytes();
-    benchmark::DoNotOptimize(auxiliary_bytes);
+    Support support = make_support<Support>(dataset);
+    index_bytes = index_logical_bytes(support);
+    owned_bytes = support.memory_usage_bytes();
+    copied_source_bytes = source_copy_bytes(support);
+    select1_enabled = supports_select1(support);
+    select0_enabled = supports_select0(support);
+    benchmark::DoNotOptimize(owned_bytes);
     benchmark::ClobberMemory();
   }
 
-  set_fnbp_counters(state, size, auxiliary_bytes, seeds.repetition_index);
+  set_fnbp_counters(state, size, index_bytes, owned_bytes, copied_source_bytes,
+                    backend_owns_source<Support>(), select1_enabled,
+                    select0_enabled, seeds.repetition_index);
   state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()) *
                           static_cast<std::int64_t>(size));
 }
 
-template <QueryOperation operation>
+template <class Support, QueryOperation operation>
 void run_fnbp_query(benchmark::State& state) {
   const std::size_t size = static_cast<std::size_t>(state.range(0));
   const SeedContext seeds = make_seed_context(state, size, Fill::k50);
   const FnbpDataset dataset(size, seeds.source_seed);
-  const RankSelect support(dataset.source(), dataset.size(),
-                           kMeasuredSelectSupport);
+  const Support support = make_support<Support>(dataset);
   const std::size_t one_count = support.rank(support.size());
   const std::size_t zero_count = support.rank0(support.size());
   if (one_count != size / 2 || zero_count != size / 2) {
@@ -403,31 +473,36 @@ void run_fnbp_query(benchmark::State& state) {
     }
   }
 
-  set_fnbp_counters(state, size, support.memory_usage_bytes(),
-                    seeds.repetition_index);
+  set_fnbp_counters(state, size, index_logical_bytes(support),
+                    support.memory_usage_bytes(), source_copy_bytes(support),
+                    backend_owns_source<Support>(), supports_select1(support),
+                    supports_select0(support), seeds.repetition_index);
   state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()));
 }
 
-template <Fill fill>
-void register_build_row() {
-  const std::string name =
-      "rank_select_build_both_" + std::string(fill_spec(fill).name);
-  auto* row = benchmark::RegisterBenchmark(name.c_str(), &run_build<fill>);
-  for (const std::size_t size : kSizes) {
-    row->Arg(static_cast<std::int64_t>(size));
-  }
-  row->ArgNames({"N"})
-      ->Unit(benchmark::kMillisecond)
-      ->MinWarmUpTime(kBenchmarkWarmupSeconds)
-      ->MinTime(kBenchmarkMinSeconds);
-}
-
-template <Fill fill, QueryOperation operation>
-void register_query_row(std::string_view operation_name) {
-  const std::string name = "rank_select_" + std::string(operation_name) + "_" +
+template <class Support, Fill fill>
+void register_build_row(std::string_view backend_name) {
+  const std::string name = std::string(backend_name) + "_build_both_" +
                            std::string(fill_spec(fill).name);
   auto* row =
-      benchmark::RegisterBenchmark(name.c_str(), &run_query<fill, operation>);
+      benchmark::RegisterBenchmark(name.c_str(), &run_build<Support, fill>);
+  for (const std::size_t size : kSizes) {
+    row->Arg(static_cast<std::int64_t>(size));
+  }
+  row->ArgNames({"N"})
+      ->Unit(benchmark::kMillisecond)
+      ->MinWarmUpTime(kBenchmarkWarmupSeconds)
+      ->MinTime(kBenchmarkMinSeconds);
+}
+
+template <class Support, Fill fill, QueryOperation operation>
+void register_query_row(std::string_view backend_name,
+                        std::string_view operation_name) {
+  const std::string name = std::string(backend_name) + "_" +
+                           std::string(operation_name) + "_" +
+                           std::string(fill_spec(fill).name);
+  auto* row = benchmark::RegisterBenchmark(
+      name.c_str(), &run_query<Support, fill, operation>);
   for (const std::size_t size : kSizes) {
     row->Arg(static_cast<std::int64_t>(size));
   }
@@ -437,18 +512,24 @@ void register_query_row(std::string_view operation_name) {
       ->MinTime(kBenchmarkMinSeconds);
 }
 
-template <Fill fill>
-void register_fill_rows() {
-  register_build_row<fill>();
-  register_query_row<fill, QueryOperation::kRank1>("rank1");
-  register_query_row<fill, QueryOperation::kRank0>("rank0");
-  register_query_row<fill, QueryOperation::kSelect1>("select1");
-  register_query_row<fill, QueryOperation::kSelect0>("select0");
+template <class Support, Fill fill>
+void register_fill_rows(std::string_view backend_name) {
+  constexpr auto kRank1 = QueryOperation::kRank1;
+  constexpr auto kRank0 = QueryOperation::kRank0;
+  constexpr auto kSelect1 = QueryOperation::kSelect1;
+  constexpr auto kSelect0 = QueryOperation::kSelect0;
+  register_build_row<Support, fill>(backend_name);
+  register_query_row<Support, fill, kRank1>(backend_name, "rank1");
+  register_query_row<Support, fill, kRank0>(backend_name, "rank0");
+  register_query_row<Support, fill, kSelect1>(backend_name, "select1");
+  register_query_row<Support, fill, kSelect0>(backend_name, "select0");
 }
 
-void register_fnbp_build_row() {
-  auto* row = benchmark::RegisterBenchmark("rank_select_fnbp_build_both",
-                                           &run_fnbp_build);
+template <class Support>
+void register_fnbp_build_row(std::string_view backend_name) {
+  const std::string name = std::string(backend_name) + "_fnbp_build_both";
+  auto* row =
+      benchmark::RegisterBenchmark(name.c_str(), &run_fnbp_build<Support>);
   for (const std::size_t size : kFnbpSizes) {
     row->Arg(static_cast<std::int64_t>(size));
   }
@@ -458,11 +539,13 @@ void register_fnbp_build_row() {
       ->MinTime(kBenchmarkMinSeconds);
 }
 
-template <QueryOperation operation>
-void register_fnbp_query_row(std::string_view operation_name) {
-  const std::string name = "rank_select_fnbp_" + std::string(operation_name);
-  auto* row =
-      benchmark::RegisterBenchmark(name.c_str(), &run_fnbp_query<operation>);
+template <class Support, QueryOperation operation>
+void register_fnbp_query_row(std::string_view backend_name,
+                             std::string_view operation_name) {
+  const std::string name =
+      std::string(backend_name) + "_fnbp_" + std::string(operation_name);
+  const auto callback = &run_fnbp_query<Support, operation>;
+  auto* row = benchmark::RegisterBenchmark(name.c_str(), callback);
   for (const std::size_t size : kFnbpSizes) {
     row->Arg(static_cast<std::int64_t>(size));
   }
@@ -472,19 +555,56 @@ void register_fnbp_query_row(std::string_view operation_name) {
       ->MinTime(kBenchmarkMinSeconds);
 }
 
-void register_fnbp_rows() {
-  register_fnbp_build_row();
-  register_fnbp_query_row<QueryOperation::kRank1>("rank1");
-  register_fnbp_query_row<QueryOperation::kRank0>("rank0");
-  register_fnbp_query_row<QueryOperation::kSelect1>("select1");
-  register_fnbp_query_row<QueryOperation::kSelect0>("select0");
+template <class Support, bool select0_enabled = true>
+void register_fnbp_rows(std::string_view backend_name) {
+  constexpr auto kRank1 = QueryOperation::kRank1;
+  constexpr auto kRank0 = QueryOperation::kRank0;
+  constexpr auto kSelect1 = QueryOperation::kSelect1;
+  constexpr auto kSelect0 = QueryOperation::kSelect0;
+  register_fnbp_build_row<Support>(backend_name);
+  register_fnbp_query_row<Support, kRank1>(backend_name, "rank1");
+  register_fnbp_query_row<Support, kRank0>(backend_name, "rank0");
+  register_fnbp_query_row<Support, kSelect1>(backend_name, "select1");
+  if constexpr (select0_enabled) {
+    register_fnbp_query_row<Support, kSelect0>(backend_name, "select0");
+  }
+}
+
+template <class Support, Fill fill>
+void register_select1_only_fill_rows(std::string_view backend_name) {
+  constexpr auto kRank1 = QueryOperation::kRank1;
+  constexpr auto kRank0 = QueryOperation::kRank0;
+  constexpr auto kSelect1 = QueryOperation::kSelect1;
+  register_build_row<Support, fill>(backend_name);
+  register_query_row<Support, fill, kRank1>(backend_name, "rank1");
+  register_query_row<Support, fill, kRank0>(backend_name, "rank0");
+  register_query_row<Support, fill, kSelect1>(backend_name, "select1");
 }
 
 void register_benchmarks() {
-  register_fill_rows<Fill::k12p5>();
-  register_fill_rows<Fill::k50>();
-  register_fill_rows<Fill::k87p5>();
-  register_fnbp_rows();
+  register_fill_rows<PixieRankSelect, Fill::k12p5>("rank_select");
+  register_fill_rows<PixieRankSelect, Fill::k50>("rank_select");
+  register_fill_rows<PixieRankSelect, Fill::k87p5>("rank_select");
+  register_fnbp_rows<PixieRankSelect>("rank_select");
+#ifdef PIXIE_PASTA_SUPPORT
+  register_fill_rows<pixie::PastaRankSelectSupport, Fill::k12p5>(
+      "rank_select_pasta");
+  register_fill_rows<pixie::PastaRankSelectSupport, Fill::k50>(
+      "rank_select_pasta");
+  register_fill_rows<pixie::PastaRankSelectSupport, Fill::k87p5>(
+      "rank_select_pasta");
+  register_fnbp_rows<pixie::PastaRankSelectSupport>("rank_select_pasta");
+#endif
+#ifdef PIXIE_3STAR_SUPPORT
+  using ThreeStarRankSelect = pixie::benchmarks::ThreeStarRankSelectSupport;
+  register_select1_only_fill_rows<ThreeStarRankSelect, Fill::k12p5>(
+      "rank_select_3star");
+  register_select1_only_fill_rows<ThreeStarRankSelect, Fill::k50>(
+      "rank_select_3star");
+  register_select1_only_fill_rows<ThreeStarRankSelect, Fill::k87p5>(
+      "rank_select_3star");
+  register_fnbp_rows<ThreeStarRankSelect, false>("rank_select_3star");
+#endif
 }
 
 }  // namespace
