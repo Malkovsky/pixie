@@ -78,6 +78,37 @@
  * | FNBP       | 2^22 |   0.139 |   0.020 |          0.041 |
  * | FNBP       | 2^26 |   2.289 |   0.291 |          0.036 |
  * | FNBP       | 2^30 |  36.093 |   4.627 |          0.036 |
+ *
+ * Current native 2^30 snapshot, 2026-09-13.
+ *
+ * One CPU-pinned Release pass per row with the standard 0.2 s warmup and 1.0 s
+ * minimum time. Query CPU times are ns; build CPU time is ms. The index uses
+ * SelectSupport::kBoth and is non-owning; its source remains external.
+ *
+ * | source       | build ms |   rank1 |   rank0 | select1 | select0 | aux MiB |
+ * | :----------- | -------: | ------: | ------: | ------: | ------: | ------: |
+ * | random 12.5% |   39.700 |  40.400 |  66.500 | 180.000 | 152.000 |   4.625 |
+ * | random 50%   |   39.800 |  38.100 |  37.200 | 140.000 | 153.000 |   4.625 |
+ * | random 87.5% |   45.400 |  37.800 |  51.200 | 134.000 | 169.000 |   4.625 |
+ *
+ * Pasta FlatRankSelect<> snapshot, 2026-09-13.
+ *
+ * One CPU-pinned Release pass per row with a deterministic random 50% source
+ * and the standard 0.2 s warmup and 1.0 s minimum time. Both query pools and
+ * index construction are outside timed query regions. Pasta uses its default
+ * `FlatRankSelect<>` configuration (`DONT_CARE` and linear L2 search). Build
+ * time is CPU ms; query times are CPU ns. `aux MiB` is logical index storage;
+ * `source MiB` is the copied source that native RankSelectSupport does not own.
+ *
+ * |    N | build ms |   rank1 |   rank0 | select1 | select0 | aux MiB | source MiB |
+ * | ---: | -------: | ------: | ------: | ------: | ------: | ------: | ---------: |
+ * | 2^10 |    0.000 |  10.900 |  11.400 |  17.200 |  16.600 |   0.000 |      0.000 |
+ * | 2^14 |    0.000 |  10.300 |  11.100 |  30.600 |  33.400 |   0.000 |      0.002 |
+ * | 2^18 |    0.003 |  11.300 |  10.100 |  30.100 |  36.300 |   0.001 |      0.031 |
+ * | 2^22 |    0.057 |  12.600 |  11.500 |  35.300 |  47.000 |   0.018 |      0.500 |
+ * | 2^26 |    1.540 |  38.300 |  29.400 |  71.600 | 146.000 |   0.281 |      8.000 |
+ * | 2^30 |  143.000 |  47.100 |  49.100 | 140.000 | 325.000 |   4.500 |    128.000 |
+ * | 2^34 | 2889.000 | 109.000 |  88.700 | 291.000 | 552.000 |  72.000 |   2048.000 |
  */
 // clang-format on
 
