@@ -43,6 +43,28 @@ example, if present:
 Use the shared skill or command as the canonical workflow. The local overlay
 adds Pixie context; it does not replace the shared guidance.
 
+## Stability and Compatibility Policy
+
+No release-version compatibility policy is currently recorded for Pixie. A
+public header, CMake option, CLI, benchmark, serialized artifact, or documented
+behavior is not automatically a long-term compatibility commitment.
+
+- Preserve a contract when Pixie documentation, a release policy, or a known
+  external consumer explicitly requires it. Inspect rather than guessing when
+  that status is unclear.
+- Treat other interfaces as evolving. Prefer one coordinated change—updating
+  Pixie's uses, tests, benchmarks, and documentation—over aliases, adapters,
+  deprecated paths, or fallback implementations.
+- The semantic guarantees documented by a current family contract remain
+  required while that contract exists. Changing the contract itself is an
+  allowed coordinated breaking change unless it has been explicitly stabilized.
+- Keep scientific interoperability and source/API compatibility separate. For
+  example, a change may preserve a serialized artifact's interpretation without
+  preserving every historical C++ entry point.
+- Do not silently break a known dependency merely because no formal policy has
+  been recorded. State the affected consumer and the proposed migration or ask
+  before proceeding.
+
 ## Architecture
 
 ### Project Layout Conventions
