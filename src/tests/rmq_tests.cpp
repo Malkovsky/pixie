@@ -64,6 +64,23 @@ void check_all_arg_min_ranges(const Rmq& rmq,
   }
 }
 
+template <class Rmq, class T, class Compare>
+void check_ranges(
+    const Rmq& rmq,
+    std::span<const T> values,
+    Compare compare,
+    const std::vector<std::pair<std::size_t, std::size_t>>& ranges) {
+  ASSERT_EQ(rmq.size(), values.size());
+  for (const auto [left, right] : ranges) {
+    const std::size_t expected = naive_arg_min(values, left, right, compare);
+    ASSERT_NE(expected, Rmq::npos) << "range=[" << left << "," << right << ")";
+    EXPECT_EQ(rmq.arg_min(left, right), expected)
+        << "range=[" << left << "," << right << ")";
+    EXPECT_EQ(rmq.range_min(left, right), values[expected])
+        << "range=[" << left << "," << right << ")";
+  }
+}
+
 bool packed_bit(std::span<const std::uint64_t> words, std::size_t position) {
   return ((words[position >> 6] >> (position & 63)) & 1u) != 0;
 }
@@ -168,6 +185,15 @@ struct SegmentTreeCase {
   static MaxRmq make_max(std::span<const int> values) { return MaxRmq(values); }
 };
 
+struct SimpleBlockRmqCase {
+  using Rmq = pixie::rmq::SimpleBlockRmq<int>;
+  using MaxRmq = pixie::rmq::SimpleBlockRmq<int, std::greater<int>>;
+
+  static Rmq make(std::span<const int> values) { return Rmq(values); }
+
+  static MaxRmq make_max(std::span<const int> values) { return MaxRmq(values); }
+};
+
 struct CartesianRmMCase {
   using Rmq = pixie::rmq::CartesianRmM<int>;
   using MaxRmq = pixie::rmq::CartesianRmM<int, std::greater<int>>;
@@ -211,6 +237,7 @@ class ValueRmqSpecificationTest : public ::testing::Test {};
 
 using ValueRmqCases = ::testing::Types<SparseTableCase,
                                        SegmentTreeCase,
+                                       SimpleBlockRmqCase,
                                        CartesianRmMCase,
                                        CartesianHybridBTreeCase,
                                        CartesianBTreeCase,
@@ -433,6 +460,244 @@ TEST(RmqSegmentTree, NonPowerOfTwoTailRanges) {
   const std::vector<int> values = {6, 5, 4, 3, 2};
   const pixie::rmq::SegmentTree<int> rmq(values);
   check_all_ranges(rmq, std::span<const int>(values), std::less<int>());
+}
+
+TEST(RmqSimpleBlockRmq, BoundarySizesAndFinalPartialBlocks) {
+  using Rmq = pixie::rmq::SimpleBlockRmq<int>;
+  constexpr std::size_t kBlock = Rmq::kBlockSize;
+  static_assert(kBlock == 496);
+
+  const std::vector<std::size_t> sizes = {495, 496, 497, 991, 992, 993};
+  for (const std::size_t size : sizes) {
+    SCOPED_TRACE(size);
+    std::vector<int> values(size);
+    for (std::size_t i = 0; i < size; ++i) {
+      values[i] = 1000 + static_cast<int>((i * 37 + i / 5) % 211);
+    }
+    values[size / 2] = -100;
+    values[size - 1] = -90;
+
+    const Rmq rmq{std::span<const int>(values)};
+    std::vector<std::pair<std::size_t, std::size_t>> ranges = {
+        {0, size}, {0, std::min(kBlock, size)}, {size - 1, size}};
+    if (size > kBlock) {
+      ranges.emplace_back(kBlock, size);
+      ranges.emplace_back(kBlock - 1, std::min(size, kBlock + 1));
+    }
+    if (size >= 2 * kBlock) {
+      ranges.emplace_back(kBlock, 2 * kBlock);
+    }
+    if (size > 2 * kBlock) {
+      ranges.emplace_back(2 * kBlock, size);
+      ranges.emplace_back(2 * kBlock - 1, size);
+    }
+
+    check_ranges(rmq, std::span<const int>(values), std::less<int>(), ranges);
+  }
+}
+
+TEST(RmqSimpleBlockRmq, PaddedCoverHitAndOverhangMisses) {
+  using Rmq = pixie::rmq::SimpleBlockRmq<int>;
+  constexpr std::size_t kBlock = Rmq::kBlockSize;
+  constexpr std::size_t kSize = 3 * kBlock;
+  constexpr std::size_t kLeft = 17;
+  constexpr std::size_t kRight = 2 * kBlock + 71;
+  constexpr std::size_t kInside = kBlock + 33;
+
+  const auto make_values = [] {
+    std::vector<int> values(kSize);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      values[i] = 1000 + static_cast<int>((i * 19 + i / 7) % 173);
+    }
+    return values;
+  };
+  const std::vector<std::pair<std::size_t, std::size_t>> range = {
+      {kLeft, kRight}};
+
+  {
+    std::vector<int> values = make_values();
+    values[kInside] = -2000;
+    const Rmq rmq{std::span<const int>(values)};
+    check_ranges(rmq, std::span<const int>(values), std::less<int>(), range);
+  }
+  {
+    std::vector<int> values = make_values();
+    values[0] = -3000;
+    values[kInside] = -2000;
+    const Rmq rmq{std::span<const int>(values)};
+    check_ranges(rmq, std::span<const int>(values), std::less<int>(), range);
+  }
+  {
+    std::vector<int> values = make_values();
+    values[kInside] = -2000;
+    values[kSize - 1] = -3000;
+    const Rmq rmq{std::span<const int>(values)};
+    check_ranges(rmq, std::span<const int>(values), std::less<int>(), range);
+  }
+}
+
+TEST(RmqSimpleBlockRmq, PartialBlockAndFullMiddleRanges) {
+  using Rmq = pixie::rmq::SimpleBlockRmq<int>;
+  constexpr std::size_t kBlock = Rmq::kBlockSize;
+
+  std::vector<int> values(6 * kBlock + 17);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] = 1000 + static_cast<int>((i * 29 + i / 11) % 251);
+  }
+  values[kBlock + 37] = -200;
+  values[kBlock + 450] = -300;
+  values[2 * kBlock + 37] = -400;
+  values[2 * kBlock + 177] = -200;
+  values[2 * kBlock + 450] = -250;
+  values[3 * kBlock + 20] = -260;
+  values[4 * kBlock + 100] = -500;
+
+  const Rmq rmq{std::span<const int>(values)};
+  const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
+      {kBlock, kBlock + 211},
+      {2 * kBlock + 211, 3 * kBlock},
+      {2 * kBlock + 101, 2 * kBlock + 319},
+      {2 * kBlock + 431, 3 * kBlock + 63},
+      {kBlock + 431, 3 * kBlock + 63},
+      {31, 5 * kBlock + 63},
+  };
+  check_ranges(rmq, std::span<const int>(values), std::less<int>(), ranges);
+}
+
+TEST(RmqSimpleBlockRmq, FirstMinimumAcrossDuplicateAndAllEqualBlocks) {
+  using Rmq = pixie::rmq::SimpleBlockRmq<int>;
+  constexpr std::size_t kBlock = Rmq::kBlockSize;
+
+  {
+    const std::vector<int> values(3 * kBlock + 17, 7);
+    const Rmq rmq{std::span<const int>(values)};
+    const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
+        {0, values.size()},
+        {13, values.size() - 11},
+        {kBlock - 10, 2 * kBlock + 10},
+    };
+    check_ranges(rmq, std::span<const int>(values), std::less<int>(), ranges);
+  }
+
+  {
+    std::vector<int> values(4 * kBlock + 29, 10);
+    values[kBlock - 3] = -7;
+    values[kBlock + 20] = -7;
+    values[2 * kBlock + 10] = -7;
+    values[3 * kBlock + 2] = -7;
+    const Rmq rmq{std::span<const int>(values)};
+    const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
+        {0, values.size()},
+        {kBlock, values.size()},
+        {kBlock + 21, values.size()},
+    };
+    check_ranges(rmq, std::span<const int>(values), std::less<int>(), ranges);
+  }
+}
+
+TEST(RmqSimpleBlockRmq, ComparatorMaximumAcrossBlocks) {
+  using Rmq = pixie::rmq::SimpleBlockRmq<int, std::greater<int>>;
+  constexpr std::size_t kBlock = Rmq::kBlockSize;
+
+  std::vector<int> values(4 * kBlock + 17);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] = -1000 + static_cast<int>((i * 23 + i / 9) % 197);
+  }
+  values[17] = 5000;
+  values[kBlock + 80] = 5000;
+  values[2 * kBlock + 10] = 5000;
+  values[2 * kBlock + 11] = 5000;
+  values[3 * kBlock + 7] = 5000;
+
+  const Rmq rmq{std::span<const int>(values)};
+  const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
+      {0, values.size()},
+      {kBlock, values.size()},
+      {kBlock + 81, values.size()},
+      {2 * kBlock + 11, values.size()},
+  };
+  check_ranges(rmq, std::span<const int>(values), std::greater<int>(), ranges);
+}
+
+TEST(RmqSimpleBlockRmq, RejectsNarrowIndexOverflow) {
+  using Rmq = pixie::rmq::SimpleBlockRmq<int, std::less<int>, std::uint8_t>;
+
+  std::vector<int> supported(255, 1);
+  supported.back() = 0;
+  const Rmq rmq{std::span<const int>(supported)};
+  EXPECT_EQ(rmq.arg_min(0, supported.size()), supported.size() - 1);
+
+  const std::vector<int> too_large(256, 0);
+  EXPECT_THROW((Rmq{std::span<const int>(too_large)}), std::length_error);
+}
+
+TEST(RmqSimpleBlockRmq, DeterministicDifferentialAcrossMultipleBlocks) {
+  using Rmq = pixie::rmq::SimpleBlockRmq<int>;
+  constexpr std::size_t kBlock = Rmq::kBlockSize;
+
+  std::mt19937_64 rng(4962026);
+  std::uniform_int_distribution<int> value_dist(-7, 7);
+  std::vector<int> values(7 * kBlock + 113);
+  std::generate(values.begin(), values.end(), [&] { return value_dist(rng); });
+
+  std::vector<std::pair<std::size_t, std::size_t>> ranges;
+  ranges.reserve(512);
+  std::uniform_int_distribution<std::size_t> width_dist(1, values.size());
+  for (std::size_t query = 0; query < 512; ++query) {
+    std::size_t width = width_dist(rng);
+    if ((query & 1u) == 0 && width <= kBlock) {
+      width += kBlock;
+    }
+    std::uniform_int_distribution<std::size_t> left_dist(0,
+                                                         values.size() - width);
+    const std::size_t left = left_dist(rng);
+    ranges.emplace_back(left, left + width);
+  }
+
+  const Rmq rmq{std::span<const int>(values)};
+  check_ranges(rmq, std::span<const int>(values), std::less<int>(), ranges);
+}
+
+TEST(RmqSimpleBlockRmq, CopyMoveAndMovedFromState) {
+  using Rmq = pixie::rmq::SimpleBlockRmq<int, std::greater<int>>;
+  constexpr std::size_t kBlock = Rmq::kBlockSize;
+
+  std::vector<int> values(3 * kBlock + 17);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] = static_cast<int>((i * 31 + i / 7) % 257);
+  }
+  values[2 * kBlock + 9] = 1000;
+
+  const Rmq original{std::span<const int>(values)};
+  Rmq copied(original);
+  Rmq copy_assigned;
+  copy_assigned = original;
+  Rmq moved(std::move(copied));
+  Rmq move_assigned;
+  move_assigned = std::move(copy_assigned);
+
+  const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
+      {0, values.size()},
+      {1, kBlock - 1},
+      {kBlock - 7, kBlock + 13},
+      {kBlock + 1, 2 * kBlock + 17},
+      {2 * kBlock + 3, values.size()},
+  };
+  check_ranges(original, std::span<const int>(values), std::greater<int>(),
+               ranges);
+  check_ranges(moved, std::span<const int>(values), std::greater<int>(),
+               ranges);
+  check_ranges(move_assigned, std::span<const int>(values), std::greater<int>(),
+               ranges);
+
+  EXPECT_TRUE(copied.empty());
+  EXPECT_TRUE(copy_assigned.empty());
+  EXPECT_EQ(copied.arg_min(0, 0), Rmq::npos);
+  EXPECT_EQ(copy_assigned.arg_min(0, 0), Rmq::npos);
+  EXPECT_EQ(copied.arg_min(0, 2), Rmq::npos);
+  EXPECT_EQ(copy_assigned.arg_min(0, 2), Rmq::npos);
+  EXPECT_EQ(copied.range_min(0, 0), 0);
+  EXPECT_EQ(copy_assigned.range_min(0, 0), 0);
 }
 
 #ifdef SDSL_SUPPORT

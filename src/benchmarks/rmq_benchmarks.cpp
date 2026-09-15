@@ -306,6 +306,8 @@ void register_benchmarks() {
                                        Index>;
   using CartesianBTree =
       pixie::rmq::CartesianBTree<std::int64_t, std::less<std::int64_t>, Index>;
+  using SimpleBlock =
+      pixie::rmq::SimpleBlockRmq<std::int64_t, std::less<std::int64_t>, Index>;
 
   const std::vector<std::size_t> sizes = {1ull << 10, 1ull << 14, 1ull << 18,
                                           1ull << 22, 1ull << 24, 1ull << 26};
@@ -320,6 +322,7 @@ void register_benchmarks() {
   constexpr std::size_t kFocusedCartesianHybridLargeSize = 1ull << 28;
   constexpr std::size_t kFocusedCartesianBTreeLargeSize = 1ull << 28;
   constexpr std::size_t kFocusedHybridBTreeLargeSize = 1ull << 28;
+  constexpr std::size_t kFocusedSimpleBlockLargeSize = 1ull << 28;
   // Focused 2^28/2^30 rows are intentionally limited to the RMQ variants whose
   // construction and query memory stay bounded at those sizes. CartesianRmM is
   // included here because its Cartesian BP construction now uses a succinct
@@ -357,6 +360,12 @@ void register_benchmarks() {
         "rmq_build_segment_tree",
         &run_value_rmq_build<pixie::rmq::SegmentTree<
             std::int64_t, std::less<std::int64_t>, Index>>)
+        ->Arg(static_cast<std::int64_t>(size))
+        ->Unit(benchmark::kMillisecond)
+        ->MinWarmUpTime(kBenchmarkWarmupSeconds)
+        ->MinTime(kBenchmarkMinSeconds);
+    benchmark::RegisterBenchmark("rmq_build_simple_block_rmq",
+                                 &run_value_rmq_build<SimpleBlock>)
         ->Arg(static_cast<std::int64_t>(size))
         ->Unit(benchmark::kMillisecond)
         ->MinWarmUpTime(kBenchmarkWarmupSeconds)
@@ -461,6 +470,18 @@ void register_benchmarks() {
       ->Unit(benchmark::kMillisecond)
       ->MinWarmUpTime(kBenchmarkWarmupSeconds)
       ->MinTime(kBenchmarkMinSeconds);
+  benchmark::RegisterBenchmark("rmq_build_simple_block_rmq",
+                               &run_value_rmq_build<SimpleBlock>)
+      ->Arg(static_cast<std::int64_t>(kFocusedSimpleBlockLargeSize))
+      ->Unit(benchmark::kMillisecond)
+      ->MinWarmUpTime(kBenchmarkWarmupSeconds)
+      ->MinTime(kBenchmarkMinSeconds);
+  benchmark::RegisterBenchmark("rmq_build_simple_block_rmq",
+                               &run_value_rmq_build<SimpleBlock>)
+      ->Arg(static_cast<std::int64_t>(kVeryLargeHybridSize))
+      ->Unit(benchmark::kMillisecond)
+      ->MinWarmUpTime(kBenchmarkWarmupSeconds)
+      ->MinTime(kBenchmarkMinSeconds);
 
   for (const std::size_t size : sizes) {
     const std::vector<std::size_t> effective_widths =
@@ -482,6 +503,13 @@ void register_benchmarks() {
           "rmq_segment_tree",
           &run_queries<pixie::rmq::SegmentTree<std::int64_t,
                                                std::less<std::int64_t>, Index>>)
+          ->Args({static_cast<std::int64_t>(size),
+                  static_cast<std::int64_t>(width)})
+          ->Unit(benchmark::kNanosecond)
+          ->MinWarmUpTime(kBenchmarkWarmupSeconds)
+          ->MinTime(kBenchmarkMinSeconds);
+      benchmark::RegisterBenchmark("rmq_simple_block_rmq",
+                                   &run_queries<SimpleBlock>)
           ->Args({static_cast<std::int64_t>(size),
                   static_cast<std::int64_t>(width)})
           ->Unit(benchmark::kNanosecond)
@@ -605,6 +633,25 @@ void register_benchmarks() {
         "rmq_hybrid_btree",
         &run_queries<pixie::rmq::HybridBTree<std::int64_t,
                                              std::less<std::int64_t>, Index>>)
+        ->Args({static_cast<std::int64_t>(kVeryLargeHybridSize),
+                static_cast<std::int64_t>(width)})
+        ->Unit(benchmark::kNanosecond)
+        ->MinWarmUpTime(kBenchmarkWarmupSeconds)
+        ->MinTime(kBenchmarkMinSeconds);
+  }
+  for (const std::size_t width :
+       effective_widths_for(kFocusedSimpleBlockLargeSize)) {
+    benchmark::RegisterBenchmark("rmq_simple_block_rmq",
+                                 &run_queries<SimpleBlock>)
+        ->Args({static_cast<std::int64_t>(kFocusedSimpleBlockLargeSize),
+                static_cast<std::int64_t>(width)})
+        ->Unit(benchmark::kNanosecond)
+        ->MinWarmUpTime(kBenchmarkWarmupSeconds)
+        ->MinTime(kBenchmarkMinSeconds);
+  }
+  for (const std::size_t width : effective_widths_for(kVeryLargeHybridSize)) {
+    benchmark::RegisterBenchmark("rmq_simple_block_rmq",
+                                 &run_queries<SimpleBlock>)
         ->Args({static_cast<std::int64_t>(kVeryLargeHybridSize),
                 static_cast<std::int64_t>(width)})
         ->Unit(benchmark::kNanosecond)
