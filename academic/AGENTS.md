@@ -75,6 +75,10 @@ quarto render index.qmd --to pdf
 quarto preview index.qmd
 ```
 
+RevealJS loads SVG figures through `<img>`, where nested external SVG references
+such as `<image href="other.svg">` may disappear even though PNG exporters resolve
+them. Keep presentation SVGs standalone by inlining all required layers.
+
 ## Conventions
 
 ### Paper Template (ACM Format)

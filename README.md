@@ -17,6 +17,8 @@
 - **Succinct trees**: static variants of $2$-bit per entry trees, i.e. LOUDS, DFUDS, BP (Based on Euler tour and Ferrada-Navarro style).
 - **Wavelet tree**, i.e. static structure that supposts rank/select on arbitrary finite alphabets, supports building a Huffman archieve with fast extraction of arbitrary segment.
 - Succinct **cartesian tree** and a state of the art solution to static **RMQ** (array is immutable, queries are not known in advance).
+- **Permutations**: identity construction, checked reads, rotations, and consuming rebased merge. Contract: `pixie/permutation.h`; concrete: `pixie/permutations/permutation.h`.
+- **Permutable sequences**: consuming range construction, checked immutable reads, rotations, and unchanged-value merge. Contract: `pixie/permutable_sequence.h`; concrete: `pixie/permutations/sequence.h`.
 
 ---
 

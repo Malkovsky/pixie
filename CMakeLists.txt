@@ -309,7 +309,25 @@ if (PIXIE_TESTS)
                 PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
     endif ()
 
+    add_executable(bit_sequence_tests
+            src/tests/bit_sequence_tests.cpp
+            src/tests/packed_sequence_tests.cpp
+            src/tests/sequence_tree_kernels_tests.cpp)
+    target_link_libraries(bit_sequence_tests
+            pixie::pixie gtest_main)
+    target_compile_definitions(bit_sequence_tests
+            PRIVATE PIXIE_SEQUENCE_TREE_TESTING)
+
+    foreach (family IN ITEMS permutation permutable_sequence)
+        add_executable(${family}_tests src/tests/${family}_tests.cpp)
+        target_link_libraries(${family}_tests PRIVATE pixie::pixie gtest_main)
+        target_compile_definitions(${family}_tests PRIVATE PIXIE_SEQUENCE_TREE_TESTING)
+    endforeach ()
+
     set(PIXIE_TEST_TARGETS
+            permutation_tests
+            permutable_sequence_tests
+            bit_sequence_tests
             bit_algorithms_unittests
             rank_select_unittests
             rank_select_tests
@@ -493,7 +511,22 @@ if (PIXIE_BENCHMARKS)
             benchmark_main
             ${PIXIE_DIAGNOSTICS_LIBS})
 
+    add_executable(bit_sequence_benchmarks
+            src/benchmarks/bit_sequence_benchmarks.cpp
+            src/benchmarks/sequence_controls_benchmarks.cpp
+            src/benchmarks/sequence_tree_kernels_benchmarks.cpp)
+    target_link_libraries(bit_sequence_benchmarks
+            pixie::pixie benchmark benchmark_main)
+
+    foreach (family IN ITEMS permutation permutable_sequence)
+        add_executable(${family}_benchmarks src/benchmarks/${family}_benchmarks.cpp)
+        target_link_libraries(${family}_benchmarks PRIVATE pixie::pixie benchmark benchmark_main)
+    endforeach ()
+
     set(PIXIE_BENCHMARK_TARGETS
+            permutation_benchmarks
+            permutable_sequence_benchmarks
+            bit_sequence_benchmarks
             rank_select_benchmarks
             rmm_benchmarks
             rmm_btree_benchmarks
