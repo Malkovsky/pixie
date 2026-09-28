@@ -106,8 +106,7 @@ class WaveletTreeIndex
           right_child(node.right_child),
           middle(node.middle) {
       const std::size_t bit_count = node.stream.size_bits();
-      const std::vector<std::uint64_t> words = node.stream.take_words();
-      bit_vector_data = AlignedStorage(std::span<const std::uint64_t>(words));
+      bit_vector_data = node.stream.take_storage();
       data =
           RankSelectSupport<Storage>(bit_vector_data.as_words64(), bit_count);
     }
@@ -431,7 +430,7 @@ class WaveletTreeIndex
     }
   }
 
-  template <class ForEachSymbol>
+  template <bool ValidateSymbolCounts, class ForEachSymbol>
   void build_byte_bit_streams(std::span<const std::size_t> symbol_counts,
                               ForEachSymbol& for_each_symbol,
                               std::vector<PreWaveletNode>& nodes)
@@ -451,7 +450,11 @@ class WaveletTreeIndex
     std::vector<std::uint8_t> block;
     std::vector<std::uint8_t> scratch(block_capacity);
     block.reserve(block_capacity);
-    detail::ByteHistogram actual_histogram;
+    struct NoHistogram {};
+    using ValidationHistogram =
+        std::conditional_t<ValidateSymbolCounts, detail::ByteHistogram,
+                           NoHistogram>;
+    ValidationHistogram actual_histogram;
     const auto encode_block = [&] {
       if (block.empty()) {
         return;
@@ -465,13 +468,15 @@ class WaveletTreeIndex
 
     std::size_t emitted_size = 0;
     const auto append_symbols = [&](std::span<const Symbol> symbols) {
-      if (emitted_size > data_size_ ||
-          symbols.size() > data_size_ - emitted_size) {
-        throw std::invalid_argument(
-            "Wavelet-tree emitted symbols do not match their counts");
+      if constexpr (ValidateSymbolCounts) {
+        if (emitted_size > data_size_ ||
+            symbols.size() > data_size_ - emitted_size) {
+          throw std::invalid_argument(
+              "Wavelet-tree emitted symbols do not match their counts");
+        }
+        emitted_size += symbols.size();
+        actual_histogram.add(std::as_bytes(symbols));
       }
-      emitted_size += symbols.size();
-      actual_histogram.add(std::as_bytes(symbols));
       while (!symbols.empty()) {
         const std::size_t copied =
             std::min(block_capacity - block.size(), symbols.size());
@@ -497,43 +502,57 @@ class WaveletTreeIndex
     });
     encode_block();
 
-    const auto actual_counts = actual_histogram.counts();
-    if (emitted_size != data_size_ ||
-        !std::ranges::equal(actual_counts.begin(),
-                            actual_counts.begin() + alphabet_size_,
-                            symbol_counts.begin(), symbol_counts.end()) ||
-        std::ranges::any_of(actual_counts.begin() + alphabet_size_,
-                            actual_counts.end(),
-                            [](std::size_t count) { return count != 0; })) {
-      throw std::invalid_argument(
-          "Wavelet-tree emitted symbols do not match their counts");
+    if constexpr (ValidateSymbolCounts) {
+      const auto actual_counts = actual_histogram.counts();
+      if (emitted_size != data_size_ ||
+          !std::ranges::equal(actual_counts.begin(),
+                              actual_counts.begin() + alphabet_size_,
+                              symbol_counts.begin(), symbol_counts.end()) ||
+          std::ranges::any_of(actual_counts.begin() + alphabet_size_,
+                              actual_counts.end(),
+                              [](std::size_t count) { return count != 0; })) {
+        throw std::invalid_argument(
+            "Wavelet-tree emitted symbols do not match their counts");
+      }
     }
   }
 
-  template <class ForEachSymbol>
+  template <bool ValidateSymbolCounts, class ForEachSymbol>
   void build_generic_bit_streams(std::span<const std::size_t> symbol_counts,
                                  ForEachSymbol& for_each_symbol,
                                  std::vector<PreWaveletNode>& nodes)
     requires(std::same_as<Storage, AlignedStorage>)
   {
-    std::vector<std::size_t> actual_counts(alphabet_size_);
+    std::vector<std::size_t> actual_counts;
+    if constexpr (ValidateSymbolCounts) {
+      actual_counts.resize(alphabet_size_);
+    }
     std::vector<Symbol> ranks;
     if (root_ != npos) {
       ranks.reserve(data_size_);
     }
     for_each_symbol([&](Symbol symbol) {
-      const std::size_t original = checked_symbol_index(symbol, alphabet_size_);
-      if (actual_counts[original] == std::numeric_limits<std::size_t>::max()) {
-        throw std::length_error("Wavelet-tree symbol count is too large");
+      const std::size_t original = static_cast<std::size_t>(symbol);
+      if constexpr (ValidateSymbolCounts) {
+        if (original >= alphabet_size_) {
+          throw std::invalid_argument(
+              "Wavelet-tree symbol is outside the alphabet");
+        }
+        if (actual_counts[original] ==
+            std::numeric_limits<std::size_t>::max()) {
+          throw std::length_error("Wavelet-tree symbol count is too large");
+        }
+        ++actual_counts[original];
       }
-      ++actual_counts[original];
       if (root_ != npos) {
         ranks.push_back(static_cast<Symbol>(permutation_[original]));
       }
     });
-    if (!std::ranges::equal(actual_counts, symbol_counts)) {
-      throw std::invalid_argument(
-          "Wavelet-tree emitted symbols do not match their counts");
+    if constexpr (ValidateSymbolCounts) {
+      if (!std::ranges::equal(actual_counts, symbol_counts)) {
+        throw std::invalid_argument(
+            "Wavelet-tree emitted symbols do not match their counts");
+      }
     }
     if (root_ == npos) {
       return;
@@ -546,16 +565,18 @@ class WaveletTreeIndex
     build_node_streams(root_, ranks, scratch, nodes);
   }
 
-  template <class ForEachSymbol>
+  template <bool ValidateSymbolCounts, class ForEachSymbol>
   void build_bit_streams(std::span<const std::size_t> symbol_counts,
                          ForEachSymbol& for_each_symbol,
                          std::vector<PreWaveletNode>& nodes)
     requires(std::same_as<Storage, AlignedStorage>)
   {
     if constexpr (std::same_as<Symbol, std::uint8_t>) {
-      build_byte_bit_streams(symbol_counts, for_each_symbol, nodes);
+      build_byte_bit_streams<ValidateSymbolCounts>(symbol_counts,
+                                                   for_each_symbol, nodes);
     } else {
-      build_generic_bit_streams(symbol_counts, for_each_symbol, nodes);
+      build_generic_bit_streams<ValidateSymbolCounts>(symbol_counts,
+                                                      for_each_symbol, nodes);
     }
   }
 
@@ -632,7 +653,7 @@ class WaveletTreeIndex
     return index;
   }
 
-  template <class ForEachSymbol>
+  template <bool ValidateSymbolCounts, class ForEachSymbol>
   void build_from_counts(std::size_t alphabet_size,
                          std::span<const std::size_t> symbol_counts,
                          ForEachSymbol&& for_each_symbol,
@@ -659,7 +680,8 @@ class WaveletTreeIndex
         if (alphabet_size_ != 0) {
           build_huffman_byte_topology(symbol_counts, nodes);
         }
-        build_bit_streams(symbol_counts, for_each_symbol, nodes);
+        build_bit_streams<ValidateSymbolCounts>(symbol_counts, for_each_symbol,
+                                                nodes);
         nodes_.reserve(nodes.size());
         for (auto& node : nodes) {
           nodes_.emplace_back(std::move(node));
@@ -746,7 +768,8 @@ class WaveletTreeIndex
           nodes);
     }
 
-    build_bit_streams(symbol_counts, for_each_symbol, nodes);
+    build_bit_streams<ValidateSymbolCounts>(symbol_counts, for_each_symbol,
+                                            nodes);
 
     nodes_.reserve(nodes.size());
     for (auto& node : nodes) {
@@ -794,7 +817,7 @@ class WaveletTreeIndex
         ++counts[checked_symbol_index(symbol, alphabet_size)];
       }
     }
-    build_from_counts(
+    build_from_counts<false>(
         alphabet_size, counts,
         [&](auto&& emit) {
           if constexpr (requires { emit(data); }) {
@@ -831,8 +854,9 @@ class WaveletTreeIndex
       const WaveletTreeBuildType build_type = WaveletTreeBuildType::Standard)
     requires(std::same_as<Storage, AlignedStorage>)
   {
-    build_from_counts(alphabet_size, symbol_counts,
-                      std::forward<ForEachSymbol>(for_each_symbol), build_type);
+    build_from_counts<true>(alphabet_size, symbol_counts,
+                            std::forward<ForEachSymbol>(for_each_symbol),
+                            build_type);
   }
 
   /**
