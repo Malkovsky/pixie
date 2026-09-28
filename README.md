@@ -119,6 +119,42 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
 The remaining `*_impl()` methods complete the `RmMBase` contract; benchmarks
 call the inherited public facade, not SDSL-specific methods.
 
+The same `PIXIE_THIRD_PARTY_BACKENDS` option enables the pinned Immer
+adapter in `<pixie/permutations/immer_sequence.h>`.
+`pixie::ImmerPermutableSequence<T>` implements the permutable-sequence contract
+for copy-constructible values, returning reads by value. It supports positional
+insertion, rotation, and unchanged-value consuming merge; it does not promise
+stable references or accept move-only payloads. Original roots remain alive
+until mutations succeed so allocation failure preserves existing owners.
+Temporary slices use consuming Immer operations. Memory reporting counts live
+tree allocations and excludes Immer's allocator caches and allocations inside
+stored values.
+
+`permutable_sequence_benchmarks` registers `Immer64_F32_L32` alongside
+`Packed64_B256_F8_Prefix`. The shared `FacadeInsertRandomBatch` rows measure
+positional insertion without sorted-search cost. Both backends also run the
+same read, rotation, construction, and consuming-merge workloads. Configure
+`benchmark-all-backends` to include this comparison; the default build does not
+fetch or require Immer.
+
+The public sequence defaults remain unchanged. Optional node reserves, cached
+root bounds, and child-permutation policies live under
+`include/pixie/experimental/`; production catalogs do not include them.
+The [current sequence benchmark snapshot](include/pixie/experimental/benchmarks/sequence_snapshot.md)
+distinguishes production configurations from these experiments.
+
+After building the four sequence benchmark targets with
+`benchmark-all-backends`, run the complete registered suite serially:
+
+```bash
+python3 scripts/benchmark_sequences.py \
+  --build-dir build/benchmark-all-backends \
+  --output-dir /tmp/pixie-sequence-benchmarks --cpu 4
+```
+
+Choose an available CPU on your host. Raw results stay outside the repository;
+`--resume` reuses completed groups only when the executable and settings match.
+
 ---
 
 ## Example Usage

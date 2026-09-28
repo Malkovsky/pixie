@@ -255,18 +255,28 @@ void Memory(benchmark::State& state,
       sequence.empty() ? 0 : static_cast<double>(bytes) / sequence.size();
   // sizeof is a separate descriptive counter, NOT an extra summand of bytes.
   state.counters["sizeof_facade_or_tree"] = sizeof(sequence);
-  state.counters["block_budget_bytes"] = V::storage_bits / 8;
+  if constexpr (requires { V::immer; }) {
+    state.counters["leaf_capacity_elements"] = V::sequence_type::leaf_capacity;
+  } else {
+    state.counters["block_budget_bytes"] = V::storage_bits / 8;
+    state.counters["cumulative_lengths"] =
+        V::layout == LengthLayout::cumulative;
+  }
   state.counters["chunk_budget_bytes"] = V::chunk_bytes;
   state.counters["sizeof_value"] = sizeof(typename V::value_type);
   state.counters["useful_bits_per_element"] = V::useful_bits;
   state.counters["fanout"] = V::fanout;
-  state.counters["cumulative_lengths"] = V::layout == LengthLayout::cumulative;
   state.counters["rebased_merge"] = V::rebased;
   state.counters["indirect_storage"] = V::indirect;
 }
 
-template <typename V, bool Dependent, bool BeyondL3 = false>
+template <typename V,
+          bool Dependent,
+          bool BeyondL3 = false,
+          bool Edited = false,
+          bool Aligned = false>
 void Access(benchmark::State& state) {
+  static_assert(!(Edited && Aligned));
   const std::size_t n = state.range(0);
   if (!Preflight<V>(state, n)) {
     return;
@@ -279,7 +289,63 @@ void Access(benchmark::State& state) {
       return;
     }
   }
-  const auto sequence = V::Make(n);
+  const auto sequence = [&] {
+    auto result = V::Make(n);
+    if constexpr (Edited) {
+      for (std::size_t i = 0; i < kRotations; ++i) {
+        const auto left = Mix(i + 731) % (n / 2);
+        result.rotate_left(left, left + n / 2, 1 + Mix(i + 917) % (n / 2 - 1));
+      }
+    }
+    if constexpr (Aligned) {
+      // Force ordering metadata into use, rather than mostly repacking nodes
+      // through arbitrary cuts. Every backend receives the same disjoint edits.
+      for (std::size_t left = 0; left < n; left += 4096) {
+        const auto length = std::min<std::size_t>(4096, n - left);
+        result.rotate_left(left, left + length,
+                           std::min<std::size_t>(256, length - 1));
+      }
+    }
+    return result;
+  }();
+  if constexpr (Edited) {
+    for (std::size_t i = 0; i < kReads; ++i) {
+      const auto position = Mix(i) % n;
+      auto original = position;
+      for (std::size_t j = kRotations; j != 0; --j) {
+        const auto left = Mix(j - 1 + 731) % (n / 2);
+        const auto distance = 1 + Mix(j - 1 + 917) % (n / 2 - 1);
+        if (original >= left && original < left + n / 2) {
+          original = left + (original - left + distance) % (n / 2);
+        }
+      }
+      if (Token(sequence[position]) !=
+          Token(Value<typename V::value_type>(original))) {
+        state.SkipWithError(
+            "Edited read fixture failed inverse-position oracle");
+        return;
+      }
+    }
+    state.counters["setup_rotations"] = kRotations;
+  }
+  if constexpr (Aligned) {
+    for (std::size_t i = 0; i < kReads; ++i) {
+      const auto position = Mix(i) % n;
+      const auto left = position / 4096 * 4096;
+      const auto length = std::min<std::size_t>(4096, n - left);
+      const auto original =
+          left +
+          (position - left + std::min<std::size_t>(256, length - 1)) % length;
+      if (Token(sequence[position]) !=
+          Token(Value<typename V::value_type>(original))) {
+        state.SkipWithError(
+            "Aligned read fixture failed inverse-position oracle");
+        return;
+      }
+    }
+    state.counters["setup_rotations"] = (n + 4095) / 4096;
+    state.counters["setup_aligned_group_values"] = 4096;
+  }
   Memory<V>(state, sequence);
   if constexpr (BeyondL3) {
     // Only instantiated for the existing untagged tree introspection API.
@@ -299,7 +365,7 @@ void Access(benchmark::State& state) {
           : "64 independent reads; scalar/first word only; hash included");
   // Fresh full-domain positions, not a small repeated query pool. A payload
   // reference is never copied merely to read its first word.
-  std::uint64_t counter = 123, previous = 0;
+  std::uint64_t counter = 123, previous = 0, checksum = 0;
   for (auto _ : state) {
     for (std::size_t i = 0; i < kReads; ++i) {
       auto key = counter++;
@@ -307,11 +373,14 @@ void Access(benchmark::State& state) {
         key ^= previous * 0x9e3779b97f4a7c15ULL;
       }
       auto value = Token(sequence[Mix(key) % n]);
-      benchmark::DoNotOptimize(value);
+      checksum += value;
       if constexpr (Dependent) {
         previous = value;
       }
     }
+    // Consume arithmetic on the payload, not only a potentially folded load.
+    // A batch sink also preserves the dependent-read chain through value.
+    benchmark::DoNotOptimize(checksum);
   }
   state.counters["operations_per_iteration"] = kReads;
   state.counters["observed_bits_per_read"] =
@@ -319,7 +388,15 @@ void Access(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations() * kReads);
 }
 
-enum class Rotation { Whole, Global, Local };
+enum class Rotation {
+  Whole,
+  Global,
+  Local,
+  ChildAligned16,
+  ChildAligned32,
+  ChildAligned64,
+  GroupedSpill256
+};
 struct Query {
   std::size_t left, right, distance;
 };
@@ -329,6 +406,29 @@ auto RotationQueries(std::size_t n) {
   std::array<Query, kRotations> queries;
   for (std::size_t i = 0; i < queries.size(); ++i) {
     const auto key = Mix(i + 128);
+    if constexpr (Mode == Rotation::GroupedSpill256) {
+      // One 256-child leaf-parent node, using the same element range for
+      // every backend. The distance can require pointers to cross groups.
+      const auto left = (key % (n / 65536)) * 65536;
+      queries[i] = {left, left + 65536, (1 + Mix(key) % 255) * 256};
+      continue;
+    }
+    if constexpr (Mode == Rotation::ChildAligned16 ||
+                  Mode == Rotation::ChildAligned32 ||
+                  Mode == Rotation::ChildAligned64) {
+      // Identical element ranges for every backend. All three boundaries
+      // lie on 256-value leaf boundaries inside the selected group size.
+      constexpr std::size_t children = Mode == Rotation::ChildAligned16   ? 16
+                                       : Mode == Rotation::ChildAligned32 ? 32
+                                                                          : 64;
+      const auto group = key % (n / (children * 256));
+      const auto first = Mix(key) % (children / 2);
+      const auto count = 2 + Mix(key + 1) % (children - 1 - first);
+      const auto left = group * (children * 256) + first * 256;
+      queries[i] = {left, left + count * 256,
+                    (1 + Mix(key + 2) % (count - 1)) * 256};
+      continue;
+    }
     const auto length = Mode == Rotation::Whole   ? n
                         : Mode == Rotation::Local ? std::min<std::size_t>(65, n)
                                                   : n / 2 + key % (n / 4);
@@ -520,6 +620,55 @@ void Build(benchmark::State& state) {
   state.counters["operations_per_iteration"] = n;
   state.SetItemsProcessed(state.iterations() * n);
   state.SetBytesProcessed(state.iterations() * (n * V::useful_bits / 8));
+}
+
+// Position generation, fixture construction and verification are outside
+// timing. The same growing-size position stream is used for every backend.
+template <typename V>
+void InsertBatch(benchmark::State& state) {
+  using Sequence = typename V::sequence_type;
+  constexpr std::size_t count = 128;
+  const auto n = static_cast<std::size_t>(state.range(0));
+  if (!Preflight<V>(state, n + count)) {
+    return;
+  }
+  std::array<std::size_t, count> positions;
+  for (std::size_t i = 0; i < count; ++i) {
+    positions[i] = Mix(i + 731) % (n + i + 1);
+  }
+  Sequence sequence;
+  state.SetLabel(
+      "128 positional inserts; search/build/destruction excluded; "
+      "allocation and leaf repair included");
+  for (auto _ : state) {
+    state.PauseTiming();
+    sequence = Sequence{};
+    sequence = V::Make(n);
+    state.ResumeTiming();
+    for (std::size_t i = 0; i < count; ++i) {
+      sequence.insert_at(positions[i], Value<typename V::value_type>(n + i));
+      benchmark::ClobberMemory();
+    }
+    benchmark::DoNotOptimize(sequence);
+  }
+  if (sequence.size() != n + count) {
+    state.SkipWithError("Insertion size invariant failed");
+    return;
+  }
+  for (std::size_t i = 0; i < count; ++i) {
+    auto final_position = positions[i];
+    for (std::size_t j = i + 1; j < count; ++j) {
+      final_position += positions[j] <= final_position;
+    }
+    if (Token(sequence[final_position]) !=
+        Token(Value<typename V::value_type>(n + i))) {
+      state.SkipWithError("Inserted value disagrees at final position");
+      return;
+    }
+  }
+  Memory<V>(state, sequence);
+  state.counters["operations_per_iteration"] = count;
+  state.SetItemsProcessed(state.iterations() * count);
 }
 
 template <typename Block, bool Rotate>

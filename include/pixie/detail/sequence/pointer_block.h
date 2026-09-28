@@ -100,6 +100,15 @@ class PointerBlock {
     return storage_.values[(storage_.origin + i) % size()];
   }
   /**
+   * @brief Replace a logical pointer without touching either pointee.
+   * @pre i < size(). No ownership is acquired or released.
+   * @param i Zero-based position. @param value Replacement pointer.
+   */
+  void set_at(std::size_t i, value_type value) noexcept {
+    assert(i < size());
+    slot(i) = value;
+  }
+  /**
    * @brief Rotate the valid half-open range [left,right) without allocation.
    * @details Distance is reduced modulo a nonempty range's length. Empty valid
    * ranges are no-ops. Whole-block rotations update only the origin. Other
@@ -129,6 +138,30 @@ class PointerBlock {
     reverse(left, left + distance);
     reverse(left + distance, right);
     reverse(left, right);
+  }
+  /**
+   * @brief Insert one pointer at a local offset without allocation.
+   * @details Requires offset <= size() < capacity. Shifts [offset,size()) one
+   * position right using bounded stack scratch and places value at offset.
+   * Resets both circular origins. Does not allocate or throw.
+   * @param offset Local insertion position in [0,size()].
+   * @param value Pointer to insert.
+   * @pre offset <= size() && size() < capacity; debug builds assert.
+   */
+  void insert_at(std::size_t offset, value_type value) noexcept {
+    assert(offset <= size() && size() < capacity);
+    std::array<value_type, capacity> scratch;
+    for (std::size_t i = 0; i < offset; ++i) {
+      scratch[i] = (*this)[i];
+    }
+    scratch[offset] = value;
+    const auto n = size();
+    for (std::size_t i = offset; i < n; ++i) {
+      scratch[i + 1] = (*this)[i];
+    }
+    std::copy_n(scratch.begin(), n + 1, storage_.values.begin());
+    storage_.length = n + 1;
+    storage_.origin = 0;
   }
   /**
    * @brief Redistribute concatenated pointers into two distinct blocks.

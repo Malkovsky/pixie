@@ -20,6 +20,8 @@ class PackedBitBlock : public BitBlock<StorageBits - 128> {
   static_assert(sizeof(BitBlock<StorageBits - 128>) == StorageBits / 8);
 
  public:
+  /** @brief Construct empty without touching unused payload storage. */
+  PackedBitBlock() noexcept {}
   using BitBlock<StorageBits - 128>::BitBlock;
 };
 

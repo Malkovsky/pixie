@@ -92,6 +92,17 @@ if (PIXIE_BENCHMARKS)
 endif ()
 
 if (PIXIE_THIRD_PARTY_BACKENDS)
+    set(immer_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(immer_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(immer_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    set(immer_BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+            immer
+            GIT_REPOSITORY https://github.com/arximboldi/immer.git
+            GIT_TAG bd4fc749b97dfa2b66a8f3de00bbf234db4856ef # 2026-02-25
+    )
+    FetchContent_MakeAvailable(immer)
+
     set(PASTA_BIT_VECTOR_BUILD_TESTS OFF CACHE BOOL "Disable pasta::bit_vector tests" FORCE)
     set(PASTA_BIT_VECTOR_BUILD_BENCHMARKS OFF CACHE BOOL "Disable pasta::bit_vector benchmarks" FORCE)
     FetchContent_Declare(
@@ -155,6 +166,10 @@ endif ()
 
 if (PIXIE_THIRD_PARTY_BACKENDS)
     target_compile_definitions(pixie INTERFACE SDSL_SUPPORT)
+    target_compile_definitions(pixie INTERFACE PIXIE_IMMER_SUPPORT)
+    target_link_libraries(pixie INTERFACE immer)
+    target_include_directories(pixie SYSTEM INTERFACE
+            $<BUILD_INTERFACE:${immer_SOURCE_DIR}>)
     target_include_directories(pixie INTERFACE
             $<BUILD_INTERFACE:${sdsl_lite_SOURCE_DIR}/include>)
 endif ()
@@ -324,9 +339,14 @@ if (PIXIE_TESTS)
         target_compile_definitions(${family}_tests PRIVATE PIXIE_SEQUENCE_TREE_TESTING)
     endforeach ()
 
+    add_executable(sorted_sequence_tests src/tests/sorted_sequence_tests.cpp)
+    target_link_libraries(sorted_sequence_tests PRIVATE pixie::pixie gtest_main)
+    target_compile_definitions(sorted_sequence_tests PRIVATE PIXIE_SEQUENCE_TREE_TESTING)
+
     set(PIXIE_TEST_TARGETS
             permutation_tests
             permutable_sequence_tests
+            sorted_sequence_tests
             bit_sequence_tests
             bit_algorithms_unittests
             rank_select_unittests
@@ -523,9 +543,15 @@ if (PIXIE_BENCHMARKS)
         target_link_libraries(${family}_benchmarks PRIVATE pixie::pixie benchmark benchmark_main)
     endforeach ()
 
+    add_executable(sorted_sequence_benchmarks
+            src/benchmarks/sorted_sequence_benchmarks.cpp)
+    target_link_libraries(sorted_sequence_benchmarks
+            PRIVATE pixie::pixie benchmark benchmark_main)
+
     set(PIXIE_BENCHMARK_TARGETS
             permutation_benchmarks
             permutable_sequence_benchmarks
+            sorted_sequence_benchmarks
             bit_sequence_benchmarks
             rank_select_benchmarks
             rmm_benchmarks

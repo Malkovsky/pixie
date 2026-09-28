@@ -119,6 +119,24 @@ class Permutation
    */
   Index value_at_impl(std::size_t position) const { return tree_[position]; }
   /**
+   * @brief Insert the next identity value at a zero-based position.
+   * @details Inserts the value size() at position, shifting later entries
+   * right. Uses the tree's atomic insert: fast path is leaf-local with zero
+   * allocation; slow path is a single split/concatenate transaction. On
+   * success the result is a valid permutation of [0,size()+1).
+   * @param position Insertion position in [0,size()].
+   * @throws std::out_of_range If position > size().
+   * @throws std::length_error If the new size exceeds the index domain.
+   * @throws std::bad_alloc On preflight failure; contents remain unchanged.
+   */
+  void insert_at_impl(std::size_t position) {
+    if (position > tree_.size()) {
+      throw std::out_of_range("Permutation: insert position");
+    }
+    check_domain(tree_.size() + 1);
+    tree_.insert_at(position, static_cast<Index>(tree_.size()));
+  }
+  /**
    * @brief Rotate a half-open interval left, preserving outside entries.
    * @details Validates even at zero distance. Empty intervals do nothing;
    * otherwise distance is reduced modulo right-left before mutation.
@@ -157,6 +175,20 @@ class Permutation
   }
 
  public:
+  /**
+   * @brief Find the first position where pred(logical_index) is true.
+   * @details Uses the tree's guided descent: at each node children are
+   * binary-searched by their rightmost stored index, then the search descends
+   * into the single child that can contain the first match. The predicate
+   * receives the decoded logical index (pending biases applied). Caller must
+   * guarantee monotonicity: all false results precede all true results.
+   * @param pred Predicate on Index returning true at or past the search target.
+   * @return Position in [0, size()]; size() means pred is false everywhere.
+   */
+  template <class Pred>
+  std::size_t lower_bound(Pred pred) const {
+    return tree_.lower_bound(pred);
+  }
   /**
    * @brief Requested live storage breakdown, excluding allocator bookkeeping.
    * @details The five byte categories payload_capacity_bytes,

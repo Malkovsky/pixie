@@ -44,7 +44,24 @@ class alignas(CacheLine) BitBlock {
   static constexpr std::size_t payload_alignment = alignof(std::uint64_t);
 
   /** @brief Construct an empty block without allocation. */
-  BitBlock() noexcept = default;
+  BitBlock() noexcept {}
+  /** @brief Copy the live physical words, preserving the circular origin.
+   * @details Unused capacity is not read or initialized. Copies own their data.
+   */
+  BitBlock(const BitBlock& other) noexcept : n_(other.n_), h_(other.h_) {
+    std::copy_n(other.bits_.begin(), n_ / 64 + (n_ % 64 != 0), bits_.begin());
+  }
+  /** @brief Replace contents with an independent copy of the live words.
+   * @param other Source block; self-assignment is a no-op. @return *this.
+   */
+  BitBlock& operator=(const BitBlock& other) noexcept {
+    if (this != &other) {
+      n_ = other.n_;
+      h_ = other.h_;
+      std::copy_n(other.bits_.begin(), n_ / 64 + (n_ % 64 != 0), bits_.begin());
+    }
+    return *this;
+  }
   /**
    * @brief Copy n LSB-first bits, ignoring extra words and dirty high padding.
    * @details The source need not outlive this block; initial origin is zero.
@@ -73,7 +90,8 @@ class alignas(CacheLine) BitBlock {
     if (i >= n_) {
       throw std::out_of_range("BitBlock: index");
     }
-    const auto p = (h_ + i) % n_;
+    const auto sum = h_ + i;
+    const auto p = sum >= n_ ? sum - n_ : sum;
     return (bits_[p / 64] >> (p % 64)) & 1;
   }
   /**
@@ -93,7 +111,10 @@ class alignas(CacheLine) BitBlock {
     if (width == 0) {
       return 0;
     }
-    const auto physical = (h_ + offset) % n_;
+    // Both operands are below n_, and capacity <= SIZE_MAX / 2. The
+    // circular sum cannot overflow and needs at most one subtraction.
+    const auto sum = h_ + offset;
+    const auto physical = sum >= n_ ? sum - n_ : sum;
     const auto first = std::min(width, n_ - physical);
     auto read = [&](std::size_t p, std::size_t count) {
       const auto shift = p % 64;
@@ -105,6 +126,53 @@ class alignas(CacheLine) BitBlock {
     };
     const auto value = read(physical, first);
     return first == width ? value : value | (read(0, width - first) << first);
+  }
+  /**
+   * @brief Read a whole word from a word-aligned logical ring.
+   * @details Requires size(), circular origin, and offset to be multiples of
+   * 64, with offset < size(). Invalid inputs violate the primitive
+   * precondition.
+   * @param offset Zero-based logical bit offset.
+   * @return The 64-bit word at offset, without bit-field decoding.
+   */
+  std::uint64_t read_aligned_word(std::size_t offset) const noexcept {
+    assert(n_ % 64 == 0 && h_ % 64 == 0 && offset % 64 == 0 && offset < n_);
+    // The common normalized case has no metadata-dependent value address.
+    if (h_ == 0) {
+      return bits_[offset / 64];
+    }
+    const auto sum = h_ + offset;
+    const auto physical = sum >= n_ ? sum - n_ : sum;
+    return bits_[physical / 64];
+  }
+  /**
+   * @brief Replace a word in a word-aligned logical ring.
+   * @pre size(), origin and offset are multiples of 64; offset < size().
+   * @param offset Logical bit offset. @param value Replacement word.
+   */
+  void write_aligned_word(std::size_t offset, std::uint64_t value) noexcept {
+    assert(n_ % 64 == 0 && h_ % 64 == 0 && offset % 64 == 0 && offset < n_);
+    const auto sum = h_ + offset;
+    bits_[(sum >= n_ ? sum - n_ : sum) / 64] = value;
+  }
+  /**
+   * @brief Replace up to 64 logical bits, preserving all other bits.
+   * @pre offset <= size() and width <= min(64, size()-offset).
+   * @param offset First logical bit. @param width Number of bits to replace.
+   * @param value LSB-first replacement; high bits outside width are ignored.
+   */
+  void write_bits(std::size_t offset,
+                  std::size_t width,
+                  std::uint64_t value) noexcept {
+    assert(offset <= n_ && width <= 64 && width <= n_ - offset);
+    if (width == 0) {
+      return;
+    }
+    const auto sum = h_ + offset;
+    const auto p = sum >= n_ ? sum - n_ : sum;
+    const auto first = std::min(width, n_ - p);
+    copy_packed_bits(&value, 0, bits_.data(), p, first);
+    copy_packed_bits(&value, first, bits_.data(), 0, width - first);
   }
   /**
    * @brief Materialize logical words without changing representation.
@@ -158,6 +226,18 @@ class alignas(CacheLine) BitBlock {
     const auto total = n_ + rhs.n_;
     assert(left_size <= capacity && left_size <= total &&
            total - left_size <= capacity);
+    if (left_size == total && h_ == 0) {
+      // A normalized prefix stays in place when absorbing the whole donor.
+      // Copy only the incoming bits, including a possibly circular donor.
+      // Partial-word writes preserve destination padding, so initialize newly
+      // exposed words before the copy kernel can read those padding bits.
+      std::fill(bits_.begin() + n_ / 64 + (n_ % 64 != 0),
+                bits_.begin() + total / 64 + (total % 64 != 0), 0);
+      rhs.copy(0, bits_, n_, rhs.n_);
+      n_ = total;
+      rhs.n_ = rhs.h_ = 0;
+      return;
+    }
     Payload a{}, b{};
     auto gather = [&](std::size_t start, Payload& out, std::size_t count) {
       const auto first = start < n_ ? std::min(count, n_ - start) : 0;
@@ -172,6 +252,27 @@ class alignas(CacheLine) BitBlock {
     n_ = left_size;
     rhs.n_ = total - left_size;
     h_ = rhs.h_ = 0;
+  }
+  /** @brief Materialize logical order at physical origin zero, without
+   * allocation.
+   * @details Preserves size and contents; copies at most capacity bits.
+   */
+  void normalize() noexcept {
+    if (h_ == 0) {
+      return;
+    }
+    Payload scratch{};
+    copy(0, scratch, 0, n_);
+    bits_ = scratch;
+    h_ = 0;
+  }
+  /** @brief Read one word from a normalized block without metadata loads.
+   * @pre Origin is zero; offset is a multiple of 64 and offset+64 <= size().
+   * @param offset Zero-based bit offset. @return The 64-bit word.
+   */
+  std::uint64_t read_normalized_word(std::size_t offset) const noexcept {
+    assert(h_ == 0 && offset % 64 == 0 && offset <= n_ && n_ - offset >= 64);
+    return bits_[offset / 64];
   }
   /** @brief Report fixed payload storage. @return Bytes including unused bits.
    */
@@ -198,7 +299,7 @@ class alignas(CacheLine) BitBlock {
   }
   std::uint64_t n_ = 0;
   std::uint64_t h_ = 0;
-  Payload bits_{};
+  Payload bits_;
 };
 
 }  // namespace pixie::detail::sequence

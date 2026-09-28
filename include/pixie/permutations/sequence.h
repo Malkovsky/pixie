@@ -373,6 +373,56 @@ class PermutableSequence
     }
   }
   /**
+   * @brief Insert one value at a zero-based position.
+   * @details Packed storage calls tree insert directly. Indirect storage
+   * constructs the value in a payload chunk (allocating a new chunk when the
+   * tail is full), then inserts the stable pointer into the tree. On tree
+   * failure the chunk entry is popped and the exception propagates. For
+   * move-only T the value is consumed even on tree failure.
+   * @param position Insertion position in [0,size()].
+   * @param value Element to own and insert.
+   * @throws std::out_of_range If position > size().
+   * @throws std::bad_alloc If chunk, vector, or tree allocation fails.
+   * @throws Any Exception from element construction.
+   */
+  void insert_at_impl(std::size_t position, T value) {
+    if (position > tree_.size()) {
+      throw std::out_of_range("PermutableSequence: insert position");
+    }
+    if constexpr (packed) {
+      tree_.insert_at(position, std::move(value));
+    } else {
+      std::unique_ptr<Chunk> staged;
+      if (!chunks_.tail || chunks_.tail->values.size() >= chunk_capacity) {
+        payload_allocation();
+        staged = std::make_unique<Chunk>();
+        payload_allocation();
+        staged->values.reserve(chunk_capacity);
+      }
+      auto& slots = staged ? staged->values : chunks_.tail->values;
+      if constexpr (std::same_as<T, bool>) {
+        slots.emplace_back(bool(std::move(value)));
+      } else {
+        slots.emplace_back(std::move(value));
+      }
+      const T* ptr;
+      if constexpr (std::same_as<T, bool>) {
+        ptr = std::addressof(slots.back().value);
+      } else {
+        ptr = std::addressof(slots.back());
+      }
+      try {
+        tree_.insert_at(position, ptr);
+      } catch (...) {
+        slots.pop_back();
+        throw;
+      }
+      if (staged) {
+        chunks_.append(staged.release());
+      }
+    }
+  }
+  /**
    * @brief Rotate half-open [left,right) left, preserving all outside values.
    * @details Validates the range even for distance zero. Reduces distance
    * modulo nonempty range length; an empty valid range is a no-op. Allocation
@@ -411,6 +461,23 @@ class PermutableSequence
   }
 
  public:
+  /**
+   * @brief Find the first position where pred(value) is true.
+   * @details Uses the tree's guided descent with boundary-value pruning. The
+   * predicate receives the logical element (T by value when packed, const T&
+   * when indirect). Caller must guarantee monotonicity: all false results
+   * precede all true results.
+   * @param pred Predicate on T returning true at or past the search target.
+   * @return Position in [0, size()]; size() means pred is false everywhere.
+   */
+  template <class Pred>
+  std::size_t lower_bound(Pred pred) const {
+    if constexpr (packed) {
+      return tree_.lower_bound(pred);
+    } else {
+      return tree_.lower_bound([&](const T* p) { return pred(*p); });
+    }
+  }
   /**
    * @brief Explicit live requested-memory breakdown, excluding allocator/RSS.
    * @details Total is facade_bytes + tree_block_bytes + tree_node_bytes +

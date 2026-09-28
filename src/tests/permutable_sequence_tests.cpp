@@ -1,5 +1,11 @@
 #include <gtest/gtest.h>
+#include <pixie/experimental/power_of_two_sequence.h>
 #include <pixie/permutations/sequence.h>
+#ifdef PIXIE_IMMER_SUPPORT
+#include <pixie/permutations/immer_sequence.h>
+
+#include <immer/heap/heap_policy.hpp>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -33,13 +39,12 @@ struct ResetFailures {
 template <class T>
 std::vector<T> values(std::size_t size, std::uint64_t seed = 42) {
   std::mt19937_64 random(seed);
-  std::vector<T> result;
-  result.reserve(size);
+  std::vector<T> result(size);
   for (std::size_t i = 0; i < size; ++i) {
     if constexpr (std::same_as<T, std::string>) {
-      result.push_back(std::to_string(random()) + std::string(40, 'x'));
+      result[i] = std::to_string(random()) + std::string(40, 'x');
     } else {
-      result.push_back(static_cast<T>(random()));
+      result[i] = static_cast<T>(random());
     }
   }
   return result;
@@ -60,44 +65,314 @@ void rotate(std::vector<T>& input,
 template <class Sequence>
 void check(const Sequence& sequence,
            const std::vector<typename Sequence::value_type>& expected) {
-  ASSERT_TRUE(sequence.test_tree().test_validate());
+  if constexpr (requires { sequence.test_tree(); }) {
+    ASSERT_TRUE(sequence.test_tree().test_validate());
+  }
   ASSERT_EQ(sequence.size(), expected.size());
   ASSERT_EQ(sequence.empty(), expected.empty());
   for (std::size_t i = 0; i < expected.size(); ++i) {
     ASSERT_EQ(sequence[i], expected[i]) << "index=" << i;
   }
   const auto memory = sequence.memory_usage();
-  EXPECT_EQ(memory.facade_bytes, sizeof(sequence));
-  EXPECT_EQ(memory.total_bytes, sizeof(sequence) + memory.tree_block_bytes +
-                                    memory.tree_node_bytes +
-                                    memory.chunk_header_bytes +
-                                    memory.vector_capacity_bytes);
-  EXPECT_EQ(memory.vector_capacity_bytes,
-            memory.vector_live_bytes + memory.vector_slack_bytes);
-  EXPECT_EQ(sequence.memory_usage_bytes(), memory.total_bytes);
-  if constexpr (Sequence::storage == ElementStorage::packed) {
-    EXPECT_EQ(memory.order_bytes, 0);
-    EXPECT_EQ(memory.chunks, 0);
-    EXPECT_EQ(memory.vector_capacity_bytes, 0);
-    EXPECT_GE(memory.packed_capacity_bits,
-              sequence.size() *
-                  std::numeric_limits<typename Sequence::value_type>::digits);
+  if constexpr (requires { memory.chunk_header_bytes; }) {
+    EXPECT_EQ(memory.facade_bytes, sizeof(sequence));
+    EXPECT_EQ(memory.total_bytes, sizeof(sequence) + memory.tree_block_bytes +
+                                      memory.tree_node_bytes +
+                                      memory.chunk_header_bytes +
+                                      memory.vector_capacity_bytes);
+    EXPECT_EQ(memory.vector_capacity_bytes,
+              memory.vector_live_bytes + memory.vector_slack_bytes);
+    EXPECT_EQ(sequence.memory_usage_bytes(), memory.total_bytes);
+    if constexpr (Sequence::storage == ElementStorage::packed) {
+      EXPECT_EQ(memory.order_bytes, 0);
+      EXPECT_EQ(memory.chunks, 0);
+      EXPECT_EQ(memory.vector_capacity_bytes, 0);
+      EXPECT_GE(memory.packed_capacity_bits,
+                sequence.size() *
+                    std::numeric_limits<typename Sequence::value_type>::digits);
+    } else {
+      EXPECT_EQ(memory.packed_capacity_bits, 0);
+      EXPECT_EQ(memory.order_bytes,
+                memory.tree_block_bytes + memory.tree_node_bytes);
+      EXPECT_EQ(memory.vector_live_bytes,
+                sequence.size() * sizeof(typename Sequence::value_type));
+    }
+    if (sequence.empty()) {
+      EXPECT_EQ(memory.total_bytes, sizeof(sequence));
+      EXPECT_EQ(memory.chunks, 0);
+    }
   } else {
-    EXPECT_EQ(memory.packed_capacity_bits, 0);
-    EXPECT_EQ(memory.order_bytes,
-              memory.tree_block_bytes + memory.tree_node_bytes);
-    EXPECT_EQ(memory.vector_live_bytes,
-              sequence.size() * sizeof(typename Sequence::value_type));
+    std::size_t reserved_bytes = 0;
+    if constexpr (requires { memory.reserved_bytes; }) {
+      reserved_bytes = memory.reserved_bytes;
+    }
+    EXPECT_EQ(memory.total_bytes, sizeof(sequence) + memory.block_bytes +
+                                      memory.node_bytes + reserved_bytes);
+    EXPECT_EQ(sequence.memory_usage_bytes(), memory.total_bytes);
+    if (sequence.empty()) {
+      EXPECT_EQ(memory.total_bytes, sizeof(sequence));
+    }
   }
-  if (sequence.empty()) {
-    EXPECT_EQ(memory.total_bytes, sizeof(sequence));
-    EXPECT_EQ(memory.chunks, 0);
+}
+
+TEST(PermutableSequenceCache, EditsFailuresAndMovesRefreshRegularBoundary) {
+  using Sequence =
+      experimental::PowerOfTwoPermutableSequence<std::uint64_t, 8, 4, 0, true>;
+  using Tree = Sequence::test_tree_type;
+  auto expected = values<std::uint64_t>(257);
+  auto sequence = Sequence::from_range(expected);
+  check(sequence, expected);
+  EXPECT_THROW(sequence[sequence.size()], std::out_of_range);
+  Tree::test_fail_after(0);
+  EXPECT_THROW(sequence.insert_at(1, 99), std::bad_alloc);
+  Tree::test_fail_after(-1);
+  check(sequence, expected);
+  Tree::test_fail_after(0);
+  EXPECT_THROW(sequence.rotate_left(1, 255, 17), std::bad_alloc);
+  Tree::test_fail_after(-1);
+  check(sequence, expected);
+  sequence.insert_at(1, 99);
+  expected.insert(expected.begin() + 1, 99);
+  check(sequence, expected);
+  sequence.rotate_left(1, 255, 17);
+  rotate(expected, 1, 255, 17);
+  check(sequence, expected);
+  auto moved = std::move(sequence);
+  EXPECT_THROW(sequence[0], std::out_of_range);
+  sequence.insert_at(0, 42);
+  check(sequence, std::vector<std::uint64_t>{42});
+  moved.merge(sequence);
+  expected.push_back(42);
+  check(moved, expected);
+  EXPECT_THROW(sequence[0], std::out_of_range);
+  sequence = std::move(moved);
+  check(sequence, expected);
+  EXPECT_THROW(moved[0], std::out_of_range);
+}
+
+TEST(PermutableSequenceSlotOrder, AlignedRotationsThenSplitInsertAndMerge) {
+  const auto run = []<std::size_t Fanout>() {
+    using Sequence =
+        experimental::PowerOfTwoPermutableSequence<std::uint64_t, 8, Fanout, 0,
+                                                   true, true>;
+    using Tree = Sequence::test_tree_type;
+    auto expected = values<std::uint64_t>(4096);
+    auto sequence = Sequence::from_range(expected);
+    for (std::size_t group = 0; group < 4096 / (8 * Fanout); ++group) {
+      const auto left = group * (8 * Fanout) + 8;
+      const auto length = (Fanout - 2) * 8;
+      Tree::test_reset_counters();
+      sequence.rotate_left(left, left + length, 40);
+      EXPECT_EQ(Tree::test_counters.allocations, 0u);
+      EXPECT_EQ(Tree::test_counters.child_transfers, 0u);
+      EXPECT_EQ(Tree::test_counters.payload_mutations, 0u);
+      EXPECT_EQ(Tree::test_counters.order_materializations, 1u);
+      rotate(expected, left, left + length, 40);
+    }
+    check(sequence, expected);
+    Tree::test_fail_after(0);
+    EXPECT_THROW(sequence.insert_at(37, 99), std::bad_alloc);
+    Tree::test_fail_after(-1);
+    check(sequence, expected);
+    for (std::size_t i = 0; i < 64; ++i) {
+      const auto position = i * 53;
+      sequence.insert_at(position, i);
+      expected.insert(expected.begin() + position, i);
+    }
+    check(sequence, expected);
+    sequence.rotate_left(17, 4001, 731);
+    rotate(expected, 17, 4001, 731);
+    check(sequence, expected);
+    auto incoming = values<std::uint64_t>(577, 91);
+    auto donor = Sequence::from_range(incoming);
+    donor.rotate_left(8, 120, 24);
+    rotate(incoming, 8, 120, 24);
+    sequence.merge(donor);
+    expected.insert(expected.end(), incoming.begin(), incoming.end());
+    check(sequence, expected);
+    EXPECT_TRUE(donor.empty());
+  };
+  run.template operator()<16>();
+  run.template operator()<32>();
+  run.template operator()<64>();
+}
+
+TEST(PermutableSequenceGroupedSlots,
+     FullGroupsPartialBoundariesAndFailedInsert) {
+  using Sequence =
+      experimental::PowerOfTwoPermutableSequence<std::uint64_t, 8, 256, 0, true,
+                                                 true>;
+  using Tree = Sequence::test_tree_type;
+  auto expected = values<std::uint64_t>(8192);
+  auto sequence = Sequence::from_range(expected);
+  Tree::test_reset_counters();
+  check(sequence, expected);
+  EXPECT_EQ(Tree::test_counters.order_materializations, 0u);
+  const auto do_rotate = [&](std::size_t left, std::size_t right,
+                             std::size_t distance) {
+    sequence.rotate_left(left, right, distance);
+    rotate(expected, left, right, distance);
+    check(sequence, expected);
+  };
+  Tree::test_reset_counters();
+  do_rotate(0, 2048, 8);
+  EXPECT_EQ(Tree::test_counters.child_transfers, 16u);
+  EXPECT_EQ(Tree::test_counters.allocations, 0u);
+  EXPECT_EQ(Tree::test_counters.payload_mutations, 0u);
+  EXPECT_EQ(Tree::test_counters.order_materializations, 1u);
+  Tree::test_reset_counters();
+  do_rotate(0, 2048, 120);
+  EXPECT_EQ(Tree::test_counters.order_materializations, 0u);
+  Tree::test_reset_counters();
+  do_rotate(2048, 4096, 128);
+  EXPECT_EQ(Tree::test_counters.child_transfers, 0u);
+  do_rotate(4096, 6144, 120);
+  do_rotate(6144 + 24, 8192 - 40, 72);
+  Tree::test_fail_after(0);
+  EXPECT_THROW(sequence.insert_at(43, 91), std::bad_alloc);
+  Tree::test_fail_after(-1);
+  check(sequence, expected);
+  for (std::size_t i = 0; i < 128; ++i) {
+    const auto position = i * 47;
+    sequence.insert_at(position, i);
+    expected.insert(expected.begin() + position, i);
+  }
+  check(sequence, expected);
+  do_rotate(17, sequence.size() - 19, 917);
+  auto incoming = values<std::uint64_t>(2225, 211);
+  auto donor = Sequence::from_range(incoming);
+  donor.rotate_left(8, 2040, 88);
+  rotate(incoming, 8, 2040, 88);
+  sequence.merge(donor);
+  expected.insert(expected.end(), incoming.begin(), incoming.end());
+  check(sequence, expected);
+  EXPECT_TRUE(donor.empty());
+}
+
+using ReservedSequence =
+    experimental::PowerOfTwoPermutableSequence<std::uint64_t, 256, 32, 96>;
+
+TEST(PermutableSequenceReserve, ThresholdReuseMoveAndConsumingMerge) {
+  using Sequence = ReservedSequence;
+  using Tree = Sequence::test_tree_type;
+  constexpr std::size_t threshold = (1 << 20) / sizeof(std::uint64_t);
+  {
+    auto small =
+        Sequence::from_range(std::views::iota(std::uint64_t{0}, threshold - 1));
+    small.rotate_left(1, small.size() - 1, 17);
+    EXPECT_EQ(small.memory_usage().reserved_nodes, 0);
+  }
+  {
+    auto expected = values<std::uint64_t>(threshold);
+    auto sequence = Sequence::from_range(expected);
+    EXPECT_EQ(sequence.memory_usage().reserved_nodes, 0);
+    for (std::size_t i = 0; i < 12; ++i) {
+      Tree::test_reset_counters();
+      sequence.rotate_left(1, threshold - 1, 17 + i);
+      rotate(expected, 1, threshold - 1, 17 + i);
+      const auto memory = sequence.memory_usage();
+      EXPECT_GT(memory.reserved_nodes, 0);
+      EXPECT_LE(memory.reserved_nodes, 96);
+      EXPECT_EQ(memory.reserved_bytes,
+                memory.reserved_nodes * Tree::node_storage_bytes);
+      EXPECT_EQ(memory.total_bytes - sizeof(sequence),
+                Tree::test_counters.live_bytes);
+      if (i > 1) {
+        EXPECT_LT(Tree::test_counters.allocations, 20);
+      }
+    }
+    check(sequence, expected);
+    const auto bytes = sequence.memory_usage_bytes();
+    auto moved = std::move(sequence);
+    EXPECT_TRUE(sequence.empty());
+    EXPECT_EQ(sequence.memory_usage_bytes(), sizeof(sequence));
+    EXPECT_EQ(moved.memory_usage_bytes(), bytes);
+    sequence = std::move(moved);
+    EXPECT_EQ(moved.memory_usage_bytes(), sizeof(moved));
+    auto destination = Sequence::from_range(std::array<std::uint64_t, 1>{99});
+    destination.merge(sequence);
+    expected.insert(expected.begin(), 99);
+    check(destination, expected);
+    EXPECT_TRUE(sequence.empty());
+    EXPECT_EQ(sequence.memory_usage_bytes(), sizeof(sequence));
+  }
+  EXPECT_EQ(Tree::test_counters.live_allocations, 0);
+}
+
+TEST(PermutableSequenceReserve, ColdAndWarmPreflightFailuresPreserveOwner) {
+  using Sequence = ReservedSequence;
+  using Tree = Sequence::test_tree_type;
+  struct Reset {
+    ~Reset() { Tree::test_fail_after(-1); }
+  } reset;
+  const auto input = values<std::uint64_t>((1 << 20) / sizeof(std::uint64_t));
+  for (bool warm : {false, true}) {
+    bool reached_success = false;
+    for (std::ptrdiff_t budget = 0; budget < 128; ++budget) {
+      auto sequence = Sequence::from_range(input);
+      auto expected = input;
+      if (warm) {
+        for (std::size_t i = 0; i < 3; ++i) {
+          sequence.rotate_left(1, input.size() - 1, 17 + i);
+          rotate(expected, 1, input.size() - 1, 17 + i);
+        }
+      }
+      const auto bytes = sequence.memory_usage_bytes();
+      const auto live = Tree::test_counters.live_allocations;
+      Tree::test_fail_after(budget);
+      try {
+        sequence.rotate_left(3, input.size() - 3, 29);
+        Tree::test_fail_after(-1);
+        rotate(expected, 3, input.size() - 3, 29);
+        check(sequence, expected);
+        reached_success = true;
+        break;
+      } catch (const std::bad_alloc&) {
+        Tree::test_fail_after(-1);
+        EXPECT_EQ(sequence.memory_usage_bytes(), bytes);
+        EXPECT_EQ(Tree::test_counters.live_allocations, live);
+        check(sequence, expected);
+      }
+    }
+    EXPECT_TRUE(reached_success);
+    EXPECT_EQ(Tree::test_counters.live_allocations, 0);
   }
 }
 
 template <class Sequence>
 class PermutableSequenceSpec : public ::testing::Test {};
 using Sequences = ::testing::Types<
+    experimental::PowerOfTwoPermutableSequence<bool, 256, 32, 0, false, true>,
+    experimental::
+        PowerOfTwoPermutableSequence<std::uint32_t, 8, 32, 0, true, true>,
+    experimental::
+        PowerOfTwoPermutableSequence<std::uint64_t, 256, 32, 96, false, true>,
+    experimental::PowerOfTwoPermutableSequence<bool, 256, 64, 0, false, true>,
+    experimental::
+        PowerOfTwoPermutableSequence<std::uint32_t, 8, 64, 0, true, true>,
+    experimental::
+        PowerOfTwoPermutableSequence<std::uint64_t, 256, 64, 48, false, true>,
+    experimental::PowerOfTwoPermutableSequence<std::uint64_t, 256, 64, 48>,
+    experimental::PowerOfTwoPermutableSequence<bool, 256, 256, 0, false, true>,
+    experimental::
+        PowerOfTwoPermutableSequence<std::uint32_t, 8, 256, 0, true, true>,
+    experimental::
+        PowerOfTwoPermutableSequence<std::uint64_t, 256, 256, 12, false, true>,
+    experimental::PowerOfTwoPermutableSequence<bool, 256, 16, 0, false, true>,
+    experimental::
+        PowerOfTwoPermutableSequence<std::uint32_t, 8, 16, 0, true, true>,
+    experimental::
+        PowerOfTwoPermutableSequence<std::uint64_t, 256, 16, 96, false, true>,
+    experimental::PowerOfTwoPermutableSequence<bool, 256, 8>,
+    experimental::PowerOfTwoPermutableSequence<std::uint32_t, 32, 8>,
+    experimental::PowerOfTwoPermutableSequence<>,
+    experimental::PowerOfTwoPermutableSequence<bool, 256, 8, 0, true>,
+    experimental::PowerOfTwoPermutableSequence<std::uint32_t, 8, 4, 0, true>,
+    experimental::
+        PowerOfTwoPermutableSequence<std::uint64_t, 256, 32, 96, true>,
+    experimental::PowerOfTwoPermutableSequence<std::uint64_t, 256, 32, 96>,
+    experimental::PowerOfTwoPermutableSequence<std::uint64_t, 32, 32>,
+    experimental::PowerOfTwoPermutableSequence<std::uint64_t, 64, 32>,
     PermutableSequence<bool>,
     PermutableSequence<bool,
                        ElementStorage::indirect,
@@ -112,6 +387,10 @@ using Sequences = ::testing::Types<
                        8,
                        LengthLayout::individual>,
     PermutableSequence<std::uint32_t, ElementStorage::automatic, 2048, 16>,
+    PermutableSequence<std::uint64_t, ElementStorage::packed, 2048, 16>,
+    PermutableSequence<std::uint64_t, ElementStorage::packed, 2048, 32>,
+    PermutableSequence<std::uint64_t, ElementStorage::packed, 16384, 16>,
+    PermutableSequence<std::uint64_t, ElementStorage::packed, 16384, 32>,
     PermutableSequence<std::uint64_t,
                        ElementStorage::packed,
                        512,
@@ -129,7 +408,15 @@ using Sequences = ::testing::Types<
                        1024,
                        4,
                        LengthLayout::cumulative,
-                       127>>;
+                       127>
+#ifdef PIXIE_IMMER_SUPPORT
+    ,
+    ImmerPermutableSequence<>,
+    ImmerPermutableSequence<std::uint32_t>,
+    ImmerPermutableSequence<std::int64_t>,
+    ImmerPermutableSequence<std::string>
+#endif
+    >;
 TYPED_TEST_SUITE(PermutableSequenceSpec, Sequences);
 
 template <class S, class Range>
@@ -150,10 +437,19 @@ TYPED_TEST(PermutableSequenceSpec, PublicContractAliasesNoexceptAndLayout) {
   static_assert(!noexcept(std::declval<const Base&>()[0]));
   static_assert(!CanConsume<S, int>);
   static_assert(!CanConsume<S, std::array<std::array<int, 2>, 2>&>);
-  static_assert(
-      sizeof(S) ==
-      sizeof(typename S::test_tree_type) +
-          (S::storage == ElementStorage::packed ? 0 : 2 * sizeof(void*)));
+  if constexpr (requires { typename S::test_tree_type; }) {
+    constexpr auto cache_bytes = [] {
+      if constexpr (requires { S::regular_cache_bytes; }) {
+        return S::regular_cache_bytes;
+      } else {
+        return std::size_t{0};
+      }
+    }();
+    static_assert(
+        sizeof(S) ==
+        sizeof(typename S::test_tree_type) + cache_bytes +
+            (S::storage == ElementStorage::packed ? 0 : 2 * sizeof(void*)));
+  }
   auto input = values<T>(3);
   static_assert(std::same_as<decltype(Base::from_range(input)), S>);
   auto owner = Base::from_range(input);
@@ -177,7 +473,7 @@ TYPED_TEST(PermutableSequenceSpec, EmptyCheckedRangesAndExclusiveMoves) {
   static_assert(!std::is_copy_assignable_v<Sequence>);
   static_assert(std::is_nothrow_move_constructible_v<Sequence>);
   static_assert(std::is_nothrow_move_assignable_v<Sequence>);
-  if constexpr (Sequence::storage == ElementStorage::packed) {
+  if constexpr (!std::is_reference_v<typename Sequence::const_reference>) {
     static_assert(
         std::same_as<decltype(std::declval<const Sequence&>()[0]), T>);
   } else {
@@ -266,7 +562,13 @@ TYPED_TEST(PermutableSequenceSpec, EveryShortRotationAndBoundaryConstruction) {
       }
     }
   }
-  constexpr auto capacity = Sequence::test_tree_type::block_capacity;
+  constexpr auto capacity = [] {
+    if constexpr (requires { typename Sequence::test_tree_type; }) {
+      return Sequence::test_tree_type::block_capacity;
+    } else {
+      return Sequence::leaf_capacity;
+    }
+  }();
   for (auto size : {capacity - 1, capacity, capacity + 1, 2 * capacity + 1}) {
     auto input = values<T>(size);
     auto expected = input;
@@ -274,6 +576,190 @@ TYPED_TEST(PermutableSequenceSpec, EveryShortRotationAndBoundaryConstruction) {
     check(sequence, expected);
   }
 }
+
+TYPED_TEST(PermutableSequenceSpec, DifferentialInsertionAfterMergeAndRotation) {
+  using S = TypeParam;
+  using T = typename S::value_type;
+  auto input = values<T>(1031);
+  auto expected = input;
+  auto sequence = S::from_range(input);
+  auto extra = values<T>(67, 51);
+  expected.insert(expected.end(), extra.begin(), extra.end());
+  auto donor = S::from_range(extra);
+  sequence.merge(donor);
+  sequence.rotate_left(7, sequence.size() - 3, 41);
+  rotate(expected, 7, expected.size() - 3, 41);
+  const auto incoming = values<T>(200, 76);
+  std::mt19937_64 random(91);
+  for (const auto& value : incoming) {
+    const auto position = random() % (expected.size() + 1);
+    sequence.insert_at(position, value);
+    expected.insert(expected.begin() + position, value);
+  }
+  sequence.insert_at(0, T{});
+  expected.insert(expected.begin(), T{});
+  sequence.insert_at(sequence.size(), T{});
+  expected.push_back(T{});
+  EXPECT_THROW(sequence.insert_at(sequence.size() + 1, T{}), std::out_of_range);
+  check(sequence, expected);
+  check(donor, {});
+}
+
+TEST(PermutableSequencePacked, WideRegularPrefixesSurviveEdits) {
+  using S =
+      PermutableSequence<std::uint64_t, ElementStorage::packed, 16384, 32>;
+  // These bulk-built shapes have fifteen full leading subtrees followed by
+  // two partial subtrees, at two different tree heights.
+  for (const std::size_t size : {131072u, 4194304u}) {
+    SCOPED_TRACE(size);
+    auto expected = values<std::uint64_t>(size);
+    auto sequence = S::from_range(expected);
+    check(sequence, expected);
+    for (const auto position : {size / 3, size - 1, size}) {
+      sequence.insert_at(position, 17);
+      expected.insert(expected.begin() + position, 17);
+    }
+    check(sequence, expected);
+    sequence.rotate_left(size / 3, size * 2 / 3, 7);
+    rotate(expected, size / 3, size * 2 / 3, 7);
+    check(sequence, expected);
+    auto tail = values<std::uint64_t>(513, 19);
+    auto donor = S::from_range(tail);
+    sequence.merge(donor);
+    expected.insert(expected.end(), tail.begin(), tail.end());
+    check(sequence, expected);
+    check(donor, {});
+  }
+}
+
+#ifdef PIXIE_IMMER_SUPPORT
+struct ImmerTestHeap {
+  inline static std::ptrdiff_t remaining = -1;
+  inline static std::size_t live_bytes = 0;
+  static void* allocate(std::size_t size, ...) {
+    if (remaining == 0) {
+      throw std::bad_alloc();
+    }
+    if (remaining > 0) {
+      --remaining;
+    }
+    auto* result = ::operator new(size);
+    live_bytes += size;
+    return result;
+  }
+  static void deallocate(std::size_t size, void* pointer) noexcept {
+    live_bytes -= size;
+    ::operator delete(pointer);
+  }
+};
+
+TEST(PermutableSequenceImmer, AllocationFailuresPreserveOwnersAndMemory) {
+  using S =
+      ImmerPermutableSequence<std::uint64_t, immer::heap_policy<ImmerTestHeap>>;
+  struct Reset {
+    ~Reset() { ImmerTestHeap::remaining = -1; }
+  } reset;
+  for (int operation = 0; operation != 3; ++operation) {
+    bool succeeded = false;
+    for (std::ptrdiff_t fail = 0; fail != 256 && !succeeded; ++fail) {
+      ASSERT_EQ(ImmerTestHeap::live_bytes, 0);
+      auto input = values<std::uint64_t>(1100);
+      auto extra = values<std::uint64_t>(1050, 51);
+      auto sequence = S::from_range(input);
+      auto donor = S::from_range(extra);
+      auto expected = input;
+      ImmerTestHeap::remaining = fail;
+      try {
+        if (operation == 0) {
+          sequence.insert_at(511, 123);
+          expected.insert(expected.begin() + 511, 123);
+        } else if (operation == 1) {
+          sequence.rotate_left(19, 1077, 513);
+          rotate(expected, 19, 1077, 513);
+        } else {
+          sequence.merge(donor);
+          expected.insert(expected.end(), extra.begin(), extra.end());
+          extra.clear();
+        }
+        succeeded = true;
+      } catch (const std::bad_alloc&) {
+        expected = input;
+      }
+      ImmerTestHeap::remaining = -1;
+      check(sequence, expected);
+      check(donor, extra);
+      EXPECT_EQ(ImmerTestHeap::live_bytes, sequence.memory_usage_bytes() +
+                                               donor.memory_usage_bytes() -
+                                               2 * sizeof(S));
+    }
+    EXPECT_TRUE(succeeded);
+  }
+  EXPECT_EQ(ImmerTestHeap::live_bytes, 0);
+}
+
+TEST(PermutableSequenceImmer, SinglePassNonCommonRange) {
+  using S = ImmerPermutableSequence<>;
+  std::istringstream stream("7 2 9 4");
+  auto input = std::ranges::istream_view<std::uint64_t>(stream);
+  auto sequence = S::from_range(input);
+  check(sequence, {7, 2, 9, 4});
+}
+
+struct ImmerThrowingValue {
+  inline static int copies = -1;
+  std::uint64_t value = 0;
+  explicit ImmerThrowingValue(std::uint64_t v = 0) : value(v) {}
+  ImmerThrowingValue(const ImmerThrowingValue& other) : value(other.value) {
+    if (copies == 0) {
+      throw std::runtime_error("copy failure");
+    }
+    if (copies > 0) {
+      --copies;
+    }
+  }
+  ImmerThrowingValue(ImmerThrowingValue&&) noexcept = default;
+  ImmerThrowingValue& operator=(const ImmerThrowingValue&) = default;
+  ImmerThrowingValue& operator=(ImmerThrowingValue&&) noexcept = default;
+};
+
+TEST(PermutableSequenceImmer, ThrowingValueCopiesPreserveExistingOwners) {
+  using S = ImmerPermutableSequence<ImmerThrowingValue,
+                                    immer::heap_policy<ImmerTestHeap>>;
+  struct Reset {
+    ~Reset() { ImmerThrowingValue::copies = -1; }
+  } reset;
+  for (int operation = 0; operation != 3; ++operation) {
+    auto input =
+        std::views::iota(std::uint64_t{0}, std::uint64_t{75}) |
+        std::views::transform([](auto i) { return ImmerThrowingValue(i); });
+    auto sequence = S::from_range(input);
+    // A tail-only donor forces concatenation to copy boundary values.
+    auto donor = S::from_range(input | std::views::take(3));
+    ImmerThrowingValue::copies = 0;
+    if (operation == 0) {
+      EXPECT_THROW(sequence.insert_at(7, ImmerThrowingValue(123)),
+                   std::runtime_error);
+    } else if (operation == 1) {
+      EXPECT_THROW(sequence.rotate_left(3, 71, 11), std::runtime_error);
+    } else {
+      EXPECT_THROW(sequence.merge(donor), std::runtime_error);
+    }
+    ImmerThrowingValue::copies = -1;
+    ASSERT_EQ(sequence.size(), 75);
+    ASSERT_EQ(donor.size(), 3);
+    for (std::size_t i = 0; i < 75; ++i) {
+      EXPECT_EQ(sequence[i].value, i);
+    }
+    for (std::size_t i = 0; i < 3; ++i) {
+      EXPECT_EQ(donor[i].value, i);
+    }
+    EXPECT_EQ(ImmerTestHeap::live_bytes, sequence.memory_usage_bytes() +
+                                             donor.memory_usage_bytes() -
+                                             2 * sizeof(S));
+  }
+  EXPECT_EQ(ImmerTestHeap::live_bytes, 0);
+}
+#endif
 
 TEST(PermutableSequence, CompileTimeSelectionAndExactPointerBudget) {
   static_assert(PermutableSequence<bool>::storage == ElementStorage::packed);
@@ -338,10 +824,15 @@ TEST(PermutableSequence, NativePointerBlockWrappedRedistribution) {
 }
 
 TEST(PermutableSequence, SinglePassStreamInput) {
-  std::istringstream stream("1 2 3 4 5 6 7 8 9");
-  auto input = std::ranges::istream_view<unsigned>(stream);
-  auto sequence = PermutableSequence<unsigned>::from_range(input);
-  check(sequence, {1, 2, 3, 4, 5, 6, 7, 8, 9});
+  auto exercise = []<class Sequence>() {
+    std::istringstream stream("1 2 3 4 5 6 7 8 9");
+    auto input = std::ranges::istream_view<unsigned>(stream);
+    auto sequence = Sequence::from_range(input);
+    check(sequence, {1, 2, 3, 4, 5, 6, 7, 8, 9});
+  };
+  exercise.template operator()<PermutableSequence<unsigned>>();
+  exercise.template
+  operator()<experimental::PowerOfTwoPermutableSequence<unsigned, 8, 4>>();
 }
 
 struct MovingInput {
@@ -401,6 +892,8 @@ TEST(PermutableSequence, HonorsCustomIteratorMoveAndCleansUpThrowingIncrement) {
   };
   exercise.template operator()<Packed>();
   exercise.template operator()<Indirect>();
+  exercise.template
+  operator()<experimental::PowerOfTwoPermutableSequence<std::uint32_t, 8, 4>>();
 }
 
 // No default construction, copying, or move assignment is available. Slot
@@ -771,23 +1264,24 @@ TEST(PermutableSequence,
   bool succeeded = false;
   for (std::ptrdiff_t failure = 0; failure < 256 && !succeeded; ++failure) {
     Tree::test_fail_after(-1);
-    auto sequence = tracked_sequence(0, 113);
+    // Exceed the bounded short-rotation path to exercise allocation failures.
+    auto sequence = tracked_sequence(0, 257);
     const auto original = addresses(sequence);
     const auto live_allocations = Tree::test_counters.live_allocations;
     Tracked::moves = 0;
     Tree::test_fail_after(failure);
     try {
-      sequence.rotate_left(1, 111, 41);
+      sequence.rotate_left(1, 255, 91);
       succeeded = true;
       auto expected = original;
-      rotate(expected, 1, 111, 41);
+      rotate(expected, 1, 255, 91);
       check_addresses(sequence, expected);
     } catch (const std::bad_alloc&) {
       check_addresses(sequence, original);
       EXPECT_EQ(Tree::test_counters.live_allocations, live_allocations);
     }
     EXPECT_EQ(Tracked::moves, 0);
-    EXPECT_EQ(Tracked::live, 113);
+    EXPECT_EQ(Tracked::live, 257);
   }
   EXPECT_TRUE(succeeded);
   EXPECT_EQ(Tracked::live, 0);
@@ -925,6 +1419,164 @@ TEST(PermutableSequence,
     EXPECT_EQ(sequence.size(), 23);
   }
   EXPECT_EQ(CopyThrows::live, 0);
+}
+
+TEST(PermutableSequenceInsertAt, PackedAndIndirectDifferential) {
+  using PackedInsert =
+      PermutableSequence<std::uint64_t, ElementStorage::packed, 512, 4>;
+  using IndirectInsert =
+      PermutableSequence<std::uint64_t, ElementStorage::indirect, 512, 4,
+                         LengthLayout::cumulative, 64>;
+  auto exercise = []<class S>() {
+    S sequence;
+    std::vector<std::uint64_t> expected;
+    std::mt19937_64 random(713);
+    for (std::size_t i = 0; i < 500; ++i) {
+      const auto position = random() % (sequence.size() + 1);
+      const std::uint64_t value = random();
+      sequence.insert_at(position, value);
+      expected.insert(expected.begin() + position, value);
+    }
+    ASSERT_EQ(sequence.size(), expected.size());
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+      ASSERT_EQ(sequence[i], expected[i]) << "index=" << i;
+    }
+  };
+  exercise.template operator()<PackedInsert>();
+  exercise.template operator()<IndirectInsert>();
+}
+
+TEST(PermutableSequence, ShortCrossLeafRotationsDoNotAllocate) {
+  using Seq = PermutableSequence<std::uint64_t, ElementStorage::packed, 512, 4>;
+  using Tree = Seq::test_tree_type;
+  ResetFailures<Seq> reset;
+  for (std::size_t length : {2, 5, 6, 7, 65, 127, 128}) {
+    for (std::size_t left : {1, 5, 6, 119}) {
+      for (std::size_t distance : {std::size_t{1}, length / 2, length - 1}) {
+        auto sequence = Seq::from_range(
+            std::views::iota(std::uint64_t{0}, std::uint64_t{400}));
+        Tree::test_reset_counters();
+        Tree::test_fail_after(0);
+        sequence.rotate_left(left, left + length, distance);
+        Tree::test_fail_after(-1);
+        EXPECT_EQ(Tree::test_counters.allocations, 0);
+        EXPECT_TRUE(sequence.test_tree().test_validate());
+        for (std::size_t i = 0; i < sequence.size(); ++i) {
+          const auto expected = i >= left && i < left + length
+                                    ? left + (i - left + distance) % length
+                                    : i;
+          ASSERT_EQ(sequence[i], expected);
+        }
+      }
+    }
+  }
+}
+
+TEST(PermutableSequenceInsertAt, EmptyAndAppendAndBounds) {
+  using Seq = PermutableSequence<std::uint64_t, ElementStorage::packed, 512, 4>;
+  Seq sequence;
+  sequence.insert_at(0, 42);
+  ASSERT_EQ(sequence.size(), 1);
+  EXPECT_EQ(sequence[0], 42);
+  sequence.insert_at(1, 43);
+  ASSERT_EQ(sequence.size(), 2);
+  EXPECT_EQ(sequence[1], 43);
+  sequence.insert_at(0, 41);
+  ASSERT_EQ(sequence.size(), 3);
+  EXPECT_EQ(sequence[0], 41);
+  EXPECT_EQ(sequence[1], 42);
+  EXPECT_EQ(sequence[2], 43);
+  EXPECT_THROW(sequence.insert_at(4, 44), std::out_of_range);
+}
+TEST(PermutableSequenceInsertAt, FastPathUsesNoAllocation) {
+  // StorageBits=512 with uint64_t yields block capacity 6. Three elements
+  // leave room in the sole leaf, so insert_at takes the zero-allocation path.
+  using Seq = PermutableSequence<std::uint64_t, ElementStorage::packed, 512, 4>;
+  Seq sequence = Seq::from_range(std::array<std::uint64_t, 3>{0, 1, 2});
+  sequence.test_tree().test_reset_counters();
+  sequence.insert_at(1, 99);
+  EXPECT_EQ(sequence.test_tree().test_counters.allocations, 0);
+  EXPECT_EQ(sequence.size(), 4);
+  EXPECT_EQ(sequence[0], 0);
+  EXPECT_EQ(sequence[1], 99);
+  EXPECT_EQ(sequence[2], 1);
+  EXPECT_EQ(sequence[3], 2);
+}
+
+TEST(PermutableSequenceInsertAt, FullLeafAllocationFailuresPreserveContents) {
+  using Seq = PermutableSequence<std::uint64_t, ElementStorage::packed, 512, 4>;
+  using Tree = Seq::test_tree_type;
+  ResetFailures<Seq> reset;
+  for (std::size_t n : {6, 24, 96, 384}) {
+    for (std::size_t position : {std::size_t{0}, n / 2, n}) {
+      auto sequence =
+          Seq::from_range(std::views::iota(std::uint64_t{0}, std::uint64_t(n)));
+      const auto live = Tree::test_counters.live_allocations;
+      bool succeeded = false;
+      for (std::ptrdiff_t failure = 0; failure < 32 && !succeeded; ++failure) {
+        Tree::test_fail_after(failure);
+        try {
+          sequence.insert_at(position, 999);
+          succeeded = true;
+        } catch (const std::bad_alloc&) {
+          EXPECT_EQ(sequence.size(), n);
+          EXPECT_EQ(Tree::test_counters.live_allocations, live);
+          for (std::size_t i = 0; i < n; ++i) {
+            ASSERT_EQ(sequence[i], i);
+          }
+        }
+        Tree::test_fail_after(-1);
+      }
+      ASSERT_TRUE(succeeded);
+      ASSERT_EQ(sequence.size(), n + 1);
+      EXPECT_TRUE(sequence.test_tree().test_validate());
+      for (std::size_t i = 0; i <= n; ++i) {
+        EXPECT_EQ(sequence[i], i == position ? 999 : i - (i > position));
+      }
+    }
+  }
+}
+
+TEST(PermutableSequenceInsertAt, IndirectFailurePreservesPayloadFootprint) {
+  const auto run = []<std::size_t ChunkBytes>() {
+    using Seq = PermutableSequence<std::uint64_t, ElementStorage::indirect, 512,
+                                   4, LengthLayout::cumulative, ChunkBytes>;
+    using Tree = typename Seq::test_tree_type;
+    ResetFailures<Seq> reset;
+    for (const auto n : {std::size_t{0}, Tree::block_capacity}) {
+      SCOPED_TRACE(n);
+      auto expected = values<std::uint64_t>(n);
+      auto sequence = Seq::from_range(expected);
+      const auto bytes = sequence.memory_usage_bytes();
+      const auto* first = n ? &sequence[0] : nullptr;
+      Tree::test_fail_after(0);
+      EXPECT_THROW(sequence.insert_at(n / 2, 777), std::bad_alloc);
+      Tree::test_fail_after(-1);
+      EXPECT_EQ(sequence.memory_usage_bytes(), bytes);
+      check(sequence, expected);
+      if (first) {
+        EXPECT_EQ(&sequence[0], first);
+      }
+      sequence.insert_at(n / 2, 777);
+      expected.insert(expected.begin() + n / 2, 777);
+      check(sequence, expected);
+    }
+  };
+  run.template operator()<8>();
+  run.template operator()<256>();
+}
+
+TEST(PermutableSequenceInsertAt, IndirectReferencesSurviveInsertion) {
+  using Seq = PermutableSequence<std::uint64_t, ElementStorage::indirect, 512,
+                                 4, LengthLayout::cumulative, 64>;
+  Seq sequence;
+  sequence.insert_at(0, std::uint64_t{3});
+  const auto* three = &sequence[0];
+  sequence.insert_at(0, std::uint64_t{2});
+  ASSERT_EQ(sequence.size(), 2);
+  EXPECT_EQ(sequence[0], 2);
+  EXPECT_EQ(sequence[1], 3);
+  EXPECT_EQ(&sequence[1], three);
 }
 
 }  // namespace

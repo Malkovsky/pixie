@@ -519,4 +519,57 @@ TEST(PermutationStress, ThousandsOfSingletonMerges) {
   check_permutation(permutation, expected);
 }
 
+TEST(PermutationInsertAt, PreservesBijectionAtEveryPosition) {
+  using P = Permutation<std::uint16_t, 512>;
+  P permutation;
+  std::vector<std::uint16_t> expected;
+  for (std::size_t i = 0; i < 64; ++i) {
+    const auto position = i % (permutation.size() + 1);
+    permutation.insert_at(position);
+    expected.insert(expected.begin() + position, static_cast<std::uint16_t>(i));
+    ASSERT_EQ(permutation.size(), i + 1);
+  }
+  check_permutation(permutation, expected);
+}
+
+TEST(PermutationInsertAt, EmptyAndAppendAndBounds) {
+  using P = Permutation<std::uint16_t, 512>;
+  P permutation;
+  permutation.insert_at(0);
+  ASSERT_EQ(permutation.size(), 1);
+  EXPECT_EQ(permutation[0], 0);
+  permutation.insert_at(1);
+  ASSERT_EQ(permutation.size(), 2);
+  EXPECT_EQ(permutation[1], 1);
+  permutation.insert_at(0);
+  ASSERT_EQ(permutation.size(), 3);
+  EXPECT_EQ(permutation[0], 2);
+  EXPECT_EQ(permutation[1], 0);
+  EXPECT_EQ(permutation[2], 1);
+  EXPECT_THROW(permutation.insert_at(4), std::out_of_range);
+}
+
+TEST(PermutationInsertAt, RandomDifferentialAgainstVector) {
+  using P = Permutation<std::uint16_t, 512>;
+  P permutation;
+  std::vector<std::uint16_t> expected;
+  std::mt19937 random(713);
+  for (std::size_t i = 0; i < 2000; ++i) {
+    const auto position = random() % (permutation.size() + 1);
+    permutation.insert_at(position);
+    expected.insert(expected.begin() + position, static_cast<std::uint16_t>(i));
+  }
+  check_permutation(permutation, expected);
+}
+
+TEST(PermutationInsertAt, FastPathUsesNoAllocation) {
+  using P = Permutation<std::uint16_t, 512>;
+  P permutation = P::identity(8);
+  permutation.test_tree().test_reset_counters();
+  permutation.insert_at(4);
+  EXPECT_EQ(permutation.test_tree().test_counters.allocations, 0);
+  EXPECT_EQ(permutation.size(), 9);
+  EXPECT_TRUE(permutation.test_tree().test_validate());
+}
+
 }  // namespace

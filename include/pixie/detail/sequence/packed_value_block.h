@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -23,15 +24,17 @@ namespace pixie::detail::sequence {
  * @tparam T Bool or an unsigned integer with at most 64 value bits.
  * @tparam StorageBits Complete local block budget, not a tree leaf budget.
  * @tparam Width Positive field width, at most the value width of T.
+ * @tparam BitStorage Owning bit block providing the bounded payload storage.
  */
 template <class T,
           std::size_t StorageBits = 2048,
-          std::size_t Width = std::numeric_limits<T>::digits>
+          std::size_t Width = std::numeric_limits<T>::digits,
+          class BitStorage = PackedBitBlock<StorageBits>>
 class PackedValueBlock {
   static_assert(std::is_integral_v<T> && std::is_unsigned_v<T> &&
                 std::numeric_limits<T>::digits <= 64);
   static_assert(Width > 0 && Width <= std::numeric_limits<T>::digits);
-  using Bits = PackedBitBlock<StorageBits>;
+  using Bits = BitStorage;
 
  public:
   /** @brief Immutable indexed result. @details Includes bool by value. */
@@ -51,7 +54,7 @@ class PackedValueBlock {
   static_assert(capacity > 0);
 
   /** @brief Construct empty. @details Performs no allocation. */
-  PackedValueBlock() noexcept = default;
+  PackedValueBlock() noexcept {}
   /**
    * @brief Copy values into independent bounded storage.
    * @details The source is needed only during construction; initial origin is
@@ -63,12 +66,19 @@ class PackedValueBlock {
     if (values.size() > capacity) {
       throw std::invalid_argument("PackedValueBlock: input size");
     }
-    typename Bits::Payload words{};
+    typename Bits::Payload words;
+    if constexpr (Width != 64) {
+      words.fill(0);
+    }
     for (std::size_t i = 0; i < values.size(); ++i) {
       if (static_cast<std::uint64_t>(values[i]) > field_max) {
         throw std::invalid_argument("PackedValueBlock: value width");
       }
-      encode(words, i, values[i]);
+      if constexpr (Width == 64) {
+        words[i] = values[i];
+      } else {
+        encode(words, i, values[i]);
+      }
     }
     bits_ = Bits(words, values.size() * Width);
   }
@@ -91,10 +101,33 @@ class PackedValueBlock {
     if (i >= size()) {
       throw std::out_of_range("PackedValueBlock: index");
     }
+    return read_unchecked(i);
+  }
+  /** @brief Read a value whose position was validated by the owning tree.
+   * @pre i < size(). @param i Zero-based position. @return The decoded value.
+   * @details Full-width words stay normalized, allowing a direct payload read.
+   */
+  T read_unchecked(std::size_t i) const noexcept {
+    assert(i < size());
     if constexpr (Width == 1) {
       return static_cast<T>(bits_[i]);
+    } else if constexpr (Width == 64) {
+      return static_cast<T>(bits_.read_normalized_word(i * 64));
     } else {
       return static_cast<T>(bits_.read_bits(i * Width, Width));
+    }
+  }
+  /**
+   * @brief Replace a logical field without changing its circular layout.
+   * @pre i < size() and value is representable in Width bits.
+   * @param i Zero-based position. @param value Replacement field.
+   */
+  void set_at(std::size_t i, T value) noexcept {
+    assert(i < size() && static_cast<std::uint64_t>(value) <= field_max);
+    if constexpr (Width == 64) {
+      bits_.write_aligned_word(i * Width, value);
+    } else {
+      bits_.write_bits(i * Width, Width, value);
     }
   }
   /**
@@ -114,7 +147,41 @@ class PackedValueBlock {
     } else if (left != right) {
       bits_.rotate_left(left * Width, right * Width,
                         (distance % (right - left)) * Width);
+      if constexpr (Width == 64) {
+        bits_.normalize();
+      }
     }
+  }
+  /**
+   * @brief Insert one value at a local offset without allocation.
+   * @details Requires offset <= size() < capacity. Shifts [offset,size()) one
+   * position right using bounded stack scratch and places value at offset.
+   * Does not allocate or throw. This primitive supports sequence-tree leaf
+   * insertion, not a public arbitrary transformation on a container.
+   * @param offset Local insertion position in [0,size()].
+   * @param value Field to insert.
+   */
+  void insert_at(std::size_t offset, T value) noexcept {
+    assert(offset <= size() && size() < capacity);
+    typename Bits::Payload words{};
+    const auto n = size();
+    if constexpr (Width == 64) {
+      for (std::size_t i = 0; i < n; ++i) {
+        words[i] = bits_.read_aligned_word(i * 64);
+      }
+      std::memmove(words.data() + offset + 1, words.data() + offset,
+                   (n - offset) * sizeof(std::uint64_t));
+      words[offset] = static_cast<std::uint64_t>(value);
+    } else {
+      for (std::size_t i = 0; i < offset; ++i) {
+        encode(words, i, bits_.read_bits(i * Width, Width));
+      }
+      encode(words, offset, value);
+      for (std::size_t i = offset; i < n; ++i) {
+        encode(words, i + 1, bits_.read_bits(i * Width, Width));
+      }
+    }
+    bits_ = Bits(words, (n + 1) * Width);
   }
   /**
    * @brief Repartition concatenated values between distinct blocks.

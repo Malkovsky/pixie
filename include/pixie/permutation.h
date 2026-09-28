@@ -20,15 +20,17 @@ namespace pixie {
  * @details Construction is identity-only; reads are checked and immutable.
  * Rotation preserves the bijection and merge rebases the consumed donor.
  * Implementations provide identity_impl(n), size_impl(), value_at_impl(i),
- * rotate_left_impl(left,right,distance), merge_impl(donor), and
- * memory_usage_bytes_impl() with the corresponding facade semantics below.
+ * insert_at_impl(position), rotate_left_impl(left,right,distance),
+ * merge_impl(donor), and memory_usage_bytes_impl() with the corresponding
+ * facade semantics below.
  * size_impl() and memory_usage_bytes_impl() must be noexcept; the other
  * extension points propagate the documented exceptions. Validation belongs
  * to the implementation, not a second facade check. No virtual dispatch.
  * Required signatures are static Impl identity_impl(size_type),
  * size_type size_impl() const noexcept, Index value_at_impl(size_type) const,
- * void rotate_left_impl(size_type,size_type,size_type), void merge_impl(Impl&),
- * and size_type memory_usage_bytes_impl() const noexcept. Private extension
+ * void insert_at_impl(size_type), void rotate_left_impl(size_type,size_type,
+ * size_type), void merge_impl(Impl&), and size_type memory_usage_bytes_impl()
+ * const noexcept. Private extension
  * points grant friendship to this base. Concrete owners default-construct
  * canonical empty and are move-only with nonthrowing move and destruction;
  * moves leave the source canonical empty and self-move is a no-op.
@@ -84,6 +86,18 @@ class PermutationBase {
   const_reference operator[](size_type position) const {
     return impl().value_at_impl(position);
   }
+  /**
+   * @brief Insert the next identity value at a zero-based position.
+   * @details insert_at_impl(position) inserts the value size() at position,
+   * shifting existing entries at or after position one to the right. The
+   * result remains a valid permutation of [0,size()+1). Allocation failure
+   * leaves all contents and pending biases unchanged.
+   * @param position Insertion position in [0,size()].
+   * @throws std::out_of_range If position > size().
+   * @throws std::length_error If the new size exceeds the index domain.
+   * @throws std::bad_alloc If preflight allocation fails.
+   */
+  void insert_at(size_type position) { impl().insert_at_impl(position); }
   /**
    * @brief Rotate [left,right) left, preserving outside indices.
    * @details rotate_left_impl validates even at zero distance. Empty intervals

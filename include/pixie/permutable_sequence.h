@@ -26,13 +26,15 @@ enum class ElementStorage { automatic, packed, indirect };
  * @brief CRTP contract for exclusively owned sequences with immutable reads.
  * @details Merge appends unchanged values, unlike permutation rebasing.
  * Implementations provide constrained from_range_impl(range), size_impl(),
- * value_at_impl(i), rotate_left_impl(left,right,distance), merge_impl(donor),
+ * value_at_impl(i), insert_at_impl(position,value),
+ * rotate_left_impl(left,right,distance), merge_impl(donor),
  * and memory_usage_bytes_impl() with the facade semantics documented below.
  * size_impl() and memory_usage_bytes_impl() must be noexcept. Other extension
  * points propagate the documented exceptions. Validation belongs to the
  * implementation; the facade does not repeat it. No virtual dispatch.
  * Required signatures are size_type size_impl() const noexcept,
  * ConstReference value_at_impl(size_type) const,
+ * void insert_at_impl(size_type, T),
  * void rotate_left_impl(size_type,size_type,size_type), void merge_impl(Impl&),
  * and size_type memory_usage_bytes_impl() const noexcept. The static factory
  * returns Impl and accepts Range&& with the same input-range and iterator-move
@@ -98,20 +100,38 @@ class PermutableSequenceBase {
    * @param position Position in [0,size()).
    * @return Immutable value or stable reference, according to storage policy.
    * @throws std::out_of_range If position >= size().
+   * @throws Any Exception from constructing a by-value result.
    */
   const_reference operator[](size_type position) const {
     return impl().value_at_impl(position);
   }
   /**
+   * @brief Insert one value at a zero-based position.
+   * @details insert_at_impl(position,value) inserts value at position,
+   * shifting existing elements at or after position one to the right. Indirect
+   * storage constructs the value in a payload chunk before the tree insert; on
+   * tree failure the chunk is rolled back and the exception propagates. For
+   * move-only T the value is consumed even on tree failure.
+   * @param position Insertion position in [0,size()].
+   * @param value Element to own and insert.
+   * @throws std::out_of_range If position > size().
+   * @throws std::bad_alloc If allocation fails.
+   * @throws Any Exception from element construction.
+   */
+  void insert_at(size_type position, T value) {
+    impl().insert_at_impl(position, std::move(value));
+  }
+  /**
    * @brief Rotate [left,right) left while preserving outside values.
    * @details rotate_left_impl validates even at zero distance; empty intervals
    * are no-ops, otherwise distance is reduced modulo right-left. Allocation
-   * failure leaves contents and indirect addresses unchanged.
+   * or element-copy failure leaves contents and indirect addresses unchanged.
    * @param left Inclusive start.
    * @param right Exclusive end, at most size().
    * @param distance Left rotation distance in elements.
    * @throws std::out_of_range If left > right or right > size().
    * @throws std::bad_alloc If preflight allocation fails.
+   * @throws Any Exception from copying elements in a by-value implementation.
    */
   void rotate_left(size_type left, size_type right, size_type distance) {
     impl().rotate_left_impl(left, right, distance);
@@ -120,11 +140,13 @@ class PermutableSequenceBase {
    * @brief Append unchanged donor values and consume donor ownership.
    * @details merge_impl accepts only identical configurations. Self merge and
    * empty donor are no-ops; success leaves donor canonical empty. Count or
-   * allocation failure leaves both containers unchanged. Indirect objects
-   * never move and references from either participant retain their addresses.
+   * allocation or element-copy failure leaves both containers unchanged.
+   * Indirect objects never move and references from either participant retain
+   * their addresses.
    * @param donor Owner whose unchanged values follow this sequence's values.
    * @throws std::length_error If the combined count exceeds SIZE_MAX.
    * @throws std::bad_alloc If preflight allocation fails.
+   * @throws Any Exception from copying elements in a by-value implementation.
    */
   void merge(Impl& donor) { impl().merge_impl(donor); }
   /**

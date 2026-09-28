@@ -180,7 +180,7 @@ dependencies only as needed. Direct CMake defaults and their effects are:
 | --- | --- | --- |
 | `PIXIE_TESTS` | `ON` standalone, `OFF` downstream | Builds tests and fetches Google Test. |
 | `PIXIE_BENCHMARKS` | `OFF` | Builds native Google Benchmark targets. |
-| `PIXIE_THIRD_PARTY_BACKENDS` | `OFF` | Enables optional SDSL adapters and their comparison targets. |
+| `PIXIE_THIRD_PARTY_BACKENDS` | `OFF` | Enables optional SDSL and Immer adapters and their comparison targets. |
 | `PIXIE_DIAGNOSTICS` | `OFF` | Enables diagnostic logging for profiling experiments. |
 | `PIXIE_DOCS` | `OFF` | Enables the Doxygen `docs` target. |
 | `PIXIE_COVERAGE` | `OFF` | Adds GCC coverage instrumentation. |
@@ -188,8 +188,8 @@ dependencies only as needed. Direct CMake defaults and their effects are:
 `MappedFile` uses native POSIX memory mapping on Linux/Unix. A default
 FetchContent consumer therefore receives no third-party dependency, while a
 standalone default build fetches Google Test. Enabling third-party backends also
-fetches SDSL and pasta-toolbox dependencies, but only SDSL currently has a
-registered Pixie adapter/comparison benchmark. Do not describe pasta-toolbox as
+fetches SDSL, Immer, and pasta-toolbox dependencies. SDSL and Immer have
+registered Pixie adapters/comparison benchmarks. Do not describe pasta-toolbox as
 an available backend until Pixie adds and registers one.
 
 ## Build and Test Presets
@@ -258,7 +258,8 @@ The registered test executables are `bit_algorithms_unittests`,
 `tree_tests`, `wavelet_tree_tests`, `storage_tests`,
 `serialization_tests`, `integer_vector_tests`, `excess_positions_tests`,
 `excess_record_lows_tests`, `rmq_tests`, `permutation_tests`,
-`permutable_sequence_tests`, and `bit_sequence_tests`. The last covers internal
+`permutable_sequence_tests`, `sorted_sequence_tests`, and `bit_sequence_tests`.
+The last covers internal
 sequence blocks/tree/kernels and the retained mapped-block experiment. Run an
 executable directly only when debugging a focused Google Test filter.
 
