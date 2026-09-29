@@ -35,7 +35,7 @@ namespace pixie {
  * @tparam Fanout Even permutation-tree fanout of at least four.
  * @tparam Layout Permutation-tree child-length representation.
  */
-template <class T,
+template <class T = std::uint64_t,
           class Compare = std::less<>,
           class Index = std::uint64_t,
           std::size_t StorageBits = 2048,

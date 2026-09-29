@@ -215,6 +215,887 @@ class SequenceTree {
     test_counters.live_bytes = test_counters.peak_bytes = bytes;
   }
 #endif
+  /** @brief Construct canonical empty, with no allocation. */
+  SequenceTree() noexcept = default;
+  /** @brief Exclusive ownership disallows copying. */
+  SequenceTree(const SequenceTree&) = delete;
+  /** @brief Exclusive ownership disallows copy assignment. */
+  SequenceTree& operator=(const SequenceTree&) = delete;
+  /** @brief Transfer ownership; source becomes canonical empty. */
+  SequenceTree(SequenceTree&&) noexcept = default;
+  /** @brief Transfer ownership; source becomes empty; self-move is a no-op. */
+  SequenceTree& operator=(SequenceTree&&) noexcept = default;
+  /** @brief Return logical element count. @return Count in [0, SIZE_MAX]. */
+  std::size_t size() const noexcept { return root_.total; }
+  /** @brief Test emptiness. @return Whether no elements or allocations exist.
+   */
+  bool empty() const noexcept { return !root_.p; }
+  /** @brief Return internal levels. @return Zero for an empty tree or leaf
+   * root. */
+  std::size_t height() const noexcept { return root_.height; }
+  /**
+   * @brief Size of the leading region addressable by pure radix descent.
+   * @details Returns an element count in [0,size()]. Empty and leaf roots
+   * return size(); internal roots include only their leading full children.
+   * A caller may cache this count until the next mutation or ownership change.
+   */
+  std::size_t regular_prefix_size() const noexcept
+    requires(!IndexBias && std::has_single_bit(Fanout) &&
+             Layout == LengthLayout::cumulative)
+  {
+    if (height() == 0) {
+      return size();
+    }
+    const auto prefix = static_cast<const Node*>(root_.p)->regular_prefix;
+    if (prefix == 0) {
+      return 0;
+    }
+    // pack records a nonzero prefix only when the child capacity fits.
+    const auto shift = (height() - 1) * std::countr_zero(Fanout);
+    return prefix * (block_capacity << shift);
+  }
+  /**
+   * @brief Read a position known to lie in regular_prefix_size().
+   * @param index Zero-based index strictly below regular_prefix_size().
+   * @return Immutable value. Invalid input violates the precondition.
+   * @details No validation or size-table loads in release builds. Cached
+   * bounds must be refreshed after every mutation and ownership change.
+   */
+  value_type read_regular_unchecked(std::size_t index) const noexcept
+    requires(!IndexBias && std::has_single_bit(Fanout) &&
+             Layout == LengthLayout::cumulative &&
+             requires(const Block& block) {
+               {
+                 block.read_unchecked(index)
+               } noexcept -> std::same_as<value_type>;
+             })
+  {
+    assert(index < regular_prefix_size());
+    const auto block_index = index / block_capacity;
+    auto* p = root_.p;
+    for (auto h = height(); h != 0; --h) {
+      visit();
+      const auto child =
+          (block_index >> ((h - 1) * std::countr_zero(Fanout))) & (Fanout - 1);
+      p = static_cast<const Node*>(p)->child(child, h);
+    }
+    return static_cast<const Leaf*>(p)->block.read_unchecked(index %
+                                                             block_capacity);
+  }
+  /**
+   * @brief Read a zero-based element by value in O(F*h).
+   * @param i Index in [0, size()).
+   * @return Immutable logical value.
+   * @throws std::out_of_range If i >= size().
+   */
+  value_type operator[](std::size_t i) const {
+    if (i >= size()) {
+      throw std::out_of_range("SequenceTree: index");
+    }
+    const auto position = locate<IndexBias>(root_, i);
+    const auto& block = std::as_const(position.leaf->block);
+    const auto value = [&] {
+      if constexpr (requires {
+                      {
+                        block.read_unchecked(position.offset)
+                      } noexcept -> std::same_as<value_type>;
+                    }) {
+        return block.read_unchecked(position.offset);
+      } else {
+        return block[position.offset];
+      }
+    }();
+    if constexpr (IndexBias) {
+      return static_cast<value_type>(value + position.bias.value);
+    } else {
+      return value;
+    }
+  }
+  /**
+   * @brief Find the first position where pred(value) is true via guided
+   * descent.
+   * @details The predicate must be monotone over the sequence order: all false
+   * values precede all true values. At each internal node the children are
+   * binary-searched by reading the rightmost value of each child subtree, then
+   * the search descends into the single child that can contain the first true
+   * element. This avoids repeated root-to-leaf descents of a position-based
+   * binary search. Complexity is O(log F * h*(h+1)/2) boundary reads plus a
+   * leaf-local binary search, where each boundary read is a pointer-chasing
+   * descent of the remaining subtree height.
+   * @param pred Predicate on decoded value_type returning true when the value
+   * is at or past the search target.
+   * @return Position in [0, size()]; size() means pred is false for every
+   * element.
+   */
+  template <class Pred>
+  std::size_t lower_bound(Pred pred) const {
+    if (empty()) {
+      return 0;
+    }
+    std::size_t base = 0;
+    std::size_t total = root_.total;
+    void* p = root_.p;
+    Bias bias{};
+    for (auto h = root_.height; h != 0; --h) {
+      auto& node = *static_cast<Node*>(p);
+      if constexpr (IndexBias) {
+        bias.value += node.bias.value;
+      }
+      std::size_t lo = 0;
+      std::size_t hi = node.count;
+      while (lo < hi) {
+        const auto mid = lo + (hi - lo) / 2;
+        if (pred(edge_value(node.child(mid, h), h - 1, bias, true))) {
+          hi = mid;
+        } else {
+          lo = mid + 1;
+        }
+      }
+      if (lo == node.count) {
+        return base + total;
+      }
+      std::size_t prefix;
+      std::size_t child_total;
+      if constexpr (Layout == LengthLayout::cumulative) {
+        prefix = lo == 0 ? 0 : node.measures[lo - 1];
+        const auto end = lo + 1 == node.count ? total : node.measures[lo];
+        child_total = end - prefix;
+      } else {
+        prefix = 0;
+        for (std::size_t i = 0; i < lo; ++i) {
+          prefix += length(node, i, total, prefix);
+        }
+        child_total = length(node, lo, total, prefix);
+      }
+      base += prefix;
+      total = child_total;
+      p = node.child(lo, h);
+    }
+    auto& leaf = *static_cast<Leaf*>(p);
+    if constexpr (IndexBias) {
+      bias.value += leaf.bias.value;
+    }
+    const auto& block = std::as_const(leaf.block);
+    std::size_t lo = 0;
+    std::size_t hi = block.size();
+    while (lo < hi) {
+      const auto mid = lo + (hi - lo) / 2;
+      const auto raw = block[mid];
+      const auto v = [&] {
+        if constexpr (IndexBias) {
+          return static_cast<value_type>(raw + bias.value);
+        } else {
+          return raw;
+        }
+      }();
+      if (pred(v)) {
+        hi = mid;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    return base + lo;
+  }
+  /**
+   * @brief Consume a single-pass range of blocks in streaming bottom-up order.
+   * @details Moves from each input block; empty blocks are ignored. Packs short
+   * inputs into full leaves, retaining O(F*h) pending owners, not a directory
+   * or second complete payload buffer. Completed levels are built bottom-up;
+   * finishing the bounded fringe groups and joins once per level. On iterator,
+   * allocation or length failure, already visited input may be consumed; all
+   * acquired ownership is reclaimed. This is not a transactional range API.
+   * @param blocks Mutable input range whose references can move into Block.
+   * @return Exclusively owned tree preserving concatenated element order.
+   * @throws std::length_error If total exceeds SIZE_MAX or a block exceeds
+   * capacity.
+   * @throws std::bad_alloc If construction allocation fails.
+   */
+  template <std::ranges::input_range Range>
+    requires std::
+        constructible_from<Block, std::ranges::range_rvalue_reference_t<Range>>
+      static SequenceTree from_blocks(Range&& blocks) {
+    auto it = std::ranges::begin(blocks);
+    const auto end = std::ranges::end(blocks);
+    if (it == end) {
+      return {};
+    }
+    Block pending(std::ranges::iter_move(it));
+    std::size_t total = pending.size();
+    if (total > Block::capacity) {
+      throw std::length_error("SequenceTree: construction size");
+    }
+    ++it;
+    if (it == end) {
+      // Avoid initializing O(F*max_height) owning slots for a single leaf.
+      SequenceTree result;
+      if (total != 0) {
+        result.root_ = Owner(allocate<Leaf>(), total, 0);
+        static_cast<Leaf*>(result.root_.p)->block = std::move(pending);
+      }
+      return result;
+    }
+    return from_blocks_many(std::move(it), end, pending, total);
+  }
+  /**
+   * @brief Keep [0,p), returning [p,size()) by exclusive ownership transfer.
+   * @details Endpoints are accepted. O(F*h) structure and at most one block
+   * redistribution. Allocation failure leaves this tree unchanged.
+   * @param p Zero-based split boundary in [0,size()].
+   * @return Consumed suffix; neither result shares storage.
+   * @throws std::out_of_range If p > size().
+   * @throws std::bad_alloc On preflight allocation failure.
+   */
+  SequenceTree split_off(std::size_t p) {
+    if (p > size()) {
+      throw std::out_of_range("SequenceTree: split position");
+    }
+    SequenceTree result;
+    if (p == size()) {
+      return result;
+    }
+    if (p == 0) {
+      return std::move(*this);
+    }
+    Pool pool;
+    pool.reserve(3 * root_.height, locate(root_, p).offset != 0);
+    auto pair = split(std::move(root_), p, pool);
+    root_ = std::move(pair.left);
+    result.root_ = std::move(pair.right);
+    reserve_.trim(size(), sizeof(value_type));
+    return result;
+  }
+  /**
+   * @brief Append and consume a distinct donor in O(F*h).
+   * @details Self-merge and empty donor are no-ops. On success donor is
+   * canonical empty. Repairs only a bounded leaf seam; off-path ownership stays
+   * intact. Both trees remain unchanged on allocation or total-size failure.
+   * @param donor Tree whose elements follow this tree's contents.
+   * @throws std::length_error If concatenation exceeds SIZE_MAX.
+   * @throws std::bad_alloc On preflight allocation failure.
+   */
+  void merge(SequenceTree& donor) { merge_impl<false>(donor); }
+  /**
+   * @brief Rotate [left,right) left, preserving all outside elements.
+   * @details A one-leaf range uses its nonthrowing local kernel. Complete-child
+   * ranges at a common covering node reorder in place when both endpoint leaves
+   * are at least half full. Unbiased blocks with nonthrowing field replacement
+   * can rotate up to 128 small values across leaves without structural edits.
+   * Otherwise one preflight covers cuts and joins, so
+   * no intermediate edit can escape on allocation failure. O(F*h) structure,
+   * bounded leaf copying. The allocation policy controls spare-node retention.
+   * @param left Inclusive start.
+   * @param right Exclusive end.
+   * @param distance Left distance reduced modulo a nonempty range length.
+   * @throws std::out_of_range If left > right or right > size(), even at
+   * distance zero.
+   * @throws std::bad_alloc On preflight failure, leaving contents unchanged.
+   */
+  void rotate_left(std::size_t left, std::size_t right, std::size_t distance) {
+    if (left > right || right > size()) {
+      throw std::out_of_range("SequenceTree: rotation range");
+    }
+    const auto n = right - left;
+    if (n == 0 || (distance %= n) == 0) {
+      return;
+    }
+    if (rotate_local(left, right, distance)) {
+      return;
+    }
+    if constexpr (!IndexBias && sizeof(value_type) <= sizeof(std::uint64_t) &&
+                  std::is_trivially_copyable_v<value_type> &&
+                  std::is_default_constructible_v<value_type> &&
+                  requires(Block& block, std::size_t i, value_type value) {
+                    { block.set_at(i, value) } noexcept;
+                  }) {
+      // Bounded short edits keep the existing leaves, lengths and topology.
+      // Gather everything before writing, so overlapping source/destination
+      // ranges are safe. This path neither allocates nor changes ownership.
+      constexpr std::size_t limit = 128;
+      if (n <= limit) {
+        struct Segment {
+          Block* block;
+          std::size_t offset, count;
+        };
+        std::array<value_type, limit> values;
+        std::array<Segment, limit> segments;
+        std::size_t count = 0, done = 0;
+        while (done < n) {
+          const auto position = locate(root_, left + done);
+          auto& block = position.leaf->block;
+          const auto take = std::min(n - done, block.size() - position.offset);
+          segments[count++] = {&block, position.offset, take};
+          for (std::size_t i = 0; i < take; ++i) {
+            values[done + i] = std::as_const(block)[position.offset + i];
+          }
+          done += take;
+        }
+        auto source = distance;
+        for (std::size_t j = 0; j < count; ++j) {
+          const auto& segment = segments[j];
+          for (std::size_t i = 0; i < segment.count; ++i) {
+            segment.block->set_at(segment.offset + i, values[source]);
+            if (++source == n) {
+              source = 0;
+            }
+          }
+          mutate();
+        }
+        return;
+      }
+    }
+    Pool pool(reserve_.for_rotation(size(), sizeof(value_type)));
+    if (left == 0 && right == size()) {
+      /** @brief One split (3h) and one seam (2h+4), with cut heights <=h. */
+      pool.reserve(5 * height() + 4, locate(root_, distance).offset != 0);
+      auto cut = split(std::move(root_), distance, pool);
+      root_ = concatenate(std::move(cut.right), std::move(cut.left), pool);
+      pool.commit();
+      return;
+    }
+    /**
+     * @brief Reserve the sum of cut and seam temporary-prefix deficits.
+     * @details Three splits cost <=9h, retaining all four results. The two
+     * independent seams each cost <=2h+4 and grow height by at most two;
+     * their final seam costs <=2(h+2)+4. The existing 15h+24 reservation
+     * conservatively covers this <=15h+16 total. Only nonaligned cuts need leaf
+     * spares; earlier cuts preserve later offsets. This is not a
+     * net-growth-only reservation.
+     */
+    const auto leaf_spares =
+        std::size_t(left != 0 && locate(root_, left).offset != 0) +
+        (locate(root_, left + distance).offset != 0) +
+        (right != size() && locate(root_, right).offset != 0);
+    pool.reserve(15 * height() + 24, leaf_spares);
+    // Split the outer boundaries in separate halves, then rebuild two halves
+    // independently. Avoid repeatedly extending the same growing prefix.
+    auto middle = split(std::move(root_), left + distance, pool);
+    auto a = split(std::move(middle.left), left, pool);
+    auto b = split(std::move(middle.right), right - left - distance, pool);
+    auto first = concatenate(std::move(a.left), std::move(b.left), pool);
+    auto second = concatenate(std::move(a.right), std::move(b.right), pool);
+    root_ = concatenate(std::move(first), std::move(second), pool);
+    pool.commit();
+  }
+
+  /**
+   * @brief Insert one value at a zero-based position in O(F*h).
+   * @details Fast path inserts into a target leaf with remaining capacity and
+   * updates ancestor measures without allocation. Without IndexBias, the slow
+   * path splits a full leaf and propagates child splits through its ancestors,
+   * reserving all required nodes before mutation. For IndexBias trees the fast
+   * path subtracts the accumulated path bias from value (the leaf retains its
+   * pending bias); the slow path splits at position and concatenates a fresh,
+   * unbiased singleton between the two results, preserving decoded values.
+   * @param position Insertion position in [0, size()].
+   * @param value Element to insert.
+   * @throws std::out_of_range If position > size().
+   * @throws std::bad_alloc On preflight allocation failure (slow path only).
+   */
+  void insert_at(std::size_t position, value_type value)
+    requires InsertableSequenceBlock<Block>
+  {
+    if (position > size()) {
+      throw std::out_of_range("SequenceTree: insert position");
+    }
+    if (empty()) {
+      root_ = Owner(allocate<Leaf>(), 1, 0);
+      const value_type data[] = {value};
+      static_cast<Leaf*>(root_.p)->block =
+          Block(std::span<const value_type>(data, 1));
+      return;
+    }
+    struct PathEntry {
+      Node* node;
+      std::size_t child;
+      std::size_t total;
+    };
+    std::array<PathEntry, max_height> path;
+    std::size_t depth = 0;
+    std::uint64_t total_bias = 0;
+    void* p = root_.p;
+    auto total = root_.total;
+    auto local = position;
+    for (auto h = root_.height; h != 0; --h) {
+      visit();
+      auto& node = *static_cast<Node*>(p);
+      if constexpr (IndexBias) {
+        total_bias += node.bias.value;
+      }
+      if constexpr (Layout == LengthLayout::cumulative) {
+        const auto i = node_select(
+            {node.measures.data(), std::size_t(node.count) - 1}, local);
+        const auto prefix = i == 0 ? 0 : node.measures[i - 1];
+        const auto end = i + 1 == node.count ? total : node.measures[i];
+        path[depth++] = {&node, i, total};
+        local -= prefix;
+        total = end - prefix;
+        p = node.child(i, h);
+      } else {
+        std::size_t prefix = 0;
+        for (std::size_t i = 0; i < node.count; ++i) {
+          const auto n = length(node, i, total, prefix);
+          if (local - prefix < n ||
+              (local - prefix == n && i + 1 == node.count)) {
+            path[depth++] = {&node, i, total};
+            local -= prefix;
+            total = n;
+            p = node.child(i, h);
+            break;
+          }
+          prefix += n;
+        }
+      }
+    }
+    auto& leaf = *static_cast<Leaf*>(p);
+    if constexpr (IndexBias) {
+      total_bias += leaf.bias.value;
+    }
+    if (leaf.block.size() < block_capacity) {
+      if constexpr (IndexBias) {
+        assert(total_bias <= value);
+        leaf.block.insert_at(local,
+                             static_cast<value_type>(value - total_bias));
+      } else {
+        leaf.block.insert_at(local, value);
+      }
+      mutate();
+      for (std::size_t i = depth; i > 0; --i) {
+        auto& entry = path[i - 1];
+        auto& node = *entry.node;
+        node.regular_prefix =
+            std::min(std::size_t(node.regular_prefix), entry.child);
+        if constexpr (Layout == LengthLayout::cumulative) {
+          for (std::size_t j = entry.child; j + 1 < node.count; ++j) {
+            ++node.measures[j];
+          }
+        } else if (entry.child + 1 < node.count) {
+          ++node.measures[entry.child];
+        }
+      }
+      ++root_.total;
+      return;
+    }
+    if constexpr (!IndexBias) {
+      // A full leaf needs one sibling. Each full ancestor can require one
+      // additional node, and propagation can create one new root. Reserve
+      // before touching ownership or payloads to retain the strong guarantee.
+      Pool pool;
+      std::size_t spares = 1;
+      for (std::size_t i = depth; i != 0; --i) {
+        if (path[i - 1].node->count != Fanout) {
+          break;
+        }
+        ++spares;
+      }
+      pool.reserve(spares, 1);
+      auto sibling = pool.leaf();
+      const auto left_count = (block_capacity + 1) / 2;
+      const bool insert_left = local < left_count;
+      const auto old_left = left_count - std::size_t(insert_left);
+      auto& right = static_cast<Leaf*>(sibling.p)->block;
+      leaf.block.redistribute(right, old_left);
+      if (insert_left) {
+        leaf.block.insert_at(local, value);
+      } else {
+        right.insert_at(local - old_left, value);
+      }
+      mutate();
+      sibling.total = right.size();
+      root_.release();
+      Pair carry{Owner(&leaf, leaf.block.size(), 0), std::move(sibling)};
+      for (std::size_t level = depth; level != 0; --level) {
+        const auto& entry = path[level - 1];
+        auto* node = entry.node;
+        Entries entries;
+        std::size_t count = 0, prefix = 0;
+        for (std::size_t i = 0; i < node->count; ++i) {
+          const auto n = length(*node, i, entry.total, prefix);
+          if (i == entry.child) {
+            entries[count++] = std::move(carry.left);
+            if (carry.right.p) {
+              entries[count++] = std::move(carry.right);
+            }
+          } else {
+            entries[count++] =
+                Owner(node->child(i, depth - level + 1), n, depth - level);
+          }
+          prefix += n;
+        }
+        pool.recycle(node);
+        carry = repack(entries, count, pool);
+      }
+      if (carry.right.p) {
+        Entries entries;
+        entries[0] = std::move(carry.left);
+        entries[1] = std::move(carry.right);
+        root_ = pack(pool.node(), entries, 0, 2);
+      } else {
+        root_ = std::move(carry.left);
+      }
+      return;
+    }
+    // Biased trees retain the split/concatenate path for lazy bias handling.
+    Pool pool;
+    const value_type data[] = {value};
+    if (position == size()) {
+      pool.reserve(2 * height() + 4, 1);
+      auto singleton = pool.leaf();
+      static_cast<Leaf*>(singleton.p)->block =
+          Block(std::span<const value_type>(data, 1));
+      singleton.total = 1;
+      singleton.height = 0;
+      root_ = concatenate(std::move(root_), std::move(singleton), pool);
+      return;
+    }
+    /**
+     * @brief One split (3h) plus two seams (2h+4 and 2h+8) = 7h+12 nodes.
+     * @details Only a nonaligned cut needs a leaf spare; the singleton uses
+     * the second. Concatenate seam repair cuts at leaf boundaries and needs
+     * no leaf spares.
+     */
+    pool.reserve(7 * height() + 12, 2);
+    auto pair = split(std::move(root_), position, pool);
+    auto singleton = pool.leaf();
+    static_cast<Leaf*>(singleton.p)->block =
+        Block(std::span<const value_type>(data, 1));
+    singleton.total = 1;
+    singleton.height = 0;
+    root_ = concatenate(std::move(pair.left), std::move(singleton), pool);
+    root_ = concatenate(std::move(root_), std::move(pair.right), pool);
+  }
+
+  /** @brief Explicit traversal result for memory accounting, excluding
+   * allocator overhead. */
+  struct MemoryUsage {
+    std::size_t blocks = 0;
+    std::size_t nodes = 0;
+    std::size_t block_bytes = 0;
+    std::size_t node_bytes = 0;
+    std::size_t reserved_nodes = 0;
+    std::size_t reserved_bytes = 0;
+    std::size_t total_bytes = sizeof(SequenceTree);
+  };
+  /**
+   * @brief Enumerate allocations for diagnostics, never called by mutation.
+   * @details O(number of allocations). Counts actual typed object sizes,
+   * including alignment padding, but excludes allocator overhead and preflight
+   * peak. Byte arithmetic saturates at SIZE_MAX if an exotic block represents
+   * too many tiny elements for the diagnostic footprint to be representable.
+   * @return Live block/node counts and requested bytes including this object.
+   */
+  MemoryUsage memory_usage() const noexcept {
+    MemoryUsage result;
+    auto walk = [&](auto&& self, void* p, std::size_t h) -> void {
+      if (!p) {
+        return;
+      }
+      if (h == 0) {
+        ++result.blocks;
+      } else {
+        ++result.nodes;
+        const auto& node = *static_cast<Node*>(p);
+        for (std::size_t i = 0; i < node.count; ++i) {
+          self(self, node.child(i, h), h - 1);
+        }
+      }
+    };
+    walk(walk, root_.p, height());
+    result.block_bytes = saturated_multiply(result.blocks, sizeof(Leaf));
+    result.node_bytes = saturated_multiply(result.nodes, sizeof(Node));
+    result.reserved_nodes = reserve_.node_count();
+    result.reserved_bytes =
+        saturated_multiply(result.reserved_nodes, sizeof(Node));
+    result.total_bytes = saturated_add(
+        sizeof(*this),
+        saturated_add(result.block_bytes,
+                      saturated_add(result.node_bytes, result.reserved_bytes)));
+    return result;
+  }
+  /** @brief Explicit O(allocations) footprint query. @return Requested live
+   * bytes. */
+  std::size_t memory_usage_bytes() const noexcept {
+    return memory_usage().total_bytes;
+  }
+  /** @brief Explicit O(allocations) leaf count. @return Number of live blocks.
+   */
+  std::size_t block_count() const noexcept { return memory_usage().blocks; }
+  /**
+   * @brief Explicit O(allocations) internal-node count.
+   * @return Number of live internal nodes, excluding leaves and the root owner.
+   */
+  std::size_t node_count() const noexcept { return memory_usage().nodes; }
+  /** @brief Explicit O(allocations) leaf bytes. @return Includes leaf
+   * metadata/padding. */
+  std::size_t block_allocation_bytes() const noexcept {
+    return memory_usage().block_bytes;
+  }
+  /** @brief Explicit O(allocations) node bytes. @return Excludes the root
+   * owner. */
+  std::size_t internal_memory_bytes() const noexcept {
+    const auto usage = memory_usage();
+    return saturated_add(usage.node_bytes, usage.reserved_bytes);
+  }
+  /**
+   * @brief Explicit O(allocations) payload accounting for blocks reporting it.
+   * @return Payload capacity bytes including unused elements, excluding
+   * metadata.
+   */
+  std::size_t payload_capacity_bytes() const noexcept
+    requires requires(const Block& b) {
+      { b.payload_capacity_bytes() } noexcept -> std::same_as<std::size_t>;
+    }
+  {
+    return saturated_multiply(block_count(), Block{}.payload_capacity_bytes());
+  }
+  /**
+   * @brief Explicit O(allocations) metadata accounting for payload-reporting
+   * blocks.
+   * @return Root owner, internal nodes, block metadata and alignment padding.
+   */
+  std::size_t metadata_bytes() const noexcept
+    requires requires(const Block& b) {
+      { b.payload_capacity_bytes() } noexcept -> std::same_as<std::size_t>;
+    }
+  {
+    return memory_usage_bytes() - payload_capacity_bytes();
+  }
+  /**
+   * @brief Visit blocks in logical order without materializing another buffer.
+   * @details Explicit O(allocations) traversal; callback receives const Block&.
+   * Mutation during traversal is unsupported; callback exceptions propagate.
+   * Unavailable on tagged trees: raw stored fields omit pending index biases.
+   * @param callback Callable invoked once per nonempty block in sequence order.
+   */
+  template <class Callback>
+  void for_each_block(Callback&& callback) const
+    requires(!IndexBias)
+  {
+    auto walk = [&](auto&& self, void* p, std::size_t h) -> void {
+      if (!p) {
+        return;
+      }
+      if (h == 0) {
+        callback(std::as_const(static_cast<Leaf*>(p)->block));
+      } else {
+        const auto& node = *static_cast<Node*>(p);
+        for (std::size_t i = 0; i < node.count; ++i) {
+          self(self, node.child(i, h), h - 1);
+        }
+      }
+    };
+    walk(walk, root_.p, height());
+  }
+
+#ifdef PIXIE_SEQUENCE_TREE_TESTING
+  /**
+   * @brief Enumerate absolute child boundaries for shape-forcing rotation
+   * tests.
+   * @details Root-first preorder; each vector starts at the node's first
+   * element and ends at its exclusive end. Read-only O(allocations) traversal,
+   * absent from normal builds, with no effect on transaction counters or lazy
+   * biases.
+   * @return One allocating boundary vector per internal node.
+   */
+  std::vector<std::vector<std::size_t>> test_child_boundaries() const {
+    std::vector<std::vector<std::size_t>> result;
+    auto walk = [&](auto&& self, const void* p, std::size_t total,
+                    std::size_t h, std::size_t start) -> void {
+      if (!p || h == 0) {
+        return;
+      }
+      const auto& node = *static_cast<const Node*>(p);
+      std::vector<std::size_t> boundaries{start};
+      std::size_t prefix = 0;
+      for (std::size_t i = 0; i < node.count; ++i) {
+        prefix += length(node, i, total, prefix);
+        boundaries.push_back(start + prefix);
+      }
+      result.push_back(boundaries);
+      for (std::size_t i = 0; i < node.count; ++i) {
+        self(self, node.child(i, h), boundaries[i + 1] - boundaries[i], h - 1,
+             boundaries[i]);
+      }
+    };
+    walk(walk, root_.p, root_.total, root_.height, 0);
+    return result;
+  }
+
+  /**
+   * @brief Test-only recursive validation; never invoked by normal operations.
+   * @details Checks lengths, depth, node/leaf occupancy, unique ownership and
+   * allocation alignment. O(allocations) space/time, may allocate and throw.
+   * @return Whether every representation invariant holds.
+   */
+  bool test_validate() const {
+    if (!root_.p) {
+      return size() == 0 && height() == 0;
+    }
+    std::unordered_set<const void*> seen;
+    auto walk = [&](auto&& self, void* p, std::size_t total, std::size_t h,
+                    bool first, bool last, bool root,
+                    std::uint64_t inherited) -> bool {
+      if (!p || !total || !seen.insert(p).second) {
+        return false;
+      }
+      if (h == 0) {
+        const auto& b = static_cast<Leaf*>(p)->block;
+        if constexpr (IndexBias) {
+          const auto pending = static_cast<Leaf*>(p)->bias.value;
+          const auto maximum = std::numeric_limits<value_type>::max();
+          if (inherited > maximum || pending > maximum - inherited) {
+            return false;
+          }
+          inherited += pending;
+          for (std::size_t i = 0; i < b.size(); ++i) {
+            if (b[i] > maximum - inherited) {
+              return false;
+            }
+          }
+        }
+        return reinterpret_cast<std::uintptr_t>(p) % alignof(Leaf) == 0 &&
+               b.size() == total && total <= Block::capacity &&
+               (first || last || total >= minimum_leaf_size);
+      }
+      const auto& node = *static_cast<Node*>(p);
+      if constexpr (IndexBias) {
+        const auto maximum = std::numeric_limits<value_type>::max();
+        if (inherited > maximum || node.bias.value > maximum - inherited) {
+          return false;
+        }
+        inherited += node.bias.value;
+      }
+      if (reinterpret_cast<std::uintptr_t>(p) % alignof(Node) != 0 ||
+          node.count < (root ? 2 : Fanout / 2) || node.count > Fanout) {
+        return false;
+      }
+      if (node.regular_prefix > node.count) {
+        return false;
+      }
+      if (!node.order.valid(node, h)) {
+        return false;
+      }
+      if (node.regular_prefix) {
+        if constexpr (!std::has_single_bit(Fanout) ||
+                      Layout != LengthLayout::cumulative) {
+          return false;
+        } else {
+          const auto shift = (h - 1) * std::countr_zero(Fanout);
+          if (shift >= std::numeric_limits<std::size_t>::digits ||
+              block_capacity >
+                  (std::numeric_limits<std::size_t>::max() >> shift)) {
+            return false;
+          }
+          const auto capacity = block_capacity << shift;
+          for (std::size_t i = 0; i < node.regular_prefix; ++i) {
+            const auto end = i + 1 == node.count ? total : node.measures[i];
+            if (end / (i + 1) != capacity || end % (i + 1) != 0) {
+              return false;
+            }
+          }
+        }
+      }
+      std::size_t prefix = 0;
+      for (std::size_t i = 0; i < node.count; ++i) {
+        if (prefix >= total) {
+          return false;
+        }
+        const auto n = length(node, i, total, prefix);
+        if (n > total - prefix ||
+            !self(self, node.child(i, h), n, h - 1, first && i == 0,
+                  last && i + 1 == node.count, false, inherited)) {
+          return false;
+        }
+        prefix += n;
+      }
+      return prefix == total;
+    };
+    return walk(walk, root_.p, size(), height(), true, true, true, 0);
+  }
+  /** @brief Enumerate stable leaf identities for locality tests. @return
+   * Ordered addresses. */
+  std::vector<const void*> test_leaf_identities() const {
+    std::vector<const void*> result;
+    auto walk = [&](auto&& self, const void* p, std::size_t h) -> void {
+      if (!p) {
+        return;
+      }
+      if (h == 0) {
+        result.push_back(&static_cast<const Leaf*>(p)->block);
+      } else {
+        const auto& node = *static_cast<const Node*>(p);
+        for (std::size_t i = 0; i < node.count; ++i) {
+          self(self, node.child(i, h), h - 1);
+        }
+      }
+    };
+    walk(walk, root_.p, height());
+    return result;
+  }
+  /**
+   * @brief Snapshot raw pending biases and their allocation identities in
+   * tests.
+   * @details Tagged trees only; root-first preorder includes every node and
+   * leaf, including zero biases. This const traversal neither pushes tags nor
+   * changes operation counters. O(allocations) time and returned vector space;
+   * vector allocation may throw. Absent from production builds.
+   * @return Allocation address and exact unaccumulated pending bias pairs.
+   */
+  std::vector<std::pair<const void*, std::uint64_t>> test_bias_snapshot() const
+    requires(IndexBias)
+  {
+    std::vector<std::pair<const void*, std::uint64_t>> result;
+    auto walk = [&](auto&& self, const void* p, std::size_t h) -> void {
+      if (!p) {
+        return;
+      }
+      if (h == 0) {
+        result.emplace_back(p, static_cast<const Leaf*>(p)->bias.value);
+      } else {
+        const auto& node = *static_cast<const Node*>(p);
+        result.emplace_back(p, node.bias.value);
+        for (std::size_t i = 0; i < node.count; ++i) {
+          self(self, node.child(i, h), h - 1);
+        }
+      }
+    };
+    walk(walk, root_.p, height());
+    return result;
+  }
+  /**
+   * @brief Attach a synthetic test-only bias without huge identity allocation.
+   * @details Requires a nonempty tree and every resulting value representable.
+   * Not present in production and never an unchecked public container action.
+   */
+  void test_add_bias(std::uint64_t bias) noexcept
+    requires(IndexBias)
+  {
+    assert(!empty());
+    add_bias(root_.p, height(), bias);
+  }
+  /**
+   * @brief Enumerate internal-node identities for test-only locality checks.
+   * @details Explicit O(allocations) traversal, never called by mutation.
+   * Addresses follow root-first preorder with children in logical order.
+   * The returned vector allocates; callback-free enumeration does not update
+   * operation counters. Empty trees and leaf roots return an empty vector.
+   * @return Internal allocation addresses, excluding leaves and the root owner.
+   */
+  std::vector<const void*> test_internal_node_identities() const {
+    std::vector<const void*> result;
+    auto walk = [&](auto&& self, const void* p, std::size_t h) -> void {
+      if (!p || h == 0) {
+        return;
+      }
+      result.push_back(p);
+      const auto& node = *static_cast<const Node*>(p);
+      for (std::size_t i = 0; i < node.count; ++i) {
+        self(self, node.child(i, h), h - 1);
+      }
+    };
+    walk(walk, root_.p, height());
+    return result;
+  }
+#endif
 
  private:
   static void allocation() {
@@ -927,231 +1808,6 @@ class SequenceTree {
     a = join(std::move(a), group(seam, 0, count, pool), pool);
     return join(std::move(a), std::move(b), pool);
   }
-
- public:
-  /** @brief Construct canonical empty, with no allocation. */
-  SequenceTree() noexcept = default;
-  /** @brief Exclusive ownership disallows copying. */
-  SequenceTree(const SequenceTree&) = delete;
-  /** @brief Exclusive ownership disallows copy assignment. */
-  SequenceTree& operator=(const SequenceTree&) = delete;
-  /** @brief Transfer ownership; source becomes canonical empty. */
-  SequenceTree(SequenceTree&&) noexcept = default;
-  /** @brief Transfer ownership; source becomes empty; self-move is a no-op. */
-  SequenceTree& operator=(SequenceTree&&) noexcept = default;
-  /** @brief Return logical element count. @return Count in [0, SIZE_MAX]. */
-  std::size_t size() const noexcept { return root_.total; }
-  /** @brief Test emptiness. @return Whether no elements or allocations exist.
-   */
-  bool empty() const noexcept { return !root_.p; }
-  /** @brief Return internal levels. @return Zero for an empty tree or leaf
-   * root. */
-  std::size_t height() const noexcept { return root_.height; }
-  /**
-   * @brief Size of the leading region addressable by pure radix descent.
-   * @details Returns an element count in [0,size()]. Empty and leaf roots
-   * return size(); internal roots include only their leading full children.
-   * A caller may cache this count until the next mutation or ownership change.
-   */
-  std::size_t regular_prefix_size() const noexcept
-    requires(!IndexBias && std::has_single_bit(Fanout) &&
-             Layout == LengthLayout::cumulative)
-  {
-    if (height() == 0) {
-      return size();
-    }
-    const auto prefix = static_cast<const Node*>(root_.p)->regular_prefix;
-    if (prefix == 0) {
-      return 0;
-    }
-    // pack records a nonzero prefix only when the child capacity fits.
-    const auto shift = (height() - 1) * std::countr_zero(Fanout);
-    return prefix * (block_capacity << shift);
-  }
-  /**
-   * @brief Read a position known to lie in regular_prefix_size().
-   * @param index Zero-based index strictly below regular_prefix_size().
-   * @return Immutable value. Invalid input violates the precondition.
-   * @details No validation or size-table loads in release builds. Cached
-   * bounds must be refreshed after every mutation and ownership change.
-   */
-  value_type read_regular_unchecked(std::size_t index) const noexcept
-    requires(!IndexBias && std::has_single_bit(Fanout) &&
-             Layout == LengthLayout::cumulative &&
-             requires(const Block& block) {
-               {
-                 block.read_unchecked(index)
-               } noexcept -> std::same_as<value_type>;
-             })
-  {
-    assert(index < regular_prefix_size());
-    const auto block_index = index / block_capacity;
-    auto* p = root_.p;
-    for (auto h = height(); h != 0; --h) {
-      visit();
-      const auto child =
-          (block_index >> ((h - 1) * std::countr_zero(Fanout))) & (Fanout - 1);
-      p = static_cast<const Node*>(p)->child(child, h);
-    }
-    return static_cast<const Leaf*>(p)->block.read_unchecked(index %
-                                                             block_capacity);
-  }
-  /**
-   * @brief Read a zero-based element by value in O(F*h).
-   * @param i Index in [0, size()).
-   * @return Immutable logical value.
-   * @throws std::out_of_range If i >= size().
-   */
-  value_type operator[](std::size_t i) const {
-    if (i >= size()) {
-      throw std::out_of_range("SequenceTree: index");
-    }
-    const auto position = locate<IndexBias>(root_, i);
-    const auto& block = std::as_const(position.leaf->block);
-    const auto value = [&] {
-      if constexpr (requires {
-                      {
-                        block.read_unchecked(position.offset)
-                      } noexcept -> std::same_as<value_type>;
-                    }) {
-        return block.read_unchecked(position.offset);
-      } else {
-        return block[position.offset];
-      }
-    }();
-    if constexpr (IndexBias) {
-      return static_cast<value_type>(value + position.bias.value);
-    } else {
-      return value;
-    }
-  }
-  /**
-   * @brief Find the first position where pred(value) is true via guided
-   * descent.
-   * @details The predicate must be monotone over the sequence order: all false
-   * values precede all true values. At each internal node the children are
-   * binary-searched by reading the rightmost value of each child subtree, then
-   * the search descends into the single child that can contain the first true
-   * element. This avoids repeated root-to-leaf descents of a position-based
-   * binary search. Complexity is O(log F * h*(h+1)/2) boundary reads plus a
-   * leaf-local binary search, where each boundary read is a pointer-chasing
-   * descent of the remaining subtree height.
-   * @param pred Predicate on decoded value_type returning true when the value
-   * is at or past the search target.
-   * @return Position in [0, size()]; size() means pred is false for every
-   * element.
-   */
-  template <class Pred>
-  std::size_t lower_bound(Pred pred) const {
-    if (empty()) {
-      return 0;
-    }
-    std::size_t base = 0;
-    std::size_t total = root_.total;
-    void* p = root_.p;
-    Bias bias{};
-    for (auto h = root_.height; h != 0; --h) {
-      auto& node = *static_cast<Node*>(p);
-      if constexpr (IndexBias) {
-        bias.value += node.bias.value;
-      }
-      std::size_t lo = 0;
-      std::size_t hi = node.count;
-      while (lo < hi) {
-        const auto mid = lo + (hi - lo) / 2;
-        if (pred(edge_value(node.child(mid, h), h - 1, bias, true))) {
-          hi = mid;
-        } else {
-          lo = mid + 1;
-        }
-      }
-      if (lo == node.count) {
-        return base + total;
-      }
-      std::size_t prefix;
-      std::size_t child_total;
-      if constexpr (Layout == LengthLayout::cumulative) {
-        prefix = lo == 0 ? 0 : node.measures[lo - 1];
-        const auto end = lo + 1 == node.count ? total : node.measures[lo];
-        child_total = end - prefix;
-      } else {
-        prefix = 0;
-        for (std::size_t i = 0; i < lo; ++i) {
-          prefix += length(node, i, total, prefix);
-        }
-        child_total = length(node, lo, total, prefix);
-      }
-      base += prefix;
-      total = child_total;
-      p = node.child(lo, h);
-    }
-    auto& leaf = *static_cast<Leaf*>(p);
-    if constexpr (IndexBias) {
-      bias.value += leaf.bias.value;
-    }
-    const auto& block = std::as_const(leaf.block);
-    std::size_t lo = 0;
-    std::size_t hi = block.size();
-    while (lo < hi) {
-      const auto mid = lo + (hi - lo) / 2;
-      const auto raw = block[mid];
-      const auto v = [&] {
-        if constexpr (IndexBias) {
-          return static_cast<value_type>(raw + bias.value);
-        } else {
-          return raw;
-        }
-      }();
-      if (pred(v)) {
-        hi = mid;
-      } else {
-        lo = mid + 1;
-      }
-    }
-    return base + lo;
-  }
-  /**
-   * @brief Consume a single-pass range of blocks in streaming bottom-up order.
-   * @details Moves from each input block; empty blocks are ignored. Packs short
-   * inputs into full leaves, retaining O(F*h) pending owners, not a directory
-   * or second complete payload buffer. Completed levels are built bottom-up;
-   * finishing the bounded fringe groups and joins once per level. On iterator,
-   * allocation or length failure, already visited input may be consumed; all
-   * acquired ownership is reclaimed. This is not a transactional range API.
-   * @param blocks Mutable input range whose references can move into Block.
-   * @return Exclusively owned tree preserving concatenated element order.
-   * @throws std::length_error If total exceeds SIZE_MAX or a block exceeds
-   * capacity.
-   * @throws std::bad_alloc If construction allocation fails.
-   */
-  template <std::ranges::input_range Range>
-    requires std::
-        constructible_from<Block, std::ranges::range_rvalue_reference_t<Range>>
-      static SequenceTree from_blocks(Range&& blocks) {
-    auto it = std::ranges::begin(blocks);
-    const auto end = std::ranges::end(blocks);
-    if (it == end) {
-      return {};
-    }
-    Block pending(std::ranges::iter_move(it));
-    std::size_t total = pending.size();
-    if (total > Block::capacity) {
-      throw std::length_error("SequenceTree: construction size");
-    }
-    ++it;
-    if (it == end) {
-      // Avoid initializing O(F*max_height) owning slots for a single leaf.
-      SequenceTree result;
-      if (total != 0) {
-        result.root_ = Owner(allocate<Leaf>(), total, 0);
-        static_cast<Leaf*>(result.root_.p)->block = std::move(pending);
-      }
-      return result;
-    }
-    return from_blocks_many(std::move(it), end, pending, total);
-  }
-
- private:
   // Keep the O(F*max_height) assembly scratch in a separate call frame. Even
   // an early return in that frame pays the compiler's stack-clash page probes.
   template <class Iterator, class Sentinel>
@@ -1225,48 +1881,6 @@ class SequenceTree {
     }
     return result;
   }
-
- public:
-  /**
-   * @brief Keep [0,p), returning [p,size()) by exclusive ownership transfer.
-   * @details Endpoints are accepted. O(F*h) structure and at most one block
-   * redistribution. Allocation failure leaves this tree unchanged.
-   * @param p Zero-based split boundary in [0,size()].
-   * @return Consumed suffix; neither result shares storage.
-   * @throws std::out_of_range If p > size().
-   * @throws std::bad_alloc On preflight allocation failure.
-   */
-  SequenceTree split_off(std::size_t p) {
-    if (p > size()) {
-      throw std::out_of_range("SequenceTree: split position");
-    }
-    SequenceTree result;
-    if (p == size()) {
-      return result;
-    }
-    if (p == 0) {
-      return std::move(*this);
-    }
-    Pool pool;
-    pool.reserve(3 * root_.height, locate(root_, p).offset != 0);
-    auto pair = split(std::move(root_), p, pool);
-    root_ = std::move(pair.left);
-    result.root_ = std::move(pair.right);
-    reserve_.trim(size(), sizeof(value_type));
-    return result;
-  }
-  /**
-   * @brief Append and consume a distinct donor in O(F*h).
-   * @details Self-merge and empty donor are no-ops. On success donor is
-   * canonical empty. Repairs only a bounded leaf seam; off-path ownership stays
-   * intact. Both trees remain unchanged on allocation or total-size failure.
-   * @param donor Tree whose elements follow this tree's contents.
-   * @throws std::length_error If concatenation exceeds SIZE_MAX.
-   * @throws std::bad_alloc On preflight allocation failure.
-   */
-  void merge(SequenceTree& donor) { merge_impl<false>(donor); }
-
- private:
   // Only Permutation may request rebasing. All allocating preflight paths
   // complete before tagging; from that point every ownership transfer and
   // bounded normalization is noexcept. The structural pool proofs are
@@ -1352,632 +1966,6 @@ class SequenceTree {
     tag();
     root_ = concatenate(std::move(root_), std::move(donor.root_), pool);
   }
-
- public:
-  /**
-   * @brief Rotate [left,right) left, preserving all outside elements.
-   * @details A one-leaf range uses its nonthrowing local kernel. Complete-child
-   * ranges at a common covering node reorder in place when both endpoint leaves
-   * are at least half full. Unbiased blocks with nonthrowing field replacement
-   * can rotate up to 128 small values across leaves without structural edits.
-   * Otherwise one preflight covers cuts and joins, so
-   * no intermediate edit can escape on allocation failure. O(F*h) structure,
-   * bounded leaf copying; no persistent spare-node storage.
-   * @param left Inclusive start.
-   * @param right Exclusive end.
-   * @param distance Left distance reduced modulo a nonempty range length.
-   * @throws std::out_of_range If left > right or right > size(), even at
-   * distance zero.
-   * @throws std::bad_alloc On preflight failure, leaving contents unchanged.
-   */
-  void rotate_left(std::size_t left, std::size_t right, std::size_t distance) {
-    if (left > right || right > size()) {
-      throw std::out_of_range("SequenceTree: rotation range");
-    }
-    const auto n = right - left;
-    if (n == 0 || (distance %= n) == 0) {
-      return;
-    }
-    if (rotate_local(left, right, distance)) {
-      return;
-    }
-    if constexpr (!IndexBias && sizeof(value_type) <= sizeof(std::uint64_t) &&
-                  std::is_trivially_copyable_v<value_type> &&
-                  std::is_default_constructible_v<value_type> &&
-                  requires(Block& block, std::size_t i, value_type value) {
-                    { block.set_at(i, value) } noexcept;
-                  }) {
-      // Bounded short edits keep the existing leaves, lengths and topology.
-      // Gather everything before writing, so overlapping source/destination
-      // ranges are safe. This path neither allocates nor changes ownership.
-      constexpr std::size_t limit = 128;
-      if (n <= limit) {
-        struct Segment {
-          Block* block;
-          std::size_t offset, count;
-        };
-        std::array<value_type, limit> values;
-        std::array<Segment, limit> segments;
-        std::size_t count = 0, done = 0;
-        while (done < n) {
-          const auto position = locate(root_, left + done);
-          auto& block = position.leaf->block;
-          const auto take = std::min(n - done, block.size() - position.offset);
-          segments[count++] = {&block, position.offset, take};
-          for (std::size_t i = 0; i < take; ++i) {
-            values[done + i] = std::as_const(block)[position.offset + i];
-          }
-          done += take;
-        }
-        auto source = distance;
-        for (std::size_t j = 0; j < count; ++j) {
-          const auto& segment = segments[j];
-          for (std::size_t i = 0; i < segment.count; ++i) {
-            segment.block->set_at(segment.offset + i, values[source]);
-            if (++source == n) {
-              source = 0;
-            }
-          }
-          mutate();
-        }
-        return;
-      }
-    }
-    Pool pool(reserve_.for_rotation(size(), sizeof(value_type)));
-    if (left == 0 && right == size()) {
-      /** @brief One split (3h) and one seam (2h+4), with cut heights <=h. */
-      pool.reserve(5 * height() + 4, locate(root_, distance).offset != 0);
-      auto cut = split(std::move(root_), distance, pool);
-      root_ = concatenate(std::move(cut.right), std::move(cut.left), pool);
-      pool.commit();
-      return;
-    }
-    /**
-     * @brief Reserve the sum of cut and seam temporary-prefix deficits.
-     * @details Three splits cost <=9h, retaining all four results. The two
-     * independent seams each cost <=2h+4 and grow height by at most two;
-     * their final seam costs <=2(h+2)+4. The existing 15h+24 reservation
-     * conservatively covers this <=15h+16 total. Only nonaligned cuts need leaf
-     * spares; earlier cuts preserve later offsets. This is not a
-     * net-growth-only reservation.
-     */
-    const auto leaf_spares =
-        std::size_t(left != 0 && locate(root_, left).offset != 0) +
-        (locate(root_, left + distance).offset != 0) +
-        (right != size() && locate(root_, right).offset != 0);
-    pool.reserve(15 * height() + 24, leaf_spares);
-    // Split the outer boundaries in separate halves, then rebuild two halves
-    // independently. Avoid repeatedly extending the same growing prefix.
-    auto middle = split(std::move(root_), left + distance, pool);
-    auto a = split(std::move(middle.left), left, pool);
-    auto b = split(std::move(middle.right), right - left - distance, pool);
-    auto first = concatenate(std::move(a.left), std::move(b.left), pool);
-    auto second = concatenate(std::move(a.right), std::move(b.right), pool);
-    root_ = concatenate(std::move(first), std::move(second), pool);
-    pool.commit();
-  }
-
-  /**
-   * @brief Insert one value at a zero-based position in O(F*h).
-   * @details Fast path inserts into a target leaf with remaining capacity and
-   * updates ancestor measures without allocation. Without IndexBias, the slow
-   * path splits a full leaf and propagates child splits through its ancestors,
-   * reserving all required nodes before mutation. For IndexBias trees the fast
-   * path subtracts the accumulated path bias from value (the leaf retains its
-   * pending bias); the slow path splits at position and concatenates a fresh,
-   * unbiased singleton between the two results, preserving decoded values.
-   * @param position Insertion position in [0, size()].
-   * @param value Element to insert.
-   * @throws std::out_of_range If position > size().
-   * @throws std::bad_alloc On preflight allocation failure (slow path only).
-   */
-  void insert_at(std::size_t position, value_type value)
-    requires InsertableSequenceBlock<Block>
-  {
-    if (position > size()) {
-      throw std::out_of_range("SequenceTree: insert position");
-    }
-    if (empty()) {
-      root_ = Owner(allocate<Leaf>(), 1, 0);
-      const value_type data[] = {value};
-      static_cast<Leaf*>(root_.p)->block =
-          Block(std::span<const value_type>(data, 1));
-      return;
-    }
-    struct PathEntry {
-      Node* node;
-      std::size_t child;
-      std::size_t total;
-    };
-    std::array<PathEntry, max_height> path;
-    std::size_t depth = 0;
-    std::uint64_t total_bias = 0;
-    void* p = root_.p;
-    auto total = root_.total;
-    auto local = position;
-    for (auto h = root_.height; h != 0; --h) {
-      visit();
-      auto& node = *static_cast<Node*>(p);
-      if constexpr (IndexBias) {
-        total_bias += node.bias.value;
-      }
-      if constexpr (Layout == LengthLayout::cumulative) {
-        const auto i = node_select(
-            {node.measures.data(), std::size_t(node.count) - 1}, local);
-        const auto prefix = i == 0 ? 0 : node.measures[i - 1];
-        const auto end = i + 1 == node.count ? total : node.measures[i];
-        path[depth++] = {&node, i, total};
-        local -= prefix;
-        total = end - prefix;
-        p = node.child(i, h);
-      } else {
-        std::size_t prefix = 0;
-        for (std::size_t i = 0; i < node.count; ++i) {
-          const auto n = length(node, i, total, prefix);
-          if (local - prefix < n ||
-              (local - prefix == n && i + 1 == node.count)) {
-            path[depth++] = {&node, i, total};
-            local -= prefix;
-            total = n;
-            p = node.child(i, h);
-            break;
-          }
-          prefix += n;
-        }
-      }
-    }
-    auto& leaf = *static_cast<Leaf*>(p);
-    if constexpr (IndexBias) {
-      total_bias += leaf.bias.value;
-    }
-    if (leaf.block.size() < block_capacity) {
-      if constexpr (IndexBias) {
-        assert(total_bias <= value);
-        leaf.block.insert_at(local,
-                             static_cast<value_type>(value - total_bias));
-      } else {
-        leaf.block.insert_at(local, value);
-      }
-      mutate();
-      for (std::size_t i = depth; i > 0; --i) {
-        auto& entry = path[i - 1];
-        auto& node = *entry.node;
-        node.regular_prefix =
-            std::min(std::size_t(node.regular_prefix), entry.child);
-        if constexpr (Layout == LengthLayout::cumulative) {
-          for (std::size_t j = entry.child; j + 1 < node.count; ++j) {
-            ++node.measures[j];
-          }
-        } else if (entry.child + 1 < node.count) {
-          ++node.measures[entry.child];
-        }
-      }
-      ++root_.total;
-      return;
-    }
-    if constexpr (!IndexBias) {
-      // A full leaf needs one sibling. Each full ancestor can require one
-      // additional node, and propagation can create one new root. Reserve
-      // before touching ownership or payloads to retain the strong guarantee.
-      Pool pool;
-      std::size_t spares = 1;
-      for (std::size_t i = depth; i != 0; --i) {
-        if (path[i - 1].node->count != Fanout) {
-          break;
-        }
-        ++spares;
-      }
-      pool.reserve(spares, 1);
-      auto sibling = pool.leaf();
-      const auto left_count = (block_capacity + 1) / 2;
-      const bool insert_left = local < left_count;
-      const auto old_left = left_count - std::size_t(insert_left);
-      auto& right = static_cast<Leaf*>(sibling.p)->block;
-      leaf.block.redistribute(right, old_left);
-      if (insert_left) {
-        leaf.block.insert_at(local, value);
-      } else {
-        right.insert_at(local - old_left, value);
-      }
-      mutate();
-      sibling.total = right.size();
-      root_.release();
-      Pair carry{Owner(&leaf, leaf.block.size(), 0), std::move(sibling)};
-      for (std::size_t level = depth; level != 0; --level) {
-        const auto& entry = path[level - 1];
-        auto* node = entry.node;
-        Entries entries;
-        std::size_t count = 0, prefix = 0;
-        for (std::size_t i = 0; i < node->count; ++i) {
-          const auto n = length(*node, i, entry.total, prefix);
-          if (i == entry.child) {
-            entries[count++] = std::move(carry.left);
-            if (carry.right.p) {
-              entries[count++] = std::move(carry.right);
-            }
-          } else {
-            entries[count++] =
-                Owner(node->child(i, depth - level + 1), n, depth - level);
-          }
-          prefix += n;
-        }
-        pool.recycle(node);
-        carry = repack(entries, count, pool);
-      }
-      if (carry.right.p) {
-        Entries entries;
-        entries[0] = std::move(carry.left);
-        entries[1] = std::move(carry.right);
-        root_ = pack(pool.node(), entries, 0, 2);
-      } else {
-        root_ = std::move(carry.left);
-      }
-      return;
-    }
-    // Biased trees retain the split/concatenate path for lazy bias handling.
-    Pool pool;
-    const value_type data[] = {value};
-    if (position == size()) {
-      pool.reserve(2 * height() + 4, 1);
-      auto singleton = pool.leaf();
-      static_cast<Leaf*>(singleton.p)->block =
-          Block(std::span<const value_type>(data, 1));
-      singleton.total = 1;
-      singleton.height = 0;
-      root_ = concatenate(std::move(root_), std::move(singleton), pool);
-      return;
-    }
-    /**
-     * @brief One split (3h) plus two seams (2h+4 and 2h+8) = 7h+12 nodes.
-     * @details Only a nonaligned cut needs a leaf spare; the singleton uses
-     * the second. Concatenate seam repair cuts at leaf boundaries and needs
-     * no leaf spares.
-     */
-    pool.reserve(7 * height() + 12, 2);
-    auto pair = split(std::move(root_), position, pool);
-    auto singleton = pool.leaf();
-    static_cast<Leaf*>(singleton.p)->block =
-        Block(std::span<const value_type>(data, 1));
-    singleton.total = 1;
-    singleton.height = 0;
-    root_ = concatenate(std::move(pair.left), std::move(singleton), pool);
-    root_ = concatenate(std::move(root_), std::move(pair.right), pool);
-  }
-
-  /** @brief Explicit traversal result for memory accounting, excluding
-   * allocator overhead. */
-  struct MemoryUsage {
-    std::size_t blocks = 0;
-    std::size_t nodes = 0;
-    std::size_t block_bytes = 0;
-    std::size_t node_bytes = 0;
-    std::size_t reserved_nodes = 0;
-    std::size_t reserved_bytes = 0;
-    std::size_t total_bytes = sizeof(SequenceTree);
-  };
-  /**
-   * @brief Enumerate allocations for diagnostics, never called by mutation.
-   * @details O(number of allocations). Counts actual typed object sizes,
-   * including alignment padding, but excludes allocator overhead and preflight
-   * peak. Byte arithmetic saturates at SIZE_MAX if an exotic block represents
-   * too many tiny elements for the diagnostic footprint to be representable.
-   * @return Live block/node counts and requested bytes including this object.
-   */
-  MemoryUsage memory_usage() const noexcept {
-    MemoryUsage result;
-    auto walk = [&](auto&& self, void* p, std::size_t h) -> void {
-      if (!p) {
-        return;
-      }
-      if (h == 0) {
-        ++result.blocks;
-      } else {
-        ++result.nodes;
-        const auto& node = *static_cast<Node*>(p);
-        for (std::size_t i = 0; i < node.count; ++i) {
-          self(self, node.child(i, h), h - 1);
-        }
-      }
-    };
-    walk(walk, root_.p, height());
-    result.block_bytes = saturated_multiply(result.blocks, sizeof(Leaf));
-    result.node_bytes = saturated_multiply(result.nodes, sizeof(Node));
-    result.reserved_nodes = reserve_.node_count();
-    result.reserved_bytes =
-        saturated_multiply(result.reserved_nodes, sizeof(Node));
-    result.total_bytes = saturated_add(
-        sizeof(*this),
-        saturated_add(result.block_bytes,
-                      saturated_add(result.node_bytes, result.reserved_bytes)));
-    return result;
-  }
-  /** @brief Explicit O(allocations) footprint query. @return Requested live
-   * bytes. */
-  std::size_t memory_usage_bytes() const noexcept {
-    return memory_usage().total_bytes;
-  }
-  /** @brief Explicit O(allocations) leaf count. @return Number of live blocks.
-   */
-  std::size_t block_count() const noexcept { return memory_usage().blocks; }
-  /**
-   * @brief Explicit O(allocations) internal-node count.
-   * @return Number of live internal nodes, excluding leaves and the root owner.
-   */
-  std::size_t node_count() const noexcept { return memory_usage().nodes; }
-  /** @brief Explicit O(allocations) leaf bytes. @return Includes leaf
-   * metadata/padding. */
-  std::size_t block_allocation_bytes() const noexcept {
-    return memory_usage().block_bytes;
-  }
-  /** @brief Explicit O(allocations) node bytes. @return Excludes the root
-   * owner. */
-  std::size_t internal_memory_bytes() const noexcept {
-    const auto usage = memory_usage();
-    return saturated_add(usage.node_bytes, usage.reserved_bytes);
-  }
-  /**
-   * @brief Explicit O(allocations) payload accounting for blocks reporting it.
-   * @return Payload capacity bytes including unused elements, excluding
-   * metadata.
-   */
-  std::size_t payload_capacity_bytes() const noexcept
-    requires requires(const Block& b) {
-      { b.payload_capacity_bytes() } noexcept -> std::same_as<std::size_t>;
-    }
-  {
-    return saturated_multiply(block_count(), Block{}.payload_capacity_bytes());
-  }
-  /**
-   * @brief Explicit O(allocations) metadata accounting for payload-reporting
-   * blocks.
-   * @return Root owner, internal nodes, block metadata and alignment padding.
-   */
-  std::size_t metadata_bytes() const noexcept
-    requires requires(const Block& b) {
-      { b.payload_capacity_bytes() } noexcept -> std::same_as<std::size_t>;
-    }
-  {
-    return memory_usage_bytes() - payload_capacity_bytes();
-  }
-  /**
-   * @brief Visit blocks in logical order without materializing another buffer.
-   * @details Explicit O(allocations) traversal; callback receives const Block&.
-   * Mutation during traversal is unsupported; callback exceptions propagate.
-   * Unavailable on tagged trees: raw stored fields omit pending index biases.
-   * @param callback Callable invoked once per nonempty block in sequence order.
-   */
-  template <class Callback>
-  void for_each_block(Callback&& callback) const
-    requires(!IndexBias)
-  {
-    auto walk = [&](auto&& self, void* p, std::size_t h) -> void {
-      if (!p) {
-        return;
-      }
-      if (h == 0) {
-        callback(std::as_const(static_cast<Leaf*>(p)->block));
-      } else {
-        const auto& node = *static_cast<Node*>(p);
-        for (std::size_t i = 0; i < node.count; ++i) {
-          self(self, node.child(i, h), h - 1);
-        }
-      }
-    };
-    walk(walk, root_.p, height());
-  }
-
-#ifdef PIXIE_SEQUENCE_TREE_TESTING
-  /**
-   * @brief Enumerate absolute child boundaries for shape-forcing rotation
-   * tests.
-   * @details Root-first preorder; each vector starts at the node's first
-   * element and ends at its exclusive end. Read-only O(allocations) traversal,
-   * absent from normal builds, with no effect on transaction counters or lazy
-   * biases.
-   * @return One allocating boundary vector per internal node.
-   */
-  std::vector<std::vector<std::size_t>> test_child_boundaries() const {
-    std::vector<std::vector<std::size_t>> result;
-    auto walk = [&](auto&& self, const void* p, std::size_t total,
-                    std::size_t h, std::size_t start) -> void {
-      if (!p || h == 0) {
-        return;
-      }
-      const auto& node = *static_cast<const Node*>(p);
-      std::vector<std::size_t> boundaries{start};
-      std::size_t prefix = 0;
-      for (std::size_t i = 0; i < node.count; ++i) {
-        prefix += length(node, i, total, prefix);
-        boundaries.push_back(start + prefix);
-      }
-      result.push_back(boundaries);
-      for (std::size_t i = 0; i < node.count; ++i) {
-        self(self, node.child(i, h), boundaries[i + 1] - boundaries[i], h - 1,
-             boundaries[i]);
-      }
-    };
-    walk(walk, root_.p, root_.total, root_.height, 0);
-    return result;
-  }
-
-  /**
-   * @brief Test-only recursive validation; never invoked by normal operations.
-   * @details Checks lengths, depth, node/leaf occupancy, unique ownership and
-   * allocation alignment. O(allocations) space/time, may allocate and throw.
-   * @return Whether every representation invariant holds.
-   */
-  bool test_validate() const {
-    if (!root_.p) {
-      return size() == 0 && height() == 0;
-    }
-    std::unordered_set<const void*> seen;
-    auto walk = [&](auto&& self, void* p, std::size_t total, std::size_t h,
-                    bool first, bool last, bool root,
-                    std::uint64_t inherited) -> bool {
-      if (!p || !total || !seen.insert(p).second) {
-        return false;
-      }
-      if (h == 0) {
-        const auto& b = static_cast<Leaf*>(p)->block;
-        if constexpr (IndexBias) {
-          const auto pending = static_cast<Leaf*>(p)->bias.value;
-          const auto maximum = std::numeric_limits<value_type>::max();
-          if (inherited > maximum || pending > maximum - inherited) {
-            return false;
-          }
-          inherited += pending;
-          for (std::size_t i = 0; i < b.size(); ++i) {
-            if (b[i] > maximum - inherited) {
-              return false;
-            }
-          }
-        }
-        return reinterpret_cast<std::uintptr_t>(p) % alignof(Leaf) == 0 &&
-               b.size() == total && total <= Block::capacity &&
-               (first || last || total >= minimum_leaf_size);
-      }
-      const auto& node = *static_cast<Node*>(p);
-      if constexpr (IndexBias) {
-        const auto maximum = std::numeric_limits<value_type>::max();
-        if (inherited > maximum || node.bias.value > maximum - inherited) {
-          return false;
-        }
-        inherited += node.bias.value;
-      }
-      if (reinterpret_cast<std::uintptr_t>(p) % alignof(Node) != 0 ||
-          node.count < (root ? 2 : Fanout / 2) || node.count > Fanout) {
-        return false;
-      }
-      if (node.regular_prefix > node.count) {
-        return false;
-      }
-      if (!node.order.valid(node, h)) {
-        return false;
-      }
-      if (node.regular_prefix) {
-        if constexpr (!std::has_single_bit(Fanout) ||
-                      Layout != LengthLayout::cumulative) {
-          return false;
-        } else {
-          const auto shift = (h - 1) * std::countr_zero(Fanout);
-          if (shift >= std::numeric_limits<std::size_t>::digits ||
-              block_capacity >
-                  (std::numeric_limits<std::size_t>::max() >> shift)) {
-            return false;
-          }
-          const auto capacity = block_capacity << shift;
-          for (std::size_t i = 0; i < node.regular_prefix; ++i) {
-            const auto end = i + 1 == node.count ? total : node.measures[i];
-            if (end / (i + 1) != capacity || end % (i + 1) != 0) {
-              return false;
-            }
-          }
-        }
-      }
-      std::size_t prefix = 0;
-      for (std::size_t i = 0; i < node.count; ++i) {
-        if (prefix >= total) {
-          return false;
-        }
-        const auto n = length(node, i, total, prefix);
-        if (n > total - prefix ||
-            !self(self, node.child(i, h), n, h - 1, first && i == 0,
-                  last && i + 1 == node.count, false, inherited)) {
-          return false;
-        }
-        prefix += n;
-      }
-      return prefix == total;
-    };
-    return walk(walk, root_.p, size(), height(), true, true, true, 0);
-  }
-  /** @brief Enumerate stable leaf identities for locality tests. @return
-   * Ordered addresses. */
-  std::vector<const void*> test_leaf_identities() const {
-    std::vector<const void*> result;
-    auto walk = [&](auto&& self, const void* p, std::size_t h) -> void {
-      if (!p) {
-        return;
-      }
-      if (h == 0) {
-        result.push_back(&static_cast<const Leaf*>(p)->block);
-      } else {
-        const auto& node = *static_cast<const Node*>(p);
-        for (std::size_t i = 0; i < node.count; ++i) {
-          self(self, node.child(i, h), h - 1);
-        }
-      }
-    };
-    walk(walk, root_.p, height());
-    return result;
-  }
-  /**
-   * @brief Snapshot raw pending biases and their allocation identities in
-   * tests.
-   * @details Tagged trees only; root-first preorder includes every node and
-   * leaf, including zero biases. This const traversal neither pushes tags nor
-   * changes operation counters. O(allocations) time and returned vector space;
-   * vector allocation may throw. Absent from production builds.
-   * @return Allocation address and exact unaccumulated pending bias pairs.
-   */
-  std::vector<std::pair<const void*, std::uint64_t>> test_bias_snapshot() const
-    requires(IndexBias)
-  {
-    std::vector<std::pair<const void*, std::uint64_t>> result;
-    auto walk = [&](auto&& self, const void* p, std::size_t h) -> void {
-      if (!p) {
-        return;
-      }
-      if (h == 0) {
-        result.emplace_back(p, static_cast<const Leaf*>(p)->bias.value);
-      } else {
-        const auto& node = *static_cast<const Node*>(p);
-        result.emplace_back(p, node.bias.value);
-        for (std::size_t i = 0; i < node.count; ++i) {
-          self(self, node.child(i, h), h - 1);
-        }
-      }
-    };
-    walk(walk, root_.p, height());
-    return result;
-  }
-  /**
-   * @brief Attach a synthetic test-only bias without huge identity allocation.
-   * @details Requires a nonempty tree and every resulting value representable.
-   * Not present in production and never an unchecked public container action.
-   */
-  void test_add_bias(std::uint64_t bias) noexcept
-    requires(IndexBias)
-  {
-    assert(!empty());
-    add_bias(root_.p, height(), bias);
-  }
-  /**
-   * @brief Enumerate internal-node identities for test-only locality checks.
-   * @details Explicit O(allocations) traversal, never called by mutation.
-   * Addresses follow root-first preorder with children in logical order.
-   * The returned vector allocates; callback-free enumeration does not update
-   * operation counters. Empty trees and leaf roots return an empty vector.
-   * @return Internal allocation addresses, excluding leaves and the root owner.
-   */
-  std::vector<const void*> test_internal_node_identities() const {
-    std::vector<const void*> result;
-    auto walk = [&](auto&& self, const void* p, std::size_t h) -> void {
-      if (!p || h == 0) {
-        return;
-      }
-      result.push_back(p);
-      const auto& node = *static_cast<const Node*>(p);
-      for (std::size_t i = 0; i < node.count; ++i) {
-        self(self, node.child(i, h), h - 1);
-      }
-    };
-    walk(walk, root_.p, height());
-    return result;
-  }
-#endif
-
- private:
   static std::size_t saturated_add(std::size_t a, std::size_t b) noexcept {
     return b > std::numeric_limits<std::size_t>::max() - a
                ? std::numeric_limits<std::size_t>::max()

@@ -17,6 +17,13 @@
 namespace {
 using namespace pixie;
 
+static_assert(
+    std::is_same_v<PermutableSequence<>, PermutableSequence<std::uint64_t>>);
+static_assert(std::is_same_v<SortedPermutableSequence<>,
+                             SortedPermutableSequence<std::uint64_t>>);
+static_assert(std::is_same_v<SortedPermutationVector<>,
+                             SortedPermutationVector<std::uint64_t>>);
+
 template <class Sorted>
 void check(const Sorted& sorted, const std::vector<std::uint64_t>& expected) {
   ASSERT_EQ(sorted.size(), expected.size());

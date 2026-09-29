@@ -73,108 +73,7 @@ class Permutation
    */
   Permutation& operator=(Permutation&& other) noexcept = default;
 
-  /**
-   * @brief Construct the identity permutation of n entries in a streaming pass.
-   * @details Uses only bounded field scratch and the tree's construction
-   * fringe, never a full temporary index vector. All acquired storage is
-   * reclaimed on failure. The maximum domain is min(SIZE_MAX, max(Index)+1),
-   * interpreted mathematically without evaluating an overflowing max(Index)+1
-   * expression.
-   * @param n Number of entries, with positions and counts represented by
-   * size_t.
-   * @return An owning identity permutation of n entries.
-   * @throws std::length_error If the chosen index domain is too small.
-   * @throws std::bad_alloc On construction allocation failure.
-   */
- private:
-  static Permutation identity_impl(std::size_t n) {
-    check_domain(n);
-    const auto count =
-        n / block_type::capacity + (n % block_type::capacity != 0);
-    auto blocks =
-        std::views::iota(std::size_t{0}, count) |
-        std::views::transform([n](std::size_t block) {
-          std::array<Index, block_type::capacity> fields;
-          const auto start = block * block_type::capacity;
-          const auto length = std::min(block_type::capacity, n - start);
-          for (std::size_t i = 0; i < length; ++i) {
-            fields[i] = static_cast<Index>(start + i);
-          }
-          return block_type(std::span<const Index>(fields.data(), length));
-        });
-    Permutation result;
-    result.tree_ = tree_type::from_blocks(blocks);
-    return result;
-  }
-  /** @brief Return domain size. @details Exactly the number of stored indices.
-   * @return Number of logical entries.
-   */
-  std::size_t size_impl() const noexcept { return tree_.size(); }
-  /**
-   * @brief Read an immutable logical index by value.
-   * @details Accumulates lazy biases without normalizing or modifying storage.
-   * @param position Zero-based position in [0, size()).
-   * @return The logical index, including all pending biases.
-   * @throws std::out_of_range If position >= size().
-   */
-  Index value_at_impl(std::size_t position) const { return tree_[position]; }
-  /**
-   * @brief Insert the next identity value at a zero-based position.
-   * @details Inserts the value size() at position, shifting later entries
-   * right. Uses the tree's atomic insert: fast path is leaf-local with zero
-   * allocation; slow path is a single split/concatenate transaction. On
-   * success the result is a valid permutation of [0,size()+1).
-   * @param position Insertion position in [0,size()].
-   * @throws std::out_of_range If position > size().
-   * @throws std::length_error If the new size exceeds the index domain.
-   * @throws std::bad_alloc On preflight failure; contents remain unchanged.
-   */
-  void insert_at_impl(std::size_t position) {
-    if (position > tree_.size()) {
-      throw std::out_of_range("Permutation: insert position");
-    }
-    check_domain(tree_.size() + 1);
-    tree_.insert_at(position, static_cast<Index>(tree_.size()));
-  }
-  /**
-   * @brief Rotate a half-open interval left, preserving outside entries.
-   * @details Validates even at zero distance. Empty intervals do nothing;
-   * otherwise distance is reduced modulo right-left before mutation.
-   * @param left Inclusive starting position.
-   * @param right Exclusive ending position, at most size().
-   * @param distance Number of entries to rotate left, reduced modulo length.
-   * @throws std::out_of_range If left > right or right > size().
-   * @throws std::bad_alloc On preflight failure; contents remain unchanged.
-   */
-  void rotate_left_impl(std::size_t left,
-                        std::size_t right,
-                        std::size_t distance) {
-    tree_.rotate_left(left, right, distance);
-  }
-  /**
-   * @brief Append and consume donor, rebasing its indices by the old size().
-   * @details Only identical configurations merge. Self-merge and empty donor
-   * are no-ops. On success donor becomes canonical empty. Checks size/domain
-   * and allocates all tree spares before attaching a donor bias; every later
-   * step is nonthrowing. No donor traversal or complete re-encoding is needed.
-   * @param donor Source whose rebased entries are appended and consumed.
-   * @throws std::length_error If the combined size exceeds SIZE_MAX or the
-   * representable index domain.
-   * @throws std::bad_alloc On preflight failure; both containers stay
-   * unchanged.
-   */
-  void merge_impl(Permutation& donor) {
-    if (this == &donor || donor.empty()) {
-      return;
-    }
-    if (donor.size() > std::numeric_limits<std::size_t>::max() - this->size()) {
-      throw std::length_error("Permutation: concatenation size");
-    }
-    check_domain(this->size() + donor.size());
-    tree_.merge_rebased(donor.tree_);
-  }
-
- public:
+  // Stream identity blocks without a full temporary index vector.
   /**
    * @brief Find the first position where pred(logical_index) is true.
    * @details Uses the tree's guided descent: at each node children are
@@ -247,16 +146,7 @@ class Permutation
         tree_type::saturated_add(tree.block_bytes, tree.node_bytes));
     return result;
   }
-  /** @brief Explicit live footprint query. @details Linear in allocations.
-   * @return Total requested live bytes, including this facade.
-   */
- private:
-  std::size_t memory_usage_bytes_impl() const noexcept {
-    return memory_usage().total_bytes;
-  }
-
 #ifdef PIXIE_SEQUENCE_TREE_TESTING
- public:
   /**
    * @brief Inspect the tree in test builds without exposing mutable ownership.
    * @details Provides structural validation and stable identities, not
@@ -267,6 +157,64 @@ class Permutation
 #endif
 
  private:
+  static Permutation identity_impl(std::size_t n) {
+    check_domain(n);
+    const auto count =
+        n / block_type::capacity + (n % block_type::capacity != 0);
+    auto blocks =
+        std::views::iota(std::size_t{0}, count) |
+        std::views::transform([n](std::size_t block) {
+          std::array<Index, block_type::capacity> fields;
+          const auto start = block * block_type::capacity;
+          const auto length = std::min(block_type::capacity, n - start);
+          for (std::size_t i = 0; i < length; ++i) {
+            fields[i] = static_cast<Index>(start + i);
+          }
+          return block_type(std::span<const Index>(fields.data(), length));
+        });
+    Permutation result;
+    result.tree_ = tree_type::from_blocks(blocks);
+    return result;
+  }
+  std::size_t size_impl() const noexcept { return tree_.size(); }
+  Index value_at_impl(std::size_t position) const { return tree_[position]; }
+  /**
+   * @brief Insert the next identity value at a zero-based position.
+   * @details Inserts the value size() at position, shifting later entries
+   * right. Uses the tree's atomic insert: fast path is leaf-local with zero
+   * allocation; slow path is a single split/concatenate transaction. On
+   * success the result is a valid permutation of [0,size()+1).
+   * @param position Insertion position in [0,size()].
+   * @throws std::out_of_range If position > size().
+   * @throws std::length_error If the new size exceeds the index domain.
+   * @throws std::bad_alloc On preflight failure; contents remain unchanged.
+   */
+  void insert_at_impl(std::size_t position) {
+    if (position > tree_.size()) {
+      throw std::out_of_range("Permutation: insert position");
+    }
+    check_domain(tree_.size() + 1);
+    tree_.insert_at(position, static_cast<Index>(tree_.size()));
+  }
+  void rotate_left_impl(std::size_t left,
+                        std::size_t right,
+                        std::size_t distance) {
+    tree_.rotate_left(left, right, distance);
+  }
+  // Validate the resulting index domain before rebasing the donor.
+  void merge_impl(Permutation& donor) {
+    if (this == &donor || donor.empty()) {
+      return;
+    }
+    if (donor.size() > std::numeric_limits<std::size_t>::max() - this->size()) {
+      throw std::length_error("Permutation: concatenation size");
+    }
+    check_domain(this->size() + donor.size());
+    tree_.merge_rebased(donor.tree_);
+  }
+  std::size_t memory_usage_bytes_impl() const noexcept {
+    return memory_usage().total_bytes;
+  }
   static void check_domain(std::size_t n) {
     if (n != 0 && n - 1 > std::numeric_limits<Index>::max()) {
       throw std::length_error("Permutation: index domain");

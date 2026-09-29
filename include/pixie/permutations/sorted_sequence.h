@@ -9,6 +9,7 @@
 
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <ranges>
@@ -32,7 +33,7 @@ namespace pixie {
  * @tparam Layout Sequence-tree child-length representation.
  * @tparam ChunkBytes Indirect payload target bytes per chunk.
  */
-template <class T,
+template <class T = std::uint64_t,
           class Compare = std::less<>,
           ElementStorage Storage = ElementStorage::automatic,
           std::size_t StorageBits = 2048,

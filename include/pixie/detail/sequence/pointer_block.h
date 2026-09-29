@@ -46,21 +46,6 @@ class PointerBlock {
   static constexpr std::size_t capacity =
       (StorageBits / CHAR_BIT - 2 * sizeof(std::size_t)) / sizeof(value_type);
   static_assert(capacity <= std::numeric_limits<std::size_t>::max() / 2);
-
- private:
-  struct alignas(CacheLine) Storage {
-    std::size_t length = 0;
-    std::size_t origin = 0;
-    std::array<value_type, capacity> values{};
-  };
-  static_assert(sizeof(Storage) == StorageBits / CHAR_BIT);
-  Storage storage_;
-
-  value_type& slot(std::size_t i) noexcept {
-    return storage_.values[(storage_.origin + i) % storage_.length];
-  }
-
- public:
   /**
    * @brief Construct an empty block.
    * @details Initializes length and origin to zero without allocating.
@@ -191,6 +176,19 @@ class PointerBlock {
     storage_.length = left_count;
     right.storage_.length = total - left_count;
     storage_.origin = right.storage_.origin = 0;
+  }
+
+ private:
+  struct alignas(CacheLine) Storage {
+    std::size_t length = 0;
+    std::size_t origin = 0;
+    std::array<value_type, capacity> values{};
+  };
+  static_assert(sizeof(Storage) == StorageBits / CHAR_BIT);
+  Storage storage_;
+
+  value_type& slot(std::size_t i) noexcept {
+    return storage_.values[(storage_.origin + i) % storage_.length];
   }
 };
 
