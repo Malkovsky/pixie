@@ -235,7 +235,8 @@ void Register(const char* name) {
         ->ArgName("N")
         ->Arg(4096)
         ->Arg(65536)
-        ->Arg(1048576);
+        ->Arg(1048576)
+        ->Arg(4194304);
   };
   add("SortedRandomInsert", RandomInsert<Model>);
   add("SortedLowerBound", LowerBound<Model>);
