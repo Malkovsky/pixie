@@ -17,7 +17,7 @@
 #define PIXIE_SSE41_SUPPORT
 #endif
 
-#if defined(PIXIE_AVX512_SUPPORT) || defined(PIXIE_BMI2_SUPPORT) || \
+#if defined(__AVX512F__) || defined(PIXIE_BMI2_SUPPORT) || \
     defined(PIXIE_AVX2_SUPPORT) || defined(PIXIE_SSE41_SUPPORT)
 #include <immintrin.h>
 #endif
@@ -279,6 +279,104 @@ static inline uint64_t first_bits_mask(size_t num) {
   return num >= 64 ? UINT64_MAX : ((1llu << num) - 1);
 }
 
+namespace pixie {
+
+/**
+ * @brief Copy LSB-first packed bits between disjoint word arrays.
+ *
+ * @details Copies [source_bit, source_bit + count) to
+ * [destination_bit, destination_bit + count), preserving all other destination
+ * bits. Offsets are zero-based. The caller must supply valid, nonoverlapping
+ * backing word arrays covering both ranges; invalid input is undefined
+ * behavior. Only words intersecting the ranges are accessed, with no SIMD
+ * alignment or extra padding requirement. A zero count does not access either
+ * pointer. Does not allocate or retain pointers. In-place callers must stage
+ * through separate scratch storage before writing back.
+ * @param source Source word array; borrowed only for this call.
+ * @param source_bit Zero-based inclusive start of the source bit range.
+ * @param destination Destination word array; borrowed only for this call.
+ * @param destination_bit Zero-based inclusive start of the destination bit
+ * range.
+ * @param count Number of bits to copy; zero permits null pointers.
+ */
+inline void copy_packed_bits(const uint64_t* source,
+                             size_t source_bit,
+                             uint64_t* destination,
+                             size_t destination_bit,
+                             size_t count) noexcept {
+  // Peel the destination's partial word, then write whole words in batches.
+  const auto copy_boundary = [&](size_t width) {
+    const auto shift = source_bit % 64;
+    uint64_t value = source[source_bit / 64] >> shift;
+    if (width > 64 - shift) {
+      value |= source[source_bit / 64 + 1] << (64 - shift);
+    }
+    const auto offset = destination_bit % 64;
+    const auto mask = first_bits_mask(width) << offset;
+    auto& word = destination[destination_bit / 64];
+    word = (word & ~mask) | ((value << offset) & mask);
+    source_bit += width;
+    destination_bit += width;
+    count -= width;
+  };
+  if (count == 0) {
+    return;
+  }
+  if (destination_bit % 64 != 0) {
+    copy_boundary(std::min(count, 64 - destination_bit % 64));
+  }
+  const auto shift = source_bit % 64;
+  const auto* input = source + source_bit / 64;
+  auto* output = destination + destination_bit / 64;
+  auto words = count / 64;
+  if (shift == 0) {
+    std::copy_n(input, words, output);
+  } else {
+#if defined(__AVX512F__)
+#if defined(__AVX512VBMI2__)
+    const auto shifts = _mm512_set1_epi64(shift);
+#else
+    const auto low_shift = _mm_cvtsi64_si128(shift);
+    const auto high_shift = _mm_cvtsi64_si128(64 - shift);
+#endif
+    for (; words >= 8; words -= 8, input += 8, output += 8) {
+      const auto low = _mm512_loadu_si512(input);
+      const auto high = _mm512_loadu_si512(input + 1);
+#if defined(__AVX512VBMI2__)
+      _mm512_storeu_si512(output, _mm512_shrdv_epi64(low, high, shifts));
+#else
+      _mm512_storeu_si512(output,
+                          _mm512_or_si512(_mm512_srl_epi64(low, low_shift),
+                                          _mm512_sll_epi64(high, high_shift)));
+#endif
+    }
+#elif defined(PIXIE_AVX2_SUPPORT)
+    const auto low_shift = _mm_cvtsi64_si128(shift);
+    const auto high_shift = _mm_cvtsi64_si128(64 - shift);
+    for (; words >= 4; words -= 4, input += 4, output += 4) {
+      const auto low =
+          _mm256_loadu_si256(reinterpret_cast<const __m256i*>(input));
+      const auto high =
+          _mm256_loadu_si256(reinterpret_cast<const __m256i*>(input + 1));
+      _mm256_storeu_si256(reinterpret_cast<__m256i*>(output),
+                          _mm256_or_si256(_mm256_srl_epi64(low, low_shift),
+                                          _mm256_sll_epi64(high, high_shift)));
+    }
+#endif
+    for (size_t i = 0; i < words; ++i) {
+      output[i] = (input[i] >> shift) | (input[i + 1] << (64 - shift));
+    }
+  }
+  source_bit += count / 64 * 64;
+  destination_bit += count / 64 * 64;
+  count %= 64;
+  if (count != 0) {
+    copy_boundary(count);
+  }
+}
+
+}  // namespace pixie
+
 /**
  * @brief Number of 1 bits in positions 0 .. count - 1
  * @details Assumes count
@@ -300,7 +398,7 @@ static inline uint64_t first_bits_mask(size_t num) {
  * 64 bits and then reduce_add to sum the result.
  */
 static inline uint64_t rank_512(const uint64_t* x, uint64_t count) {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(PIXIE_AVX512_SUPPORT) && defined(__AVX512VBMI2__)
 
   __m512i a = _mm512_maskz_set1_epi64((1ull << ((count >> 6))) - 1,
                                       std::numeric_limits<uint64_t>::max());

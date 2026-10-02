@@ -11,6 +11,80 @@
 
 namespace {
 
+TEST(PackedBitCopy, AllAlignmentsAndExactBackingExtents) {
+  pixie::copy_packed_bits(nullptr, 0, nullptr, 0, 0);
+  std::mt19937_64 random(91265);
+  for (size_t source_bit = 64; source_bit < 128; ++source_bit) {
+    for (size_t destination_bit = 64; destination_bit < 128;
+         ++destination_bit) {
+      for (const size_t count :
+           {0,    1,    2,    63,   64,   65,   127,  128,  129,
+            255,  256,  257,  511,  512,  513,  1023, 1024, 1025,
+            2047, 2048, 2049, 2111, 4095, 4096, 4097, 4159}) {
+        SCOPED_TRACE(::testing::Message() << source_bit << " -> "
+                                          << destination_bit << ": " << count);
+        // Exact extents catch SIMD lookahead past the last intersecting word.
+        std::vector<uint64_t> source((source_bit + count + 63) / 64);
+        std::vector<uint64_t> actual((destination_bit + count + 63) / 64);
+        for (auto& word : source) {
+          word = random();
+        }
+        for (auto& word : actual) {
+          word = random();
+        }
+        const auto original_source = source;
+        auto expected = actual;
+        for (size_t i = 0; i < count; ++i) {
+          const auto bit =
+              (source[(source_bit + i) / 64] >> ((source_bit + i) % 64)) & 1;
+          const auto p = destination_bit + i;
+          const auto mask = uint64_t{1} << (p % 64);
+          expected[p / 64] = (expected[p / 64] & ~mask) | (bit << (p % 64));
+        }
+        pixie::copy_packed_bits(source.data(), source_bit, actual.data(),
+                                destination_bit, count);
+        ASSERT_EQ(actual, expected);
+        ASSERT_EQ(source, original_source);
+      }
+    }
+  }
+}
+
+TEST(PackedBitCopy, VectorWordAlignments) {
+  alignas(64) std::array<uint64_t, 48> source;
+  alignas(64) std::array<uint64_t, 48> actual;
+  std::mt19937_64 random(67234);
+  for (auto& word : source) {
+    word = random();
+  }
+  for (size_t source_word = 0; source_word < 8; ++source_word) {
+    for (size_t destination_word = 0; destination_word < 8;
+         ++destination_word) {
+      for (size_t shift = 0; shift < 64; ++shift) {
+        for (const size_t count : {512, 1024, 2049}) {
+          SCOPED_TRACE(::testing::Message()
+                       << source_word << " -> " << destination_word
+                       << ": shift=" << shift << " count=" << count);
+          actual.fill(0xA5A5A5A5A5A5A5A5ull);
+          auto expected = actual;
+          const auto source_bit = source_word * 64 + shift;
+          const auto destination_bit = destination_word * 64;
+          for (size_t i = 0; i < count; ++i) {
+            const auto bit =
+                (source[(source_bit + i) / 64] >> ((source_bit + i) % 64)) & 1;
+            const auto p = destination_bit + i;
+            const auto mask = uint64_t{1} << (p % 64);
+            expected[p / 64] = (expected[p / 64] & ~mask) | (bit << (p % 64));
+          }
+          pixie::copy_packed_bits(source.data(), source_bit, actual.data(),
+                                  destination_bit, count);
+          ASSERT_EQ(actual, expected);
+        }
+      }
+    }
+  }
+}
+
 using SelectBlock = std::array<uint64_t, 8>;
 
 uint64_t naive_select_512(const uint64_t* bits, uint64_t rank, bool value) {

@@ -520,6 +520,39 @@ TEST(PackedBitBuilderTest, SupportsPartialFieldsAndSafeReuse) {
   EXPECT_THROW(builder.write_bits(0, 65), std::invalid_argument);
 }
 
+TEST(PackedBitBuilderTest, PreservesBitsAcrossCacheLineGrowth) {
+  constexpr std::uint64_t kPattern = 0xfedcba9876543210;
+  for (const std::size_t reserved_bits : {0u, 512u, 1536u}) {
+    SCOPED_TRACE(reserved_bits);
+    pixie::PackedBitBuilder builder;
+    builder.reserve_bits(reserved_bits);
+    std::vector<bool> expected;
+    for (std::size_t bit = 0; bit < 511; ++bit) {
+      const bool value = bit % 2 != 0;
+      builder.write_bit(value);
+      expected.push_back(value);
+    }
+    for (std::size_t field = 0; field < 32; ++field) {
+      const bool value = field % 2 != 0;
+      builder.write_bit(value);
+      expected.push_back(value);
+      const std::uint64_t pattern = kPattern ^ field;
+      builder.write_bits(pattern, 63);
+      for (std::size_t bit = 0; bit < 63; ++bit) {
+        expected.push_back(((pattern >> bit) & 1u) != 0);
+      }
+    }
+    ASSERT_EQ(builder.size_bits(), expected.size());
+    const auto storage = builder.take_storage();
+    const auto words = storage.as_words64();
+    ASSERT_EQ(words.size(), (expected.size() + 63) / 64);
+    for (std::size_t bit = 0; bit < expected.size(); ++bit) {
+      EXPECT_EQ(packed_bit(words, bit), expected[bit]) << "bit=" << bit;
+    }
+    EXPECT_EQ(builder.size_bits(), 0u);
+  }
+}
+
 TEST(PackedBitBuilderTest, TransfersAlignedStorageWithoutChangingBits) {
   pixie::PackedBitBuilder builder;
   builder.reserve_bits(129);

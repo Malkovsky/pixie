@@ -10,6 +10,8 @@ Current library families are:
 
 - rank/select support over packed bit sequences;
 - positional and monotone packed integer vectors;
+- owning permutations with rebased consuming merge and permutable sequences with
+  unchanged-value consuming merge;
 - range min-max (RmM) indexes;
 - static range-minimum-query (RMQ) indexes;
 - rooted-tree encodings (LOUDS, balanced parentheses, and DFUDS);
@@ -73,7 +75,15 @@ adds Pixie context; it does not replace the shared guidance.
 
 Public data-structure families use CRTP contracts. The current contracts are
 `IntegerVectorBase`, `MonotoneIntegerVectorBase`, `RankSelectBase`, `RmMBase`,
-`pixie::rmq::RmqBase`, `TreeBase`, `StorageBase`, and `WaveletTreeBase`.
+`pixie::rmq::RmqBase`, `TreeBase`, `StorageBase`, `WaveletTreeBase`,
+`PermutationBase`, and `PermutableSequenceBase`. The latter two keep separate
+contracts in `permutation.h` and `permutable_sequence.h`, with concrete
+`Permutation` and `PermutableSequence` types in `permutations/permutation.h` and
+`permutations/sequence.h`. Their benchmark catalogs are
+`permutations/permutation_implementations.h` and
+`permutations/sequence_implementations.h`, respectively;
+`permutations/detail/` is their unsupported shared engine, not a public
+family.
 
 1. Define or extend the public contract in `include/pixie/<family>.h`.
    Public facade methods delegate to a clearly named `*_impl()` method on the
@@ -171,7 +181,7 @@ dependencies only as needed. Direct CMake defaults and their effects are:
 | --- | --- | --- |
 | `PIXIE_TESTS` | `ON` standalone, `OFF` downstream | Builds tests and fetches Google Test. |
 | `PIXIE_BENCHMARKS` | `OFF` | Builds native Google Benchmark targets. |
-| `PIXIE_THIRD_PARTY_BACKENDS` | `OFF` | Enables optional SDSL adapters and their comparison targets. |
+| `PIXIE_THIRD_PARTY_BACKENDS` | `OFF` | Enables optional SDSL and Immer adapters and their comparison targets. |
 | `PIXIE_DIAGNOSTICS` | `OFF` | Enables diagnostic logging for profiling experiments. |
 | `PIXIE_DOCS` | `OFF` | Enables the Doxygen `docs` target. |
 | `PIXIE_COVERAGE` | `OFF` | Adds GCC coverage instrumentation. |
@@ -179,8 +189,8 @@ dependencies only as needed. Direct CMake defaults and their effects are:
 `MappedFile` uses native POSIX memory mapping on Linux/Unix. A default
 FetchContent consumer therefore receives no third-party dependency, while a
 standalone default build fetches Google Test. Enabling third-party backends also
-fetches SDSL and pasta-toolbox dependencies, but only SDSL currently has a
-registered Pixie adapter/comparison benchmark. Do not describe pasta-toolbox as
+fetches SDSL, Immer, and pasta-toolbox dependencies. SDSL and Immer have
+registered Pixie adapters/comparison benchmarks. Do not describe pasta-toolbox as
 an available backend until Pixie adds and registers one.
 
 ## Build and Test Presets
@@ -248,8 +258,11 @@ The registered test executables are `bit_algorithms_unittests`,
 `rank_select_unittests`, `rank_select_tests`, `benchmark_tests`, `test_rmm`,
 `tree_tests`, `wavelet_tree_tests`, `storage_tests`,
 `serialization_tests`, `integer_vector_tests`, `excess_positions_tests`,
-`excess_record_lows_tests`, and `rmq_tests`. Run an executable directly only
-when debugging a focused Google Test filter.
+`excess_record_lows_tests`, `rmq_tests`, `permutation_tests`,
+`permutable_sequence_tests`, `sorted_sequence_tests`, and `bit_sequence_tests`.
+The last covers internal
+sequence blocks/tree/kernels and the retained mapped-block experiment. Run an
+executable directly only when debugging a focused Google Test filter.
 
 ### Test Configuration via Environment Variables
 
