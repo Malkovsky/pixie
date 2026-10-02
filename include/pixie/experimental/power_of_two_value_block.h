@@ -1,6 +1,6 @@
 #pragma once
 
-#include <pixie/detail/sequence/packed_value_block.h>
+#include <pixie/permutations/detail/packed_value_block.h>
 
 #include <bit>
 #include <climits>
@@ -23,21 +23,22 @@ namespace pixie::experimental {
  */
 template <class T = std::uint64_t, std::size_t Values = 256>
 class PowerOfTwoValueBlock
-    : public detail::sequence::PackedValueBlock<
+    : public permutations::detail::PackedValueBlock<
           T,
-          sizeof(detail::sequence::BitBlock<Values *
-                                            std::numeric_limits<T>::digits>) *
+          sizeof(permutations::detail::BitBlock<
+                 Values * std::numeric_limits<T>::digits>) *
               CHAR_BIT,
           std::numeric_limits<T>::digits,
-          detail::sequence::BitBlock<Values * std::numeric_limits<T>::digits>> {
+          permutations::detail::BitBlock<Values *
+                                         std::numeric_limits<T>::digits>> {
   static_assert(std::has_single_bit(Values));
-  using Base = detail::sequence::PackedValueBlock<
+  using Base = permutations::detail::PackedValueBlock<
       T,
-      sizeof(
-          detail::sequence::BitBlock<Values * std::numeric_limits<T>::digits>) *
+      sizeof(permutations::detail::BitBlock<Values *
+                                            std::numeric_limits<T>::digits>) *
           CHAR_BIT,
       std::numeric_limits<T>::digits,
-      detail::sequence::BitBlock<Values * std::numeric_limits<T>::digits>>;
+      permutations::detail::BitBlock<Values * std::numeric_limits<T>::digits>>;
 
  public:
   using Base::Base;

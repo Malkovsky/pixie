@@ -1,8 +1,8 @@
 #pragma once
 
 #include <benchmark/benchmark.h>
-#include <pixie/detail/sequence/packed_value_block.h>
-#include <pixie/detail/sequence/sequence_tree.h>
+#include <pixie/permutations/detail/packed_value_block.h>
+#include <pixie/permutations/detail/sequence_tree.h>
 
 #include <algorithm>
 #include <array>
@@ -45,8 +45,8 @@
 namespace {
 
 using pixie::LengthLayout;
-using pixie::detail::sequence::PackedValueBlock;
-using pixie::detail::sequence::SequenceTree;
+using pixie::permutations::detail::PackedValueBlock;
+using pixie::permutations::detail::SequenceTree;
 
 constexpr std::size_t kMiB = 1024 * 1024;
 constexpr std::size_t kReads = 64;

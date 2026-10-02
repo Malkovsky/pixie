@@ -1,9 +1,9 @@
 #include <benchmark/benchmark.h>
 #include <pixie/bits.h>
-#include <pixie/detail/sequence/bit_block.h>
-#include <pixie/detail/sequence/packed_bit_block.h>
-#include <pixie/detail/sequence/sequence_tree.h>
 #include <pixie/experimental/permuted_bit_block.h>
+#include <pixie/permutations/detail/bit_block.h>
+#include <pixie/permutations/detail/packed_bit_block.h>
+#include <pixie/permutations/detail/sequence_tree.h>
 
 #include <algorithm>
 #include <array>
@@ -109,11 +109,12 @@ const bool packed_copy_registered = [] {
   return true;
 }();
 
-using BitBlock = pixie::detail::sequence::BitBlock<2048>;
-using Packed128 = pixie::detail::sequence::PackedBitBlock<128 * 8>;
-using Packed256 = pixie::detail::sequence::PackedBitBlock<256 * 8>;
-using Packed512 = pixie::detail::sequence::PackedBitBlock<512 * 8>;
-using MatchedBitBlock = pixie::detail::sequence::BitBlock<Packed256::capacity>;
+using BitBlock = pixie::permutations::detail::BitBlock<2048>;
+using Packed128 = pixie::permutations::detail::PackedBitBlock<128 * 8>;
+using Packed256 = pixie::permutations::detail::PackedBitBlock<256 * 8>;
+using Packed512 = pixie::permutations::detail::PackedBitBlock<512 * 8>;
+using MatchedBitBlock =
+    pixie::permutations::detail::BitBlock<Packed256::capacity>;
 using DirectBlock = pixie::experimental::PermutedBitBlock<false>;
 using MappedBlock = pixie::experimental::PermutedBitBlock<true>;
 using pixie::LengthLayout;
@@ -124,7 +125,7 @@ template <typename Block, std::size_t Fanout, LengthLayout Layout>
 struct Variant {
   using block_type = Block;
   using tree_type =
-      pixie::detail::sequence::SequenceTree<Block, Fanout, Layout>;
+      pixie::permutations::detail::SequenceTree<Block, Fanout, Layout>;
   static constexpr auto fanout = Fanout;
   static constexpr auto layout = Layout;
 };

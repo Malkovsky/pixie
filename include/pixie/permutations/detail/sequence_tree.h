@@ -1,7 +1,7 @@
 #pragma once
 
-#include <pixie/detail/sequence/sequence_tree_kernels.h>
-#include <pixie/detail/sequence/tree_policy.h>
+#include <pixie/permutations/detail/sequence_tree_kernels.h>
+#include <pixie/permutations/detail/tree_policy.h>
 #include <pixie/sequence_options.h>
 #include <pixie/storage/aligned.h>
 
@@ -35,7 +35,7 @@ class Permutation;
 }  // namespace pixie
 
 // Unsupported implementation shared by the two public sequence families.
-namespace pixie::detail::sequence {
+namespace pixie::permutations::detail {
 
 /**
  * @brief Nonallocating local contract for SequenceTree leaves.
@@ -1983,5 +1983,5 @@ class SequenceTree {
   [[no_unique_address]] Reserve reserve_;
 };
 
-}  // namespace pixie::detail::sequence
+}  // namespace pixie::permutations::detail
 /// @endcond

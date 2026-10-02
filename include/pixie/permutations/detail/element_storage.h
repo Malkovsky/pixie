@@ -6,7 +6,7 @@
 #include <limits>
 #include <type_traits>
 
-namespace pixie::detail::sequence {
+namespace pixie::permutations::detail {
 
 // Resolve storage and read semantics once for the facade and its CRTP base.
 template <class T, ElementStorage Requested>
@@ -33,4 +33,4 @@ struct ElementStorageTraits {
   using const_reference = std::conditional_t<packed, T, const T&>;
 };
 
-}  // namespace pixie::detail::sequence
+}  // namespace pixie::permutations::detail

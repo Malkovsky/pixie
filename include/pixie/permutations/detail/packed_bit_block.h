@@ -1,9 +1,9 @@
 #pragma once
 
-#include <pixie/detail/sequence/bit_block.h>
+#include <pixie/permutations/detail/bit_block.h>
 
 /// @cond PIXIE_SEQUENCE_INTERNAL
-namespace pixie::detail::sequence {
+namespace pixie::permutations::detail {
 
 /**
  * @brief Bit block whose complete aligned object fits a physical-bit budget.
@@ -25,5 +25,5 @@ class PackedBitBlock : public BitBlock<StorageBits - 128> {
   using BitBlock<StorageBits - 128>::BitBlock;
 };
 
-}  // namespace pixie::detail::sequence
+}  // namespace pixie::permutations::detail
 /// @endcond

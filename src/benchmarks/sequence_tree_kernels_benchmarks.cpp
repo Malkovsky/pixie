@@ -1,5 +1,5 @@
 #include <benchmark/benchmark.h>
-#include <pixie/detail/sequence/sequence_tree_kernels.h>
+#include <pixie/permutations/detail/sequence_tree_kernels.h>
 
 #include <algorithm>
 #include <array>
@@ -89,8 +89,8 @@ const bool node_select_registered = [] {
       }
     }
   };
-  add("NodeSelect/Scalar", pixie::detail::sequence::node_select_scalar);
-  add("NodeSelect/Dispatched", pixie::detail::sequence::node_select);
+  add("NodeSelect/Scalar", pixie::permutations::detail::node_select_scalar);
+  add("NodeSelect/Dispatched", pixie::permutations::detail::node_select);
   return true;
 }();
 

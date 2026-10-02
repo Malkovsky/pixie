@@ -8,7 +8,7 @@
 #include <utility>
 
 /// @cond PIXIE_SEQUENCE_INTERNAL
-namespace pixie::detail::sequence {
+namespace pixie::permutations::detail {
 
 // Default child addressing. Policy headers retain the count and regular
 // prefix in one word; state-free policies add no per-node storage.
@@ -111,5 +111,5 @@ struct SequenceTreePolicy {
   struct TestCounters {};
 };
 
-}  // namespace pixie::detail::sequence
+}  // namespace pixie::permutations::detail
 /// @endcond

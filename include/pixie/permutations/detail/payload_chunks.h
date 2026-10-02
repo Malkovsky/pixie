@@ -5,7 +5,7 @@
 #include <utility>
 #include <vector>
 
-namespace pixie::detail::sequence {
+namespace pixie::permutations::detail {
 
 // Own frozen payload vectors independently of the order tree. Publishing a
 // chunk transfers ownership; its reserved capacity must not grow afterwards.
@@ -73,4 +73,4 @@ struct PayloadChunks {
   }
 };
 
-}  // namespace pixie::detail::sequence
+}  // namespace pixie::permutations::detail

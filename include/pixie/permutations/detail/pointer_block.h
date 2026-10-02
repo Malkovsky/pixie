@@ -13,7 +13,7 @@
 #include <utility>
 
 /// @cond PIXIE_SEQUENCE_INTERNAL
-namespace pixie::detail::sequence {
+namespace pixie::permutations::detail {
 
 /**
  * @brief Bounded, nonowning block of native pointers for a SequenceTree.
@@ -192,5 +192,5 @@ class PointerBlock {
   }
 };
 
-}  // namespace pixie::detail::sequence
+}  // namespace pixie::permutations::detail
 /// @endcond

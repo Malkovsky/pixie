@@ -11,7 +11,7 @@
 #endif
 
 /// @cond PIXIE_SEQUENCE_INTERNAL
-namespace pixie::detail::sequence {
+namespace pixie::permutations::detail {
 
 /**
  * @brief Scalar child selection from unsigned cumulative exclusive ends.
@@ -90,5 +90,5 @@ inline std::size_t node_select(std::span<const std::size_t> ends,
 #endif
 }
 
-}  // namespace pixie::detail::sequence
+}  // namespace pixie::permutations::detail
 /// @endcond

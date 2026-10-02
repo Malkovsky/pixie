@@ -1,6 +1,6 @@
 #pragma once
 
-#include <pixie/detail/sequence/packed_bit_block.h>
+#include <pixie/permutations/detail/packed_bit_block.h>
 
 #include <cassert>
 #include <cstddef>
@@ -12,7 +12,7 @@
 #include <type_traits>
 
 /// @cond PIXIE_SEQUENCE_INTERNAL
-namespace pixie::detail::sequence {
+namespace pixie::permutations::detail {
 
 /**
  * @brief Fixed-width unsigned values over an owning circular packed bit block.
@@ -241,5 +241,5 @@ class PackedValueBlock {
   Bits bits_;
 };
 
-}  // namespace pixie::detail::sequence
+}  // namespace pixie::permutations::detail
 /// @endcond

@@ -9,13 +9,13 @@
  * retained in benchmarks/sequence_snapshot.md.
  */
 
-#include <pixie/detail/sequence/sequence_tree.h>
 #include <pixie/experimental/grouped_slot_order256.h>
 #include <pixie/experimental/power_of_two_value_block.h>
 #include <pixie/experimental/sequence_tree_policy.h>
 #include <pixie/experimental/slot_order.h>
 #include <pixie/experimental/slot_order16.h>
 #include <pixie/permutable_sequence.h>
+#include <pixie/permutations/detail/sequence_tree.h>
 
 #include <algorithm>
 #include <array>
@@ -85,7 +85,7 @@ class PowerOfTwoPermutableSequence
                          std::conditional_t<Fanout == 256,
                                             GroupedSlotOrder256,
                                             ByteSlotOrder<Fanout>>>;
-  using Tree = detail::sequence::SequenceTree<
+  using Tree = permutations::detail::SequenceTree<
       Block,
       Fanout,
       LengthLayout::cumulative,

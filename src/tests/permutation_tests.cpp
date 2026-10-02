@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
-#include <pixie/detail/sequence/packed_value_block.h>
-#include <pixie/detail/sequence/sequence_tree.h>
+#include <pixie/permutations/detail/packed_value_block.h>
+#include <pixie/permutations/detail/sequence_tree.h>
 #include <pixie/permutations/permutation.h>
 
 #include <algorithm>
@@ -18,7 +18,7 @@
 
 namespace {
 using namespace pixie;
-using namespace pixie::detail::sequence;
+using namespace pixie::permutations::detail;
 
 template <class T>
 [[gnu::noinline]] void rotate_values(std::vector<T>& values,

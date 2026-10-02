@@ -13,7 +13,7 @@
 #include <stdexcept>
 
 /// @cond PIXIE_SEQUENCE_INTERNAL
-namespace pixie::detail::sequence {
+namespace pixie::permutations::detail {
 
 /**
  * @brief Standalone, fixed-capacity, circular packed-bit block.
@@ -302,5 +302,5 @@ class alignas(CacheLine) BitBlock {
   Payload bits_;
 };
 
-}  // namespace pixie::detail::sequence
+}  // namespace pixie::permutations::detail
 /// @endcond

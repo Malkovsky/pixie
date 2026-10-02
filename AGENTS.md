@@ -82,7 +82,8 @@ contracts in `permutation.h` and `permutable_sequence.h`, with concrete
 `permutations/sequence.h`. Their benchmark catalogs are
 `permutations/permutation_implementations.h` and
 `permutations/sequence_implementations.h`, respectively;
-`detail/sequence/` is their unsupported shared engine, not a public family.
+`permutations/detail/` is their unsupported shared engine, not a public
+family.
 
 1. Define or extend the public contract in `include/pixie/<family>.h`.
    Public facade methods delegate to a clearly named `*_impl()` method on the

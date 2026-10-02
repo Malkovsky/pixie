@@ -26,7 +26,7 @@
 
 namespace {
 using namespace pixie;
-using namespace pixie::detail::sequence;
+using namespace pixie::permutations::detail;
 
 template <class Sequence>
 struct ResetFailures {
@@ -770,18 +770,20 @@ TEST(PermutableSequence, CompileTimeSelectionAndExactPointerBudget) {
                 ElementStorage::indirect);
   static_assert(PermutableSequence<std::string>::storage ==
                 ElementStorage::indirect);
-  static_assert(SequenceBlock<pixie::detail::sequence::PointerBlock<int, 512>>);
-  static_assert(sizeof(pixie::detail::sequence::PointerBlock<int, 512>) == 64);
-  static_assert(sizeof(pixie::detail::sequence::PointerBlock<bool, 2048>) ==
+  static_assert(
+      SequenceBlock<pixie::permutations::detail::PointerBlock<int, 512>>);
+  static_assert(sizeof(pixie::permutations::detail::PointerBlock<int, 512>) ==
+                64);
+  static_assert(sizeof(pixie::permutations::detail::PointerBlock<bool, 2048>) ==
                 256);
-  static_assert(pixie::detail::sequence::PointerBlock<int, 512>::capacity ==
+  static_assert(pixie::permutations::detail::PointerBlock<int, 512>::capacity ==
                 (64 - 2 * sizeof(std::size_t)) / sizeof(const int*));
   EXPECT_EQ(sizeof(PermutableSequence<unsigned>),
             sizeof(PermutableSequence<unsigned>::test_tree_type));
 }
 
 TEST(PermutableSequence, NativePointerBlockWrappedRedistribution) {
-  using Block = pixie::detail::sequence::PointerBlock<int, 512>;
+  using Block = pixie::permutations::detail::PointerBlock<int, 512>;
   constexpr auto capacity = Block::capacity;
   std::array<int, 2 * capacity + 1> objects{};
   std::array<const int*, 2 * capacity + 1> pointers{};

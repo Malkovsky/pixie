@@ -1,11 +1,11 @@
 #pragma once
 
-#include <pixie/detail/sequence/element_storage.h>
-#include <pixie/detail/sequence/packed_value_block.h>
-#include <pixie/detail/sequence/payload_chunks.h>
-#include <pixie/detail/sequence/pointer_block.h>
-#include <pixie/detail/sequence/sequence_tree.h>
 #include <pixie/permutable_sequence.h>
+#include <pixie/permutations/detail/element_storage.h>
+#include <pixie/permutations/detail/packed_value_block.h>
+#include <pixie/permutations/detail/payload_chunks.h>
+#include <pixie/permutations/detail/pointer_block.h>
+#include <pixie/permutations/detail/sequence_tree.h>
 
 #include <algorithm>
 #include <array>
@@ -70,20 +70,20 @@ class PermutableSequence
                              Layout,
                              ChunkBytes>,
           T,
-          typename detail::sequence::ElementStorageTraits<T, Storage>::
+          typename permutations::detail::ElementStorageTraits<T, Storage>::
               const_reference> {
-  using Traits = detail::sequence::ElementStorageTraits<T, Storage>;
+  using Traits = permutations::detail::ElementStorageTraits<T, Storage>;
   friend class PermutableSequenceBase<PermutableSequence,
                                       T,
                                       typename Traits::const_reference>;
   static constexpr bool packed = Traits::packed;
   using Block =
       std::conditional_t<packed,
-                         detail::sequence::PackedValueBlock<T, StorageBits>,
-                         detail::sequence::PointerBlock<T, StorageBits>>;
+                         permutations::detail::PackedValueBlock<T, StorageBits>,
+                         permutations::detail::PointerBlock<T, StorageBits>>;
   static_assert(sizeof(Block) * CHAR_BIT == StorageBits);
-  using Tree = detail::sequence::SequenceTree<Block, Fanout, Layout>;
-  using Chunks = detail::sequence::PayloadChunks<T>;
+  using Tree = permutations::detail::SequenceTree<Block, Fanout, Layout>;
+  using Chunks = permutations::detail::PayloadChunks<T>;
   using Chunk = typename Chunks::Chunk;
   using Slot = typename Chunks::Slot;
   static constexpr std::size_t chunk_capacity =

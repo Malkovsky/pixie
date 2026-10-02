@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include <pixie/detail/sequence/sequence_tree_kernels.h>
+#include <pixie/permutations/detail/sequence_tree_kernels.h>
 
 #include <algorithm>
 #include <bit>
@@ -11,8 +11,8 @@
 
 namespace {
 
-using pixie::detail::sequence::node_select;
-using pixie::detail::sequence::node_select_scalar;
+using pixie::permutations::detail::node_select;
+using pixie::permutations::detail::node_select_scalar;
 
 constexpr auto kMax = std::numeric_limits<std::size_t>::max();
 constexpr auto kTop = std::size_t{1}

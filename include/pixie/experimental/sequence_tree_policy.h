@@ -1,6 +1,6 @@
 #pragma once
 
-#include <pixie/detail/sequence/tree_policy.h>
+#include <pixie/permutations/detail/tree_policy.h>
 
 #include <bit>
 #include <cstddef>
@@ -48,8 +48,8 @@ class LeafChildOrder {
                      std::size_t end,
                      std::size_t height) noexcept {
     if (height != 1) {
-      return detail::sequence::DirectChildOrder<Fanout>::template rotate<Tree>(
-          node, begin, middle, end, height);
+      return permutations::detail::DirectChildOrder<Fanout>::template rotate<
+          Tree>(node, begin, middle, end, height);
     }
     if (!node.mapped) {
       std::construct_at(&storage_.value, std::size_t(node.count));
@@ -113,8 +113,8 @@ struct BoundedNodeReserve {
 
 template <class Node, class Owner, class Allocator, std::size_t Limit>
 class RetainedNodePool
-    : public detail::sequence::SequenceNodePool<Node, Owner, Allocator> {
-  using Base = detail::sequence::SequenceNodePool<Node, Owner, Allocator>;
+    : public permutations::detail::SequenceNodePool<Node, Owner, Allocator> {
+  using Base = permutations::detail::SequenceNodePool<Node, Owner, Allocator>;
   using Reserve = BoundedNodeReserve<Node, Allocator, Limit>;
   Reserve* retained_ = nullptr;
   std::size_t borrowed_ = 0;
@@ -150,18 +150,19 @@ class RetainedNodePool
 template <std::size_t ReservedNodes, class LeafOrder = void>
 struct SequenceTreePolicy {
   template <std::size_t Fanout>
-  using Order = std::conditional_t<std::is_void_v<LeafOrder>,
-                                   detail::sequence::DirectChildOrder<Fanout>,
-                                   LeafChildOrder<Fanout, LeafOrder>>;
+  using Order =
+      std::conditional_t<std::is_void_v<LeafOrder>,
+                         permutations::detail::DirectChildOrder<Fanout>,
+                         LeafChildOrder<Fanout, LeafOrder>>;
   template <class Node, class Allocator>
   using Reserve =
       std::conditional_t<ReservedNodes == 0,
-                         detail::sequence::NoNodeReserve<Node>,
+                         permutations::detail::NoNodeReserve<Node>,
                          BoundedNodeReserve<Node, Allocator, ReservedNodes>>;
   template <class Node, class Owner, class Allocator>
   using Pool = std::conditional_t<
       ReservedNodes == 0,
-      detail::sequence::SequenceNodePool<Node, Owner, Allocator>,
+      permutations::detail::SequenceNodePool<Node, Owner, Allocator>,
       RetainedNodePool<Node, Owner, Allocator, ReservedNodes>>;
   struct TestCounters {
     std::size_t order_materializations = 0;

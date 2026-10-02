@@ -1,8 +1,8 @@
 #pragma once
 
-#include <pixie/detail/sequence/packed_value_block.h>
-#include <pixie/detail/sequence/sequence_tree.h>
 #include <pixie/permutation.h>
+#include <pixie/permutations/detail/packed_value_block.h>
+#include <pixie/permutations/detail/sequence_tree.h>
 
 #include <algorithm>
 #include <array>
@@ -44,9 +44,9 @@ class Permutation
     : public PermutationBase<Permutation<Index, StorageBits, Fanout, Layout>,
                              Index> {
   friend class PermutationBase<Permutation, Index>;
-  using block_type = detail::sequence::PackedValueBlock<Index, StorageBits>;
+  using block_type = permutations::detail::PackedValueBlock<Index, StorageBits>;
   using tree_type =
-      detail::sequence::SequenceTree<block_type, Fanout, Layout, true>;
+      permutations::detail::SequenceTree<block_type, Fanout, Layout, true>;
   static_assert(std::is_integral_v<Index> && std::is_unsigned_v<Index> &&
                 !std::is_same_v<Index, bool> &&
                 std::numeric_limits<Index>::digits <= 64);
@@ -124,7 +124,8 @@ class Permutation
    * @return Disjoint storage categories and total requested live bytes.
    */
   MemoryUsage memory_usage() const noexcept {
-    using Untagged = detail::sequence::SequenceTree<block_type, Fanout, Layout>;
+    using Untagged =
+        permutations::detail::SequenceTree<block_type, Fanout, Layout>;
     const auto tree = tree_.memory_usage();
     MemoryUsage result;
     result.blocks = tree.blocks;

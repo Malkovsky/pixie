@@ -1,12 +1,12 @@
 #include <gtest/gtest.h>
-#include <pixie/detail/sequence/bit_block.h>
-#include <pixie/detail/sequence/packed_bit_block.h>
-#include <pixie/detail/sequence/sequence_tree.h>
 #include <pixie/experimental/grouped_slot_order256.h>
 #include <pixie/experimental/permuted_bit_block.h>
 #include <pixie/experimental/power_of_two_value_block.h>
 #include <pixie/experimental/slot_order.h>
 #include <pixie/experimental/slot_order16.h>
+#include <pixie/permutations/detail/bit_block.h>
+#include <pixie/permutations/detail/packed_bit_block.h>
+#include <pixie/permutations/detail/sequence_tree.h>
 
 #include <algorithm>
 #include <array>
@@ -25,7 +25,7 @@
 
 namespace {
 using namespace pixie;
-using namespace pixie::detail::sequence;
+using namespace pixie::permutations::detail;
 using namespace pixie::experimental;
 
 template <class T>
