@@ -38,13 +38,16 @@ class PackedBitBuilder {
     if (required_words <= current_words) {
       return;
     }
+    if (current_words == 0) {
+      data_ = AlignedStorage(
+          bits_for_words(std::max(required_words, kAlignedStorageLineWords64)));
+      return;
+    }
     const std::size_t doubled_words =
         current_words > std::numeric_limits<std::size_t>::max() / 2
             ? required_words
             : current_words * 2;
-    const std::size_t grown_words =
-        std::max(required_words, current_words == 0 ? kAlignedStorageLineWords64
-                                                    : doubled_words);
+    const std::size_t grown_words = std::max(required_words, doubled_words);
     data_.resize(bits_for_words(grown_words));
   }
 
