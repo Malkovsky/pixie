@@ -5,6 +5,7 @@
  * @brief Self-contained byte-oriented file archives with line extraction.
  */
 
+#include <pixie/detail/byte_histogram.h>
 #include <pixie/detail/serialization.h>
 #include <pixie/storage/read_only_view.h>
 #include <pixie/wavelet_tree/index.h>
@@ -378,7 +379,9 @@ class FileArchiveIndex : public FileArchiveBase<FileArchiveIndex<Storage>>,
    * receives `(const FileArchiveSourceMetadata&, consumer)` and must pass the
    * same immutable content to `consumer` as byte spans on both calls. The
    * first pass derives metadata and symbol counts; the second constructs the
-   * tree without retaining complete source contents.
+   * tree without retaining original source buffers. Wavelet construction
+   * temporarily owns up to two byte buffers, each as large as the logical
+   * content.
    * @throws std::invalid_argument for invalid metadata or changed content.
    */
   template <class ReadSource>
@@ -546,8 +549,7 @@ class FileArchiveIndex : public FileArchiveBase<FileArchiveIndex<Storage>>,
               [](const auto& left, const auto& right) {
                 return left.path < right.path;
               });
-    std::array<std::size_t, file_archive_detail::kByteAlphabetSize>
-        symbol_counts{};
+    detail::ByteHistogram histogram;
     std::vector<std::uint64_t> content_hashes;
     content_hashes.reserve(sources.size());
     std::string paths;
@@ -589,9 +591,9 @@ class FileArchiveIndex : public FileArchiveBase<FileArchiveIndex<Storage>>,
         }
         logical_size_ += chunk.size();
         utf8.Consume(chunk);
+        histogram.add(chunk);
         for (const std::byte byte : chunk) {
           const std::uint8_t value = std::to_integer<std::uint8_t>(byte);
-          ++symbol_counts[value];
           newlines += value == '\n' ? 1U : 0U;
           has_content = true;
           last_byte = value;
@@ -613,6 +615,8 @@ class FileArchiveIndex : public FileArchiveBase<FileArchiveIndex<Storage>>,
     paths_ = MakeStorage(
         std::as_bytes(std::span<const char>(paths.data(), paths.size())));
 
+    const auto symbol_counts = histogram.counts();
+
     tree_.emplace(
         file_archive_detail::kByteAlphabetSize, symbol_counts,
         [&](auto&& emit) {
@@ -626,12 +630,15 @@ class FileArchiveIndex : public FileArchiveBase<FileArchiveIndex<Storage>>,
                     "File-archive source changed between build passes");
               }
               content_size += chunk.size();
+              const auto symbols = std::span<const std::uint8_t>(
+                  reinterpret_cast<const std::uint8_t*>(chunk.data()),
+                  chunk.size());
               for (const std::byte byte : chunk) {
                 const std::uint8_t value = std::to_integer<std::uint8_t>(byte);
                 content_hash ^= value;
                 content_hash *= 1099511628211ULL;
-                emit(value);
               }
+              emit(symbols);
             });
             if (content_size != records_[index].content_size ||
                 content_hash != content_hashes[index]) {
