@@ -520,4 +520,27 @@ TEST(PackedBitBuilderTest, SupportsPartialFieldsAndSafeReuse) {
   EXPECT_THROW(builder.write_bits(0, 65), std::invalid_argument);
 }
 
+TEST(PackedBitBuilderTest, TransfersAlignedStorageWithoutChangingBits) {
+  pixie::PackedBitBuilder builder;
+  builder.reserve_bits(129);
+  builder.write_bits(0xfedcba9876543210, 64);
+  builder.write_bits(0x5a, 8);
+
+  const pixie::AlignedStorage storage = builder.take_storage();
+  ASSERT_EQ(storage.size_bytes(), 2 * sizeof(std::uint64_t));
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(storage.as_bytes().data()) %
+                pixie::kAlignedStorageLineBytes,
+            0u);
+  const auto words = storage.as_words64();
+  ASSERT_EQ(words.size(), 2u);
+  EXPECT_EQ(words[0], 0xfedcba9876543210u);
+  EXPECT_EQ(words[1], 0x5au);
+  EXPECT_EQ(builder.size_bits(), 0u);
+
+  builder.write_bit(true);
+  const auto reused = builder.take_words();
+  ASSERT_EQ(reused.size(), 1u);
+  EXPECT_EQ(reused[0], 1u);
+}
+
 }  // namespace

@@ -1,12 +1,12 @@
 #pragma once
 
 #include <pixie/detail/byte_histogram.h>
-#include <pixie/detail/huffman_build_table.h>
 #include <pixie/detail/serialization.h>
-#include <pixie/detail/wavelet_partition.h>
 #include <pixie/packed_bit_builder.h>
 #include <pixie/rank_select/support.h>
 #include <pixie/wavelet_tree.h>
+#include <pixie/wavelet_tree/detail/huffman_build_table.h>
+#include <pixie/wavelet_tree/detail/wavelet_partition.h>
 
 #include <algorithm>
 #include <array>
@@ -834,9 +834,11 @@ class WaveletTreeIndex
   /**
    * @brief Construct from counts and one streamed pass over the symbols.
    * @details @p for_each_symbol is invoked exactly once with a consumer that
-   * accepts one `Symbol`. Emitted symbols must exactly match @p symbol_counts;
-   * this permits callers to scan a replayable source once for counts and once
-   * for construction without materializing the sequence themselves.
+   * accepts either one `Symbol` or a contiguous range convertible to
+   * `std::span<const Symbol>`. Emitted symbols must exactly match
+   * @p symbol_counts; this permits callers to scan a replayable source once
+   * for counts and once for construction without materializing the sequence
+   * themselves.
    * Construction temporarily owns up to two buffers of one `Symbol` per
    * emitted symbol. The buffers are released before the permanent node indexes
    * are materialized.

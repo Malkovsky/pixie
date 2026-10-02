@@ -7,16 +7,15 @@
  * This file is derived from PivCo's `huffman_table.c` and has been modified
  * for Pixie's header-only C++ representation. Wire-format, flat-subtree,
  * entropy-coding, and decoder tables were removed. The two-queue length
- * builder, length limiter, fused canonical tree shaping, and in-order rank
- * assignment are retained. Both projects are distributed under Apache-2.0.
+ * builder, length limiter, sibling-paired canonical tree shaping, and in-order
+ * rank assignment are retained. Both projects are distributed under
+ * Apache-2.0.
  */
 
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <span>
 
 namespace pixie::detail {
@@ -31,17 +30,9 @@ struct HuffmanBuildNode {
   std::int16_t right = -1;
 };
 
-enum class HuffmanBuildNodeType : std::uint8_t {
-  kInternal,
-  kBothLeaves,
-  kLeftLeaf,
-  kLeaf,
-};
-
 struct HuffmanBuildTable {
   std::array<HuffmanBuildNode, kMaximumHuffmanNodes> tree{};
   std::array<std::uint8_t, kMaximumHuffmanNodes> split_rank{};
-  std::array<HuffmanBuildNodeType, kMaximumHuffmanNodes> node_type{};
   std::array<std::uint8_t, kByteAlphabetSize> symbol_to_rank{};
   std::int16_t root = -1;
   std::size_t node_count = 0;
@@ -245,10 +236,9 @@ inline void limit_code_lengths(
   }
 }
 
-struct FusedChunk {
-  std::uint16_t suffix_bits;
+struct CanonicalChunk {
+  bool sibling_pair;
   std::uint16_t depth;
-  std::uint16_t symbol_count;
   std::uint16_t root_code;
   std::size_t symbol_begin;
 };
@@ -266,7 +256,7 @@ inline std::uint16_t assign_inorder_ranks(HuffmanBuildTable& table,
   return assign_inorder_ranks(table, node.right, rank);
 }
 
-inline void build_fused_tree(
+inline void build_canonical_tree(
     const std::array<std::uint8_t, kByteAlphabetSize>& lengths,
     HuffmanBuildTable& table) {
   std::array<std::uint16_t, kMaximumHuffmanCodeLength + 1> length_counts{};
@@ -296,22 +286,22 @@ inline void build_fused_tree(
     }
   }
 
-  std::array<FusedChunk, kByteAlphabetSize> chunks{};
+  std::array<CanonicalChunk, kByteAlphabetSize> chunks{};
   std::size_t chunk_count = 0;
   for (std::size_t length = 1; length <= maximum_length; ++length) {
     std::size_t symbol = length_begin[length];
     for (std::size_t pair = 0; pair < length_counts[length] / 2; ++pair) {
-      chunks[chunk_count++] = {1, static_cast<std::uint16_t>(length - 1), 2, 0,
+      chunks[chunk_count++] = {true, static_cast<std::uint16_t>(length - 1), 0,
                                symbol};
       symbol += 2;
     }
     if ((length_counts[length] & 1U) != 0) {
-      chunks[chunk_count++] = {0, static_cast<std::uint16_t>(length), 1, 0,
+      chunks[chunk_count++] = {false, static_cast<std::uint16_t>(length), 0,
                                symbol};
     }
   }
   for (std::size_t index = 1; index < chunk_count; ++index) {
-    const FusedChunk current = chunks[index];
+    const CanonicalChunk current = chunks[index];
     std::size_t position = index;
     while (position != 0 && chunks[position - 1].depth > current.depth) {
       chunks[position] = chunks[position - 1];
@@ -323,7 +313,7 @@ inline void build_fused_tree(
   std::uint32_t code = 0;
   std::size_t previous_depth = 0;
   for (std::size_t index = 0; index < chunk_count; ++index) {
-    FusedChunk& chunk = chunks[index];
+    CanonicalChunk& chunk = chunks[index];
     code <<= chunk.depth - previous_depth;
     chunk.root_code = static_cast<std::uint16_t>(code);
     ++code;
@@ -333,7 +323,7 @@ inline void build_fused_tree(
   table.root = 0;
   table.node_count = 1;
   for (std::size_t index = 0; index < chunk_count; ++index) {
-    const FusedChunk& chunk = chunks[index];
+    const CanonicalChunk& chunk = chunks[index];
     std::int16_t node_id = table.root;
     for (std::size_t bit = chunk.depth; bit-- > 0;) {
       const bool right = ((chunk.root_code >> bit) & 1U) != 0;
@@ -344,7 +334,7 @@ inline void build_fused_tree(
       }
       node_id = child;
     }
-    if (chunk.suffix_bits == 1) {
+    if (chunk.sibling_pair) {
       HuffmanBuildNode& node = table.tree[node_id];
       node.left = static_cast<std::int16_t>(table.node_count++);
       table.tree[node.left].symbol = ordered_symbols[chunk.symbol_begin];
@@ -356,30 +346,14 @@ inline void build_fused_tree(
   }
 
   assign_inorder_ranks(table, table.root, 0);
-  for (std::size_t index = 0; index < table.node_count; ++index) {
-    const HuffmanBuildNode& node = table.tree[index];
-    if (node.symbol >= 0) {
-      table.node_type[index] = HuffmanBuildNodeType::kLeaf;
-      continue;
-    }
-    const bool left_leaf = table.tree[node.left].symbol >= 0;
-    const bool right_leaf = table.tree[node.right].symbol >= 0;
-    if (left_leaf && right_leaf) {
-      table.node_type[index] = HuffmanBuildNodeType::kBothLeaves;
-    } else if (left_leaf) {
-      table.node_type[index] = HuffmanBuildNodeType::kLeftLeaf;
-    } else {
-      table.node_type[index] = HuffmanBuildNodeType::kInternal;
-    }
-  }
 }
 
 }  // namespace huffman_build_detail
 
 /**
- * @brief Build PivCo's fused, non-flat byte Huffman tree.
+ * @brief Build PivCo's sibling-paired, non-flat byte Huffman tree.
  * @param frequencies Frequencies for a dense alphabet of at most 256 symbols.
- * @return Tree, node dispatch classes, symbol ranks, and split ranks.
+ * @return Tree, symbol ranks, and split ranks.
  */
 inline HuffmanBuildTable build_huffman_table(
     std::span<const std::size_t> frequencies) {
@@ -397,7 +371,6 @@ inline HuffmanBuildTable build_huffman_table(
     table.root = 0;
     table.node_count = 1;
     table.tree[0].symbol = used_symbols[0];
-    table.node_type[0] = HuffmanBuildNodeType::kLeaf;
     table.symbol_to_rank[used_symbols[0]] = 0;
     return table;
   }
@@ -405,7 +378,7 @@ inline HuffmanBuildTable build_huffman_table(
   auto lengths = huffman_build_detail::build_code_lengths(
       frequencies, std::span(used_symbols).first(table.symbol_count));
   huffman_build_detail::limit_code_lengths(lengths);
-  huffman_build_detail::build_fused_tree(lengths, table);
+  huffman_build_detail::build_canonical_tree(lengths, table);
   return table;
 }
 
