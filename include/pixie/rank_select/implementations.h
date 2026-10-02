@@ -18,10 +18,9 @@
  * Full registered family: 378 cases, one CPU-pinned Release pass per row
  * on CPU 4 (AMD Ryzen 7 8845HS), GCC 13.3 with -march=native. Rows through 2^26
  * use the standard 0.2 s warmup and 1.0 s adaptive minimum. Larger rows use
- * explicit iteration counts targeting about one CPU second, with the same
- * warmup; their work counts are retained below. This avoids repeated large
- * source construction during adaptive calibration. Single-pass values are
- * a performance snapshot, not a claim of statistical significance.
+ * fixed iteration counts targeting about one CPU second, with the same warmup,
+ * to avoid repeated large source construction during calibration. Single-pass
+ * values are a performance snapshot, not a claim of statistical significance.
  *
  * Sources and 65,536-query pools (512 KiB) use deterministic seed 42, mixed
  * with size and fill; every measured row uses repetition seed index zero.
@@ -141,34 +140,6 @@
  * | FNBP         | 2^22 |    1624.5 |  15.6 |  15.6 |    41.4 |       - |  0.004250 |
  * | FNBP         | 2^26 |   10499.9 |  26.2 |  27.1 |    68.5 |       - |  0.063034 |
  * | FNBP         | 2^30 |  344262.7 |  96.3 |  93.0 |   141.5 |       - |  1.004486 |
- *
- * Explicit work counts for the largest rows. Reproduce each operation with
- * taskset -c 4, its exact size/source/backend filter,
- * --benchmark_repetitions=1, and --benchmark_min_time=<count>x.
- *
- * | backend | source       | N    | build |    rank1 |    rank0 | select1 | select0 |
- * | :------ | :----------- | :--- | ----: | -------: | -------: | ------: | ------: |
- * | Pixie   | random 12.5% | 2^30 |    25 | 30928500 | 53282966 | 9697233 | 2500000 |
- * | Pixie   | random 12.5% | 2^34 |     2 | 18288804 | 20765962 | 4346761 | 1088189 |
- * | Pixie   | random 50%   | 2^30 |    29 | 30928500 | 53282966 | 9697233 | 2500000 |
- * | Pixie   | random 50%   | 2^34 |     2 | 18288804 | 20765962 | 4346761 | 1088189 |
- * | Pixie   | random 87.5% | 2^30 |    25 | 30928500 | 53282966 | 9697233 | 2500000 |
- * | Pixie   | random 87.5% | 2^34 |     2 | 18288804 | 20765962 | 4346761 | 1088189 |
- * | Pixie   | FNBP         | 2^30 |    25 | 30928500 | 53282966 | 9697233 | 2500000 |
- * | Pasta   | random 12.5% | 2^30 |     8 | 28307643 | 31502783 | 8285911 | 2500000 |
- * | Pasta   | random 12.5% | 2^34 |     1 | 16158411 | 14023061 | 3582090 | 1088189 |
- * | Pasta   | random 50%   | 2^30 |     9 | 28307643 | 31502783 | 8285911 | 2500000 |
- * | Pasta   | random 50%   | 2^34 |     1 | 16158411 | 14023061 | 3582090 | 1088189 |
- * | Pasta   | random 87.5% | 2^30 |     8 | 28307643 | 31502783 | 8285911 | 2500000 |
- * | Pasta   | random 87.5% | 2^34 |     1 | 16158411 | 14023061 | 3582090 | 1088189 |
- * | Pasta   | FNBP         | 2^30 |     8 | 28307643 | 31502783 | 8285911 | 2500000 |
- * | 3-star  | random 12.5% | 2^30 |     3 | 10698133 | 10441310 | 6845335 |       - |
- * | 3-star  | random 12.5% | 2^34 |     1 |  3721295 |  5141622 | 2991904 |       - |
- * | 3-star  | random 50%   | 2^30 |     4 | 10698133 | 10441310 | 6845335 |       - |
- * | 3-star  | random 50%   | 2^34 |     1 |  3721295 |  5141622 | 2991904 |       - |
- * | 3-star  | random 87.5% | 2^30 |     3 | 10698133 | 10441310 | 6845335 |       - |
- * | 3-star  | random 87.5% | 2^34 |     1 |  3721295 |  5141622 | 2991904 |       - |
- * | 3-star  | FNBP         | 2^30 |     3 | 10698133 | 10441310 | 6845335 |       - |
  */
 // clang-format on
 
