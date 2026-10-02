@@ -347,6 +347,17 @@ TEST(RankSelectSupportTest, SelectZeroSkewedDistributionFallback) {
   EXPECT_EQ(bv.select0(kZeroBasicBlocks * 512u + 1), bv.size());
 }
 
+TEST(RankSelectSupportTest, SelectHandlesFullSuperblockRank) {
+  constexpr size_t kWordsPerSuperblock = 65536 / 64;
+  std::vector<uint64_t> ones(kWordsPerSuperblock, ~uint64_t{0});
+  const RankSelectSupport one_support(ones, 65536);
+  EXPECT_EQ(one_support.select(65536), 65535u);
+
+  std::vector<uint64_t> zeros(kWordsPerSuperblock, 0);
+  const RankSelectSupport zero_support(zeros, 65536);
+  EXPECT_EQ(zero_support.select0(65536), 65535u);
+}
+
 TEST(RankSelectSupportTest, MainRankZeroTest) {
   std::mt19937_64 rng(42);
   std::vector<uint64_t> bits(65536 * 32);

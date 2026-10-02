@@ -188,7 +188,8 @@ unavoidable external C library dependency.
 ## Technology Stack
 
 - **Language**: C++20 (`std::span`, `std::popcount`, and `<bit>` are required).
-- **Build**: CMake 3.18 or newer.
+- **Build**: CMake 3.18 or newer. The optional Pasta comparison backend
+  requires CMake 3.25 or newer.
 - **Testing**: Google Test 1.17.0, registered with CTest.
 - **Benchmarking**: Google Benchmark 1.9.4.
 - **SIMD**: AVX-512 when available, AVX2 fallback, and scalar fallback.
@@ -203,7 +204,7 @@ dependencies only as needed. Direct CMake defaults and their effects are:
 | --- | --- | --- |
 | `PIXIE_TESTS` | `ON` standalone, `OFF` downstream | Builds tests and fetches Google Test. |
 | `PIXIE_BENCHMARKS` | `OFF` | Builds native Google Benchmark targets. |
-| `PIXIE_THIRD_PARTY_BACKENDS` | `OFF` | Enables optional SDSL and Immer adapters and their comparison targets. |
+| `PIXIE_THIRD_PARTY_BACKENDS` | `OFF` | Enables optional SDSL, Immer, Pasta, and 3-star comparison backends. |
 | `PIXIE_DIAGNOSTICS` | `OFF` | Enables diagnostic logging for profiling experiments. |
 | `PIXIE_DOCS` | `OFF` | Enables the Doxygen `docs` target. |
 | `PIXIE_COVERAGE` | `OFF` | Adds GCC coverage instrumentation. |
@@ -211,9 +212,16 @@ dependencies only as needed. Direct CMake defaults and their effects are:
 `MappedFile` uses native POSIX memory mapping on Linux/Unix. A default
 FetchContent consumer therefore receives no third-party dependency, while a
 standalone default build fetches Google Test. Enabling third-party backends also
-fetches SDSL, Immer, and pasta-toolbox dependencies. SDSL and Immer have
-registered Pixie adapters/comparison benchmarks. Do not describe pasta-toolbox as
-an available backend until Pixie adds and registers one.
+fetches SDSL, Immer, pasta-toolbox, and 3star-rankselect dependencies. Immer has
+registered sequence comparison benchmarks; SDSL has registered RmM comparison
+targets. Pasta provides an owning rank/select
+comparison backend and is not a default library dependency. Pasta is
+GPLv3-or-later; keep its adapter strictly
+behind the optional comparison-backend build option. 3star-rankselect is MPL 2.0
+and is fetched at a pinned licensed revision. Its benchmark-only adapter
+supports one-rank, derived zero-rank, and one-select. Upstream global state and
+incomplete zero-select prevent a general public rank/select adapter. Use the
+standard `FETCHCONTENT_SOURCE_DIR_THREE_STAR` override for a local source tree.
 
 ## Build and Test Presets
 
@@ -310,6 +318,9 @@ executable directly only when debugging a focused Google Test filter.
   cases over more undirected random input. Cover border correction, same-leaf
   paths, prefix/suffix selectors, sparse-overlay hit/miss paths, partial final
   blocks, and first-minimum ties.
+- **Rank/select boundaries**: test a target at the final position of a full
+  2^16-bit superblock; its local one or zero rank is 65,536 and cannot be
+  passed through a 16-bit basic-block search key.
 - **Storage tests**: test owners and views through the same specification,
   including nested byte subranges, alignment constraints, serialization, and
   owner/view lifetime rules.

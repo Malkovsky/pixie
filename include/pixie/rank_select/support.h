@@ -713,7 +713,6 @@ class RankSelectSupport
     const size_t block_begin = kBlocksPerSuperBlock * s_block;
     const size_t block_count =
         std::min(kBlocksPerSuperBlock, basic_block_rank.size() - block_begin);
-
     for (size_t pos = 0; pos < block_count; pos += 32) {
       auto count =
           lower_bound_32x16(&basic_block_rank[block_begin + pos], local_rank);
@@ -758,15 +757,10 @@ class RankSelectSupport
    * @param s_block Super block
    * index.
    * @details
-   * Similar to find_basicblock but initial guess is
-   * based on linear
-   * interpolation, for random data it should make initial
-   * guess correct
-   * most of the times, we start from the 32 wide block with
-   * interpolation
-   * guess at the center, if we see that select result lie in
-   * lower blocks
-   * we backoff to find_basicblock
+   * @details Interpolation predicts a basic block from the superblock's one
+   * ranks. The predicted block is validated directly from the existing
+   * one-prefix metadata; a miss uses the centered SIMD search and its scalar
+   * fallback.
    */
   uint64_t find_basicblock_is(uint16_t local_rank, uint64_t s_block) const {
     auto super_block_rank = super_block_rank_.as_words64();
@@ -779,7 +773,19 @@ class RankSelectSupport
     auto lower = super_block_rank[s_block];
     auto upper = super_block_rank[s_block + 1];
 
-    uint64_t pos = block_count * local_rank / (upper - lower);
+    uint64_t interpolation = block_count * local_rank / (upper - lower);
+    const uint64_t block_offset =
+        std::min<uint64_t>(interpolation, block_count - 1);
+    const uint64_t block = block_begin + block_offset;
+    const uint64_t ones_before = basic_block_rank[block];
+    const uint64_t ones_after = block_offset + 1 == block_count
+                                    ? upper - lower
+                                    : basic_block_rank[block + 1];
+    if (ones_before < local_rank && local_rank <= ones_after) {
+      return block;
+    }
+
+    uint64_t pos = interpolation;
     pos = pos + 16 < 32 ? 0 : (pos - 16);
     pos = std::min<uint64_t>(pos, last_group);
     while (pos < last_group) {
@@ -1066,7 +1072,10 @@ class RankSelectSupport
 
     uint64_t s_block = find_superblock(rank);
     rank -= super_block_rank[s_block];
-    auto pos = find_basicblock_is(rank, s_block);
+    const uint64_t pos =
+        rank == kSuperBlockSize
+            ? s_block * kBlocksPerSuperBlock + (kBlocksPerSuperBlock - 1)
+            : find_basicblock_is(static_cast<uint16_t>(rank), s_block);
     rank -= basic_block_rank[pos];
     return select_in_words(pos * kWordsPerBlock, rank, true);
   }
@@ -1093,7 +1102,10 @@ class RankSelectSupport
 
     uint64_t s_block = find_superblock_zeros(rank0);
     rank0 -= kSuperBlockSize * s_block - super_block_rank[s_block];
-    auto pos = find_basicblock_is_zeros(rank0, s_block);
+    const uint64_t pos =
+        rank0 == kSuperBlockSize
+            ? s_block * kBlocksPerSuperBlock + (kBlocksPerSuperBlock - 1)
+            : find_basicblock_is_zeros(static_cast<uint16_t>(rank0), s_block);
     auto pos_in_super_block = pos & (kBlocksPerSuperBlock - 1);
     rank0 -= kBasicBlockSize * pos_in_super_block - basic_block_rank[pos];
     return select_in_words(pos * kWordsPerBlock, rank0, false);

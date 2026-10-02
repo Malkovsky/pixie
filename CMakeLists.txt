@@ -52,7 +52,11 @@ option(PIXIE_DIAGNOSTICS "Include diagnostic logs" OFF)
 option(PIXIE_DOCS "Build Doxygen documentation" OFF)
 
 if (PIXIE_THIRD_PARTY_BACKENDS)
-    add_compile_definitions(SDSL_SUPPORT)
+    if (CMAKE_VERSION VERSION_LESS 3.25)
+        message(FATAL_ERROR
+                "PIXIE_THIRD_PARTY_BACKENDS requires CMake 3.25 for pasta::bit_vector")
+    endif ()
+    add_compile_definitions(SDSL_SUPPORT PIXIE_PASTA_SUPPORT)
 endif ()
 
 if (PIXIE_DIAGNOSTICS)
@@ -108,7 +112,7 @@ if (PIXIE_THIRD_PARTY_BACKENDS)
     FetchContent_Declare(
             pasta_bit_vector
             GIT_REPOSITORY https://github.com/pasta-toolbox/bit_vector.git
-            GIT_TAG origin/main
+            GIT_TAG 3ffb6e5a2e58c76425de8197bfe554eb1bf9fd94
     )
     FetchContent_MakeAvailable(pasta_bit_vector)
 
@@ -126,6 +130,18 @@ if (PIXIE_THIRD_PARTY_BACKENDS)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sdsl-lite/patch.cmake
     )
     FetchContent_MakeAvailable(sdsl_lite)
+
+    # Upstream's CMake project builds its standalone research harness. Fetch
+    # only the sources; Pixie's adapter supplies the required global state.
+    FetchContent_Declare(
+            three_star
+            GIT_REPOSITORY https://github.com/nrilu/3star-rankselect.git
+            GIT_TAG a69449585d1c760b2ed1af9b2761e3c05d86b247
+            GIT_SUBMODULES ""
+            SOURCE_SUBDIR pixie-source-only
+    )
+    FetchContent_MakeAvailable(three_star)
+    set(PIXIE_3STAR_SUPPORT ON)
 endif ()
 
 if (PIXIE_TESTS)
@@ -159,19 +175,44 @@ function (pixie_enable_project_warnings target)
     endif ()
 endfunction ()
 
+if (PIXIE_3STAR_SUPPORT)
+    add_library(pixie_three_star INTERFACE)
+    target_include_directories(pixie_three_star
+            SYSTEM INTERFACE ${three_star_SOURCE_DIR})
+    target_compile_definitions(pixie_three_star INTERFACE
+            PIXIE_3STAR_SUPPORT
+            ALIGNMENT=2097152
+            CHECK_ALL_DENSE_SPARSE=0
+            COUNT_HIT_TYPES=0
+            CUSTOM_L0=2048
+            POP=2
+            PREFETCH_NT=1
+            PREFETCH_T0=1
+            REVERSE=2
+            TREE_DIVISION_EXP=3
+            TREE_EXP_LVL0=19
+            TREE_TYPE=3)
+
+    function (pixie_enable_three_star target)
+        target_include_directories(${target} PRIVATE src/benchmarks)
+        target_link_libraries(${target} pixie_three_star)
+    endfunction ()
+endif ()
+
 if (PIXIE_DIAGNOSTICS)
     target_compile_definitions(pixie INTERFACE PIXIE_DIAGNOSTICS)
     target_link_libraries(pixie INTERFACE spdlog::spdlog_header_only)
 endif ()
 
 if (PIXIE_THIRD_PARTY_BACKENDS)
-    target_compile_definitions(pixie INTERFACE SDSL_SUPPORT)
+    target_compile_definitions(pixie INTERFACE SDSL_SUPPORT PIXIE_PASTA_SUPPORT)
     target_compile_definitions(pixie INTERFACE PIXIE_IMMER_SUPPORT)
     target_link_libraries(pixie INTERFACE immer)
     target_include_directories(pixie SYSTEM INTERFACE
             $<BUILD_INTERFACE:${immer_SOURCE_DIR}>)
     target_include_directories(pixie INTERFACE
             $<BUILD_INTERFACE:${sdsl_lite_SOURCE_DIR}/include>)
+    target_link_libraries(pixie INTERFACE pasta_bit_vector)
 endif ()
 
 # ---------------------------------------------------------------------------
@@ -206,6 +247,27 @@ if (PIXIE_TESTS)
             gtest
             gtest_main
             ${PIXIE_DIAGNOSTICS_LIBS})
+    if (PIXIE_THIRD_PARTY_BACKENDS)
+        target_link_libraries(rank_select_tests pasta_bit_vector)
+        if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+            # Pasta's debug-assertion helper is a static function that becomes
+            # unused in optimized builds.
+            target_compile_options(rank_select_tests PRIVATE -Wno-unused-function)
+        endif ()
+    endif ()
+
+    if (PIXIE_3STAR_SUPPORT)
+        add_executable(three_star_benchmark_tests
+                src/tests/three_star_benchmark_tests.cpp
+                src/benchmarks/three_star_adapter.cpp)
+        target_include_directories(three_star_benchmark_tests
+                PUBLIC include)
+        target_link_libraries(three_star_benchmark_tests
+                gtest
+                gtest_main
+                ${PIXIE_DIAGNOSTICS_LIBS})
+        pixie_enable_three_star(three_star_benchmark_tests)
+    endif ()
 
     add_executable(benchmark_tests
             src/tests/benchmark_tests.cpp)
@@ -363,6 +425,9 @@ if (PIXIE_TESTS)
             select512_experimental_tests
             excess_record_lows_tests
             rmq_tests)
+    if (PIXIE_3STAR_SUPPORT)
+        list(APPEND PIXIE_TEST_TARGETS three_star_benchmark_tests)
+    endif ()
     foreach (test_target IN LISTS PIXIE_TEST_TARGETS)
         pixie_enable_project_warnings(${test_target})
         gtest_discover_tests(${test_target}
@@ -383,6 +448,18 @@ if (PIXIE_BENCHMARKS)
     target_link_libraries(rank_select_benchmarks
             benchmark
             ${PIXIE_DIAGNOSTICS_LIBS})
+    if (PIXIE_THIRD_PARTY_BACKENDS)
+        target_link_libraries(rank_select_benchmarks pasta_bit_vector)
+        if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+            # See the matching rank_select_tests exception above.
+            target_compile_options(rank_select_benchmarks PRIVATE -Wno-unused-function)
+        endif ()
+    endif ()
+    if (PIXIE_3STAR_SUPPORT)
+        target_sources(rank_select_benchmarks PRIVATE
+                src/benchmarks/three_star_adapter.cpp)
+        pixie_enable_three_star(rank_select_benchmarks)
+    endif ()
 
     add_executable(rmm_benchmarks
             src/benchmarks/rmm_benchmarks.cpp)
@@ -469,6 +546,15 @@ if (PIXIE_BENCHMARKS)
             benchmark
             benchmark_main
             ${PIXIE_DIAGNOSTICS_LIBS})
+    if (PIXIE_THIRD_PARTY_BACKENDS)
+        target_include_directories(serialization_benchmarks
+                PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
+        target_link_libraries(serialization_benchmarks pasta_bit_vector)
+        if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(serialization_benchmarks
+                    PRIVATE -Wno-unused-function)
+        endif ()
+    endif ()
 
     add_executable(integer_vector_benchmarks
             src/benchmarks/integer_vector_benchmarks.cpp)
