@@ -1,7 +1,7 @@
 #pragma once
 
 #ifndef PIXIE_3STAR_SUPPORT
-#error "ThreeStarRankSelectSupport requires PIXIE_3STAR_SOURCE_DIR"
+#error "ThreeStarRankSelectSupport requires PIXIE_THIRD_PARTY_BACKENDS"
 #endif
 
 #include <cstddef>
@@ -23,14 +23,15 @@ static void print_separator() {}
 namespace pixie::benchmarks {
 
 /**
- * @brief Benchmark-only adapter for a permitted local 3-star checkout.
+ * @brief Benchmark-only adapter for the optional 3-star backend.
  *
  * @details This adapter exposes only the upstream operations that are complete
- * in the pinned local source: one-rank and one-select. Its backing input and
+ * in the pinned upstream source: one-rank and one-select. Its backing input and
  * metadata are owned by the upstream process-global implementation, so only
  * one instance may be live at a time. It is intentionally not a public Pixie
  * rank/select implementation. Upstream construction diagnostics are suppressed
  * to keep terminal I/O out of the timed build operation.
+ * The source copy includes zero padding for complete superblocks and sentinels.
  */
 class ThreeStarRankSelectSupport {
  public:

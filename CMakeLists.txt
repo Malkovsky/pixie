@@ -50,33 +50,6 @@ option(PIXIE_BENCHMARKS "Build benchmarks" OFF)
 option(PIXIE_THIRD_PARTY_BACKENDS "Build optional third-party backend integrations" OFF)
 option(PIXIE_DIAGNOSTICS "Include diagnostic logs" OFF)
 option(PIXIE_DOCS "Build Doxygen documentation" OFF)
-set(PIXIE_3STAR_SOURCE_DIR "" CACHE PATH
-        "Path to a permitted local 3star-rankselect checkout for benchmark-only use")
-
-if (PIXIE_3STAR_SOURCE_DIR)
-    if (NOT PIXIE_THIRD_PARTY_BACKENDS)
-        message(FATAL_ERROR
-                "PIXIE_3STAR_SOURCE_DIR requires PIXIE_THIRD_PARTY_BACKENDS")
-    endif ()
-    foreach (three_star_file m3.hpp Tree3.hpp bv.hpp alignedallocator.hpp)
-        if (NOT EXISTS "${PIXIE_3STAR_SOURCE_DIR}/${three_star_file}")
-            message(FATAL_ERROR
-                    "PIXIE_3STAR_SOURCE_DIR is missing ${three_star_file}")
-        endif ()
-    endforeach ()
-    execute_process(
-            COMMAND git -C "${PIXIE_3STAR_SOURCE_DIR}" rev-parse HEAD
-            OUTPUT_VARIABLE PIXIE_3STAR_REVISION
-            OUTPUT_STRIP_TRAILING_WHITESPACE
-            RESULT_VARIABLE PIXIE_3STAR_REVISION_RESULT)
-    if (NOT PIXIE_3STAR_REVISION_RESULT EQUAL 0 OR
-            NOT PIXIE_3STAR_REVISION STREQUAL "8b66e5b24944b483f8a886e215e147a11457cb30")
-        message(FATAL_ERROR
-                "PIXIE_3STAR_SOURCE_DIR must be 3star-rankselect revision "
-                "8b66e5b24944b483f8a886e215e147a11457cb30")
-    endif ()
-    set(PIXIE_3STAR_SUPPORT ON)
-endif ()
 
 if (PIXIE_THIRD_PARTY_BACKENDS)
     if (CMAKE_VERSION VERSION_LESS 3.25)
@@ -157,6 +130,18 @@ if (PIXIE_THIRD_PARTY_BACKENDS)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sdsl-lite/patch.cmake
     )
     FetchContent_MakeAvailable(sdsl_lite)
+
+    # Upstream's CMake project builds its standalone research harness. Fetch
+    # only the sources; Pixie's adapter supplies the required global state.
+    FetchContent_Declare(
+            three_star
+            GIT_REPOSITORY https://github.com/nrilu/3star-rankselect.git
+            GIT_TAG a69449585d1c760b2ed1af9b2761e3c05d86b247
+            GIT_SUBMODULES ""
+            SOURCE_SUBDIR pixie-source-only
+    )
+    FetchContent_MakeAvailable(three_star)
+    set(PIXIE_3STAR_SUPPORT ON)
 endif ()
 
 if (PIXIE_TESTS)
@@ -191,24 +176,26 @@ function (pixie_enable_project_warnings target)
 endfunction ()
 
 if (PIXIE_3STAR_SUPPORT)
+    add_library(pixie_three_star INTERFACE)
+    target_include_directories(pixie_three_star
+            SYSTEM INTERFACE ${three_star_SOURCE_DIR})
+    target_compile_definitions(pixie_three_star INTERFACE
+            PIXIE_3STAR_SUPPORT
+            ALIGNMENT=2097152
+            CHECK_ALL_DENSE_SPARSE=0
+            COUNT_HIT_TYPES=0
+            CUSTOM_L0=2048
+            POP=2
+            PREFETCH_NT=1
+            PREFETCH_T0=1
+            REVERSE=2
+            TREE_DIVISION_EXP=3
+            TREE_EXP_LVL0=19
+            TREE_TYPE=3)
+
     function (pixie_enable_three_star target)
-        target_include_directories(${target}
-                PRIVATE src/benchmarks)
-        target_include_directories(${target}
-                SYSTEM PRIVATE ${PIXIE_3STAR_SOURCE_DIR})
-        target_compile_definitions(${target} PRIVATE
-                PIXIE_3STAR_SUPPORT
-                ALIGNMENT=2097152
-                CHECK_ALL_DENSE_SPARSE=0
-                COUNT_HIT_TYPES=0
-                CUSTOM_L0=2048
-                POP=2
-                PREFETCH_NT=1
-                PREFETCH_T0=1
-                REVERSE=2
-                TREE_DIVISION_EXP=3
-                TREE_EXP_LVL0=19
-                TREE_TYPE=3)
+        target_include_directories(${target} PRIVATE src/benchmarks)
+        target_link_libraries(${target} pixie_three_star)
     endfunction ()
 endif ()
 

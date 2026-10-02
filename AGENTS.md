@@ -204,8 +204,7 @@ dependencies only as needed. Direct CMake defaults and their effects are:
 | --- | --- | --- |
 | `PIXIE_TESTS` | `ON` standalone, `OFF` downstream | Builds tests and fetches Google Test. |
 | `PIXIE_BENCHMARKS` | `OFF` | Builds native Google Benchmark targets. |
-| `PIXIE_THIRD_PARTY_BACKENDS` | `OFF` | Enables optional SDSL and Immer adapters and their comparison targets. |
-| `PIXIE_3STAR_SOURCE_DIR` | empty | Permitted local 3star-rankselect checkout at Pixie's pinned revision for its benchmark-only adapter; Pixie never fetches or redistributes it. |
+| `PIXIE_THIRD_PARTY_BACKENDS` | `OFF` | Enables optional SDSL, Immer, Pasta, and 3-star comparison backends. |
 | `PIXIE_DIAGNOSTICS` | `OFF` | Enables diagnostic logging for profiling experiments. |
 | `PIXIE_DOCS` | `OFF` | Enables the Doxygen `docs` target. |
 | `PIXIE_COVERAGE` | `OFF` | Adds GCC coverage instrumentation. |
@@ -213,13 +212,16 @@ dependencies only as needed. Direct CMake defaults and their effects are:
 `MappedFile` uses native POSIX memory mapping on Linux/Unix. A default
 FetchContent consumer therefore receives no third-party dependency, while a
 standalone default build fetches Google Test. Enabling third-party backends also
-fetches SDSL, Immer, and pasta-toolbox dependencies. Immer has registered sequence
-comparison benchmarks. SDSL has registered RmM comparison
-targets; Pasta provides an owning rank/select comparison backend and is not a
-default library dependency. Pasta is GPLv3-or-later; keep its adapter strictly
-behind the optional comparison-backend build option. The 3-star research
-artifact has no published license; its benchmark-only adapter requires a
-user-provided, permitted local checkout and must not fetch or redistribute it.
+fetches SDSL, Immer, pasta-toolbox, and 3star-rankselect dependencies. Immer has
+registered sequence comparison benchmarks; SDSL has registered RmM comparison
+targets. Pasta provides an owning rank/select
+comparison backend and is not a default library dependency. Pasta is
+GPLv3-or-later; keep its adapter strictly
+behind the optional comparison-backend build option. 3star-rankselect is MPL 2.0
+and is fetched at a pinned licensed revision. Its benchmark-only adapter
+supports one-rank, derived zero-rank, and one-select. Upstream global state and
+incomplete zero-select prevent a general public rank/select adapter. Use the
+standard `FETCHCONTENT_SOURCE_DIR_THREE_STAR` override for a local source tree.
 
 ## Build and Test Presets
 

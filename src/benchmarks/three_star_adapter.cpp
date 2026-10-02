@@ -9,7 +9,6 @@
 namespace {
 
 constexpr std::size_t kWordBits = 64;
-constexpr std::size_t kWordsPerBasicBlock = 32;
 constexpr std::size_t kWordsPerSuperblock = 1024;
 constexpr std::size_t kSentinelSuperblocks = 5;
 
@@ -95,9 +94,16 @@ ThreeStarRankSelectSupport::ThreeStarRankSelectSupport(
     std::size_t num_bits)
     : num_bits_(std::min(num_bits, source_words.size() * kWordBits)) {
   const std::size_t source_word_count = (num_bits_ + kWordBits - 1) / kWordBits;
+  const std::size_t padded_word_count =
+      ((source_word_count + kWordsPerSuperblock - 1) / kWordsPerSuperblock) *
+      kWordsPerSuperblock;
+  const std::size_t stored_words =
+      padded_word_count + kSentinelSuperblocks * kWordsPerSuperblock;
   N_bits = num_bits_;
-  N_words = source_word_count;
-  bits.assign(source_word_count, 0);
+  // Upstream builds complete superblocks and copies sentinel blocks without
+  // checking the input vector's end. Supply initialized padding for both.
+  N_words = padded_word_count;
+  bits.assign(stored_words, 0);
   one_count_ = 0;
   for (std::size_t word_index = 0; word_index < source_word_count;
        ++word_index) {
@@ -118,10 +124,6 @@ ThreeStarRankSelectSupport::ThreeStarRankSelectSupport(
 
   support_.build_auxiliaries();
 
-  const std::size_t stored_words =
-      ((source_word_count + kSentinelSuperblocks * kWordsPerSuperblock) /
-       kWordsPerBasicBlock) *
-      kWordsPerBasicBlock;
   source_copy_bytes_ = stored_words * sizeof(std::uint64_t);
 }
 
