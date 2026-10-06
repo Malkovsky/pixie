@@ -1,0 +1,99 @@
+---
+title: "Compressed rank/select with validated source prefetch"
+date: 2026-10-06
+format: html
+bibliography: ../../bibliography/references.bib
+---
+
+The retained implementation is `pixie::RankSelectSupportCompressed<>` in
+`include/pixie/rank_select/compressed.h`, with default parameters `<4096,16>`.
+It borrows immutable packed source words and owns its metadata. Rank counts a
+half-open prefix; select accepts a one-based occurrence rank and returns a
+zero-based bit position. The public contract defines empty, disabled-direction
+and out-of-range behavior. Serialization is not provided.
+
+## Rank records
+
+Each 16,384-bit superblock has one aligned 64-byte record. Its first word is the
+global one count, and the remaining seven words pack 32 local 512-bit prefix
+counts in fourteen bits each. Terminal zero/full counts are reconstructed from
+the first local prefix. Full-superblock rank metadata costs 3.125% of the source.
+
+Rank reads the relevant record and source basic block. Local select searches
+decode the packed prefixes with the retained SIMD primitive, or use the scalar
+estimate with exact corrections. The chosen 512-bit select kernel keeps source
+words available through word localization. Feature guards and fallbacks remain
+inside the primitive headers.
+
+The rank layout stays uniformly packed. Elias--Fano remains useful for monotone
+select positions, but its high-bit selection adds work to an isolated rank
+lookup. A bulk decode improvement alone does not establish an overall query
+improvement; the rank/select decision uses the integrated workload.
+
+## Primary samples and wide intervals
+
+Samples delimit every 4096 occurrences independently for one-select and
+zero-select. A coarse sample stores a superblock ID. An interval spanning fewer
+than 16 superblocks uses a forward scan of global ranks; wider intervals have
+occupied-superblock IDs and relative rank endpoints in a secondary directory.
+Endpoint selection uses lower_bound. A bitmap and prefix count map a sample
+exactly to its wide entry, without searching sample IDs or reserving a child
+pointer for each ordinary sample. Contiguous occupied IDs are derived
+arithmetically, and homogeneous directions retain their arithmetic shortcuts.
+
+Dense, nonhomogeneous sources instead store exact selected bit positions in
+fixed-stride Elias--Fano groups of 32. A group interleaves the base, unary high
+word, optional wide-entry prefix/mask and packed low fields. The maximum low
+width is shared across the array, padding every group to one stride. These
+positions replace the coarse primary array rather than duplicating it. The
+terminal sample is one past the last selected bit.
+
+## Validated prefetch
+
+For exact-position samples, a query always decodes both neighboring positions.
+Interpolation estimates the containing 512-bit source block. The implementation
+prefetches that block, then checks the target occurrence against rank metadata.
+It can correct the estimate by one adjacent basic block. Remaining misses use
+the established coarse scan or wide-directory lookup, starting from the already
+decoded sample position. Prediction is a hint; exact rank checks determine the
+answer.
+
+Intervals wider than 65,536 bits skip prediction. Sources with either population
+below `floor(size()/16)` retain coarse samples. Homogeneous directions skip the
+position arrays and retain their direct answers. These gates limit speculative
+work without assuming uniformly distributed bits within an interval.
+
+## Measurements and reproduction
+
+The current rounded snapshot lives only in
+`include/pixie/rank_select/implementations.h`. It retains the measured final
+prefetch implementation, baseline and Spider comparison at $2^{34}$ bits.
+Earlier kernel/layout variants, experiment runners and their timing histories
+were removed during finalization. The snapshot predates code relocation into
+the public type; it is not a new measurement after cleanup.
+
+The registered harness compares all nine source families: 12.5%, 50%, 87.5%,
+sparse, sparse complement, runs, mixed, mixed complement and FNBP. It retains the
+8192-entry shifted query pool and query-only perf control. Optional Pasta and
+3-star backends stay behind the comparison build option. Spider is not vendored
+or registered because no license was found at the measured revision; its
+reported rank1/select1 results came from a temporary wrapper. Compare directions
+that each backend actually supports.
+
+Build the relevant benchmark target with the native or comparison preset, list
+the requested rows, and run one backend/operation per process for focused
+measurements. Set `PIXIE_RANK_SELECT_FIXED_SEED=1` when independently launched
+backends must reuse repetition zero. The benchmark's defaults remain distinct
+from the snapshot's specified warmup and duration; match those explicitly when
+reproducing a timing comparison.
+
+For profiling, use `agentic/cpp/skills/profiling/SKILL.md` and its Pixie example.
+Perf text, counters and annotated assembly are the normal analysis tools. Export
+the source-aware HTML viewer only when requested. Cycle samples on a consuming
+popcount may reflect a preceding load's stall; a flame graph does not isolate
+instruction latency or provide a per-query timeline.
+
+Correctness coverage includes the shared rank/select specifications, sample
+group edges, low-word crossings, full-width sample values, mixed bitmap lookup,
+gaps, partial dirty tails, sampling frequencies through 65,536 and copy/move
+behavior. Native and sanitizer fallback checks cover the retained implementation.

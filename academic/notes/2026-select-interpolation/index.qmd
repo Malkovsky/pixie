@@ -1,0 +1,310 @@
+---
+title: "Interpolation in Compressed Rank/Select: What to Predict"
+date: 2026-10-06
+bibliography: ../../bibliography/references.bib
+link-citations: true
+format:
+  html:
+    toc: true
+---
+
+This note records an earlier design investigation. The retained implementation
+and current reproduction guidance are in
+[the final compressed rank/select design](../compressed-rank-select/index.qmd).
+Intermediate implementations and their runners were removed during cleanup.
+
+## Scope and conclusion
+
+This study concerned the earlier `RankSelectSupportCompressed<4096,16>` and an
+interpolation experiment that has since been removed. Source bits remain borrowed;
+rank metadata uses one aligned 64-byte record per 16,384 source bits, with a
+64-bit global prefix and 32 packed local prefixes. Both select directions are
+studied. The implementation catalog now retains the final prefetch snapshot.
+
+Superblock interpolation has little room on dense input: most sample intervals
+span zero or one superblock. Basic-block population interpolation is accurate on dense input, but a
+scalar-check-plus-SIMD-fallback screen did not establish an overall timing win.
+A SIMD-group predictor for the wide secondary directory likewise did not
+establish a consistent win at 2^30 or 2^34. The remaining hypothesis is starting
+the source fetch earlier while rank metadata validates it. The
+[retained design](../compressed-rank-select/index.qmd) uses this idea
+with exact-position samples and metadata validation.
+Prediction accuracy alone does not establish speed.
+
+These are exploratory observations, not a promoted implementation. The
+prediction-accuracy models below do not measure cache misses or hardware stage
+latency.
+
+## What the literature contributes
+
+SPIDER predicts from two occurrence samples storing bit positions, then corrects
+using rank data. Interleaved SPIDER's low-level samples are positions relative
+to a superblock; non-interleaved SPIDER stores absolute positions. Thus its
+prediction identifies a basic block, whereas Pixie's current primary samples
+identify only superblocks [@Laws2024, sections 2.2--2.5].
+
+SIP suggests reusing a slope, inexpensive arithmetic, and switching to a short
+scan when progress is poor; TIP uses three points to fit nonuniform keys
+[@VanSandt2019, sections 3--4]. For Pixie's narrow path, there are fewer than 16
+superblocks, and often only one or two. An extra point and a more complicated
+model are hard to justify before proving that a cheaper one-point guess helps.
+Repeated rank values also mean this is interval localization, not exact-key
+search.
+
+## Why the current global interpolation pays extra
+
+For one-based target rank `k`, the selected superblock satisfies
+
+$$R(s) < k \le R(s) + P(s),$$
+
+where `R(s)` is the prefix before the superblock and `P(s)` its population in the
+requested direction. Both values are in one rank record: the global prefix at
+the front and the terminal local prefix at the end.
+
+The registered interpolation variant loads the next sample's global rank,
+loads the first sample's global rank when needed, and then probes global
+starting ranks until two adjacent boundaries remain. It never accepts a probe
+by testing the end of that same record. The adjacent bracket can therefore
+require additional probes after a good prediction. Loading an upper rank
+boundary also costs a distinct record when the answer is in the lower block.
+
+Three temporary screens tested paired-sample linear search, a first-block check
+followed by one interpolation and exact correction, and a sample-ID guess with
+exact correction. All retain the existing rank packing and secondary directory.
+The focused screens did not establish a convincing general improvement.
+In particular, always decoding a neighboring sample has a cost even when the
+secondary directory or homogeneous shortcut resolves the query.
+
+## Query geometry at 2^30
+
+The diagnostic uses the current generators and shifted query pool, with
+262,144 queries per direction per input and deterministic source/query seeds
+matching the full comparison harness. Homogeneous and wide paths are classified
+before applying the narrow-search models. All modeled localizations are checked
+against the baseline's exact select answer.
+
+Percentages below refer to queries, rather than unique sample intervals.
+
+| Input/direction | Span 0 (%) | Span 1 (%) | Span 2--15 (%) | Wide (%) | Homogeneous (%) |
+| :-------------- | ---------: | ---------: | -------------: | -------: | --------------: |
+| 50%, select1    |     49.948 |     50.052 |          0.000 |    0.000 |           0.000 |
+| 50%, select0    |     50.082 |     49.918 |          0.000 |    0.000 |           0.000 |
+| 12.5%, select1  |      0.000 |      0.916 |         99.084 |    0.000 |           0.000 |
+| Sparse, select1 |      0.000 |      0.000 |          0.000 |  100.000 |           0.000 |
+| Mixed, select1  |     44.377 |      0.486 |          4.926 |   50.212 |           0.000 |
+| Runs, either    |      0.000 |      0.000 |          0.000 |    0.000 |         100.000 |
+
+At 12.5% density, narrow linear search examines 1.998 distinct rank records per
+query, the current interpolation model 2.501, and the sample-ID prediction
+1.498. The selected record is included in these counts. These are distinct
+records touched by a modeled query, not hardware load counts or cache misses.
+The reduced count alone did not establish a timing win.
+
+The asymmetry of the generated Cartesian-tree input matters: in the same audit,
+select1's current interpolation model examines 1.001 records versus 1.498 for
+linear search; select0 examines 1.500 versus 1.001. A density-dependent choice
+cannot be inferred from the population alone, and both directions must remain
+in the objective.
+
+## Predict a group in the wide secondary directory
+
+The primary narrow interval contains fewer than 16 superblocks, but the wide
+secondary directory can contain hundreds of occupied-block endpoints. Its
+current `grouped_lower_bound` first binary-searches the ends of 32-element
+groups, then runs SIMD lower-bound in the selected group. The following model
+compares this with guessing an endpoint index
+
+$$\hat i = \left\lfloor\frac{r m}{4096}\right\rfloor,$$
+
+where `r = (k-1) mod 4096` and `m` is the entry's endpoint count. The divisor is
+constant: this is a multiply and shift, without new boundary-rank loads or a
+floating-point division. The guessed group is `floor(i_hat / 32)`.
+
+Run SIMD lower-bound in that group first. If its answer is after lane zero,
+the preceding lane is below the key, which proves the global lower-bound by
+monotonicity; there is no need to read the previous group. A hit in lane zero
+requires checking the previous group's last endpoint, unless this is group zero.
+If the key is beyond the guessed group, search to its right; if the predecessor
+is already at least the key, search to its left. Exact corrections remain
+required for arbitrary populations.
+
+The diagnostic uses 262,144 queries per direction, counts distinct logical
+endpoint groups, and checks the result against exact endpoint lower-bound. It
+includes the SIMD group itself and any predecessor or binary-correction groups.
+Single-endpoint entries retain the existing shortcut without endpoint reads.
+
+| Input/direction | Wide queries (%) | Mean endpoints per wide query | Predicted group correct (%) | Current groups examined | Predicted groups examined |
+| :-------------- | ---------------: | ----------------------------: | --------------------------: | ----------------------: | ------------------------: |
+| Sparse/select1  |          100.000 |                       257.034 |                      95.863 |                   3.384 |                     1.126 |
+| Sparse0/select0 |          100.000 |                       256.575 |                      95.887 |                   3.378 |                     1.124 |
+| Mixed/select1   |           50.212 |                        57.738 |                      56.909 |                   1.891 |                     1.497 |
+| Mixed0/select0  |           50.212 |                        57.738 |                      56.909 |                   1.891 |                     1.497 |
+
+These are logical groups, not physical cache lines or measured cache misses.
+Entries are not individually cache-line aligned, so a full SIMD group can cross
+two lines. Binary endpoint probes read only a scalar value. The temporary timing screen described below did not establish a consistent
+query-time benefit. A retained candidate would still need registered benchmarks
+and shared specification validation before promotion.
+
+A construction-time quality flag is a possible refinement. For each endpoint
+`e_i`, its valid keys run from `e_(i-1)+1` through `e_i`, with `e_(-1)=-1`.
+Since the predictor is monotone, checking both extremes bounds its error for
+all keys. If the maximum endpoint-index error is at most 32, the correct group
+is within one group of the prediction. The flag could select this bounded
+correction path and leave other entries on existing search. Each interval stores at most one endpoint per occupied superblock, so its
+count is bounded by `ceil(SIZE_MAX / 16384)` independently of the sampling
+frequency. That leaves high bits of the existing count field available beyond
+the current contiguity marker. A quality flag would therefore need no larger
+entry, although its dispatch and correction costs still require measurement.
+
+In this model, 99.720% and 99.920% of sparse-direction queries use entries that
+satisfy that error bound; only 36.522% do in the mixed minority direction.
+These percentages are weighted by queries, not the number of directory entries.
+This supports testing a cheap predictor with an exact fallback or build-time
+quality gate, rather than paying for a more elaborate interpolation model.
+
+## Basic-block prediction from the existing rank record
+
+Let `t = k - R(s)`, `p = P(s)`, and `b` be the number of valid basic blocks.
+For a full superblock, `b = 32`. An inexpensive guess is
+
+$$\hat j = \left\lfloor\frac{(t-1)b}{p}\right\rfloor.$$
+
+The guard `p > 0` follows from exact superblock localization. For arbitrary
+partial superblocks and rounded estimates, clamp the guess to `[0,b-1]`.
+Decode local prefix counts `C(j)` and `C(j+1)`. Accept exactly when
+
+$$C(\hat j) < t \le C(\hat j+1).$$
+
+Otherwise use the current packed-prefix search. This handles empty basic blocks,
+clustering, and repeated prefixes without relying on prediction accuracy.
+Any arithmetic approximation is safe only because the exact test and fallback
+remain authoritative.
+
+The following model uses exact integer population interpolation after exact
+superblock localization. The sample alternatives interpolate physical positions
+between two occurrence samples, using either exact bit positions or the centers
+of their 512-bit quantization bins. All sample positions are obtained from exact
+select, not a learned approximation. The final sample is a synthetic end-of-input
+endpoint; its remaining occurrence count is used as the denominator.
+
+| Input/direction | Existing-record guess correct basic block (%) | 512-bit samples, centered (%) | Exact-bit samples (%) |
+| :-------------- | --------------------------------------------: | ----------------------------: | --------------------: |
+| 12.5%, select1  |                                        79.542 |                        64.708 |                70.778 |
+| 50%, select1    |                                        92.231 |                        77.470 |                94.459 |
+| 50%, select0    |                                        92.184 |                        77.359 |                94.468 |
+| 87.5%, select1  |                                        97.043 |                        78.305 |                98.410 |
+| Sparse, select1 |                                        14.524 |                         1.007 |                 0.990 |
+| Mixed, select1  |                                        83.653 |                        34.189 |                41.961 |
+| FNBP, select1   |                                        99.461 |                        53.766 |                99.477 |
+
+These percentages cover all modeled queries, including ones that existing
+homogeneous or secondary-directory paths already handle. They quantify the
+candidate predictions, not the net benefit of routing every query through them.
+In particular, retain the homogeneous shortcut and the sparse secondary index.
+
+Sparse populations are poorly predictable at basic-block granularity even after
+exact superblock localization. A speculative scalar check should be bypassed
+when confidence is low. The temporary screen gates it at population 512, an
+exploratory threshold rather than an accepted policy; the audit's unconditional
+accuracy figures above do not depend on that gate.
+
+## More precise samples: space and limits
+
+Re-encoding the exact sample positions with the existing blocked monotone
+primitive gives the following model at 50% density and 2^30 source bits:
+
+| Resolution | Two directions' sample storage (MiB) | Added source overhead vs superblock samples (percentage points) |
+| :--------- | -----------------------------------: | ------------------------------------------------------------: |
+| Superblock |                                0.188 |                                                         0.000 |
+| 512 bits   |                                0.312 |                                                         0.098 |
+| Exact bit  |                                0.625 |                                                         0.342 |
+
+This compares the plain monotone sample containers, not the entire select index:
+wide bitmaps, exception entries, and owning-index overhead are excluded. It is a
+re-encoding model, not a production layout or a guarantee for every distribution.
+
+Finer samples could predict the basic block before loading its rank record,
+allowing a speculative source prefetch to overlap rank validation. That is a
+hypothesis: a 77% accurate 512-bit prediction can fetch an unnecessary source line
+on roughly 23% of these dense queries. Exact-bit samples improve accuracy to
+about 94.5% but enlarge payloads and may add sample cache-line accesses.
+
+The existing-record prediction is later in the dependency chain, but already
+has about 92.2% accuracy here and needs no sample-space increase. It is the
+smaller first experiment. If it helps, prefetching its predicted source block
+while checking local prefixes is a separate experiment, with incorrect-prefetch
+rates and actual cache counters measured independently.
+
+## Experimental method and next decision
+
+The temporary screens use the full-suite source generators, shifted 64-KiB query
+pool, GCC 13.3 with `-O3 -DNDEBUG -march=native`, Ryzen 7 8845HS under WSL2,
+serial processes pinned to CPU 0, both select directions, three independent
+launches, and rotating operation/backend order. Query timing excludes source
+construction, reference validation, and I/O. The first screen covers nine input
+patterns at 2^30; the basic-block screen covers 50%, 12.5%, mixed, sparse, and
+Cartesian-tree input. Each operation uses a 0.05-second warmup and 0.25-second
+minimum. A paired-sample linear control isolates local prediction from the
+existing experiment's global interpolation.
+
+Temporary variants undergo reference validation on four shifted-pool passes
+before each timed process, plus exhaustive select checks on structured short
+and multi-superblock inputs, including invalid ranks, partial blocks, empty
+gaps, and dirty padding. This does not replace the shared specification suite
+or registered benchmark required before retaining or promoting a new library
+implementation.
+
+The local screen tested exact 32-bit integer division and a clamped float
+estimate, two scalar prefix checks, and the existing SIMD fallback. Both keep
+the paired-sample linear control's global localization. The screen did not
+establish an overall win; per-operation variability was substantial. Production
+code and the registered interpolation implementation remain unchanged.
+
+A further temporary screen tested interpolation into SIMD groups of the wide
+secondary directory, using an occurrence-proportional group guess, exact SIMD
+checks, and bounded binary correction. It also tested direct search for a
+single group and a minimum-group gate. Native and AVX2 sanitizer validation
+covered approximately 26 million endpoint searches and 81 million select
+queries, including duplicates, skew, partial groups, gaps, and dirty padding.
+The screen covered five patterns at 2^30 and compared the unrestricted
+predictor with the control on sparse, complemented sparse, and mixed inputs
+at 2^34. Three independent launches per case did not establish a consistent
+overall win; the larger runs had substantial variability. These temporary
+kernels are not retained or promoted. Construction-time quality bounds remain
+an untested hypothesis, rather than a demonstrated benefit.
+
+A range-classification screen subsequently stored one medium-range bit per
+sample, retaining the existing wide map. Spans of zero or one superblock used
+production scanning, spans from two through fifteen used interpolation, and
+larger spans retained the secondary directory. Only medium queries decoded a
+neighboring sample. It tested the original interpolation loop, a first-block
+check with exact correction, and an outlined version that kept medium dispatch
+inside the narrow path. The nine standard patterns at 2^30 showed no consistent
+overall benefit. Additional random 6.25%, 3.125%, and 1.5625% populations covered
+longer medium intervals and the wide boundary; the outlined implementation also
+failed to establish an advantage there.
+
+Native and AVX2 AddressSanitizer/UndefinedBehaviorSanitizer differential checks
+covered all three classes, sample-group boundaries, repeated rank prefixes,
+gaps, partial words, and sample frequencies 8, 4096, and 65536. Query-only perf
+runs used equal fixed select counts and non-multiplexed event groups. On the
+population with roughly eight-superblock intervals, interpolation reduced
+reported L1 load misses but increased instructions and cycles. The code reads
+boundary ranks before calculating a probe, introducing a dependency chain that
+sequential scanning can avoid. That is a plausible explanation for the measured
+loss, rather than evidence that the class bitmap or fewer cache misses alone
+makes the operation faster. These temporary variants are not promoted.
+
+A separate remaining experiment is memory overlap: predict a source block,
+start its fetch, then validate with the existing rank search. Compare prediction from the
+loaded rank record against prediction from more precise samples. Measure extra
+source fetches when the guess is wrong and sample-payload cache-line costs, as
+well as balanced rank-plus-select query time and allocated space. Keep the
+homogeneous shortcut and wide secondary directory. An early prefetch is not an
+answer; exact rank checks must still choose the block.
+
+Keep repeated interpolation and three-point models secondary until a workload
+actually presents enough unresolved rank records for them to save. The current
+experiments justify investigating latency overlap, not promoting a more
+complicated search or assuming a cache-miss reduction.

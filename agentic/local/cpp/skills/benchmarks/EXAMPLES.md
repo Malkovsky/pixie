@@ -33,15 +33,23 @@ accept `(/|$)` after the size. Build rows report CPU milliseconds; query rows
 report CPU nanoseconds. Both expose `aux_bytes`, `aux_mib`, and
 `aux_bits_per_input_bit` for metadata owned by the support.
 
+For deterministic independent-process comparisons, set
+`PIXIE_RANK_SELECT_FIXED_SEED=1` to use repetition zero. The retained optimized
+backend is `rank_select_compressed`; it includes validated source prefetch.
+Both baseline and compressed register dense, sparse, sparse-complement, runs,
+mixed, mixed-complement and FNBP controls. Removed experimental layouts have no
+registered rows. Query pools contain 8192 values and shift on each wrap.
+For query-only perf captures and optional HTML, use the local
+[profiling example](../profiling/EXAMPLES.md).
+
 ### FNBP Source Rows
 
 `rank_select_fnbp_*` generates the Ferrada-Navarro balanced-parentheses source
-used by the Cartesian RMQ backends. It covers `2^10` through `2^30` bits,
-including a large-source case with 16,384 rank superblocks.
+used by the Cartesian RMQ backends. It covers `2^10` through `2^34` bits.
 
 ```bash
 taskset -c 0 ./build/benchmarks/rank_select_benchmarks \
-  --benchmark_filter='^rank_select_fnbp_(build_both|rank1|rank0|select1|select0)/N:(1024|16384|262144|4194304|67108864|1073741824)(/|$)' \
+  --benchmark_filter='^rank_select_fnbp_(build_both|rank1|rank0|select1|select0)/N:(1024|16384|262144|4194304|67108864|1073741824|17179869184)(/|$)' \
   --benchmark_report_aggregates_only=true \
   --benchmark_display_aggregates_only=true
 ```
