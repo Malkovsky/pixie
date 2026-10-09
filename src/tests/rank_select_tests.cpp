@@ -21,6 +21,58 @@
 
 namespace {
 
+// Deliberately offset a cache-line-aligned allocation. This backend provides
+// only bytes/resize, so tests also reject hidden dependencies on as_lines() or
+// writable_words64(). Poison fresh bytes to check index initialization.
+template <std::size_t Offset>
+class TestMetadataStorage
+    : public pixie::StorageBase<TestMetadataStorage<Offset>> {
+ public:
+  inline static std::vector<std::size_t> allocations;
+
+  std::size_t size_bytes_impl() const { return size_; }
+  std::uint64_t begin_position_impl() const { return 0; }
+  std::uint64_t end_position_impl() const { return size_; }
+
+  void resize_impl(std::size_t bits) {
+    size_ = (bits + 7) / 8;
+    backing_.resize(bits + Offset * 8);
+    std::ranges::fill(writable_bytes_impl(), std::byte{0xa5});
+    if (size_ != 0) {
+      EXPECT_EQ(reinterpret_cast<std::uintptr_t>(as_bytes_impl().data()) % 64,
+                Offset);
+      allocations.push_back(backing_.allocated_bytes());
+    }
+  }
+
+  std::span<const std::byte> as_bytes_impl() const {
+    return size_ == 0 ? std::span<const std::byte>{}
+                      : backing_.as_bytes().subspan(Offset, size_);
+  }
+
+  std::span<std::byte> writable_bytes_impl() {
+    return size_ == 0 ? std::span<std::byte>{}
+                      : backing_.writable_bytes().subspan(Offset, size_);
+  }
+
+  pixie::SplitSpan<const std::byte> segments_impl(std::uint64_t offset,
+                                                  std::size_t count) const {
+    return pixie::SplitSpan(as_bytes_impl().subspan(offset, count));
+  }
+
+  std::size_t allocated_bytes_impl() const {
+    return backing_.allocated_bytes();
+  }
+
+ private:
+  pixie::AlignedStorage backing_;
+  std::size_t size_ = 0;
+};
+
+using WordAlignedMetadataStorage = TestMetadataStorage<8>;
+using WordAlignedCompressed =
+    pixie::RankSelectSupportCompressed<WordAlignedMetadataStorage>;
+
 void overwrite_u64(std::vector<std::byte>& bytes,
                    std::size_t offset,
                    std::uint64_t value) {
@@ -73,15 +125,16 @@ RankSelectSampleLayout locate_rank_select_samples(
 template <class Support>
 class RankSelectSpecificationTest : public testing::Test {};
 
-using RankSelectImplementations =
-    testing::Types<pixie::RankSelectSupport<>,
-                   pixie::RankSelectSupportCompressed<>,
-                   pixie::RankSelectSupportCompressed<2048>
+using RankSelectImplementations = testing::Types<
+    pixie::RankSelectSupport<>,
+    pixie::RankSelectSupportCompressed<>,
+    pixie::RankSelectSupportCompressed<pixie::AlignedStorage, 2048>,
+    WordAlignedCompressed
 #ifdef PIXIE_PASTA_SUPPORT
-                   ,
-                   pixie::PastaRankSelectSupport
+    ,
+    pixie::PastaRankSelectSupport
 #endif
-                   >;
+    >;
 TYPED_TEST_SUITE(RankSelectSpecificationTest, RankSelectImplementations);
 
 TYPED_TEST(RankSelectSpecificationTest, EmptySequence) {
@@ -141,7 +194,8 @@ TYPED_TEST(RankSelectSpecificationTest, RankSelectAndAccessMatchPackedBits) {
 }
 
 TEST(CompressedRankSelectTest, ExhaustiveShortPatterns) {
-  using Support = pixie::RankSelectSupportCompressed<8, 4>;
+  using Support =
+      pixie::RankSelectSupportCompressed<pixie::AlignedStorage, 8, 4>;
   for (std::size_t size = 0; size <= 10; ++size) {
     for (std::uint64_t pattern = 0; pattern < (std::uint64_t{1} << size);
          ++pattern) {
@@ -168,6 +222,54 @@ TEST(CompressedRankSelectTest, ExhaustiveShortPatterns) {
   }
 }
 
+TEST(CompressedRankSelectTest, CustomStorageOwnsAllMetadataAndReportsBytes) {
+  constexpr std::size_t kSuper = 16384;
+  constexpr std::size_t kSize = 128 * kSuper + 17;
+  using Support =
+      pixie::RankSelectSupportCompressed<WordAlignedMetadataStorage, 4096, 2>;
+  std::mt19937_64 random(413);
+  for (int shape = 0; shape < 3; ++shape) {
+    std::vector<std::uint64_t> words((kSize + 63) / 64);
+    for (std::size_t position = 0; position < kSize; ++position) {
+      const auto super = position / kSuper;
+      const bool bit =
+          shape == 0 ? (random() & 1)
+          : shape == 1
+              ? (position % (3 * kSuper + 1) == 0)
+              : (super < 32 ? (random() & 1)
+                            : (super % 7 == 0 && position % kSuper == 100));
+      words[position / 64] |= std::uint64_t{bit} << (position % 64);
+    }
+    WordAlignedMetadataStorage::allocations.clear();
+    const Support support(words, kSize);
+    std::size_t expected_bytes = sizeof(Support);
+    for (const auto bytes : WordAlignedMetadataStorage::allocations) {
+      expected_bytes += bytes;
+    }
+    EXPECT_GT(WordAlignedMetadataStorage::allocations.size(), 1u);
+    EXPECT_EQ(support.memory_usage_bytes(), expected_bytes)
+        << "shape=" << shape;
+
+    const pixie::RankSelectSupport<> reference(words, kSize);
+    for (const bool zero : {false, true}) {
+      const auto total = zero ? reference.rank0(kSize) : reference.rank(kSize);
+      for (std::size_t rank = 1; rank <= total; rank += 127) {
+        EXPECT_EQ(zero ? support.select0(rank) : support.select(rank),
+                  zero ? reference.select0(rank) : reference.select(rank))
+            << "shape=" << shape << " zero=" << zero << " rank=" << rank;
+      }
+      EXPECT_EQ(zero ? support.select0(total) : support.select(total),
+                zero ? reference.select0(total) : reference.select(total));
+    }
+  }
+}
+
+TEST(CompressedRankSelectTest, RejectsMisalignedMetadataStorage) {
+  using Support = pixie::RankSelectSupportCompressed<TestMetadataStorage<1>>;
+  const std::array<std::uint64_t, 1> words{0x1234};
+  EXPECT_THROW((Support(words, 64)), std::invalid_argument);
+}
+
 TYPED_TEST(RankSelectSpecificationTest,
            HomogeneousSuperblocksAndTerminalLocalRank) {
   using Support = TypeParam;
@@ -188,7 +290,8 @@ TYPED_TEST(RankSelectSpecificationTest,
 
 TEST(CompressedRankSelectTest,
      WideIntervalsSkipEmptySuperblocksInBothDirections) {
-  using Support = pixie::RankSelectSupportCompressed<8, 4>;
+  using Support =
+      pixie::RankSelectSupportCompressed<pixie::AlignedStorage, 8, 4>;
   constexpr std::size_t kSuper = 16384;
   constexpr std::size_t kSize = 45 * kSuper + 13;
   const std::array<std::size_t, 18> positions = {
@@ -228,7 +331,8 @@ TEST(CompressedRankSelectTest,
 }
 
 TEST(CompressedRankSelectTest, ExactThresholdAndSampleGroupBoundaries) {
-  using Support = pixie::RankSelectSupportCompressed<8, 4>;
+  using Support =
+      pixie::RankSelectSupportCompressed<pixie::AlignedStorage, 8, 4>;
   constexpr std::size_t kSuper = 16384;
   constexpr std::size_t kSize = 150 * kSuper + 37;
   std::vector<std::uint64_t> words((kSize + 63) / 64, 0);
@@ -365,6 +469,7 @@ TEST(CompressedRankSelectTest,
                  std::invalid_argument);
   };
   check.template operator()<pixie::RankSelectSupportCompressed<>>();
+  check.template operator()<WordAlignedCompressed>();
 }
 
 TEST(CompressedRankSelectTest, ExactSamplesGroupEdgesGapsAndPartialTerminal) {
@@ -386,7 +491,8 @@ TEST(CompressedRankSelectTest, ExactSamplesGroupEdgesGapsAndPartialTerminal) {
     // Ignore dirty source padding, including during final-sample construction.
     words.back() |= ~::first_bits_mask(kSize % 64);
     const auto check = [&]<std::size_t Frequency>() {
-      const pixie::RankSelectSupportCompressed<Frequency> index(words, kSize);
+      const pixie::RankSelectSupportCompressed<pixie::AlignedStorage, Frequency>
+          index(words, kSize);
       for (bool zero : {false, true}) {
         for (std::size_t k = 1; k <= positions[zero].size(); ++k) {
           const auto result = zero ? index.select0(k) : index.select(k);
@@ -574,9 +680,12 @@ TEST(CompressedRankSelectTest, BitmapLookupOnNoncontiguousMixedSource) {
 
 template <class Samples>
 class MonotoneSampleEncodingTest : public testing::Test {};
-using MonotoneSampleImplementations =
-    testing::Types<pixie::detail::compressed::BlockedMonotoneSamples,
-                   pixie::detail::compressed::PositionSamples>;
+using MonotoneSampleImplementations = testing::Types<
+    pixie::detail::compressed::BlockedMonotoneSamples<>,
+    pixie::detail::compressed::PositionSamples<>,
+    pixie::detail::compressed::BlockedMonotoneSamples<
+        WordAlignedMetadataStorage>,
+    pixie::detail::compressed::PositionSamples<WordAlignedMetadataStorage>>;
 TYPED_TEST_SUITE(MonotoneSampleEncodingTest, MonotoneSampleImplementations);
 
 TYPED_TEST(MonotoneSampleEncodingTest,
@@ -655,13 +764,15 @@ void check_full_sampling_endpoint() {
 }
 
 TEST(CompressedRankSelectTest, WideEndpointAtFullSamplingInterval) {
-  check_full_sampling_endpoint<pixie::RankSelectSupportCompressed<65536, 1>>();
+  check_full_sampling_endpoint<
+      pixie::RankSelectSupportCompressed<pixie::AlignedStorage, 65536, 1>>();
 }
 
 TEST(CompressedRankSelectTest, UnsignedPackedEndpointGroups) {
   constexpr std::size_t kSuper = 16384;
   constexpr std::size_t kSize = 65 * kSuper;
-  using Support = pixie::RankSelectSupportCompressed<65536, 1>;
+  using Support =
+      pixie::RankSelectSupportCompressed<pixie::AlignedStorage, 65536, 1>;
   for (const bool invert : {false, true}) {
     std::vector<std::uint64_t> words(kSize / 64, 0);
     for (std::size_t super = 0; super < 65; ++super) {
@@ -1088,7 +1199,7 @@ TEST(CompressedPositionSampleTest, GroupEdgesLowWordCrossingsAndExtremes) {
       values.push_back((i / 2) << width);
     }
     values.back() = std::numeric_limits<std::uint64_t>::max();
-    const pixie::detail::compressed::PositionSamples samples(values);
+    const pixie::detail::compressed::PositionSamples<> samples(values);
     for (std::size_t i = 0; i + 1 < values.size(); ++i) {
       EXPECT_EQ(samples.bounds(i), std::make_pair(values[i], values[i + 1]));
     }
@@ -1101,8 +1212,8 @@ TEST(CompressedPositionSampleTest, InterleavedBitmapAcrossGroupBoundaries) {
     values[i] = i * 17003;
   }
   const std::array<std::uint64_t, 7> wide{0, 17, 31, 32, 63, 64, 98};
-  const pixie::detail::compressed::PositionSamples samples(values, wide);
-  const pixie::detail::compressed::PositionSamples without_bitmap(values);
+  const pixie::detail::compressed::PositionSamples<> samples(values, wide);
+  const pixie::detail::compressed::PositionSamples<> without_bitmap(values);
   std::size_t next = 0;
   for (std::size_t i = 0; i < values.size(); ++i) {
     EXPECT_EQ(samples[i], values[i]);
@@ -1146,7 +1257,8 @@ TEST(CompressedRankSelectTest, SkewedBlocksGapsAndTerminalSamples) {
       }
     };
     check.operator()<pixie::RankSelectSupportCompressed<>>();
-    check.operator()<pixie::RankSelectSupportCompressed<64>>();
+    check.
+    operator()<pixie::RankSelectSupportCompressed<pixie::AlignedStorage, 64>>();
     if (pattern == 0) {
       words.back() |= 1;
     } else {

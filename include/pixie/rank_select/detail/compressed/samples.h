@@ -1,6 +1,7 @@
 #pragma once
 
 #include <pixie/bits.h>
+#include <pixie/rank_select/detail/compressed/metadata_array.h>
 #include <pixie/storage/aligned.h>
 
 #include <algorithm>
@@ -55,17 +56,22 @@ inline void write_monotone_low(std::uint64_t* words,
  * zero; duplicates are valid. There is no child pointer or exception flag per
  * integer.
  */
+template <StorageImplementation MetadataStorage = AlignedStorage>
 class BlockedMonotoneSamples {
  public:
+  using metadata_storage_type = MetadataStorage;
+
   BlockedMonotoneSamples() = default;
 
-  explicit BlockedMonotoneSamples(std::span<const std::uint64_t> values) {
+  explicit BlockedMonotoneSamples(std::span<const std::uint64_t> values)
+    requires MutableMetadataStorage<MetadataStorage>
+  {
     if (!std::is_sorted(values.begin(), values.end())) {
       throw std::invalid_argument("Monotone samples must be non-decreasing");
     }
     const std::size_t groups =
         values.empty() ? 0 : 1 + (values.size() - 1) / 32;
-    offsets_.resize(groups);
+    offsets_ = MetadataArray<std::uint64_t, MetadataStorage>(groups);
     std::size_t words = 0;
     for (std::size_t group = 0; group < groups; ++group) {
       const std::size_t begin = group * 32;
@@ -80,13 +86,13 @@ class BlockedMonotoneSamples {
       }
       words += record_words;
     }
-    storage_ = AlignedStorage(words * 64);
-    auto packed = storage_.writable_words64();
+    storage_ = MetadataArray<std::uint64_t, MetadataStorage>(words);
+    auto* packed = storage_.data();
     for (std::size_t group = 0; group < groups; ++group) {
       const std::size_t begin = group * 32;
       const std::size_t count =
           std::min<std::size_t>(32, values.size() - begin);
-      auto* record = packed.data() + (offsets_[group] & kOffsetMask);
+      auto* record = packed + (offsets_[group] & kOffsetMask);
       record[0] = values[begin];
       const unsigned width =
           std::bit_width((values[begin + count - 1] - values[begin]) >> 5);
@@ -109,18 +115,17 @@ class BlockedMonotoneSamples {
   }
 
   std::size_t allocated_bytes() const {
-    return storage_.allocated_bytes() +
-           offsets_.capacity() * sizeof(offsets_[0]);
+    return storage_.allocated_bytes() + offsets_.allocated_bytes();
   }
 
  protected:
   static constexpr std::uint64_t kOffsetMask = (std::uint64_t{1} << 58) - 1;
-  AlignedStorage storage_;
-  std::vector<std::uint64_t> offsets_;
+  MetadataArray<std::uint64_t, MetadataStorage> storage_;
+  MetadataArray<std::uint64_t, MetadataStorage> offsets_;
 
   const std::uint64_t* words() const {
-    // Construction allocates complete words in 64-byte-aligned storage.
-    return reinterpret_cast<const std::uint64_t*>(storage_.as_lines().data());
+    // Construction validates the backing word alignment once.
+    return storage_.data();
   }
 };
 
@@ -169,7 +174,9 @@ class BitmapMonotoneSamples : public Base {
   BitmapMonotoneSamples() = default;
   BitmapMonotoneSamples(std::span<const std::uint64_t> values,
                         std::span<const std::uint64_t> wide = {})
-      : Base(values), wide_(make_sample_wide_groups(values.size(), wide)) {}
+      : Base(values),
+        wide_(std::span<const SampleWideGroup>(
+            make_sample_wide_groups(values.size(), wide))) {}
 
   std::optional<std::size_t> wide_entry(std::size_t index) const {
     if (wide_.empty()) {
@@ -179,11 +186,11 @@ class BitmapMonotoneSamples : public Base {
     return sample_wide_entry(group.begin, group.mask, index % 32);
   }
   std::size_t allocated_bytes() const {
-    return Base::allocated_bytes() + wide_.capacity() * sizeof(SampleWideGroup);
+    return Base::allocated_bytes() + wide_.allocated_bytes();
   }
 
  private:
-  std::vector<SampleWideGroup> wide_;
+  MetadataArray<SampleWideGroup, typename Base::metadata_storage_type> wide_;
 };
 
 }  // namespace pixie::detail::compressed

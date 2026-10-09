@@ -37,11 +37,13 @@ namespace pixie {
  * follow RankSelectBase. Rank boundaries beyond size() clamp to the total
  * count.
  *
- * Each 16,384-bit superblock has one aligned 64-byte record: a global one rank
+ * Each 16,384-bit superblock has one 64-byte record: a global one rank
  * followed by 32 monotone prefixes packed uniformly in fourteen bits. A zero
  * terminal encoding represents either zero or 16,384 ones: the first prefix
  * is then exactly zero or 512, so multiplying it by 32 reconstructs the total.
- * All 448 local bits fit beside the global rank. On little-endian hosts each
+ * All 448 local bits fit beside the global rank. The default AlignedStorage
+ * aligns every rank record to 64 bytes; another backend need only align its
+ * allocation to uint64_t. On little-endian hosts each
  * nonterminal prefix decodes from one unaligned 32-bit read within the record;
  * other hosts use word extraction. Full-superblock rank overhead is 3.125%.
  *
@@ -95,17 +97,31 @@ namespace pixie {
  * use the established SIMD/scalar fallback. Construction builds rank records
  * from source bits, then samples and exceptions from those records. Exact
  * position samples additionally resolve selected source blocks. The index owns
- * metadata, not source bits. Serialization is not provided.
+ * metadata, not source bits. All retained metadata arrays use MetadataStorage;
+ * construction may use temporary vectors. Serialization is not provided.
+ * @tparam MetadataStorage Default-empty, contiguous storage for index metadata.
+ * Construction requires resize(bit_count) and writable_bytes(); read access
+ * uses as_bytes(), and memory accounting uses allocated_bytes(). Allocations
+ * must expose exactly the requested bytes with uint64_t alignment. The storage
+ * must own its bytes, preserve contents when copied, and transfer ownership
+ * when moved. Its alignment does not constrain the borrowed source words.
  * @tparam SampleFrequency Positive power-of-two occurrence sampling interval.
  * @tparam SearchThreshold Positive superblock-span threshold for extra
  * indexing.
  */
-template <std::size_t SampleFrequency = 4096, std::size_t SearchThreshold = 16>
+template <StorageImplementation MetadataStorage = AlignedStorage,
+          std::size_t SampleFrequency = 4096,
+          std::size_t SearchThreshold = 16>
 class RankSelectSupportCompressed
-    : public RankSelectBase<
-          RankSelectSupportCompressed<SampleFrequency, SearchThreshold>> {
+    : public RankSelectBase<RankSelectSupportCompressed<MetadataStorage,
+                                                        SampleFrequency,
+                                                        SearchThreshold>> {
   static_assert(std::has_single_bit(SampleFrequency));
   static_assert(SearchThreshold > 0);
+  static constexpr bool kNothrowMove =
+      std::is_nothrow_default_constructible_v<MetadataStorage> &&
+      std::is_nothrow_move_constructible_v<MetadataStorage> &&
+      std::is_nothrow_move_assignable_v<MetadataStorage>;
 
  public:
   /** @brief Optional select directions; rank is always indexed. */
@@ -124,13 +140,16 @@ class RankSelectSupportCompressed
 
   /** @brief Transfer metadata, leaving the source empty with select disabled.
    */
-  RankSelectSupportCompressed(RankSelectSupportCompressed&& other) noexcept {
+  RankSelectSupportCompressed(RankSelectSupportCompressed&& other) noexcept(
+      kNothrowMove) {
     swap_state(other);
   }
 
   /**
    * @brief Duplicate metadata while borrowing the assigned source.
-   * @details Allocation failure leaves this index unchanged.
+   * @details Allocation failure while copying metadata leaves this index
+   * unchanged. The strong exception guarantee also covers assignment when
+   * MetadataStorage has nonthrowing move construction and move assignment.
    */
   RankSelectSupportCompressed& operator=(
       const RankSelectSupportCompressed& other) {
@@ -146,7 +165,7 @@ class RankSelectSupportCompressed
    * @details Self-move assignment preserves the index.
    */
   RankSelectSupportCompressed& operator=(
-      RankSelectSupportCompressed&& other) noexcept {
+      RankSelectSupportCompressed&& other) noexcept(kNothrowMove) {
     if (this != &other) {
       RankSelectSupportCompressed moved(std::move(other));
       swap_state(moved);
@@ -160,6 +179,7 @@ class RankSelectSupportCompressed
    * @param num_bits Valid bit count, clamped to the available source capacity.
    * @param select_support Directions to build; disabled select returns size().
    * @throws std::invalid_argument If select_support is not a defined mode.
+   * Also thrown if the metadata backend exposes an invalid size or alignment.
    * @throws std::length_error If an auxiliary allocation size is
    * unrepresentable.
    * @details Allocation failure propagates. Select rank zero returns zero even
@@ -169,6 +189,7 @@ class RankSelectSupportCompressed
       std::span<const std::uint64_t> source_words,
       std::size_t num_bits,
       SelectSupport select_support = SelectSupport::kBoth)
+    requires detail::compressed::MutableMetadataStorage<MetadataStorage>
       : bits_(source_words),
         num_bits_(num_bits),
         select_support_(select_support) {
@@ -258,7 +279,11 @@ class RankSelectSupportCompressed
   }
 
   /** @brief Object plus allocated auxiliary bytes, excluding borrowed words. */
-  std::size_t memory_usage_bytes_impl() const {
+  std::size_t memory_usage_bytes_impl() const
+    requires requires(const MetadataStorage& storage) {
+      storage.allocated_bytes();
+    }
+  {
     return sizeof(*this) + ranks_.allocated_bytes() +
            select1_.allocated_bytes() + select0_.allocated_bytes();
   }
@@ -277,9 +302,11 @@ class RankSelectSupportCompressed
     std::size_t count;
   };
   using PrimarySamples = detail::compressed::BitmapMonotoneSamples<
-      detail::compressed::BlockedMonotoneSamples>;
+      detail::compressed::BlockedMonotoneSamples<MetadataStorage>>;
 
-  using PositionSamples = detail::compressed::PositionSamples;
+  using PositionSamples = detail::compressed::PositionSamples<MetadataStorage>;
+  template <class T>
+  using MetadataArray = detail::compressed::MetadataArray<T, MetadataStorage>;
 
   struct SelectIndex {
     enum class Shape : std::uint8_t {
@@ -298,27 +325,27 @@ class RankSelectSupportCompressed
     PrimarySamples samples;
     PositionSamples positions;
     bool predicted = false;
-    detail::compressed::BlockedMonotoneSamples occupied;
-    std::vector<WideEntry> wide;
-    std::vector<Endpoint> endpoints;
+    detail::compressed::BlockedMonotoneSamples<MetadataStorage> occupied;
+    MetadataArray<WideEntry> wide;
+    MetadataArray<Endpoint> endpoints;
     Shape shape{};
 
     std::size_t allocated_bytes() const {
       return samples.allocated_bytes() + positions.allocated_bytes() +
-             occupied.allocated_bytes() + wide.capacity() * sizeof(WideEntry) +
-             endpoints.capacity() * sizeof(Endpoint);
+             occupied.allocated_bytes() + wide.allocated_bytes() +
+             endpoints.allocated_bytes();
     }
   };
 
   std::span<const std::uint64_t> bits_;
   std::size_t num_bits_ = 0;
   std::uint64_t one_count_ = 0;
-  AlignedStorage ranks_;
+  MetadataArray<std::uint64_t> ranks_;
   SelectIndex select1_;
   SelectIndex select0_;
   SelectSupport select_support_ = SelectSupport::kNone;
 
-  void swap_state(RankSelectSupportCompressed& other) noexcept {
+  void swap_state(RankSelectSupportCompressed& other) noexcept(kNothrowMove) {
     using std::swap;
     swap(bits_, other.bits_);
     swap(num_bits_, other.num_bits_);
@@ -329,13 +356,12 @@ class RankSelectSupportCompressed
     swap(select_support_, other.select_support_);
   }
 
-  std::size_t super_count() const { return ranks_.size_bytes() / kRecordBytes; }
+  std::size_t super_count() const { return ranks_.size() / (kRecordBytes / 8); }
 
   const std::uint64_t* rank_record(std::size_t super) const {
-    // Complete aligned records are guaranteed by build_rank(). Avoid repeating
-    // the general storage view's alignment/size validation in query paths.
-    return reinterpret_cast<const std::uint64_t*>(ranks_.as_lines().data()) +
-           super * (kRecordBytes / 8);
+    // Complete word-aligned records are guaranteed by build_rank(). Avoid
+    // repeating storage alignment/size validation in query paths.
+    return ranks_.data() + super * (kRecordBytes / 8);
   }
 
   static std::uint64_t local_rank(const std::uint64_t* record,
@@ -389,10 +415,10 @@ class RankSelectSupportCompressed
   void build_rank() {
     const std::size_t count =
         num_bits_ == 0 ? 0 : 1 + (num_bits_ - 1) / kSuperBits;
-    ranks_ = AlignedStorage(count * kRecordBytes * 8);
-    auto words = ranks_.writable_words64();
+    ranks_ = MetadataArray<std::uint64_t>(count * (kRecordBytes / 8));
+    auto* words = ranks_.data();
     for (std::size_t super = 0; super < count; ++super) {
-      auto* record = words.data() + super * (kRecordBytes / 8);
+      auto* record = words + super * (kRecordBytes / 8);
       record[0] = one_count_;
       const std::size_t base = super * kSuperBits;
       const std::size_t valid = super_size(super);
@@ -482,6 +508,8 @@ class RankSelectSupportCompressed
     }
     std::vector<std::uint64_t> occupied;
     std::vector<std::uint64_t> wide_samples;
+    std::vector<WideEntry> wide;
+    std::vector<typename SelectIndex::Endpoint> endpoints;
     bool needs_occupied_ids = false;
     for (std::size_t sample = 0; sample < sample_count; ++sample) {
       if (samples[sample + 1] - samples[sample] < SearchThreshold) {
@@ -499,24 +527,24 @@ class RankSelectSupportCompressed
         const auto after = prefix_after<Zero>(super);
         if (after > before && after > begin_rank && before < end_rank) {
           occupied.push_back(super);
-          result.endpoints.push_back(
-              static_cast<typename SelectIndex::Endpoint>(
-                  std::min<std::uint64_t>(after - begin_rank, SampleFrequency) -
-                  1));
+          endpoints.push_back(static_cast<typename SelectIndex::Endpoint>(
+              std::min<std::uint64_t>(after - begin_rank, SampleFrequency) -
+              1));
         }
       }
       const std::size_t count = occupied.size() - begin;
       const bool contiguous = occupied.back() - occupied[begin] + 1 == count;
       needs_occupied_ids |= !contiguous;
 
-      result.wide.push_back({begin, count | (contiguous ? kContiguous : 0)});
+      wide.push_back({begin, count | (contiguous ? kContiguous : 0)});
       wide_samples.push_back(sample);
     }
     if (needs_occupied_ids) {
-      result.occupied = detail::compressed::BlockedMonotoneSamples(occupied);
+      result.occupied =
+          detail::compressed::BlockedMonotoneSamples<MetadataStorage>(occupied);
     }
-    result.wide.shrink_to_fit();
-    result.endpoints.shrink_to_fit();
+    result.wide = MetadataArray<WideEntry>(wide);
+    result.endpoints = MetadataArray<typename SelectIndex::Endpoint>(endpoints);
 
     const auto last_wide = wide_samples.empty() ? 0 : wide_samples.back();
     result.shape = result.wide.empty() ? SelectIndex::Shape::kNarrow

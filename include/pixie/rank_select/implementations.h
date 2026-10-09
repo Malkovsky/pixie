@@ -25,7 +25,9 @@
  * 8192-entry shifted query pools, identical native generators/seeds, repetition
  * zero. Four pool passes per supported operation validated before timing.
  * Tables retain baseline, final compressed <4096,16> and Spider only; measured
- * before public-type relocation and experiment cleanup, not remeasured after.
+ * before public-type relocation, experiment cleanup and metadata-storage
+ * parameterization, not remeasured after. Secondary-directory allocations now
+ * also use the metadata backend; recorded auxiliary bytes are historical.
  * Auxiliary MiB excludes borrowed source words (input occupies 2048 MiB).
  * Spider reports requested allocations minus N/8, including embedded rank bits.
  * Spider interleaved read_and_build_rank(...,4), revision

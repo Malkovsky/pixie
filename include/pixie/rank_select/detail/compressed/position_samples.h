@@ -13,6 +13,7 @@ namespace pixie::detail::compressed {
  * Internal callers supply sorted wide keys below values.size(). Query indexes
  * must exist; bounds() additionally requires a following terminal sample.
  */
+template <StorageImplementation MetadataStorage = AlignedStorage>
 class PositionSamples {
   static constexpr std::size_t kHeaderWords = 2;
 
@@ -20,7 +21,9 @@ class PositionSamples {
   PositionSamples() = default;
 
   explicit PositionSamples(std::span<const std::uint64_t> values,
-                           std::span<const std::uint64_t> wide = {}) {
+                           std::span<const std::uint64_t> wide = {})
+    requires MutableMetadataStorage<MetadataStorage>
+  {
     if (!std::is_sorted(values.begin(), values.end())) {
       throw std::invalid_argument("Monotone samples must be non-decreasing");
     }
@@ -35,10 +38,10 @@ class PositionSamples {
     if (groups > std::numeric_limits<std::size_t>::max() / (stride_ * 64)) {
       throw std::length_error("Fixed sample allocation too large");
     }
-    storage_ = AlignedStorage(groups * stride_ * 64);
-    auto data = storage_.writable_words64();
+    storage_ = MetadataArray<std::uint64_t, MetadataStorage>(groups * stride_);
+    auto* data = storage_.data();
     for (std::size_t group = 0; group < groups; ++group) {
-      auto* record = data.data() + group * stride_;
+      auto* record = data + group * stride_;
       record[0] = values[group * 32];
       if (!wide_groups.empty()) {
         record[kHeaderWords] = wide_groups[group].begin;
@@ -78,7 +81,7 @@ class PositionSamples {
   std::size_t allocated_bytes() const { return storage_.allocated_bytes(); }
 
  private:
-  AlignedStorage storage_;
+  MetadataArray<std::uint64_t, MetadataStorage> storage_;
   std::size_t stride_ = 0;
   std::size_t low_offset_ = kHeaderWords;
   unsigned width_ = 0;
@@ -91,8 +94,7 @@ class PositionSamples {
   }
 
   const std::uint64_t* group(std::size_t index) const {
-    return reinterpret_cast<const std::uint64_t*>(storage_.as_lines().data()) +
-           index * stride_;
+    return storage_.data() + index * stride_;
   }
 
   std::uint64_t decode(const std::uint64_t* record, unsigned index) const {
