@@ -40,47 +40,27 @@ alignas(64) inline constexpr auto kPrefixHighBytes = [] {
   return indexes;
 }();
 
-// Four 14-bit values occupy seven bytes. Gather each group into a 64-bit
-// lane; the eighth byte is ignored after the final 14-bit mask.
-alignas(64) inline constexpr auto kPrefixGroupBytes = [] {
-  std::array<std::uint8_t, 64> indexes{};
-  for (std::size_t i = 0; i < 64; ++i) {
-    indexes[i] = (8 + (i / 8) * 7 + i % 8) & 63;
-  }
-  return indexes;
-}();
-
 // The selected superblock must be nonhomogeneous, with uniformly packed local
 // ends. This excludes the zero terminal alias. Unsupported targets return no
 // result so callers retain the established scalar interpolation/correction.
-template <bool Zero, bool Multishift = false>
+template <bool Zero>
 [[gnu::always_inline]] inline std::optional<PackedPrefixLocation>
 packed_prefix_search(const std::uint64_t* record,
                      std::uint64_t target,
                      std::size_t valid_bits) {
 #if defined(PIXIE_AVX512_SUPPORT) && defined(__AVX512VBMI__)
   const auto packed = _mm512_loadu_si512(record);
-  __m512i ends;
-  if constexpr (Multishift) {
-    const auto groups = _mm512_permutexvar_epi8(
-        _mm512_load_si512(kPrefixGroupBytes.data()), packed);
-    ends =
-        _mm512_and_si512(_mm512_multishift_epi64_epi8(
-                             _mm512_set1_epi64(0x322a241c160e0800ULL), groups),
-                         _mm512_set1_epi16(0x3fff));
-  } else {
-    const auto low = _mm512_permutexvar_epi8(
-        _mm512_load_si512(kPrefixLowBytes.data()), packed);
-    const auto high = _mm512_permutexvar_epi8(
-        _mm512_load_si512(kPrefixHighBytes.data()), packed);
-    const auto offsets = _mm512_set1_epi64(0x0002000400060000);
-    ends = _mm512_and_si512(
-        _mm512_or_si512(
-            _mm512_srlv_epi16(low, offsets),
-            _mm512_sllv_epi16(
-                high, _mm512_sub_epi16(_mm512_set1_epi16(16), offsets))),
-        _mm512_set1_epi16(0x3fff));
-  }
+  const auto low = _mm512_permutexvar_epi8(
+      _mm512_load_si512(kPrefixLowBytes.data()), packed);
+  const auto high = _mm512_permutexvar_epi8(
+      _mm512_load_si512(kPrefixHighBytes.data()), packed);
+  const auto offsets = _mm512_set1_epi64(0x0002000400060000);
+  auto ends = _mm512_and_si512(
+      _mm512_or_si512(
+          _mm512_srlv_epi16(low, offsets),
+          _mm512_sllv_epi16(high,
+                            _mm512_sub_epi16(_mm512_set1_epi16(16), offsets))),
+      _mm512_set1_epi16(0x3fff));
   if constexpr (Zero) {
     const auto positions = _mm512_set_epi16(
         16384, 15872, 15360, 14848, 14336, 13824, 13312, 12800, 12288, 11776,

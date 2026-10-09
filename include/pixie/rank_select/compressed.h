@@ -29,85 +29,44 @@
 
 namespace pixie {
 /**
- * @brief Non-owning rank/select index with interleaved compressed metadata.
- * @details Source words must remain alive and immutable for the index lifetime.
- * Copying duplicates metadata and continues to borrow the same source words.
- * Moving transfers metadata and leaves the source empty with select disabled.
- * Bit numbering, half-open rank prefixes, one-based select, and sentinels
- * follow RankSelectBase. Rank boundaries beyond size() clamp to the total
- * count.
+ * @brief Non-owning rank/select index with compressed interleaved metadata.
+ * @details Source words must remain alive and immutable. Copies own independent
+ * metadata and borrow the same source; moves leave an empty, disabled index.
+ * Half-open rank, one-based select and sentinels follow RankSelectBase; rank
+ * boundaries beyond size() clamp to the total. Serialization is not provided.
  *
- * Each 16,384-bit superblock has one 64-byte record: a global one rank
- * followed by 32 monotone prefixes packed uniformly in fourteen bits. A zero
- * terminal encoding represents either zero or 16,384 ones: the first prefix
- * is then exactly zero or 512, so multiplying it by 32 reconstructs the total.
- * All 448 local bits fit beside the global rank. The default AlignedStorage
- * aligns every rank record to 64 bytes; another backend need only align its
- * allocation to uint64_t. On little-endian hosts each
- * nonterminal prefix decodes from one unaligned 32-bit read within the record;
- * other hosts use word extraction. Full-superblock rank overhead is 3.125%.
+ * @code{.text}
+ * Rank: one 64-byte record per 16,384 source bits (3.125% overhead)
+ *   +------------------+-------------------------------------------+
+ *   | global ones: 64b | 32 local prefix ends: 14b each (448b)       |
+ *   +------------------+-------------------------------------------+
+ *   local prefix ends correspond to 512-bit source-block boundaries
  *
- * Select samples store superblock IDs every SampleFrequency occurrences, using
- * block Elias--Fano. During construction, neighboring samples delimit rank
- * searching. A span below SearchThreshold uses a short forward rank scan.
- * Other intervals have
- * a separate sparse directory, compressed occupied-superblock IDs and bounded
- * relative rank endpoints; select searches those endpoints without probing
- * interleaved rank records, then decodes just the chosen superblock ID.
- * If every wide interval has contiguous occupied superblocks, no occupied-ID
- * array is allocated; all target IDs follow arithmetically from their samples.
- * Mixed directions store a 32-bit wide-interval bitmap and prefix count per
- * 32 samples. A bit test and popcount locate the exact sparse-directory entry;
- * queries never binary-search sample IDs. Endpoint selection uses lower_bound.
- * Ordinary samples carry no child pointers. A
- * terminal sample follows the last occupied superblock, excluding trailing
- * empty blocks. Construction classifies each direction as homogeneous, narrow,
- * wide-prefix, or mixed. If all superblocks are homogeneous and sampling
- * divides their full population, the starting sample gives an arithmetic
- * answer. Such indexes allocate neither occupied IDs nor endpoint exceptions.
- * The retained arithmetic shortcut obtains the within-superblock offset from
- * (rank - 1) modulo 16,384, avoiding a rank-record fetch on that path.
- * Proven shapes need no bitmap allocation. Wide endpoint search probes
- * existing group ends, then compares up to 64 bytes together; no group index
- * is stored. Singleton intervals need no endpoint load. Endpoint values are
- * zero-based, allowing a sampling frequency of 65,536 to use sixteen bits.
- * Indexes of at most 1,024 bits allocate no select samples. An outlined path
- * chooses between at most two basic blocks using their local prefix; a fully
- * matching index returns rank - 1 directly.
+ * Select: independent samples every SampleFrequency ones / zeros
+ *   coarse EF groups: descriptor -> [base | unary highs | low bits]
+ *   dense EF groups:  [base | unary highs | wide map* | 32 low fields]
+ *                      <---------- fixed stride ------------------>
+ *   wide map*: [directory prefix | bitmap], present for mixed shapes
+ *   coarse groups keep the wide map separately
  *
- * Dense, nonhomogeneous sources replace coarse primary samples with exact
- * selected bit positions in fixed-stride Elias--Fano groups of 32. Each group
- * interleaves its base, high bitmap, optional wide-interval map and low fields;
- * a shared maximum low width pads groups uniformly without an offset directory.
- * There is no duplicate primary sample array. Every such query decodes both
- * neighboring positions, predicts a 512-bit source block and prefetches its
- * words while validating against rank metadata. Exact validation may correct
- * the estimate by one adjacent basic block; otherwise the original narrow
- * scan or wide-directory lookup finds the answer. Prediction is skipped when
- * the sampled bit span exceeds 65,536. Sources with either bit population below
- * floor(size()/16), and homogeneous directions, retain coarse samples and their
- * arithmetic shortcuts. The terminal position is one past the last selected
- * bit, excluding trailing empty bits. Speculation never changes correctness.
+ *   wide directory: [begin, count] -> rank endpoints + occupied IDs*
+ *   occupied IDs* are omitted when all wide intervals are contiguous
+ * @endcode
  *
- * On AVX-512 VBMI targets, local search reconstructs all packed prefixes with
- * two byte permutations, then compares them together. Other targets use
- * interpolation with exact correction bounds. Homogeneous blocks return an
- * arithmetic position. The 512-bit select primitive
- * keeps source words in registers through word localization; other targets
- * use the established SIMD/scalar fallback. Construction builds rank records
- * from source bits, then samples and exceptions from those records. Exact
- * position samples additionally resolve selected source blocks. The index owns
- * metadata, not source bits. All retained metadata arrays use MetadataStorage;
- * construction may use temporary vectors. Serialization is not provided.
- * @tparam MetadataStorage Default-empty, contiguous storage for index metadata.
- * Construction requires resize(bit_count) and writable_bytes(); read access
- * uses as_bytes(), and memory accounting uses allocated_bytes(). Allocations
- * must expose exactly the requested bytes with uint64_t alignment. The storage
- * must own its bytes, preserve contents when copied, and transfer ownership
- * when moved. Its alignment does not constrain the borrowed source words.
+ * Short intervals scan global ranks; wide intervals search stored endpoints.
+ * Dense samples store exact positions: decode both neighbors, prefetch an
+ * estimated source block, then validate against rank. A miss corrects by one
+ * block or falls back to the directory. Homogeneous regions use arithmetic.
+ * AlignedStorage aligns rank records to 64 bytes; custom backends need only
+ * uint64_t alignment. All retained arrays use MetadataStorage.
+ *
+ * @tparam MetadataStorage Default-empty, owning contiguous storage with deep
+ * copies and nonthrowing move construction/assignment. Construction requires
+ * resize(bit_count), writable_bytes() and as_bytes(), exposing exactly the
+ * requested bytes with uint64_t alignment. Memory reporting requires
+ * allocated_bytes(). The borrowed source needs no cache-line alignment.
  * @tparam SampleFrequency Positive power-of-two occurrence sampling interval.
- * @tparam SearchThreshold Positive superblock-span threshold for extra
- * indexing.
+ * @tparam SearchThreshold Positive superblock-span threshold for wide indexing.
  */
 template <StorageImplementation MetadataStorage = AlignedStorage,
           std::size_t SampleFrequency = 4096,
@@ -118,10 +77,11 @@ class RankSelectSupportCompressed
                                                         SearchThreshold>> {
   static_assert(std::has_single_bit(SampleFrequency));
   static_assert(SearchThreshold > 0);
-  static constexpr bool kNothrowMove =
-      std::is_nothrow_default_constructible_v<MetadataStorage> &&
-      std::is_nothrow_move_constructible_v<MetadataStorage> &&
-      std::is_nothrow_move_assignable_v<MetadataStorage>;
+  static_assert(std::is_nothrow_move_constructible_v<MetadataStorage> &&
+                    std::is_nothrow_move_assignable_v<MetadataStorage>,
+                "Compressed metadata storage must have nonthrowing moves");
+  static constexpr bool kNothrowDefaultConstruction =
+      std::is_nothrow_default_constructible_v<MetadataStorage>;
 
  public:
   /** @brief Optional select directions; rank is always indexed. */
@@ -141,15 +101,13 @@ class RankSelectSupportCompressed
   /** @brief Transfer metadata, leaving the source empty with select disabled.
    */
   RankSelectSupportCompressed(RankSelectSupportCompressed&& other) noexcept(
-      kNothrowMove) {
+      kNothrowDefaultConstruction) {
     swap_state(other);
   }
 
   /**
    * @brief Duplicate metadata while borrowing the assigned source.
-   * @details Allocation failure while copying metadata leaves this index
-   * unchanged. The strong exception guarantee also covers assignment when
-   * MetadataStorage has nonthrowing move construction and move assignment.
+   * @details Copy failure leaves this index unchanged.
    */
   RankSelectSupportCompressed& operator=(
       const RankSelectSupportCompressed& other) {
@@ -164,8 +122,9 @@ class RankSelectSupportCompressed
    * @brief Transfer metadata, leaving the source empty with select disabled.
    * @details Self-move assignment preserves the index.
    */
-  RankSelectSupportCompressed& operator=(
-      RankSelectSupportCompressed&& other) noexcept(kNothrowMove) {
+  RankSelectSupportCompressed&
+  operator=(RankSelectSupportCompressed&& other) noexcept(
+      kNothrowDefaultConstruction) {
     if (this != &other) {
       RankSelectSupportCompressed moved(std::move(other));
       swap_state(moved);
@@ -345,7 +304,7 @@ class RankSelectSupportCompressed
   SelectIndex select0_;
   SelectSupport select_support_ = SelectSupport::kNone;
 
-  void swap_state(RankSelectSupportCompressed& other) noexcept(kNothrowMove) {
+  void swap_state(RankSelectSupportCompressed& other) noexcept {
     using std::swap;
     swap(bits_, other.bits_);
     swap(num_bits_, other.num_bits_);
@@ -359,8 +318,6 @@ class RankSelectSupportCompressed
   std::size_t super_count() const { return ranks_.size() / (kRecordBytes / 8); }
 
   const std::uint64_t* rank_record(std::size_t super) const {
-    // Complete word-aligned records are guaranteed by build_rank(). Avoid
-    // repeating storage alignment/size validation in query paths.
     return ranks_.data() + super * (kRecordBytes / 8);
   }
 
@@ -595,14 +552,10 @@ class RankSelectSupportCompressed
     const std::size_t sample = (rank - 1) / SampleFrequency;
     if constexpr (SampleFrequency <= kSuperBits) {
       if (index.shape == SelectIndex::Shape::kHomogeneous) {
-        // The sample interval divides a full superblock's population. Every
-        // earlier occupied block contributes exactly kSuperBits occurrences;
-        // only the final block can be partial. The sample's first superblock
-        // therefore contains the complete query interval, despite empty gaps.
+        // Sampling divides each full occupied superblock's population, so
+        // the local offset follows arithmetically without reading rank
+        // metadata.
         const auto super = index.samples[sample];
-
-        // Every earlier occupied block contributes exactly kSuperBits, so
-        // the local offset needs neither a global nor a local rank load.
         return super * kSuperBits + ((rank - 1) & (kSuperBits - 1));
       }
     }
@@ -614,55 +567,51 @@ class RankSelectSupportCompressed
         return *answer;
       }
     }
-    const auto first_super = [&]() {
-      return index.predicted ? predicted_first : index.samples[sample];
-    };
-    std::uint64_t first;
-    bool narrow;
-    std::optional<std::size_t> mapped_wide;
-
-    if (index.shape == SelectIndex::Shape::kMixed) {
-      mapped_wide = index.predicted ? index.positions.wide_entry(sample)
-                                    : index.samples.wide_entry(sample);
+    const WideEntry* entry = nullptr;
+    switch (index.shape) {
+      case SelectIndex::Shape::kNarrow:
+        break;
+      case SelectIndex::Shape::kWidePrefix:
+        if (sample < index.wide.size()) {
+          entry = &index.wide[sample];
+        }
+        break;
+      case SelectIndex::Shape::kMixed:
+        if (const auto mapped = index.predicted
+                                    ? index.positions.wide_entry(sample)
+                                    : index.samples.wide_entry(sample)) {
+          entry = &index.wide[*mapped];
+        }
+        break;
+      case SelectIndex::Shape::kHomogeneous:
+        // The arithmetic path above handles all homogeneous indexes.
+        assert(false);
+        break;
     }
 
-    if (index.shape != SelectIndex::Shape::kMixed &&
-        (index.shape == SelectIndex::Shape::kNarrow ||
-         sample < index.wide.size())) {
-      narrow = index.shape == SelectIndex::Shape::kNarrow;
-      first = narrow || (index.wide[sample].count & kContiguous) != 0
-                  ? first_super()
-                  : 0;
-    } else {
-      narrow = !mapped_wide;
-      first = narrow || (index.wide[*mapped_wide].count & kContiguous) != 0
-                  ? first_super()
-                  : 0;
-    }
-    std::size_t super = first;
-    if (narrow) {
+    std::size_t super;
+    if (entry == nullptr) {
+      super = index.predicted ? predicted_first : index.samples[sample];
       while (prefix_after<Zero>(super) < rank) {
         ++super;
       }
     } else {
-      // Wide-prefix shapes index directly; mixed shapes use the exact bitmap
-      // map.
-      const auto* entry = &index.wide[mapped_wide ? *mapped_wide : sample];
-
-      std::size_t low = entry->begin;
       const std::size_t count = entry->count & ~kContiguous;
       const auto relative_rank = (rank - 1) % SampleFrequency;
-
-      // A single occupied superblock already proves the answer; its stored
-      // endpoint contributes no localization information to this query.
-      if (count != 1) {
-        low += detail::compressed::grouped_lower_bound(
-            index.endpoints.data() + low, count, relative_rank);
+      // A singleton interval identifies the superblock without an endpoint
+      // load.
+      const std::size_t offset =
+          count == 1 ? 0
+                     : detail::compressed::grouped_lower_bound(
+                           index.endpoints.data() + entry->begin, count,
+                           relative_rank);
+      assert(offset < count);
+      if ((entry->count & kContiguous) != 0) {
+        super = (index.predicted ? predicted_first : index.samples[sample]) +
+                offset;
+      } else {
+        super = index.occupied[entry->begin + offset];
       }
-
-      assert(low < entry->begin + count);
-      super = (entry->count & kContiguous) != 0 ? super + low - entry->begin
-                                                : index.occupied[low];
     }
 
     return select_in_super<Zero>(rank, super);

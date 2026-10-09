@@ -2,6 +2,7 @@
 #include <pixie/io/file_output_sink.h>
 #include <pixie/io/mapped_file.h>
 #include <pixie/rank_select/compressed.h>
+#include <pixie/rank_select/experimental/packed_prefix_multishift.h>
 #include <pixie/rank_select/support.h>
 #ifdef PIXIE_PASTA_SUPPORT
 #include <pixie/rank_select/pasta.h>
@@ -875,6 +876,69 @@ TYPED_TEST(RankSelectSpecificationTest, MixedWideDirectoryWithNarrowTail) {
     EXPECT_EQ(support.select0(rank), reference.select0(rank));
   }
   EXPECT_EQ(support.select(3 * kSuper + 1), kSize);
+}
+
+TEST(CompressedRankSelectTest, PackedPrefixKernelsMatchBlockBoundaries) {
+  std::mt19937_64 random(817);
+  for (const std::size_t valid : {511u, 512u, 513u, 16383u, 16384u}) {
+    for (unsigned round = 0; round < 8; ++round) {
+      std::array<std::uint64_t, 8> record{};
+      std::array<std::uint64_t, 33> ones{};
+      for (std::size_t block = 0; block < 32; ++block) {
+        ones[block + 1] = ones[block];
+        for (std::size_t lane = 0; lane < 8; ++lane) {
+          const auto position = block * 512 + lane * 64;
+          if (position >= valid) {
+            break;
+          }
+          const auto word = round == 0   ? std::uint64_t{0}
+                            : round == 1 ? ~std::uint64_t{0}
+                                         : random();
+          ones[block + 1] +=
+              std::popcount(word & ::first_bits_mask(std::min<std::size_t>(
+                                       64, valid - position)));
+        }
+        const auto bit = block * 14;
+        const auto prefix = ones[block + 1] & 0x3fff;
+        record[1 + bit / 64] |= prefix << (bit % 64);
+        if (bit % 64 + 14 > 64) {
+          record[2 + bit / 64] |= prefix >> (64 - bit % 64);
+        }
+      }
+      // Both kernels exclude homogeneous blocks and their terminal aliases.
+      if (ones.back() == 0 || ones.back() == valid) {
+        continue;
+      }
+      const auto check = [&]<bool Zero>() {
+        const auto prefix = [&](std::size_t boundary) {
+          return Zero ? std::min(boundary * 512, valid) - ones[boundary]
+                      : ones[boundary];
+        };
+        std::size_t block = 0;
+        for (std::uint64_t rank = 1; rank <= prefix(32); ++rank) {
+          while (prefix(block + 1) < rank) {
+            ++block;
+          }
+          const auto selected =
+              pixie::detail::compressed::packed_prefix_search<Zero>(
+                  record.data(), rank, valid);
+          const auto multishift =
+              pixie::experimental::packed_prefix_search_multishift<Zero>(
+                  record.data(), rank, valid);
+          ASSERT_EQ(selected.has_value(), multishift.has_value());
+          for (const auto& location : {selected, multishift}) {
+            if (location) {
+              ASSERT_EQ(location->basic, block);
+              ASSERT_EQ(location->before, prefix(block));
+              ASSERT_EQ(location->after, prefix(block + 1));
+            }
+          }
+        }
+      };
+      check.template operator()<false>();
+      check.template operator()<true>();
+    }
+  }
 }
 
 TEST(CompressedRankSelectTest, LoadedBlockHandlesEmptyAndFullWordLanes) {

@@ -15,16 +15,14 @@ namespace pixie::detail::compressed {
 
 template <class Storage>
 concept MutableMetadataStorage =
-    StorageImplementation<Storage> &&
+    StorageImplementation<Storage> && std::default_initializable<Storage> &&
     requires(Storage& storage, const Storage& readonly) {
       storage.resize(std::size_t{});
       { storage.writable_bytes() } -> std::same_as<std::span<std::byte>>;
       { readonly.as_bytes() } -> std::same_as<std::span<const std::byte>>;
     };
 
-// Fixed-size typed metadata over the selected storage. Validate size/alignment
-// and initialize bytes once during construction; queries need no repeated
-// storage-view checks. Construction vectors are never retained by the index.
+// Fixed-size typed metadata; validate storage once, before initializing bytes.
 template <class T, StorageImplementation Storage>
 class MetadataArray {
   static_assert(std::is_trivially_copyable_v<T>);
@@ -35,32 +33,15 @@ class MetadataArray {
   explicit MetadataArray(std::size_t count)
     requires MutableMetadataStorage<Storage>
   {
-    if (count > std::numeric_limits<std::size_t>::max() / (sizeof(T) * 8)) {
-      throw std::length_error("Compressed metadata allocation too large");
-    }
-    if (count == 0) {
-      return;
-    }
-    storage_.resize(count * sizeof(T) * 8);
-    auto bytes = storage_.writable_bytes();
-    if (bytes.size() != count * sizeof(T) ||
-        storage_.as_bytes().size() != bytes.size() ||
-        storage_.as_bytes().data() != bytes.data() ||
-        storage_.size_bytes() != bytes.size() ||
-        reinterpret_cast<std::uintptr_t>(bytes.data()) %
-                std::max(alignof(T), alignof(std::uint64_t)) !=
-            0) {
-      throw std::invalid_argument(
-          "Compressed metadata storage must be contiguous and word aligned");
-    }
-    std::ranges::fill(bytes, std::byte{0});
+    std::ranges::fill(allocate(count), std::byte{0});
   }
 
   explicit MetadataArray(std::span<const T> values)
     requires MutableMetadataStorage<Storage>
-      : MetadataArray(values.size()) {
+  {
+    auto bytes = allocate(values.size());
     if (!values.empty()) {
-      std::memcpy(data(), values.data(), values.size_bytes());
+      std::memcpy(bytes.data(), values.data(), values.size_bytes());
     }
   }
 
@@ -94,6 +75,31 @@ class MetadataArray {
 
  private:
   Storage storage_;
+
+  std::span<std::byte> allocate(std::size_t count)
+    requires MutableMetadataStorage<Storage>
+  {
+    if (count > std::numeric_limits<std::size_t>::max() / (sizeof(T) * 8)) {
+      throw std::length_error("Compressed metadata allocation too large");
+    }
+    if (count == 0) {
+      return {};
+    }
+    const auto byte_count = count * sizeof(T);
+    storage_.resize(byte_count * 8);
+    auto bytes = storage_.writable_bytes();
+    const auto readonly = storage_.as_bytes();
+    if (bytes.size() != byte_count || readonly.size() != byte_count ||
+        readonly.data() != bytes.data() ||
+        storage_.size_bytes() != byte_count ||
+        reinterpret_cast<std::uintptr_t>(bytes.data()) %
+                std::max(alignof(T), alignof(std::uint64_t)) !=
+            0) {
+      throw std::invalid_argument(
+          "Compressed metadata storage must be contiguous and word aligned");
+    }
+    return bytes;
+  }
 };
 
 }  // namespace pixie::detail::compressed

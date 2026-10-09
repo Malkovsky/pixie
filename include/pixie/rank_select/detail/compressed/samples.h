@@ -92,10 +92,10 @@ class BlockedMonotoneSamples {
       const std::size_t begin = group * 32;
       const std::size_t count =
           std::min<std::size_t>(32, values.size() - begin);
-      auto* record = packed + (offsets_[group] & kOffsetMask);
+      const auto descriptor = offsets_[group];
+      auto* record = packed + (descriptor & kOffsetMask);
       record[0] = values[begin];
-      const unsigned width =
-          std::bit_width((values[begin + count - 1] - values[begin]) >> 5);
+      const unsigned width = descriptor >> 58;
       for (std::size_t i = 0; i < count; ++i) {
         const std::uint64_t delta = values[begin + i] - record[0];
         record[1] |= std::uint64_t{1} << ((delta >> width) + i);
@@ -106,7 +106,7 @@ class BlockedMonotoneSamples {
 
   std::uint64_t operator[](std::size_t index) const {
     const std::uint64_t descriptor = offsets_[index / 32];
-    const auto* record = words() + (descriptor & kOffsetMask);
+    const auto* record = storage_.data() + (descriptor & kOffsetMask);
     const std::size_t local = index % 32;
     const unsigned width = descriptor >> 58;
     const std::uint64_t high = ::select_64(record[1], local) - local;
@@ -122,11 +122,6 @@ class BlockedMonotoneSamples {
   static constexpr std::uint64_t kOffsetMask = (std::uint64_t{1} << 58) - 1;
   MetadataArray<std::uint64_t, MetadataStorage> storage_;
   MetadataArray<std::uint64_t, MetadataStorage> offsets_;
-
-  const std::uint64_t* words() const {
-    // Construction validates the backing word alignment once.
-    return storage_.data();
-  }
 };
 
 struct SampleWideGroup {
