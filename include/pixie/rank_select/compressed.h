@@ -176,8 +176,11 @@ class RankSelectSupportCompressed
   }
 
   /** @brief Count ones in [0, end), clamping end at size(). */
-  // Keep the shared prefix calculation inside the directional query.
-  [[gnu::always_inline]] inline std::uint64_t rank_impl(std::size_t end) const {
+  // Inlining exposes block-aligned prefix calls in select's prediction path.
+#if __has_cpp_attribute(gnu::always_inline)
+  [[gnu::always_inline]]
+#endif
+  inline std::uint64_t rank_impl(std::size_t end) const {
     if (end >= num_bits_) {
       return one_count_;
     }
@@ -713,9 +716,11 @@ class RankSelectSupportCompressed
   }
 
   template <bool Zero>
-  [[gnu::noinline]] std::uint64_t select_small_index(
-      std::size_t rank,
-      std::uint64_t total) const {
+#if __has_cpp_attribute(gnu::noinline)
+  [[gnu::noinline]]
+#endif
+  std::uint64_t select_small_index(std::size_t rank,
+                                   std::uint64_t total) const {
     const std::uint64_t first_ones = local_rank(rank_record(0), 1);
     const std::uint64_t first_end =
         Zero ? std::min(kBasicBits, num_bits_) - first_ones : first_ones;
@@ -727,10 +732,12 @@ class RankSelectSupportCompressed
   }
 
   template <bool Zero>
-  [[gnu::always_inline]] inline std::uint64_t select_basic(
-      std::size_t base,
-      std::uint64_t remaining,
-      std::uint64_t population) const {
+#if __has_cpp_attribute(gnu::always_inline)
+  [[gnu::always_inline]]
+#endif
+  inline std::uint64_t select_basic(std::size_t base,
+                                    std::uint64_t remaining,
+                                    std::uint64_t population) const {
     if (population == kBasicBits) {
       return base + remaining - 1;
     }

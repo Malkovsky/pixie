@@ -22,8 +22,7 @@ alignas(64) inline constexpr auto kPrefixGroupBytes = [] {
  * by RankSelectSupportCompressed.
  */
 template <bool Zero>
-[[gnu::always_inline]] inline std::optional<
-    detail::compressed::PackedPrefixLocation>
+inline std::optional<detail::compressed::PackedPrefixLocation>
 packed_prefix_search_multishift(const std::uint64_t* record,
                                 std::uint64_t target,
                                 std::size_t valid_bits) {

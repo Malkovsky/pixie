@@ -42,14 +42,44 @@ registered rows. Query pools contain 8192 values and shift on each wrap.
 For query-only perf captures and optional HTML, use the local
 [profiling example](../profiling/EXAMPLES.md).
 
+With `PIXIE_THIRD_PARTY_BACKENDS=ON`, `rank_select_succinct_fast` and
+`rank_select_orzo` register build, rank1, derived rank0, and select1 rows for all
+nine input families. Their pinned upstream APIs have no select0 operation.
+FastBitVec's 32-bit sample positions limit registration to sizes through 2^30
+in the current size grid (the adapter accepts at most 2^32 bits). Orzo requires
+BMI/BMI2 in the configured target and is omitted otherwise. Its build-local
+header preparation fixes allocation rounding/terminal storage and a utility
+name collision; query algorithms retain the upstream code.
+
+Both own a normalized source copy. `source_copy_bytes` includes Orzo's padding;
+`aux_bytes` excludes the source copy and includes adapter/upstream object bytes.
+FastBitVec reports logical directory sizes because upstream does not expose
+allocator capacities. Orzo accounts for its requested raw allocations.
+Use one-rank/one-select rows for a common-operation comparison with these
+backends, Spider, and 3-star.
+
+The CMake target `pixie_rank_select_comparisons` shares definitions, includes,
+dependencies, and the 3-star adapter source across the rank/select harnesses.
+It enables Pasta and succinct-bitvec-cpp, plus 3-star and Orzo when BMI/BMI2 is
+available.
+
+```bash
+PIXIE_RANK_SELECT_FIXED_SEED=1 taskset -c 0 \
+  ./build/benchmark-all-backends/rank_select_benchmarks \
+  --benchmark_filter='^rank_select_(succinct_fast|orzo)_(rank1|rank0|select1)_50/N:(4194304|1073741824)(/|$)' \
+  --benchmark_out=/tmp/rank_select_new_backends.json \
+  --benchmark_out_format=json
+```
+
 ### FNBP Source Rows
 
 `rank_select_fnbp_*` generates the Ferrada-Navarro balanced-parentheses source
-used by the Cartesian RMQ backends. It covers `2^10` through `2^34` bits.
+used by the Cartesian RMQ backends. It covers `2^10` through `2^30` bits;
+larger FNBP sources are omitted because generation dominates suite runtime.
 
 ```bash
 taskset -c 0 ./build/benchmarks/rank_select_benchmarks \
-  --benchmark_filter='^rank_select_fnbp_(build_both|rank1|rank0|select1|select0)/N:(1024|16384|262144|4194304|67108864|1073741824|17179869184)(/|$)' \
+  --benchmark_filter='^rank_select_fnbp_(build_both|rank1|rank0|select1|select0)/N:(1024|16384|262144|4194304|67108864|1073741824)(/|$)' \
   --benchmark_report_aggregates_only=true \
   --benchmark_display_aggregates_only=true
 ```

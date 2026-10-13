@@ -44,10 +44,10 @@ alignas(64) inline constexpr auto kPrefixHighBytes = [] {
 // ends. This excludes the zero terminal alias. Unsupported targets return no
 // result so callers retain the established scalar interpolation/correction.
 template <bool Zero>
-[[gnu::always_inline]] inline std::optional<PackedPrefixLocation>
-packed_prefix_search(const std::uint64_t* record,
-                     std::uint64_t target,
-                     std::size_t valid_bits) {
+inline std::optional<PackedPrefixLocation> packed_prefix_search(
+    const std::uint64_t* record,
+    std::uint64_t target,
+    std::size_t valid_bits) {
 #if defined(PIXIE_AVX512_SUPPORT) && defined(__AVX512VBMI__)
   const auto packed = _mm512_loadu_si512(record);
   const auto low = _mm512_permutexvar_epi8(

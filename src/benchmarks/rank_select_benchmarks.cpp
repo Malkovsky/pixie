@@ -9,6 +9,12 @@
 #ifdef PIXIE_3STAR_SUPPORT
 #include "three_star_adapter.h"
 #endif
+#ifdef PIXIE_SUCCINCT_BITVEC_SUPPORT
+#include "succinct_bitvec_adapter.h"
+#endif
+#ifdef PIXIE_ORZO_SUPPORT
+#include "orzo_adapter.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -43,9 +49,8 @@ double query_warmup_seconds() {
 constexpr std::array<std::size_t, 7> kSizes = {
     1ull << 10, 1ull << 14, 1ull << 18, 1ull << 22,
     1ull << 26, 1ull << 30, 1ull << 34};
-// All source families share the same scaling points, including the final
-// large-source FNBP comparison.
-constexpr auto kFnbpSizes = kSizes;
+// FNBP generation is costly; cap these benchmark rows at 2^30 bits.
+constexpr auto kFnbpSizes = std::span(kSizes).first<6>();
 
 enum class Fill {
   k12p5,
@@ -549,15 +554,27 @@ void run_fnbp_query(benchmark::State& state) {
   state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()));
 }
 
+// Omit unsupported sizes before allocation, including FastBitVec's 32-bit
+// sample-position limit. All source families use the same supported-size set.
+template <class Support>
+void register_sizes(auto* row, std::span<const std::size_t> sizes) {
+  for (const std::size_t size : sizes) {
+    if constexpr (requires { Support::kMaxBits; }) {
+      if (size > Support::kMaxBits) {
+        continue;
+      }
+    }
+    row->Arg(static_cast<std::int64_t>(size));
+  }
+}
+
 template <class Support, Fill fill>
 void register_build_row(std::string_view backend_name) {
   const std::string name = std::string(backend_name) + "_build_both_" +
                            std::string(fill_spec(fill).name);
   auto* row =
       benchmark::RegisterBenchmark(name.c_str(), &run_build<Support, fill>);
-  for (const std::size_t size : kSizes) {
-    row->Arg(static_cast<std::int64_t>(size));
-  }
+  register_sizes<Support>(row, kSizes);
   row->ArgNames({"N"})
       ->Unit(benchmark::kMillisecond)
       ->MinWarmUpTime(kBenchmarkWarmupSeconds)
@@ -572,9 +589,7 @@ void register_query_row(std::string_view backend_name,
                            std::string(fill_spec(fill).name);
   auto* row = benchmark::RegisterBenchmark(
       name.c_str(), &run_query<Support, fill, operation>);
-  for (const std::size_t size : kSizes) {
-    row->Arg(static_cast<std::int64_t>(size));
-  }
+  register_sizes<Support>(row, kSizes);
   row->ArgNames({"N"})
       ->Unit(benchmark::kNanosecond)
       ->MinWarmUpTime(query_warmup_seconds())
@@ -599,9 +614,7 @@ void register_fnbp_build_row(std::string_view backend_name) {
   const std::string name = std::string(backend_name) + "_fnbp_build_both";
   auto* row =
       benchmark::RegisterBenchmark(name.c_str(), &run_fnbp_build<Support>);
-  for (const std::size_t size : kFnbpSizes) {
-    row->Arg(static_cast<std::int64_t>(size));
-  }
+  register_sizes<Support>(row, kFnbpSizes);
   row->ArgNames({"N"})
       ->Unit(benchmark::kMillisecond)
       ->MinWarmUpTime(kBenchmarkWarmupSeconds)
@@ -615,9 +628,7 @@ void register_fnbp_query_row(std::string_view backend_name,
       std::string(backend_name) + "_fnbp_" + std::string(operation_name);
   const auto callback = &run_fnbp_query<Support, operation>;
   auto* row = benchmark::RegisterBenchmark(name.c_str(), callback);
-  for (const std::size_t size : kFnbpSizes) {
-    row->Arg(static_cast<std::int64_t>(size));
-  }
+  register_sizes<Support>(row, kFnbpSizes);
   row->ArgNames({"N"})
       ->Unit(benchmark::kNanosecond)
       ->MinWarmUpTime(query_warmup_seconds())
@@ -650,17 +661,26 @@ void register_select1_only_fill_rows(std::string_view backend_name) {
   register_query_row<Support, fill, kSelect1>(backend_name, "select1");
 }
 
-template <class Support>
+template <class Support, bool Select0, Fill fill>
+void register_backend_fill(std::string_view name) {
+  if constexpr (Select0) {
+    register_fill_rows<Support, fill>(name);
+  } else {
+    register_select1_only_fill_rows<Support, fill>(name);
+  }
+}
+
+template <class Support, bool Select0 = true>
 void register_backend(std::string_view name) {
-  register_fill_rows<Support, Fill::k12p5>(name);
-  register_fill_rows<Support, Fill::k50>(name);
-  register_fill_rows<Support, Fill::k87p5>(name);
-  register_fill_rows<Support, Fill::kSparse>(name);
-  register_fill_rows<Support, Fill::kSparseZeros>(name);
-  register_fill_rows<Support, Fill::kRuns>(name);
-  register_fill_rows<Support, Fill::kMixed>(name);
-  register_fill_rows<Support, Fill::kMixedZeros>(name);
-  register_fnbp_rows<Support>(name);
+  register_backend_fill<Support, Select0, Fill::k12p5>(name);
+  register_backend_fill<Support, Select0, Fill::k50>(name);
+  register_backend_fill<Support, Select0, Fill::k87p5>(name);
+  register_backend_fill<Support, Select0, Fill::kSparse>(name);
+  register_backend_fill<Support, Select0, Fill::kSparseZeros>(name);
+  register_backend_fill<Support, Select0, Fill::kRuns>(name);
+  register_backend_fill<Support, Select0, Fill::kMixed>(name);
+  register_backend_fill<Support, Select0, Fill::kMixedZeros>(name);
+  register_fnbp_rows<Support, Select0>(name);
 }
 
 void register_benchmarks() {
@@ -670,19 +690,17 @@ void register_benchmarks() {
 #ifdef PIXIE_PASTA_SUPPORT
   register_backend<pixie::PastaRankSelectSupport>("rank_select_pasta");
 #endif
+#ifdef PIXIE_SUCCINCT_BITVEC_SUPPORT
+  register_backend<pixie::benchmarks::SuccinctFastRankSelectSupport, false>(
+      "rank_select_succinct_fast");
+#endif
+#ifdef PIXIE_ORZO_SUPPORT
+  register_backend<pixie::benchmarks::OrzoRankSelectSupport, false>(
+      "rank_select_orzo");
+#endif
 #ifdef PIXIE_3STAR_SUPPORT
-  using Support = pixie::benchmarks::ThreeStarRankSelectSupport;
-  register_select1_only_fill_rows<Support, Fill::k12p5>("rank_select_3star");
-  register_select1_only_fill_rows<Support, Fill::k50>("rank_select_3star");
-  register_select1_only_fill_rows<Support, Fill::k87p5>("rank_select_3star");
-  register_select1_only_fill_rows<Support, Fill::kSparse>("rank_select_3star");
-  register_select1_only_fill_rows<Support, Fill::kSparseZeros>(
+  register_backend<pixie::benchmarks::ThreeStarRankSelectSupport, false>(
       "rank_select_3star");
-  register_select1_only_fill_rows<Support, Fill::kRuns>("rank_select_3star");
-  register_select1_only_fill_rows<Support, Fill::kMixed>("rank_select_3star");
-  register_select1_only_fill_rows<Support, Fill::kMixedZeros>(
-      "rank_select_3star");
-  register_fnbp_rows<Support, false>("rank_select_3star");
 #endif
 }
 
