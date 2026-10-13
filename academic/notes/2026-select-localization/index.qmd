@@ -1,0 +1,335 @@
+---
+title: "Improving Select Localization in Pixie"
+date: 2026-10-03
+bibliography: ../../bibliography/references.bib
+link-citations: true
+format:
+  html:
+    toc: true
+---
+
+This note records an earlier design investigation. The retained implementation
+and current reproduction guidance are in
+[the final compressed rank/select design](../compressed-rank-select/index.qmd).
+Intermediate implementations and their runners were removed during cleanup.
+
+
+## Recommendation
+
+Preserve the pipeline: **select samples localize the query, rank metadata
+resolves the block, source words finish select**. The first experiment should
+make each existing 64-bit sample contain both its superblock and a rank offset,
+and use neighboring samples as bounds. A second experiment should compress
+groups of these richer samples into one cache line, doubling sample frequency
+without increasing the leading sampling-space term.
+
+The strongest opportunities are removing dependent global-rank loads and
+tightening rank-search bounds. Prediction helps after establishing those
+bounds, but cannot replace a correct bounded search on irregular input.
+
+This note develops candidate layouts and reports a localization model. It
+does not introduce a library implementation or claim measured speedups.
+
+## Current localization and its lost information
+
+In `include/pixie/rank_select/support.h`, a sample stores a 64-bit superblock
+ID every 16,384 occurrences. `find_superblock()` and its zero counterpart
+read one sample and scan the global rank directory forward. After selecting
+the superblock, select loads its global rank again to form a local rank, then
+searches the 16-bit basic-block ranks.
+
+Three improvements are available before changing the rank layout:
+
+1. Read the next checkpoint to get an upper location bound.
+2. Retain the prefix rank associated with a checkpoint, so an additional
+   directory lookup is not needed to recover it.
+3. Pack neighboring checkpoint locations relative to a group base, using
+   the saved bits for more checkpoints or useful rank information.
+
+SPIDER provides related evidence that prediction can reduce select scanning
+[@Laws2024]. The layouts below are proposals for Pixie's current separate rank
+arrays; they are not claims to reproduce SPIDER's implementation.
+
+## Define the samples precisely
+
+Work internally with zero-based occurrence index `k = requested_rank - 1`.
+The public one-based select convention and its guards remain as documented.
+Let `M` be the count of the selected bit value, `B = 65536`, and `R(s)` the
+number of that value before superblock `s`.
+
+At occurrence indices `a = 0, S, 2S, ...`, store
+
+$$
+s_a = \left\lfloor\frac{\operatorname{select}(a+1)}{B}\right\rfloor,
+\qquad d_a = a-R(s_a).
+$$
+
+Here `d_a` is the zero-based occurrence offset inside the sampled superblock,
+not a physical bit offset. It is in `[0, 65535]`, including the final occurrence
+of a completely full superblock. Recover the prefix count as
+
+$$R(s_a)=a-d_a.$$
+
+Sample the **first actual occurrence**, rather than using superblock zero as
+the initial sample. This removes the initial empty-run localization problem.
+For the final interval, synthesize an endpoint with occurrence index `M`,
+superblock `last_occurrence_superblock + 1`, and prefix count `M`. Track that
+terminal superblock during construction. This also excludes an irrelevant
+trailing empty run and avoids counting padding as zero occurrences.
+
+This changes internal sample phase and representation. A future implementation
+must coordinate construction, queries, serialization, and validation.
+
+## Experiment A: richer samples at the current spacing
+
+Every actual superblock ID fits in 48 bits for representable lengths below
+2^64 bits. Its occurrence offset fits in 16 bits. Therefore one word can hold
+
+| Field | Width |
+| --- | ---: |
+| Actual superblock ID | 48 bits |
+| Occurrence offset `d_a` | 16 bits |
+| Total | 64 bits |
+
+Keep `S = 16384`. This uses the same leading sample storage as today. There
+is no need to narrow the global rank counts: recover their full 64-bit values
+from the implicit occurrence index and the stored offset.
+
+The synthesized final endpoint can have ID 2^48, so it must not be packed as
+an actual 48-bit sample. Keep the terminal ID in full-width per-direction
+metadata, or derive a conservative endpoint from the logical length.
+Tracking the last occurrence gives the tighter bound.
+
+For query `k`, decode the samples at `a` and `a_next`, obtaining `(sL, RL)`
+and `(sU, RU)`. The target superblock lies in `[sL, sU]`:
+
+- If `sL == sU`, the target is `sL`, with local occurrence rank `k - RL + 1`.
+- If `sU == sL + 1`, compare `k` with `RU`. Choose `sL` if `k < RU`, otherwise
+  `sU`. The chosen prefix rank is already available.
+- Otherwise, search the global rank directory within the established bounds.
+  Once that search succeeds, continue the existing basic-block search.
+
+The first two cases remove global-rank directory accesses entirely from
+localization. They still search local rank metadata and the source words.
+The next sample is in the same cache line for seven of every eight naturally
+aligned sample pairs; a pair crossing the boundary needs another line.
+
+This is the smallest useful prototype and isolates the benefit of richer
+anchors from the cost of compressed decoding.
+
+## Experiment B: sixteen rich checkpoints in one cache line
+
+Use a coarse group of `Q = 131072` occurrences. Within it, use checkpoint
+spacing `q = 8192`, giving sixteen starting checkpoints plus the next group's
+boundary. Group and checkpoint lookup remain shifts and masks:
+
+```text
+k = requested_rank - 1
+group = k >> 17
+checkpoint = (k >> 13) & 15
+```
+
+Store the first superblock absolutely and the other sixteen IDs as offsets
+from it. For normal groups, each offset fits in 12 bits. Retain the 16-bit
+occurrence offset for all seventeen checkpoints, including the endpoint:
+
+| Field | Count | Width per value | Total |
+| --- | ---: | ---: | ---: |
+| First actual superblock ID | 1 | 48 bits | 48 bits |
+| Relative superblock IDs | 16 | 12 bits | 192 bits |
+| Occurrence offsets | 17 | 16 bits | 272 bits |
+| Complete record | | | **512 bits** |
+
+One concrete packing is:
+
+```text
+word 0: first superblock (48), endpoint occurrence offset (16)
+body:   first occurrence offset (16)
+        15 pairs of [superblock delta (12), occurrence offset (16)]
+        endpoint superblock delta (12)
+```
+
+The record is exactly 64 bytes. Decode the selected checkpoint and its right
+neighbor. The endpoint is duplicated at the group boundary deliberately, so
+the final pair does not require fetching the next record.
+
+The leading sample overhead is unchanged:
+
+$$\frac{512}{131072}=\frac{64}{16384}=0.390625\%.$$
+
+For both select directions together, substitute `M1 + M0 = n`; this is the
+combined ratio, not a separate 0.391% charge per direction. Partial groups,
+terminal IDs, objects, and allocation rounding are additional fixed terms.
+
+There are sixteen interior checkpoints plus their endpoint in each cache line,
+compared with eight location-only samples today. Only the fields needed by a
+query should be decoded. Scalar extraction is the appropriate initial kernel;
+SIMD whole-record decoding is an optional later experiment for batching or
+irregular searches.
+
+### Large-span escape representation
+
+A long physical span must not truncate a delta. Reserve endpoint delta 4095
+as the escape marker; normal groups have span at most 4094 superblocks.
+An escaped record points to a full-width side record containing seventeen
+64-bit superblock IDs and sixteen 16-bit offsets; the endpoint offset remains
+in the original header. The 168-byte payload can occupy an aligned 192-byte
+record. Escape lookup adds a dependent load, while ordinary records stay fixed
+at 64 bytes and require no descriptor-array access.
+
+There is a useful storage bound. Coarse-group superblock spans telescope
+within each select direction. If `T = ceil(n / B)`, the number of escaped
+groups per direction is at most `T / 4095`. With 192 extra bytes per escape,
+the leading extra ratio for both directions is bounded by
+
+$$\frac{2\cdot192\cdot8}{4095\cdot65536}\approx0.001145\%.$$
+
+Thus the candidate's leading sample ratio is at most about **0.39177%**, plus
+fixed rounding terms, if side storage is allocated to its final logical size.
+This is a storage bound. It does not guarantee constant query time on sparse
+input, and temporary allocator capacity is not included.
+
+### Compatible with a later rank-layout change
+
+For superblocks of size `2^b`, actual IDs need `64-b` bits and occurrence
+offsets need `b` bits. This same record fits if relative location offsets use
+`28-b` bits:
+
+$$ (64-b)+17b+16(28-b)=512.$$
+
+For the current layout, `(b, delta_width) = (16, 12)`. For the earlier proposed
+16,384-bit rank record, it becomes `(14, 14)`. This preserves the full size
+domain, although the smaller superblocks change how often direct localization
+works. Re-measure that interaction rather than assuming unchanged speed.
+
+## Alternative: spend the bytes only on finer locations
+
+A different 64-byte record can store a 64-bit base basic-block ID and thirty-two
+14-bit basic-block deltas. With the same coarse group `Q`, its fine spacing is
+4,096 occurrences. It provides twice the resolution of experiment B, at
+512-bit rather than 65,536-bit granularity.
+
+The cost is losing cached prefix ranks. The remaining rank search still needs
+global/local metadata to recover them. Normal coarse spans must fit below
+16,384 basic blocks, about 8 Mi bits (1 MiB) of source, versus nearly 256 Mi bits
+(32 MiB) for B.
+Full-width delta escapes are therefore more frequent, especially for sparse
+directions. With thirty-two 64-bit deltas per escape, the analogous leading
+extra-space bound for both directions is about 0.04883%, giving a sample ratio
+of roughly 0.43945% plus fixed terms.
+
+This is worth comparing if finer location dominates the cost, particularly
+after rank metadata is interleaved. My preference with today's separate arrays
+is **cached ranks plus moderately finer locations**, because it can remove
+directory accesses instead of only reducing search distance.
+
+Elias--Fano is another possible encoding of monotone checkpoint locations.
+Orzo demonstrates micro-scale Elias--Fano compression for rank metadata
+[@HoughBhatele2025]; it is not evidence that this sample design will be faster.
+Fixed records offer simpler address calculation and selective decoding, so
+they should be the first baseline before a more involved encoding.
+
+## Localization-model evidence
+
+A temporary C++20 model used 2^26-bit sources, seed 42, and 65,536 valid
+occurrence queries per source and direction. Random fills were generated by
+ANDing independent random words, with complements for dense fills. It built
+the actual global prefix counts and checked the proposed packed record's
+decoded prefixes against them. A monotone-directory search supplied the
+reference target superblock for every query.
+
+The table reports the fraction with neighboring checkpoints in the same or
+adjacent superblocks. Those are precisely the cases resolved using cached
+prefix ranks alone:
+
+| Source and selected direction | Rich 64-bit samples, spacing 16,384 | Grouped rich samples, spacing 8,192 |
+| --- | ---: | ---: |
+| Random 50%, either direction | 100.0% | 100.0% |
+| Random 12.5%, one-select | 0.57% | 99.60% |
+| Random 12.5%, zero-select | 100.0% | 100.0% |
+| Random 87.5%, zero-select | 0.57% | 99.60% |
+| Random 1/1024, one-select | 0.0% | 0.0% |
+| Half zeros followed by half ones, either direction | 100.0% | 100.0% |
+| Alternating runs of 2^20 bits, either direction | 98.47% | 99.28% |
+| A single trailing one, one-select | 100.0% | 100.0% |
+
+All 917,504 modeled queries satisfied the localization bounds; grouped-record
+prefix reconstruction and direct resolutions agreed with the reference.
+Separate bit-field checks covered maximum 48-bit IDs, residual 65,535,
+cross-word field extraction, normal delta 4094, and escape marker 4095.
+The source size was too small to exercise B's wide-span side representation,
+which remains a proposed design. Its lookup and allocation require testing
+in an implementation.
+
+The sparse minority case still had an average bracket about 128 superblocks
+wide with B, versus about 256 with A. That requires searching rank metadata.
+The single trailing one illustrates the separate benefit of sampling the first
+actual occurrence: today's initial sample starts at superblock zero and must
+traverse 1,023 superblocks in this source; the new anchor starts at its target.
+
+These percentages describe this model's query geometry. They are not cache-miss
+measurements, performance benchmarks, or guarantees for real application data.
+
+## Search policy and implementation plan
+
+The existing basic-block interpolation kernels themselves read `R(s)` and
+`R(s+1)` to estimate a superblock's population. Therefore removing directory
+accesses from localization does not automatically remove them from the full
+query. A prototype must distinguish these costs.
+
+Pass the cached target prefix into the local-search kernel. If another
+checkpoint in the loaded group belongs to superblock `s+1`, its residual also
+provides the exact next prefix and hence the population required by the existing
+interpolation. Looking for that checkpoint gives SIMD decoding/search a concrete
+purpose: reuse more information from the already fetched sample line. Its
+availability has not been measured by the model above. If the next prefix is
+absent, compare fetching it with a local-rank search that does not need the
+population. The latter may read more local metadata; neither choice is an
+assumed improvement. Experiment A can initially retain the existing local
+interpolation to isolate the localization change.
+
+After decoding the anchors, use the same/adjacent-superblock fast cases above.
+For wider bounds, validate an interpolation guess against rank counts, then
+use a short SIMD scan with bounded exponential/binary fallback. Search must
+handle repeated prefix ranks correctly. The target satisfies
+`R(s) <= k < R(s+1)`; a terminal boundary is never a target.
+
+Interpolation estimates location, while the checkpoint pair establishes
+correct bounds. Neither fixed occurrence spacing nor compression guarantees a
+small physical interval across long empty runs. A bounded directory search is
+still necessary for predictable behavior on those inputs.
+
+Prototype in this order:
+
+1. Rich 64-bit samples, actual-first anchors, cached terminal boundaries, and
+   pair-bounded rank search. Keep the current rank arrays and sampling frequency.
+2. Grouped rich records, initially with scalar field extraction, explicit
+   normal/escape handling, and the same remaining search.
+3. Compare the offset-only basic-block variant if measurements indicate location
+   resolution is more valuable than eliminating global-rank accesses.
+
+Measure dependent-query latency and independent throughput, sample cache-line
+loads, global-rank directory loads, fallback rates, construction cost, and total
+allocated metadata. Do not assume the global directory is cold: its compactness
+may let it remain cached, reducing the gain from avoiding it. Compare small
+and large sources, both select directions, sparse data, long runs, and tree or
+wavelet workloads. Test with native, AVX2, and scalar primitive dispatch.
+
+Normal records require a 64-byte-aligned base to ensure each lies in one cache
+line. The proposed serialized metadata must preserve that alignment for mapped
+views, or the one-line claim will not hold. Construction can collect bounded
+per-group scratch metadata in the existing word scan; a sampled word's superblock
+is already known, so no within-word select is needed to construct these anchors.
+
+Validation should cover partial groups and final superblocks, absent directions,
+dirty source padding, sample-phase boundaries, every occurrence of short inputs,
+full-superblock rank 65,536, escape thresholds, and maximum representable IDs.
+Clamp occurrence endpoints using differences before addition to avoid overflow
+near the 64-bit limit. Serialization needs a coordinated representation/version
+change rather than reinterpreting old sample words.
+
+## References
+
+- [SPIDER, SEA 2024](https://doi.org/10.4230/LIPIcs.SEA.2024.21).
+- [Orzo, SEA 2025](https://doi.org/10.4230/LIPIcs.SEA.2025.23).
+- [Earlier broader Pixie rank/select investigation](../rank-select-investigation/index.qmd).
