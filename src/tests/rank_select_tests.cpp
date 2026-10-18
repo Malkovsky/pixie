@@ -37,13 +37,24 @@ namespace {
 // Deliberately offset a cache-line-aligned allocation. This backend provides
 // only bytes/resize, so tests also reject hidden dependencies on as_lines() or
 // writable_words64(). Poison fresh bytes to check index initialization.
+enum class MetadataFault {
+  kNone,
+  kWritableSize,
+  kReadonlySize,
+  kReadonlyAddress,
+  kReportedSize,
+};
+
 template <std::size_t Offset>
 class TestMetadataStorage
     : public pixie::StorageBase<TestMetadataStorage<Offset>> {
  public:
   inline static std::vector<std::size_t> allocations;
+  inline static MetadataFault fault = MetadataFault::kNone;
 
-  std::size_t size_bytes_impl() const { return size_; }
+  std::size_t size_bytes_impl() const {
+    return size_ - (size_ != 0 && fault == MetadataFault::kReportedSize);
+  }
   std::uint64_t begin_position_impl() const { return 0; }
   std::uint64_t end_position_impl() const { return size_; }
 
@@ -52,20 +63,26 @@ class TestMetadataStorage
     backing_.resize(bits + Offset * 8);
     std::ranges::fill(writable_bytes_impl(), std::byte{0xa5});
     if (size_ != 0) {
-      EXPECT_EQ(reinterpret_cast<std::uintptr_t>(as_bytes_impl().data()) % 64,
-                Offset);
+      EXPECT_EQ(
+          reinterpret_cast<std::uintptr_t>(writable_bytes_impl().data()) % 64,
+          Offset);
       allocations.push_back(backing_.allocated_bytes());
     }
   }
 
   std::span<const std::byte> as_bytes_impl() const {
-    return size_ == 0 ? std::span<const std::byte>{}
-                      : backing_.as_bytes().subspan(Offset, size_);
+    return size_ == 0
+               ? std::span<const std::byte>{}
+               : backing_.as_bytes().subspan(
+                     fault == MetadataFault::kReadonlyAddress ? 0 : Offset,
+                     size_ - (fault == MetadataFault::kReadonlySize));
   }
 
   std::span<std::byte> writable_bytes_impl() {
-    return size_ == 0 ? std::span<std::byte>{}
-                      : backing_.writable_bytes().subspan(Offset, size_);
+    return size_ == 0
+               ? std::span<std::byte>{}
+               : backing_.writable_bytes().subspan(
+                     Offset, size_ - (fault == MetadataFault::kWritableSize));
   }
 
   pixie::SplitSpan<const std::byte> segments_impl(std::uint64_t offset,
@@ -550,6 +567,19 @@ TEST(CompressedRankSelectTest, RejectsMisalignedMetadataStorage) {
   using Support = pixie::RankSelectSupportCompressed<TestMetadataStorage<1>>;
   const std::array<std::uint64_t, 1> words{0x1234};
   EXPECT_THROW((Support(words, 64)), std::invalid_argument);
+}
+
+TEST(CompressedRankSelectTest, RejectsInconsistentMetadataStorageViews) {
+  const std::array<std::uint64_t, 1> words{0x1234};
+  using Support =
+      pixie::RankSelectSupportCompressed<WordAlignedMetadataStorage>;
+  for (const auto fault :
+       {MetadataFault::kWritableSize, MetadataFault::kReadonlySize,
+        MetadataFault::kReadonlyAddress, MetadataFault::kReportedSize}) {
+    WordAlignedMetadataStorage::fault = fault;
+    EXPECT_THROW((Support(words, 64)), std::invalid_argument);
+    WordAlignedMetadataStorage::fault = MetadataFault::kNone;
+  }
 }
 
 TYPED_TEST(RankSelectSpecificationTest,
@@ -1067,6 +1097,53 @@ TEST(CompressedRankSelectTest, UnsignedPackedEndpointGroups) {
       const auto expected = (rank - 1) / 1024 * kSuper + (rank - 1) % 1024;
       EXPECT_EQ(invert ? support.select0(rank) : support.select(rank),
                 expected);
+    }
+  }
+}
+
+TEST(CompressedRankSelectTest, WideDirectoriesWith32And64BitEndpoints) {
+  constexpr std::size_t kSuper = 16384;
+  // More than two SIMD groups of either endpoint width, plus a partial tail.
+  // Large sampling intervals select wider endpoint types without huge inputs.
+  for (const std::size_t stride : {1u, 2u}) {
+    const std::size_t size = 35 * stride * kSuper + 37;
+    std::vector<std::uint64_t> words((size + 63) / 64);
+    std::vector<std::size_t> positions;
+    for (std::size_t super = 0; super < 35; ++super) {
+      for (std::size_t bit = 0; bit < 4096; ++bit) {
+        const auto position = super * stride * kSuper + 1023 + bit;
+        words[position / 64] |= std::uint64_t{1} << (position % 64);
+        positions.push_back(position);
+      }
+    }
+    words.back() =
+        ~std::uint64_t{0};  // Dirty padding must not enter the index.
+    for (std::size_t bit = size - 37; bit < size; ++bit) {
+      positions.push_back(bit);
+    }
+    for (const bool zero : {false, true}) {
+      const auto check = [&]<std::size_t Frequency>() {
+        const pixie::RankSelectSupportCompressed<pixie::AlignedStorage,
+                                                 Frequency, 1>
+            support(words, size);
+        for (std::size_t i = 0; i < positions.size(); ++i) {
+          ASSERT_EQ(zero ? support.select0(i + 1) : support.select(i + 1),
+                    positions[i])
+              << "frequency=" << Frequency << " zero=" << zero
+              << " stride=" << stride << " rank=" << i + 1;
+          ASSERT_EQ(
+              zero ? support.rank0(positions[i]) : support.rank(positions[i]),
+              i);
+        }
+        EXPECT_EQ(zero ? support.select0(positions.size() + 1)
+                       : support.select(positions.size() + 1),
+                  size);
+      };
+      check.operator()<std::size_t{1} << 17>();
+      check.operator()<std::size_t{1} << 33>();
+      for (auto& word : words) {
+        word = ~word;
+      }
     }
   }
 }
