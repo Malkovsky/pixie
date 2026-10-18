@@ -22,6 +22,10 @@
 
 ---
 
+## AI Note
+
+The project is AI-friendly and heavily AI-assisted especially in low-level kernels and vast experimentation. As a side-effect the project might seem swolen, sloppy or just too verbosed. If you want to use Pixie but don't find it easier due to AI involvement, you can leave an issue with the [humanization required](https://github.com/Malkovsky/pixie/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22humanization%20required%22) label or reach out to me [@Malkovsky](https://github.com/Malkovsky).
+
 ## Getting started
 
 Pixie requires C++20 and CMake 3.18 or newer. It is a header-only library and
