@@ -39,6 +39,7 @@ namespace {
 // writable_words64(). Poison fresh bytes to check index initialization.
 enum class MetadataFault {
   kNone,
+  kMisaligned,
   kWritableSize,
   kReadonlySize,
   kReadonlyAddress,
@@ -65,7 +66,7 @@ class TestMetadataStorage
     if (size_ != 0) {
       EXPECT_EQ(
           reinterpret_cast<std::uintptr_t>(writable_bytes_impl().data()) % 64,
-          Offset);
+          view_offset());
       allocations.push_back(backing_.allocated_bytes());
     }
   }
@@ -74,15 +75,16 @@ class TestMetadataStorage
     return size_ == 0
                ? std::span<const std::byte>{}
                : backing_.as_bytes().subspan(
-                     fault == MetadataFault::kReadonlyAddress ? 0 : Offset,
+                     fault == MetadataFault::kReadonlyAddress ? 0
+                                                              : view_offset(),
                      size_ - (fault == MetadataFault::kReadonlySize));
   }
 
   std::span<std::byte> writable_bytes_impl() {
-    return size_ == 0
-               ? std::span<std::byte>{}
-               : backing_.writable_bytes().subspan(
-                     Offset, size_ - (fault == MetadataFault::kWritableSize));
+    return size_ == 0 ? std::span<std::byte>{}
+                      : backing_.writable_bytes().subspan(
+                            view_offset(),
+                            size_ - (fault == MetadataFault::kWritableSize));
   }
 
   pixie::SplitSpan<const std::byte> segments_impl(std::uint64_t offset,
@@ -95,6 +97,10 @@ class TestMetadataStorage
   }
 
  private:
+  static std::size_t view_offset() {
+    return Offset - (fault == MetadataFault::kMisaligned);
+  }
+
   pixie::AlignedStorage backing_;
   std::size_t size_ = 0;
 };
@@ -564,9 +570,12 @@ TEST(CompressedRankSelectTest, CustomStorageOwnsAllMetadataAndReportsBytes) {
 }
 
 TEST(CompressedRankSelectTest, RejectsMisalignedMetadataStorage) {
-  using Support = pixie::RankSelectSupportCompressed<TestMetadataStorage<1>>;
+  using Support =
+      pixie::RankSelectSupportCompressed<WordAlignedMetadataStorage>;
   const std::array<std::uint64_t, 1> words{0x1234};
+  WordAlignedMetadataStorage::fault = MetadataFault::kMisaligned;
   EXPECT_THROW((Support(words, 64)), std::invalid_argument);
+  WordAlignedMetadataStorage::fault = MetadataFault::kNone;
 }
 
 TEST(CompressedRankSelectTest, RejectsInconsistentMetadataStorageViews) {

@@ -362,6 +362,13 @@ The script configures and builds the `coverage` preset, deletes stale
 `.gcda`/`.gcov` files, runs `ctest --preset coverage`, and writes
 `build/coverage/coverage.txt`.
 
+CI also runs the script with `PIXIE_COVERAGE_VARIANT=rank-select-scalar`.
+This builds only rank/select for baseline `x86-64` in `build/coverage-scalar`
+and uploads its report under the same Codecov flag. This covers scalar paths
+even on AVX2 runners without rerunning the entire suite in that configuration.
+The native job uses only the runner's available instructions; CI does not
+require AVX-512 hardware.
+
 - The report uses `gcov -pb`, so Codecov receives branch probabilities as well
   as line hits. A Codecov partial line executed but did not take every branch.
 - Do not compare Codecov's branch-aware percentage with a line-only local

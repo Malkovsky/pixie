@@ -8,7 +8,16 @@ on:
 
 jobs:
   coverage:
+    name: ${{ matrix.variant == 'native' && 'coverage' || 'coverage (scalar)' }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: native
+            build_directory: coverage
+          - variant: rank-select-scalar
+            build_directory: coverage-scalar
 
     steps:
     - uses: actions/checkout@v4
@@ -18,19 +27,21 @@ jobs:
 
     - name: Run coverage
       run: ./scripts/coverage_report.sh
+      env:
+        PIXIE_COVERAGE_VARIANT: ${{ matrix.variant }}
 
     - name: Upload to Codecov
       uses: codecov/codecov-action@v4
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-        files: build/coverage/coverage.txt
+        files: build/${{ matrix.build_directory }}/coverage.txt
         flags: gcov
         fail_ci_if_error: false
 
     - name: Upload coverage artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: coverage-gcov
+        name: coverage-gcov-${{ matrix.variant }}
         path: |
-          build/coverage/coverage.txt
-          build/coverage/*.gcov
+          build/${{ matrix.build_directory }}/coverage.txt
+          build/${{ matrix.build_directory }}/*.gcov
