@@ -213,18 +213,22 @@ dependencies only as needed. Direct CMake defaults and their effects are:
 FetchContent consumer therefore receives no third-party dependency, while a
 standalone default build fetches Google Test. Enabling third-party backends also
 fetches SDSL, Immer, pasta-toolbox, and 3star-rankselect dependencies. Immer has
-registered sequence comparison benchmarks; SDSL has registered RmM comparison
-targets. Pasta provides an owning rank/select
+registered sequence comparison benchmarks; SDSL has registered RmM and
+rank/select comparison targets. The optional rank/select implementation uses
+`rank_support_v<>` and MCL select for both bit values over an owned copy;
+its logical auxiliary size follows SDSL's serialized-size convention.
+Pasta provides an owning rank/select
 comparison backend and is not a default library dependency. Pasta is
 GPLv3-or-later; keep its adapter strictly
 behind the optional comparison-backend build option. 3star-rankselect is MPL 2.0
-and is fetched at a pinned licensed revision. Its benchmark-only adapter
-supports one-rank, derived zero-rank, and one-select. Upstream global state and
-incomplete zero-select prevent a general public rank/select adapter. Use the
+and is fetched at a pinned licensed revision. Its optional implementation
+supports one-rank, derived zero-rank, and one-select. Upstream global state
+permits only one live instance; the comparison target provides the compiled
+global-state shim. Zero-select is disabled. Use the
 standard `FETCHCONTENT_SOURCE_DIR_THREE_STAR` override for a local source tree.
 
 The MIT-licensed succinct-bitvec-cpp and Orzo projects are fetched at pinned
-revisions for benchmark-only adapters. Their includes and feature definitions
+revisions for optional implementations. Their includes and feature definitions
 are private to rank/select tests and benchmarks. Both expose one-rank, derived
 zero-rank, and one-select; neither pinned source implements zero-select.
 `rank_select_succinct_fast` uses FastBitVec and omits sizes above 2^32 bits,
@@ -237,6 +241,12 @@ unchanged. Both adapters own normalized source copies; report those bytes
 separately from index bytes. Orzo's copy is padded to full lower blocks.
 Local trees use `FETCHCONTENT_SOURCE_DIR_SUCCINCT_BITVEC` and
 `FETCHCONTENT_SOURCE_DIR_ORZO`.
+
+All optional rank/select implementation headers live in
+`include/pixie/rank_select/`, use the `pixie` namespace and `RankSelectBase`,
+and appear behind their feature guards in `rank_select/implementations.h`.
+The 3-star global-state definitions remain in
+`src/benchmarks/three_star_globals.cpp`.
 
 ## Build and Test Presets
 

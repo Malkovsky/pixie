@@ -7,16 +7,20 @@
 #ifdef PIXIE_PASTA_SUPPORT
 #include <pixie/rank_select/pasta.h>
 #endif
-#ifdef PIXIE_SUCCINCT_BITVEC_SUPPORT
-#include "succinct_bitvec_adapter.h"
-#ifdef PIXIE_ORZO_SUPPORT
-#include "orzo_adapter.h"
+#ifdef SDSL_SUPPORT
+#include <pixie/rank_select/sdsl.h>
 #endif
+#ifdef PIXIE_SUCCINCT_BITVEC_SUPPORT
+#include <pixie/rank_select/succinct_bitvec.h>
+#endif
+#ifdef PIXIE_ORZO_SUPPORT
+#include <pixie/rank_select/orzo.h>
 #endif
 
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -83,6 +87,19 @@ using WordAlignedCompressed =
     pixie::RankSelectSupportCompressed<WordAlignedMetadataStorage>;
 
 template <class Support>
+std::uint64_t expected_select(const Support& support,
+                              bool zero,
+                              std::size_t rank,
+                              std::uint64_t position) {
+  if (rank == 0) {
+    return 0;
+  }
+  const bool enabled =
+      zero ? support.supports_select0() : support.supports_select1();
+  return enabled ? position : support.size();
+}
+
+template <class Support>
 void expect_matches_packed_bits(const Support& support,
                                 std::span<const std::uint64_t> words) {
   std::size_t ones = 0;
@@ -98,9 +115,13 @@ void expect_matches_packed_bits(const Support& support,
     EXPECT_EQ(support[position], value) << "position=" << position;
     expected.push_back(value ? '1' : '0');
     if (value) {
-      EXPECT_EQ(support.select(++ones), position);
+      ++ones;
+      EXPECT_EQ(support.select(ones),
+                expected_select(support, false, ones, position));
     } else {
-      EXPECT_EQ(support.select0(++zeros), position);
+      ++zeros;
+      EXPECT_EQ(support.select0(zeros),
+                expected_select(support, true, zeros, position));
     }
   }
   for (const auto boundary :
@@ -110,6 +131,10 @@ void expect_matches_packed_bits(const Support& support,
   }
   EXPECT_EQ(support.select(ones + 1), support.size());
   EXPECT_EQ(support.select0(zeros + 1), support.size());
+  EXPECT_EQ(support.select(std::numeric_limits<std::size_t>::max()),
+            support.size());
+  EXPECT_EQ(support.select0(std::numeric_limits<std::size_t>::max()),
+            support.size());
   EXPECT_EQ(support.to_string(), expected);
 }
 
@@ -195,7 +220,9 @@ RankSelectSampleLayout locate_rank_select_samples(
 }
 
 template <class Support>
-class RankSelectSpecificationTest : public testing::Test {};
+class RankSelectSpecificationTest : public testing::Test {
+  static_assert(std::derived_from<Support, pixie::RankSelectBase<Support>>);
+};
 
 using RankSelectImplementations = testing::Types<
     pixie::RankSelectSupport<>,
@@ -206,64 +233,33 @@ using RankSelectImplementations = testing::Types<
     ,
     pixie::PastaRankSelectSupport
 #endif
+#ifdef SDSL_SUPPORT
+    ,
+    pixie::SdslRankSelectSupport
+#endif
+#ifdef PIXIE_SUCCINCT_BITVEC_SUPPORT
+    ,
+    pixie::SuccinctFastRankSelectSupport
+#endif
+#ifdef PIXIE_ORZO_SUPPORT
+    ,
+    pixie::OrzoRankSelectSupport
+#endif
     >;
 TYPED_TEST_SUITE(RankSelectSpecificationTest, RankSelectImplementations);
 
-#ifdef PIXIE_SUCCINCT_BITVEC_SUPPORT
-// Comparison-only backends expose the operations actually implemented upstream;
-// they do not satisfy the public family's zero-select contract.
-template <class Support>
-class RankSelectComparisonSpecificationTest : public testing::Test {};
-
-using RankSelectComparisonImplementations =
-    testing::Types<pixie::benchmarks::SuccinctFastRankSelectSupport
-#ifdef PIXIE_ORZO_SUPPORT
-                   ,
-                   pixie::benchmarks::OrzoRankSelectSupport
-#endif
-                   >;
-TYPED_TEST_SUITE(RankSelectComparisonSpecificationTest,
-                 RankSelectComparisonImplementations);
-
-template <class Support>
-void expect_comparison_matches_bits(const Support& support,
-                                    std::span<const std::uint64_t> words) {
-  EXPECT_TRUE(support.supports_select1());
-  EXPECT_FALSE(support.supports_select0());
-  std::size_t ones = 0;
-  EXPECT_EQ(support.select(0), 0u);
-  for (std::size_t position = 0; position < support.size(); ++position) {
-    const bool bit = (words[position / 64] >> (position % 64)) & 1u;
-    ASSERT_EQ(support.rank(position), ones) << position;
-    ASSERT_EQ(support.rank0(position), position - ones) << position;
-    ASSERT_EQ(support[position], bit) << position;
-    if (bit) {
-      ASSERT_EQ(support.select(++ones), position) << ones;
-    }
-  }
-  EXPECT_EQ(support.rank(support.size()), ones);
-  EXPECT_EQ(support.rank(std::numeric_limits<std::size_t>::max()), ones);
-  EXPECT_EQ(support.rank0(support.size()), support.size() - ones);
-  EXPECT_EQ(support.rank0(std::numeric_limits<std::size_t>::max()),
-            support.size() - ones);
-  EXPECT_EQ(support.select(ones + 1), support.size());
-  EXPECT_EQ(support.select(std::numeric_limits<std::size_t>::max()),
-            support.size());
-}
-
-TYPED_TEST(RankSelectComparisonSpecificationTest, ExhaustiveShortPatterns) {
+TYPED_TEST(RankSelectSpecificationTest, ExhaustiveShortPatterns) {
   for (std::size_t size = 0; size <= 10; ++size) {
     for (std::uint64_t pattern = 0; pattern < (std::uint64_t{1} << size);
          ++pattern) {
       const std::array words{pattern | ~::first_bits_mask(size)};
       const TypeParam support(words, size);
-      expect_comparison_matches_bits(support, words);
+      expect_matches_packed_bits(support, words);
     }
   }
 }
 
-TYPED_TEST(RankSelectComparisonSpecificationTest,
-           BlocksSamplesAndPartialTails) {
+TYPED_TEST(RankSelectSpecificationTest, BlocksSamplesAndPartialTails) {
   constexpr std::array sizes{
       1u,    63u,    64u,    65u,    255u,    256u,    257u,   511u,  512u,
       513u,  2047u,  2048u,  2049u,  4095u,   4096u,   4097u,  5631u, 5632u,
@@ -281,12 +277,12 @@ TYPED_TEST(RankSelectComparisonSpecificationTest,
                                      : (word % 97 == 0 ? 1 : 0);
       }
       const TypeParam support(words, size);
-      expect_comparison_matches_bits(support, words);
+      expect_matches_packed_bits(support, words);
     }
   }
 }
 
-TYPED_TEST(RankSelectComparisonSpecificationTest, SparseAndClusteredSamples) {
+TYPED_TEST(RankSelectSpecificationTest, SparseAndClusteredSamples) {
   constexpr std::size_t kSize = (1 << 22) + 17;
   std::vector<std::uint64_t> words((kSize + 63) / 64, 0);
   std::vector<std::size_t> positions;
@@ -313,25 +309,31 @@ TYPED_TEST(RankSelectComparisonSpecificationTest, SparseAndClusteredSamples) {
   }
 }
 
-TYPED_TEST(RankSelectComparisonSpecificationTest,
-           OwnsNormalizedSourceAndMemory) {
-  std::vector<std::uint64_t> source{0x8000000000000001ull,
-                                    0x3333333333333333ull, ~std::uint64_t{0},
-                                    ~std::uint64_t{0}};
-  const auto original = source;
-  const TypeParam support(source, 130);
-  std::fill(source.begin(), source.end(), 0);
-  expect_comparison_matches_bits(support, original);
-  EXPECT_GE(support.source_copy_bytes(), 3 * sizeof(std::uint64_t));
-  EXPECT_GT(support.index_logical_bytes(), 0u);
-  EXPECT_EQ(support.memory_usage_bytes(),
-            support.source_copy_bytes() + support.index_logical_bytes());
+TYPED_TEST(RankSelectSpecificationTest, OwnsNormalizedSourceAndMemory) {
+  if constexpr (requires(const TypeParam& support) {
+                  support.source_copy_bytes();
+                  support.index_logical_bytes();
+                }) {
+    std::vector<std::uint64_t> source{0x8000000000000001ull,
+                                      0x3333333333333333ull, ~std::uint64_t{0},
+                                      ~std::uint64_t{0}};
+    const auto original = source;
+    const TypeParam support(source, 130);
+    std::fill(source.begin(), source.end(), 0);
+    expect_matches_packed_bits(support, original);
+    EXPECT_GE(support.source_copy_bytes(), 3 * sizeof(std::uint64_t));
+    EXPECT_GT(support.index_logical_bytes(), 0u);
+    // Wrapper fields may be accounted separately from logical directories.
+    EXPECT_GE(support.memory_usage_bytes(),
+              support.source_copy_bytes() + support.index_logical_bytes());
 
-  const TypeParam clamped(original, std::numeric_limits<std::size_t>::max());
-  EXPECT_EQ(clamped.size(), original.size() * 64);
-  expect_comparison_matches_bits(clamped, original);
+    const TypeParam clamped(original, std::numeric_limits<std::size_t>::max());
+    EXPECT_EQ(clamped.size(), original.size() * 64);
+    expect_matches_packed_bits(clamped, original);
+  } else {
+    GTEST_SKIP() << "Backend borrows its source";
+  }
 }
-#endif
 
 TYPED_TEST(RankSelectSpecificationTest, EmptySequence) {
   const std::vector<std::uint64_t> words;
@@ -365,8 +367,6 @@ TYPED_TEST(RankSelectSpecificationTest, RankSelectAndAccessMatchPackedBits) {
     const TypeParam bits(words, size);
     ASSERT_FALSE(bits.empty());
     ASSERT_EQ(bits.size(), size);
-    ASSERT_TRUE(bits.supports_select1());
-    ASSERT_TRUE(bits.supports_select0());
 
     expect_matches_packed_bits(bits, words);
   }
@@ -418,9 +418,11 @@ TYPED_TEST(RankSelectSpecificationTest, LargeRandomSourceAcrossSuperblocks) {
       }
       if (zero_count != 0) {
         EXPECT_EQ(support.select0(zeros + 1),
-                  position + std::countr_zero(~words[i]));
+                  expected_select(support, true, zeros + 1,
+                                  position + std::countr_zero(~words[i])));
         EXPECT_EQ(support.select0(zeros + zero_count),
-                  position + 63 - std::countl_zero(~words[i]));
+                  expected_select(support, true, zeros + zero_count,
+                                  position + 63 - std::countl_zero(~words[i])));
       }
     }
     ones += one_count;
@@ -558,9 +560,11 @@ TYPED_TEST(RankSelectSpecificationTest,
   std::fill_n(words.begin(), kZeroBits / 64, 0);
   const TypeParam support(words, kSize);
   EXPECT_EQ(support.rank0(kSize), kZeroBits);
-  EXPECT_EQ(support.select0(1), 0u);
-  EXPECT_EQ(support.select0(10000), 9999u);
-  EXPECT_EQ(support.select0(kZeroBits), kZeroBits - 1);
+  EXPECT_EQ(support.select0(1), expected_select(support, true, 1, 0));
+  EXPECT_EQ(support.select0(10000),
+            expected_select(support, true, 10000, 9999));
+  EXPECT_EQ(support.select0(kZeroBits),
+            expected_select(support, true, kZeroBits, kZeroBits - 1));
   EXPECT_EQ(support.select0(kZeroBits + 1), kSize);
 }
 
@@ -575,7 +579,8 @@ TYPED_TEST(RankSelectSpecificationTest,
         EXPECT_EQ(support.rank(position), value == 0 ? 0 : position);
         EXPECT_EQ(
             value == 0 ? support.select0(position) : support.select(position),
-            position == 0 ? 0 : position - 1);
+            expected_select(support, value == 0, position,
+                            position == 0 ? 0 : position - 1));
       }
       EXPECT_EQ(value == 0 ? support.select(1) : support.select0(1), size);
     }
@@ -670,7 +675,9 @@ TYPED_TEST(RankSelectSpecificationTest,
         if ((words[position / 64] >> (position % 64)) & 1) {
           EXPECT_EQ(support.select(++ones), position);
         } else {
-          EXPECT_EQ(support.select0(++zeros), position);
+          ++zeros;
+          EXPECT_EQ(support.select0(zeros),
+                    expected_select(support, true, zeros, position));
         }
       }
     }
@@ -906,7 +913,7 @@ TYPED_TEST(RankSelectSpecificationTest, DefaultSamplingOnSparsePartialSource) {
     const TypeParam support(words, kSize);
     for (std::size_t i = 0; i < positions.size(); ++i) {
       EXPECT_EQ(invert ? support.select0(i + 1) : support.select(i + 1),
-                positions[i]);
+                expected_select(support, invert, i + 1, positions[i]));
       const auto expected = invert ? positions[i] - i : i;
       EXPECT_EQ(support.rank(positions[i]), expected);
     }
@@ -1104,13 +1111,15 @@ TYPED_TEST(RankSelectSpecificationTest, WideEndpointGroupsAndPartialTails) {
         const pixie::RankSelectSupport<> reference(words, size);
         for (std::size_t i = 0; i < count; ++i) {
           EXPECT_EQ(invert ? support.select0(i + 1) : support.select(i + 1),
-                    positions[i]);
+                    expected_select(support, invert, i + 1, positions[i]));
         }
         std::mt19937_64 rng(42);
         for (unsigned i = 0; i < 256; ++i) {
           const auto rank = 1 + rng() % (size - count);
           EXPECT_EQ(invert ? support.select(rank) : support.select0(rank),
-                    invert ? reference.select(rank) : reference.select0(rank));
+                    expected_select(support, !invert, rank,
+                                    invert ? reference.select(rank)
+                                           : reference.select0(rank)));
         }
         for (auto& word : words) {
           word = ~word;
@@ -1141,7 +1150,8 @@ TYPED_TEST(RankSelectSpecificationTest, MixedWideDirectoryWithNarrowTail) {
   std::mt19937_64 rng(42);
   for (unsigned i = 0; i < 1024; ++i) {
     const auto rank = 1 + rng() % (kSize - 3 * kSuper);
-    EXPECT_EQ(support.select0(rank), reference.select0(rank));
+    EXPECT_EQ(support.select0(rank),
+              expected_select(support, true, rank, reference.select0(rank)));
   }
   EXPECT_EQ(support.select(3 * kSuper + 1), kSize);
 }

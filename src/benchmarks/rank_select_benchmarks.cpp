@@ -3,19 +3,6 @@
 #include <pixie/rmq/utils/succinct_monotone_stack.h>
 #include <pixie/storage/implementations.h>
 
-#include "perf_query_window.h"
-#include "shifted_query_pool.h"
-
-#ifdef PIXIE_3STAR_SUPPORT
-#include "three_star_adapter.h"
-#endif
-#ifdef PIXIE_SUCCINCT_BITVEC_SUPPORT
-#include "succinct_bitvec_adapter.h"
-#endif
-#ifdef PIXIE_ORZO_SUPPORT
-#include "orzo_adapter.h"
-#endif
-
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -28,6 +15,9 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+
+#include "perf_query_window.h"
+#include "shifted_query_pool.h"
 
 namespace {
 
@@ -395,12 +385,17 @@ void run_build(benchmark::State& state) {
 
   for (auto _ : state) {
     Support support = make_support<Support>(dataset);
-    index_bytes = index_logical_bytes(support);
-    owned_bytes = support.memory_usage_bytes();
-    copied_source_bytes = source_copy_bytes(support);
-    select1_enabled = supports_select1(support);
-    select0_enabled = supports_select0(support);
-    benchmark::DoNotOptimize(owned_bytes);
+    if (index_bytes == 0) {
+      // Footprint inspection can traverse directories (for example in SDSL).
+      state.PauseTiming();
+      index_bytes = index_logical_bytes(support);
+      owned_bytes = support.memory_usage_bytes();
+      copied_source_bytes = source_copy_bytes(support);
+      select1_enabled = supports_select1(support);
+      select0_enabled = supports_select0(support);
+      state.ResumeTiming();
+    }
+    benchmark::DoNotOptimize(&support);
     benchmark::ClobberMemory();
   }
 
@@ -483,12 +478,17 @@ void run_fnbp_build(benchmark::State& state) {
 
   for (auto _ : state) {
     Support support = make_support<Support>(dataset);
-    index_bytes = index_logical_bytes(support);
-    owned_bytes = support.memory_usage_bytes();
-    copied_source_bytes = source_copy_bytes(support);
-    select1_enabled = supports_select1(support);
-    select0_enabled = supports_select0(support);
-    benchmark::DoNotOptimize(owned_bytes);
+    if (index_bytes == 0) {
+      // Footprint inspection can traverse directories (for example in SDSL).
+      state.PauseTiming();
+      index_bytes = index_logical_bytes(support);
+      owned_bytes = support.memory_usage_bytes();
+      copied_source_bytes = source_copy_bytes(support);
+      select1_enabled = supports_select1(support);
+      select0_enabled = supports_select0(support);
+      state.ResumeTiming();
+    }
+    benchmark::DoNotOptimize(&support);
     benchmark::ClobberMemory();
   }
 
@@ -690,16 +690,18 @@ void register_benchmarks() {
 #ifdef PIXIE_PASTA_SUPPORT
   register_backend<pixie::PastaRankSelectSupport>("rank_select_pasta");
 #endif
+#ifdef SDSL_SUPPORT
+  register_backend<pixie::SdslRankSelectSupport>("rank_select_sdsl");
+#endif
 #ifdef PIXIE_SUCCINCT_BITVEC_SUPPORT
-  register_backend<pixie::benchmarks::SuccinctFastRankSelectSupport, false>(
+  register_backend<pixie::SuccinctFastRankSelectSupport, false>(
       "rank_select_succinct_fast");
 #endif
 #ifdef PIXIE_ORZO_SUPPORT
-  register_backend<pixie::benchmarks::OrzoRankSelectSupport, false>(
-      "rank_select_orzo");
+  register_backend<pixie::OrzoRankSelectSupport, false>("rank_select_orzo");
 #endif
 #ifdef PIXIE_3STAR_SUPPORT
-  register_backend<pixie::benchmarks::ThreeStarRankSelectSupport, false>(
+  register_backend<pixie::ThreeStarRankSelectSupport, false>(
       "rank_select_3star");
 #endif
 }

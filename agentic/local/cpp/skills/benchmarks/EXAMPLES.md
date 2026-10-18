@@ -59,9 +59,15 @@ Use one-rank/one-select rows for a common-operation comparison with these
 backends, Spider, and 3-star.
 
 The CMake target `pixie_rank_select_comparisons` shares definitions, includes,
-dependencies, and the 3-star adapter source across the rank/select harnesses.
-It enables Pasta and succinct-bitvec-cpp, plus 3-star and Orzo when BMI/BMI2 is
-available.
+dependencies, and the 3-star global-state source across the rank/select harnesses.
+Optional implementations live beside native rank/select implementations under
+`include/pixie/rank_select/` and use the `pixie` namespace.
+It enables Pasta, SDSL, and succinct-bitvec-cpp, plus 3-star and Orzo when
+BMI/BMI2 is available. `rank_select_sdsl` uses `rank_support_v<>` with
+`select_support_mcl<1>` and `<0>` over an owned bitvector. Rank0 derives from
+rank1; both select directions are indexed. Its auxiliary counter uses SDSL's
+serialized directory sizes plus the adapter object, excluding the source copy.
+Build rows collect invariant space counters once with timing paused.
 
 ```bash
 PIXIE_RANK_SELECT_FIXED_SEED=1 taskset -c 0 \

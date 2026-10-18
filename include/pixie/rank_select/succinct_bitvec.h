@@ -4,6 +4,8 @@
 #error "SuccinctFastRankSelectSupport requires PIXIE_THIRD_PARTY_BACKENDS"
 #endif
 
+#include <pixie/rank_select.h>
+
 #include <algorithm>
 #include <bitvec.hpp>
 #include <cstddef>
@@ -12,10 +14,11 @@
 #include <span>
 #include <stdexcept>
 
-namespace pixie::benchmarks {
+namespace pixie {
 
 /**
- * @brief Benchmark-only adapter for succinct-bitvec-cpp's FastBitVec.
+ * @brief Optional rank/select implementation over succinct-bitvec-cpp's
+ * FastBitVec.
  * @details Owns a masked source copy and the upstream index. Upstream ranks
  * include their bit position and selects have zero-based occurrence numbers;
  * this adapter uses half-open prefixes and one-based occurrences. Rank zero
@@ -24,7 +27,8 @@ namespace pixie::benchmarks {
  * positions limit the logical source to 2^32 bits. Copy and move are disabled
  * because FastBitVec retains a reference to its RawBits object.
  */
-class SuccinctFastRankSelectSupport {
+class SuccinctFastRankSelectSupport
+    : public RankSelectBase<SuccinctFastRankSelectSupport> {
  public:
   /** @brief Largest supported source; its last bit fits a uint32_t sample. */
   static constexpr std::uint64_t kMaxBits = std::uint64_t{1} << 32;
@@ -50,27 +54,22 @@ class SuccinctFastRankSelectSupport {
       delete;
 
   /** @brief Return the logical source length. */
-  std::size_t size() const { return bits_.len; }
+  std::size_t size_impl() const { return bits_.len; }
 
   /** @brief Return a source bit; position must be below size(). */
-  int operator[](std::size_t position) const { return bits_.get(position); }
+  int bit_impl(std::size_t position) const { return bits_.get(position); }
 
   /** @brief Count ones in [0, end), clamping end to size(). */
-  std::uint64_t rank(std::size_t end) const {
+  std::uint64_t rank_impl(std::size_t end) const {
     if (end >= size()) {
       return support_.get_total_ones();
     }
     return end == 0 ? 0 : support_.rank1(end - 1);
   }
 
-  /** @brief Count zeros in [0, end), clamping end to size(). */
-  std::uint64_t rank0(std::size_t end) const {
-    return std::min(end, size()) - rank(end);
-  }
-
   /** @brief Return a one-based one's position, zero for zero, size() if absent.
    */
-  std::uint64_t select(std::size_t occurrence) const {
+  std::uint64_t select_impl(std::size_t occurrence) const {
     if (occurrence == 0) {
       return 0;
     }
@@ -81,9 +80,13 @@ class SuccinctFastRankSelectSupport {
   }
 
   /** @brief FastBitVec always builds one-select metadata. */
-  bool supports_select1() const { return true; }
+  bool supports_select1_impl() const { return true; }
   /** @brief The pinned upstream implementation has no zero-select API. */
-  bool supports_select0() const { return false; }
+  bool supports_select0_impl() const { return false; }
+  /** @brief Return zero for occurrence zero, otherwise size(): disabled. */
+  std::uint64_t select0_impl(std::size_t occurrence) const {
+    return occurrence == 0 ? 0 : size();
+  }
 
   /** @brief Return allocated bytes in the normalized source copy. */
   std::size_t source_copy_bytes() const {
@@ -99,7 +102,7 @@ class SuccinctFastRankSelectSupport {
   }
 
   /** @brief Return reported index bytes plus the allocated source copy. */
-  std::size_t memory_usage_bytes() const {
+  std::size_t memory_usage_bytes_impl() const {
     return index_logical_bytes() + source_copy_bytes();
   }
 
@@ -131,4 +134,4 @@ class SuccinctFastRankSelectSupport {
   succinct::FastBitVec support_;
 };
 
-}  // namespace pixie::benchmarks
+}  // namespace pixie

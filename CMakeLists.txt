@@ -226,9 +226,8 @@ if (PIXIE_THIRD_PARTY_BACKENDS)
     target_link_libraries(pixie_rank_select_comparisons INTERFACE pasta_bit_vector)
     target_compile_definitions(pixie_rank_select_comparisons INTERFACE
             PIXIE_SUCCINCT_BITVEC_SUPPORT)
-    target_include_directories(pixie_rank_select_comparisons INTERFACE
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/benchmarks)
     target_include_directories(pixie_rank_select_comparisons SYSTEM INTERFACE
+            ${sdsl_lite_SOURCE_DIR}/include
             ${succinct_bitvec_SOURCE_DIR}/include)
     if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         # Pasta's debug-assertion helper becomes unused in optimized builds.
@@ -240,7 +239,7 @@ if (PIXIE_THIRD_PARTY_BACKENDS)
                 ${three_star_SOURCE_DIR}
                 ${PIXIE_ORZO_PREPARED_DIR}/include)
         target_sources(pixie_rank_select_comparisons INTERFACE
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/benchmarks/three_star_adapter.cpp)
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/benchmarks/three_star_globals.cpp)
         target_compile_definitions(pixie_rank_select_comparisons INTERFACE
                 PIXIE_ORZO_SUPPORT PIXIE_3STAR_SUPPORT
                 ALIGNMENT=2097152
@@ -712,11 +711,9 @@ if (PIXIE_DOCS)
 
     set(PIXIE_DOC_INPUT
             "${CMAKE_CURRENT_SOURCE_DIR}/include"
-            "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
-    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmark_results.md")
-        list(APPEND PIXIE_DOC_INPUT
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmark_results.md")
-    endif ()
+            "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmarks/index.md"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmarks/rank_select.md")
     string(JOIN " \\\n                         " PIXIE_DOC_INPUT
             ${PIXIE_DOC_INPUT})
 

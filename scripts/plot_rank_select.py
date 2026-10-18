@@ -46,6 +46,7 @@ BACKEND_LABELS = {
     "rank_select_3star": "3-star",
     "rank_select_succinct_fast": "FastBitVec",
     "rank_select_orzo": "Orzo",
+    "rank_select_sdsl": "SDSL (rank-v + MCL)",
     "rank_select_spider": "Spider",
 }
 OP_PATTERN = r"rank[01]|select[01]|build_both"
@@ -190,7 +191,7 @@ def write_graphs(points, output, metric, aggregate, formats, yscale):
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.ticker import StrMethodFormatter
+    from matplotlib.ticker import NullLocator, StrMethodFormatter
     import plot_style as style
 
     style.apply_style()
@@ -246,17 +247,27 @@ def write_graphs(points, output, metric, aggregate, formats, yscale):
             ax.set_title(FAMILY_LABELS.get(family, family))
             ax.set_xlabel("Input size (bits)")
             action = "build" if operation == "build" else "query"
-            ax.set_ylabel("Auxiliary index / input (%)" if space else
-                          f"{metric.title()} time per {action} ({unit})")
+            ylabel = f"{metric.title()} time per {action}"
+            if operation != "build" or axis_scale != "log":
+                ylabel += f" ({unit})"
+            ax.set_ylabel("Auxiliary index / input (%)" if space else ylabel)
             if family_sizes:
                 ax.set_xscale("log", base=2)
-                ax.set_yscale(axis_scale)
-                if space:
-                    ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}%"))
+                if axis_scale == "log":
+                    if operation == "build":
+                        style.build_time_y_axis(ax)
+                    else:
+                        style.log_y_axis(ax, percent=space)
+                else:
+                    ax.set_yscale(axis_scale)
+                    if space:
+                        ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}%"))
                 ticks = sorted(family_sizes)
                 ax.set_xticks(ticks, [size_label(n) for n in ticks])
                 ax.tick_params(axis="y", labelleft=True)
-                ax.minorticks_off()
+                ax.xaxis.set_minor_locator(NullLocator())
+                if operation != "build" or axis_scale != "log":
+                    ax.yaxis.set_minor_locator(NullLocator())
             else:
                 ax.text(
                     0.5, 0.5, "No measurements", ha="center", va="center",

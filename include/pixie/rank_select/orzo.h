@@ -5,6 +5,7 @@
 #endif
 
 #include <orzo/orzo.h>
+#include <pixie/rank_select.h>
 
 #include <algorithm>
 #include <bit>
@@ -16,10 +17,11 @@
 #include <stdexcept>
 #include <vector>
 
-namespace pixie::benchmarks {
+namespace pixie {
 
 /**
- * @brief Benchmark-only adapter for the default Orzo configuration.
+ * @brief Optional rank/select implementation over the default Orzo
+ * configuration.
  * @details Owns a masked source copy padded to whole 5,632-bit lower blocks.
  * This keeps upstream construction and select within complete basic blocks,
  * including partial logical tails. Uses Orzo's half-open one rank and one-based
@@ -30,7 +32,7 @@ namespace pixie::benchmarks {
  * terminal entry; query code is unchanged. Copy and move are disabled to avoid
  * copying upstream's raw owning pointers.
  */
-class OrzoRankSelectSupport {
+class OrzoRankSelectSupport : public RankSelectBase<OrzoRankSelectSupport> {
  public:
   /**
    * @brief Build Orzo from least-significant-bit-first packed words.
@@ -92,24 +94,20 @@ class OrzoRankSelectSupport {
   OrzoRankSelectSupport& operator=(OrzoRankSelectSupport&&) = delete;
 
   /** @brief Return the logical, unpadded source length. */
-  std::size_t size() const { return num_bits_; }
+  std::size_t size_impl() const { return num_bits_; }
   /** @brief Return a bit; position must be below size(). */
-  int operator[](std::size_t position) const {
+  int bit_impl(std::size_t position) const {
     return (words_[position / 64] >> (position % 64)) & 1;
   }
 
   /** @brief Count ones in [0, end), clamping end to size(). */
-  std::uint64_t rank(std::size_t end) const {
+  std::uint64_t rank_impl(std::size_t end) const {
     return end >= num_bits_ ? one_count_ : support_->rank1(words_.data(), end);
-  }
-  /** @brief Count zeros in [0, end), clamping end to size(). */
-  std::uint64_t rank0(std::size_t end) const {
-    return std::min(end, num_bits_) - rank(end);
   }
 
   /** @brief Return a one-based one's position, zero for zero, size() if absent.
    */
-  std::uint64_t select(std::size_t occurrence) const {
+  std::uint64_t select_impl(std::size_t occurrence) const {
     if (occurrence == 0) {
       return 0;
     }
@@ -119,9 +117,13 @@ class OrzoRankSelectSupport {
   }
 
   /** @brief Orzo always builds one-select support in this configuration. */
-  bool supports_select1() const { return true; }
+  bool supports_select1_impl() const { return true; }
   /** @brief The pinned upstream implementation does not provide zero select. */
-  bool supports_select0() const { return false; }
+  bool supports_select0_impl() const { return false; }
+  /** @brief Return zero for occurrence zero, otherwise size(): disabled. */
+  std::uint64_t select0_impl(std::size_t occurrence) const {
+    return occurrence == 0 ? 0 : size();
+  }
   /** @brief Return allocated source-copy bytes, including zero padding. */
   std::size_t source_copy_bytes() const {
     return words_.capacity() * sizeof(std::uint64_t);
@@ -131,7 +133,7 @@ class OrzoRankSelectSupport {
     return sizeof(*this) + metadata_bytes_;
   }
   /** @brief Return object and allocated index/source bytes. */
-  std::size_t memory_usage_bytes() const {
+  std::size_t memory_usage_bytes_impl() const {
     return index_logical_bytes() + source_copy_bytes();
   }
 
@@ -154,4 +156,4 @@ class OrzoRankSelectSupport {
   std::size_t metadata_bytes_ = 0;
 };
 
-}  // namespace pixie::benchmarks
+}  // namespace pixie
