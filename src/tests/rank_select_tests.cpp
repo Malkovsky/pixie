@@ -2,6 +2,7 @@
 #include <pixie/io/file_output_sink.h>
 #include <pixie/io/mapped_file.h>
 #include <pixie/rank_select/compressed.h>
+#include <pixie/rank_select/detail/compressed/select_metadata_search.h>
 #include <pixie/rank_select/experimental/packed_prefix_multishift.h>
 #include <pixie/rank_select/support.h>
 #ifdef PIXIE_PASTA_SUPPORT
@@ -25,6 +26,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <new>
 #include <random>
 #include <span>
 #include <stdexcept>
@@ -52,6 +54,15 @@ class TestMetadataStorage
  public:
   inline static std::vector<std::size_t> allocations;
   inline static MetadataFault fault = MetadataFault::kNone;
+  inline static std::size_t copies_before_failure =
+      std::numeric_limits<std::size_t>::max();
+
+  TestMetadataStorage() = default;
+  TestMetadataStorage(const TestMetadataStorage& other)
+      : backing_(copy_storage(other.backing_)), size_(other.size_) {}
+  TestMetadataStorage& operator=(const TestMetadataStorage&) = default;
+  TestMetadataStorage(TestMetadataStorage&&) noexcept = default;
+  TestMetadataStorage& operator=(TestMetadataStorage&&) noexcept = default;
 
   std::size_t size_bytes_impl() const {
     return size_ - (size_ != 0 && fault == MetadataFault::kReportedSize);
@@ -97,6 +108,17 @@ class TestMetadataStorage
   }
 
  private:
+  static pixie::AlignedStorage copy_storage(
+      const pixie::AlignedStorage& source) {
+    if (copies_before_failure == 0) {
+      throw std::bad_alloc();
+    }
+    if (copies_before_failure != std::numeric_limits<std::size_t>::max()) {
+      --copies_before_failure;
+    }
+    return source;
+  }
+
   static std::size_t view_offset() {
     return Offset - (fault == MetadataFault::kMisaligned);
   }
@@ -885,6 +907,81 @@ TEST(CompressedRankSelectTest, CopyMoveAssignmentPreservesMixedDirectories) {
   check(copy);
 }
 
+TEST(CompressedRankSelectTest, FailedCopyAssignmentPreservesBothIndexes) {
+  constexpr std::size_t kSuper = 16384;
+  constexpr std::size_t kSourceSize = 80 * kSuper + 37;
+  constexpr std::size_t kDestinationSize = 4096 + 73;
+  std::vector<std::uint64_t> source_words((kSourceSize + 63) / 64);
+  for (std::size_t super = 0; super < 80; ++super) {
+    if (super % 17 == 0) {
+      std::fill_n(source_words.begin() + super * kSuper / 64, 128,
+                  ~std::uint64_t{0});
+    } else {
+      source_words[super * kSuper / 64] = 0xffff;
+    }
+  }
+  source_words.back() = ~std::uint64_t{0};
+  const std::vector<std::uint64_t> destination_words(
+      (kDestinationSize + 63) / 64, 0x5555555555555555);
+  const WordAlignedCompressed source(source_words, kSourceSize);
+  WordAlignedCompressed destination(destination_words, kDestinationSize);
+  const pixie::RankSelectSupport<> source_reference(source_words, kSourceSize);
+  const pixie::RankSelectSupport<> destination_reference(destination_words,
+                                                         kDestinationSize);
+  const auto original_bytes = destination.memory_usage_bytes();
+  constexpr std::array<std::size_t, 10> boundaries{
+      0,           1,
+      63,          64,
+      511,         512,
+      1024,        kDestinationSize,
+      kSourceSize, std::numeric_limits<std::size_t>::max()};
+  const std::array<std::size_t, 10> ranks{
+      0,
+      1,
+      4095,
+      4096,
+      4097,
+      source_reference.rank(kSourceSize),
+      source_reference.rank0(kSourceSize),
+      destination_reference.rank(kDestinationSize),
+      destination_reference.rank0(kDestinationSize),
+      std::numeric_limits<std::size_t>::max()};
+
+  struct CopyBudget {
+    explicit CopyBudget(std::size_t count) {
+      WordAlignedMetadataStorage::copies_before_failure = count;
+    }
+    ~CopyBudget() {
+      WordAlignedMetadataStorage::copies_before_failure =
+          std::numeric_limits<std::size_t>::max();
+    }
+  };
+  std::size_t failures = 0;
+  bool succeeded = false;
+  // Fail progressively later copies, including after some metadata has already
+  // been duplicated. Stop when the entire assignment can complete.
+  for (std::size_t limit = 0; limit < 64; ++limit) {
+    SCOPED_TRACE(limit);
+    try {
+      const CopyBudget budget(limit);
+      destination = source;
+      succeeded = true;
+    } catch (const std::bad_alloc&) {
+      ++failures;
+      expect_same_queries(destination, destination_reference, boundaries,
+                          ranks);
+      EXPECT_EQ(destination.memory_usage_bytes(), original_bytes);
+    }
+    expect_same_queries(source, source_reference, boundaries, ranks);
+    if (succeeded) {
+      expect_same_queries(destination, source_reference, boundaries, ranks);
+      break;
+    }
+  }
+  EXPECT_GT(failures, 1u);
+  EXPECT_TRUE(succeeded);
+}
+
 TEST(CompressedRankSelectTest, ContiguousAndGappedWideIntervals) {
   constexpr std::size_t kSuper = 16384;
   constexpr std::size_t kSize = 600 * kSuper + 17;
@@ -1331,6 +1428,46 @@ TEST(CompressedRankSelectTest, LoadedBlockHandlesEmptyAndFullWordLanes) {
   }
 }
 
+TEST(CompressedRankSelectTest,
+     MetadataSearchHandlesAbsentKeysAndUnsignedLimits) {
+  const auto check = []<class Endpoint>() {
+    constexpr std::size_t kLanes = 64 / sizeof(Endpoint);
+    constexpr auto kMaximum = std::numeric_limits<Endpoint>::max();
+    constexpr std::uint64_t kSign =
+        std::uint64_t{1} << (std::numeric_limits<Endpoint>::digits - 1);
+    for (const auto count :
+         {std::size_t{0}, std::size_t{1}, kLanes - 1, kLanes, kLanes + 1,
+          2 * kLanes - 1, 2 * kLanes, 2 * kLanes + 1, 3 * kLanes + 1}) {
+      // A one-element offset exercises unaligned loads. The allocation ends
+      // immediately after the logical array so ASan catches full tail loads.
+      std::vector<Endpoint> storage(count + 1);
+      auto* endpoints = storage.data() + 1;
+      for (std::size_t i = 0; i < count; ++i) {
+        endpoints[i] = i < 10   ? static_cast<Endpoint>(i / 3)
+                       : i < 30 ? static_cast<Endpoint>(kSign + i / 3)
+                                : kMaximum;
+      }
+      for (const std::uint64_t key :
+           {std::uint64_t{0}, std::uint64_t{1}, std::uint64_t{4}, kSign - 1,
+            kSign, kSign + 1, std::uint64_t{kMaximum}}) {
+        const auto expected = [&](std::size_t size) {
+          return static_cast<std::size_t>(
+              std::lower_bound(endpoints, endpoints + size, key) - endpoints);
+        };
+        EXPECT_EQ(pixie::detail::compressed::first_metadata_ge(
+                      endpoints, std::min(count, kLanes), key),
+                  expected(std::min(count, kLanes)));
+        EXPECT_EQ(pixie::detail::compressed::grouped_lower_bound(endpoints,
+                                                                 count, key),
+                  expected(count));
+      }
+    }
+  };
+  check.operator()<std::uint16_t>();
+  check.operator()<std::uint32_t>();
+  check.operator()<std::uint64_t>();
+}
+
 TEST(RankSelectSupportTest, DefaultConstructedIndexIsEmpty) {
   const pixie::RankSelectSupport<> support;
   expect_empty_disabled_index(support);
@@ -1675,10 +1812,17 @@ TEST(CompressedPositionSampleTest, InterleavedBitmapAcrossGroupBoundaries) {
   const std::array<std::uint64_t, 7> wide{0, 17, 31, 32, 63, 64, 98};
   const pixie::detail::compressed::PositionSamples<> samples(values, wide);
   const pixie::detail::compressed::PositionSamples<> without_bitmap(values);
+  using CoarseSamples = pixie::detail::compressed::BitmapMonotoneSamples<
+      pixie::detail::compressed::BlockedMonotoneSamples<>>;
+  const CoarseSamples coarse(values, wide);
+  const CoarseSamples coarse_without_bitmap(values);
   std::size_t next = 0;
   for (std::size_t i = 0; i < values.size(); ++i) {
     EXPECT_EQ(samples[i], values[i]);
+    EXPECT_EQ(coarse[i], values[i]);
     EXPECT_FALSE(without_bitmap.wide_entry(i));
+    EXPECT_FALSE(coarse_without_bitmap.wide_entry(i));
+    EXPECT_EQ(coarse.wide_entry(i), samples.wide_entry(i));
     if (next < wide.size() && i == wide[next]) {
       EXPECT_EQ(samples.wide_entry(i), next++);
     } else {
