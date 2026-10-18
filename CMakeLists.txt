@@ -56,7 +56,7 @@ if (PIXIE_THIRD_PARTY_BACKENDS)
         message(FATAL_ERROR
                 "PIXIE_THIRD_PARTY_BACKENDS requires CMake 3.25 for pasta::bit_vector")
     endif ()
-    add_compile_definitions(SDSL_SUPPORT PIXIE_PASTA_SUPPORT)
+    add_compile_definitions(SDSL_SUPPORT)
 endif ()
 
 if (PIXIE_DIAGNOSTICS)
@@ -115,6 +115,7 @@ if (PIXIE_THIRD_PARTY_BACKENDS)
             GIT_TAG 3ffb6e5a2e58c76425de8197bfe554eb1bf9fd94
     )
     FetchContent_MakeAvailable(pasta_bit_vector)
+    target_compile_definitions(pasta_bit_vector INTERFACE PIXIE_PASTA_SUPPORT)
 
     # Disable sdsl-lite's own tests/examples/tutorials
     set(SDSL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -131,17 +132,61 @@ if (PIXIE_THIRD_PARTY_BACKENDS)
     )
     FetchContent_MakeAvailable(sdsl_lite)
 
-    # Upstream's CMake project builds its standalone research harness. Fetch
-    # only the sources; Pixie's adapter supplies the required global state.
+    # Fetch headers without importing upstream standalone harnesses.
     FetchContent_Declare(
-            three_star
-            GIT_REPOSITORY https://github.com/nrilu/3star-rankselect.git
-            GIT_TAG a69449585d1c760b2ed1af9b2761e3c05d86b247
-            GIT_SUBMODULES ""
+            succinct_bitvec
+            GIT_REPOSITORY https://github.com/ishantgarg2332/succinct-bitvec-cpp.git
+            GIT_TAG e825c01655a08266869febe9af56fca277583e31
             SOURCE_SUBDIR pixie-source-only
     )
-    FetchContent_MakeAvailable(three_star)
-    set(PIXIE_3STAR_SUPPORT ON)
+    FetchContent_MakeAvailable(succinct_bitvec)
+
+    include(CheckCXXSourceCompiles)
+    # Recheck when the configured architecture or BMI2 option changes.
+    unset(PIXIE_RANK_SELECT_HAS_BMI CACHE)
+    check_cxx_source_compiles("
+        #if !defined(__BMI__) || !defined(__BMI2__)
+        #error Rank/select comparisons require BMI and BMI2
+        #endif
+        int main() { return 0; }
+    " PIXIE_RANK_SELECT_HAS_BMI)
+    if (PIXIE_RANK_SELECT_HAS_BMI)
+        # Upstream's CMake project builds its standalone research harness. Fetch
+        # only the sources; Pixie's adapter supplies the required global state.
+        FetchContent_Declare(
+                three_star
+                GIT_REPOSITORY https://github.com/nrilu/3star-rankselect.git
+                GIT_TAG a69449585d1c760b2ed1af9b2761e3c05d86b247
+                GIT_SUBMODULES ""
+                SOURCE_SUBDIR pixie-source-only
+        )
+        FetchContent_MakeAvailable(three_star)
+
+        FetchContent_Declare(
+                orzo
+                GIT_REPOSITORY https://github.com/hpcgroup/orzo.git
+                GIT_TAG 02a7cd72fefdc03c1f402a9af3ff74289404c8bf
+                SOURCE_SUBDIR pixie-source-only
+        )
+        FetchContent_MakeAvailable(orzo)
+        set(PIXIE_ORZO_PREPARED_DIR "${CMAKE_CURRENT_BINARY_DIR}/third_party/orzo")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                "${CMAKE_CURRENT_SOURCE_DIR}/third_party/orzo/prepare.cmake"
+                "${orzo_SOURCE_DIR}/include/orzo/orzo.h"
+                "${orzo_SOURCE_DIR}/include/orzo/utils.h")
+        execute_process(
+                COMMAND ${CMAKE_COMMAND}
+                -DORZO_SOURCE_DIR=${orzo_SOURCE_DIR}
+                -DORZO_OUTPUT_DIR=${PIXIE_ORZO_PREPARED_DIR}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/third_party/orzo/prepare.cmake
+                RESULT_VARIABLE orzo_prepare_result
+        )
+        if (NOT orzo_prepare_result EQUAL 0)
+            message(FATAL_ERROR "Failed to prepare the pinned Orzo headers")
+        endif ()
+    else ()
+        message(STATUS "3-star and Orzo comparisons disabled: configured target lacks BMI/BMI2")
+    endif ()
 endif ()
 
 if (PIXIE_TESTS)
@@ -175,28 +220,40 @@ function (pixie_enable_project_warnings target)
     endif ()
 endfunction ()
 
-if (PIXIE_3STAR_SUPPORT)
-    add_library(pixie_three_star INTERFACE)
-    target_include_directories(pixie_three_star
-            SYSTEM INTERFACE ${three_star_SOURCE_DIR})
-    target_compile_definitions(pixie_three_star INTERFACE
-            PIXIE_3STAR_SUPPORT
-            ALIGNMENT=2097152
-            CHECK_ALL_DENSE_SPARSE=0
-            COUNT_HIT_TYPES=0
-            CUSTOM_L0=2048
-            POP=2
-            PREFETCH_NT=1
-            PREFETCH_T0=1
-            REVERSE=2
-            TREE_DIVISION_EXP=3
-            TREE_EXP_LVL0=19
-            TREE_TYPE=3)
-
-    function (pixie_enable_three_star target)
-        target_include_directories(${target} PRIVATE src/benchmarks)
-        target_link_libraries(${target} pixie_three_star)
-    endfunction ()
+# Shared configuration for optional rank/select tests and benchmarks.
+if (PIXIE_THIRD_PARTY_BACKENDS)
+    add_library(pixie_rank_select_comparisons INTERFACE)
+    target_link_libraries(pixie_rank_select_comparisons INTERFACE pasta_bit_vector)
+    target_compile_definitions(pixie_rank_select_comparisons INTERFACE
+            PIXIE_SUCCINCT_BITVEC_SUPPORT)
+    target_include_directories(pixie_rank_select_comparisons SYSTEM INTERFACE
+            ${sdsl_lite_SOURCE_DIR}/include
+            ${succinct_bitvec_SOURCE_DIR}/include)
+    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        # Pasta's debug-assertion helper becomes unused in optimized builds.
+        target_compile_options(pixie_rank_select_comparisons INTERFACE
+                -Wno-unused-function)
+    endif ()
+    if (PIXIE_RANK_SELECT_HAS_BMI)
+        target_include_directories(pixie_rank_select_comparisons SYSTEM INTERFACE
+                ${three_star_SOURCE_DIR}
+                ${PIXIE_ORZO_PREPARED_DIR}/include)
+        target_sources(pixie_rank_select_comparisons INTERFACE
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/benchmarks/three_star_globals.cpp)
+        target_compile_definitions(pixie_rank_select_comparisons INTERFACE
+                PIXIE_ORZO_SUPPORT PIXIE_3STAR_SUPPORT
+                ALIGNMENT=2097152
+                CHECK_ALL_DENSE_SPARSE=0
+                COUNT_HIT_TYPES=0
+                CUSTOM_L0=2048
+                POP=2
+                PREFETCH_NT=1
+                PREFETCH_T0=1
+                REVERSE=2
+                TREE_DIVISION_EXP=3
+                TREE_EXP_LVL0=19
+                TREE_TYPE=3)
+    endif ()
 endif ()
 
 if (PIXIE_DIAGNOSTICS)
@@ -205,7 +262,7 @@ if (PIXIE_DIAGNOSTICS)
 endif ()
 
 if (PIXIE_THIRD_PARTY_BACKENDS)
-    target_compile_definitions(pixie INTERFACE SDSL_SUPPORT PIXIE_PASTA_SUPPORT)
+    target_compile_definitions(pixie INTERFACE SDSL_SUPPORT)
     target_compile_definitions(pixie INTERFACE PIXIE_IMMER_SUPPORT)
     target_link_libraries(pixie INTERFACE immer)
     target_include_directories(pixie SYSTEM INTERFACE
@@ -230,15 +287,6 @@ if (PIXIE_TESTS)
             gtest_main
             ${PIXIE_DIAGNOSTICS_LIBS})
 
-    add_executable(rank_select_unittests
-            src/tests/rank_select_unittests.cc)
-    target_include_directories(rank_select_unittests
-            PUBLIC include)
-    target_link_libraries(rank_select_unittests
-            gtest
-            gtest_main
-            ${PIXIE_DIAGNOSTICS_LIBS})
-
     add_executable(rank_select_tests
             src/tests/rank_select_tests.cpp)
     target_include_directories(rank_select_tests
@@ -248,25 +296,20 @@ if (PIXIE_TESTS)
             gtest_main
             ${PIXIE_DIAGNOSTICS_LIBS})
     if (PIXIE_THIRD_PARTY_BACKENDS)
-        target_link_libraries(rank_select_tests pasta_bit_vector)
-        if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-            # Pasta's debug-assertion helper is a static function that becomes
-            # unused in optimized builds.
-            target_compile_options(rank_select_tests PRIVATE -Wno-unused-function)
-        endif ()
+        target_link_libraries(rank_select_tests pixie_rank_select_comparisons)
     endif ()
 
-    if (PIXIE_3STAR_SUPPORT)
+    if (PIXIE_THIRD_PARTY_BACKENDS AND PIXIE_RANK_SELECT_HAS_BMI)
         add_executable(three_star_benchmark_tests
-                src/tests/three_star_benchmark_tests.cpp
-                src/benchmarks/three_star_adapter.cpp)
+                src/tests/three_star_benchmark_tests.cpp)
         target_include_directories(three_star_benchmark_tests
                 PUBLIC include)
         target_link_libraries(three_star_benchmark_tests
                 gtest
                 gtest_main
                 ${PIXIE_DIAGNOSTICS_LIBS})
-        pixie_enable_three_star(three_star_benchmark_tests)
+        target_link_libraries(three_star_benchmark_tests
+                pixie_rank_select_comparisons)
     endif ()
 
     add_executable(benchmark_tests
@@ -411,7 +454,6 @@ if (PIXIE_TESTS)
             sorted_sequence_tests
             bit_sequence_tests
             bit_algorithms_unittests
-            rank_select_unittests
             rank_select_tests
             benchmark_tests
             test_rmm
@@ -425,7 +467,7 @@ if (PIXIE_TESTS)
             select512_experimental_tests
             excess_record_lows_tests
             rmq_tests)
-    if (PIXIE_3STAR_SUPPORT)
+    if (TARGET three_star_benchmark_tests)
         list(APPEND PIXIE_TEST_TARGETS three_star_benchmark_tests)
     endif ()
     foreach (test_target IN LISTS PIXIE_TEST_TARGETS)
@@ -449,16 +491,7 @@ if (PIXIE_BENCHMARKS)
             benchmark
             ${PIXIE_DIAGNOSTICS_LIBS})
     if (PIXIE_THIRD_PARTY_BACKENDS)
-        target_link_libraries(rank_select_benchmarks pasta_bit_vector)
-        if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-            # See the matching rank_select_tests exception above.
-            target_compile_options(rank_select_benchmarks PRIVATE -Wno-unused-function)
-        endif ()
-    endif ()
-    if (PIXIE_3STAR_SUPPORT)
-        target_sources(rank_select_benchmarks PRIVATE
-                src/benchmarks/three_star_adapter.cpp)
-        pixie_enable_three_star(rank_select_benchmarks)
+        target_link_libraries(rank_select_benchmarks pixie_rank_select_comparisons)
     endif ()
 
     add_executable(rmm_benchmarks
@@ -678,11 +711,9 @@ if (PIXIE_DOCS)
 
     set(PIXIE_DOC_INPUT
             "${CMAKE_CURRENT_SOURCE_DIR}/include"
-            "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
-    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmark_results.md")
-        list(APPEND PIXIE_DOC_INPUT
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmark_results.md")
-    endif ()
+            "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmarks/index.md"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmarks/rank_select.md")
     string(JOIN " \\\n                         " PIXIE_DOC_INPUT
             ${PIXIE_DOC_INPUT})
 

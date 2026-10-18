@@ -204,7 +204,7 @@ dependencies only as needed. Direct CMake defaults and their effects are:
 | --- | --- | --- |
 | `PIXIE_TESTS` | `ON` standalone, `OFF` downstream | Builds tests and fetches Google Test. |
 | `PIXIE_BENCHMARKS` | `OFF` | Builds native Google Benchmark targets. |
-| `PIXIE_THIRD_PARTY_BACKENDS` | `OFF` | Enables optional SDSL, Immer, Pasta, and 3-star comparison backends. |
+| `PIXIE_THIRD_PARTY_BACKENDS` | `OFF` | Enables optional SDSL, Immer, Pasta, 3-star, FastBitVec, and Orzo comparison backends. |
 | `PIXIE_DIAGNOSTICS` | `OFF` | Enables diagnostic logging for profiling experiments. |
 | `PIXIE_DOCS` | `OFF` | Enables the Doxygen `docs` target. |
 | `PIXIE_COVERAGE` | `OFF` | Adds GCC coverage instrumentation. |
@@ -213,15 +213,40 @@ dependencies only as needed. Direct CMake defaults and their effects are:
 FetchContent consumer therefore receives no third-party dependency, while a
 standalone default build fetches Google Test. Enabling third-party backends also
 fetches SDSL, Immer, pasta-toolbox, and 3star-rankselect dependencies. Immer has
-registered sequence comparison benchmarks; SDSL has registered RmM comparison
-targets. Pasta provides an owning rank/select
+registered sequence comparison benchmarks; SDSL has registered RmM and
+rank/select comparison targets. The optional rank/select implementation uses
+`rank_support_v<>` and MCL select for both bit values over an owned copy;
+its logical auxiliary size follows SDSL's serialized-size convention.
+Pasta provides an owning rank/select
 comparison backend and is not a default library dependency. Pasta is
 GPLv3-or-later; keep its adapter strictly
 behind the optional comparison-backend build option. 3star-rankselect is MPL 2.0
-and is fetched at a pinned licensed revision. Its benchmark-only adapter
-supports one-rank, derived zero-rank, and one-select. Upstream global state and
-incomplete zero-select prevent a general public rank/select adapter. Use the
+and is fetched at a pinned licensed revision. Its optional implementation
+supports one-rank, derived zero-rank, and one-select. Upstream global state
+permits only one live instance; the comparison target provides the compiled
+global-state shim. Zero-select is disabled. Use the
 standard `FETCHCONTENT_SOURCE_DIR_THREE_STAR` override for a local source tree.
+
+The MIT-licensed succinct-bitvec-cpp and Orzo projects are fetched at pinned
+revisions for optional implementations. Their includes and feature definitions
+are private to rank/select tests and benchmarks. Both expose one-rank, derived
+zero-rank, and one-select; neither pinned source implements zero-select.
+`rank_select_succinct_fast` uses FastBitVec and omits sizes above 2^32 bits,
+because its select samples store 32-bit positions. `rank_select_orzo` uses the
+default Orzo configuration and is enabled only when the configured target has
+BMI and BMI2. Orzo is prepared in the build tree with exact integer directory
+allocation, a terminal-entry allocation fix, and a renamed inline timing
+utility to avoid a Google Benchmark namespace/ODR conflict. Its query code is
+unchanged. Both adapters own normalized source copies; report those bytes
+separately from index bytes. Orzo's copy is padded to full lower blocks.
+Local trees use `FETCHCONTENT_SOURCE_DIR_SUCCINCT_BITVEC` and
+`FETCHCONTENT_SOURCE_DIR_ORZO`.
+
+All optional rank/select implementation headers live in
+`include/pixie/rank_select/`, use the `pixie` namespace and `RankSelectBase`,
+and appear behind their feature guards in `rank_select/implementations.h`.
+The 3-star global-state definitions remain in
+`src/benchmarks/three_star_globals.cpp`.
 
 ## Build and Test Presets
 
@@ -285,7 +310,7 @@ ctest --preset release -L rank_select_tests
 ```
 
 The registered test executables are `bit_algorithms_unittests`,
-`rank_select_unittests`, `rank_select_tests`, `benchmark_tests`, `test_rmm`,
+`rank_select_tests`, `benchmark_tests`, `test_rmm`,
 `tree_tests`, `wavelet_tree_tests`, `storage_tests`,
 `serialization_tests`, `integer_vector_tests`, `excess_positions_tests`,
 `excess_record_lows_tests`, `rmq_tests`, `permutation_tests`,
@@ -336,6 +361,13 @@ Use the repository script for local coverage:
 The script configures and builds the `coverage` preset, deletes stale
 `.gcda`/`.gcov` files, runs `ctest --preset coverage`, and writes
 `build/coverage/coverage.txt`.
+
+CI also runs the script with `PIXIE_COVERAGE_VARIANT=rank-select-scalar`.
+This builds only rank/select for baseline `x86-64` in `build/coverage-scalar`
+and uploads its report under the same Codecov flag. This covers scalar paths
+even on AVX2 runners without rerunning the entire suite in that configuration.
+The native job uses only the runner's available instructions; CI does not
+require AVX-512 hardware.
 
 - The report uses `gcov -pb`, so Codecov receives branch probabilities as well
   as line hits. A Codecov partial line executed but did not take every branch.

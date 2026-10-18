@@ -33,11 +33,55 @@ accept `(/|$)` after the size. Build rows report CPU milliseconds; query rows
 report CPU nanoseconds. Both expose `aux_bytes`, `aux_mib`, and
 `aux_bits_per_input_bit` for metadata owned by the support.
 
+For deterministic independent-process comparisons, set
+`PIXIE_RANK_SELECT_FIXED_SEED=1` to use repetition zero. The retained optimized
+backend is `rank_select_compressed`; it includes validated source prefetch.
+Both baseline and compressed register dense, sparse, sparse-complement, runs,
+mixed, mixed-complement and FNBP controls. Removed experimental layouts have no
+registered rows. Query pools contain 8192 values and shift on each wrap.
+For query-only perf captures and optional HTML, use the local
+[profiling example](../profiling/EXAMPLES.md).
+
+With `PIXIE_THIRD_PARTY_BACKENDS=ON`, `rank_select_succinct_fast` and
+`rank_select_orzo` register build, rank1, derived rank0, and select1 rows for all
+nine input families. Their pinned upstream APIs have no select0 operation.
+FastBitVec's 32-bit sample positions limit registration to sizes through 2^30
+in the current size grid (the adapter accepts at most 2^32 bits). Orzo requires
+BMI/BMI2 in the configured target and is omitted otherwise. Its build-local
+header preparation fixes allocation rounding/terminal storage and a utility
+name collision; query algorithms retain the upstream code.
+
+Both own a normalized source copy. `source_copy_bytes` includes Orzo's padding;
+`aux_bytes` excludes the source copy and includes adapter/upstream object bytes.
+FastBitVec reports logical directory sizes because upstream does not expose
+allocator capacities. Orzo accounts for its requested raw allocations.
+Use one-rank/one-select rows for a common-operation comparison with these
+backends, Spider, and 3-star.
+
+The CMake target `pixie_rank_select_comparisons` shares definitions, includes,
+dependencies, and the 3-star global-state source across the rank/select harnesses.
+Optional implementations live beside native rank/select implementations under
+`include/pixie/rank_select/` and use the `pixie` namespace.
+It enables Pasta, SDSL, and succinct-bitvec-cpp, plus 3-star and Orzo when
+BMI/BMI2 is available. `rank_select_sdsl` uses `rank_support_v<>` with
+`select_support_mcl<1>` and `<0>` over an owned bitvector. Rank0 derives from
+rank1; both select directions are indexed. Its auxiliary counter uses SDSL's
+serialized directory sizes plus the adapter object, excluding the source copy.
+Build rows collect invariant space counters once with timing paused.
+
+```bash
+PIXIE_RANK_SELECT_FIXED_SEED=1 taskset -c 0 \
+  ./build/benchmark-all-backends/rank_select_benchmarks \
+  --benchmark_filter='^rank_select_(succinct_fast|orzo)_(rank1|rank0|select1)_50/N:(4194304|1073741824)(/|$)' \
+  --benchmark_out=/tmp/rank_select_new_backends.json \
+  --benchmark_out_format=json
+```
+
 ### FNBP Source Rows
 
 `rank_select_fnbp_*` generates the Ferrada-Navarro balanced-parentheses source
-used by the Cartesian RMQ backends. It covers `2^10` through `2^30` bits,
-including a large-source case with 16,384 rank superblocks.
+used by the Cartesian RMQ backends. It covers `2^10` through `2^30` bits;
+larger FNBP sources are omitted because generation dominates suite runtime.
 
 ```bash
 taskset -c 0 ./build/benchmarks/rank_select_benchmarks \

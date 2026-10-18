@@ -1,0 +1,269 @@
+---
+title: "Rank/Select in Pixie: Gaps and Research Priorities"
+date: 2026-10-03
+bibliography: ../../bibliography/references.bib
+link-citations: true
+format:
+  html:
+    toc: true
+---
+
+This note records an earlier design investigation. The retained implementation
+and current reproduction guidance are in
+[the final compressed rank/select design](../compressed-rank-select/index.qmd).
+Intermediate implementations and their runners were removed during cleanup.
+
+
+## Opinion
+
+Keep the current dense, non-owning implementation as the default. Its most
+important gap is **distribution-sensitive select search**, followed by
+**benchmark coverage of application latency**. Those deserve attention before
+another round of low-level instruction tuning.
+
+There are three further opportunities: reduce rank metadata with paired
+counters, explore an owning layout that places counters alongside bits, and
+add compressed implementations for sparse or locally repetitive inputs.
+These address different workloads and should be evaluated separately.
+
+This investigation reviewed the current contract, implementation, tests,
+consumer call sites, and retained benchmark snapshot, and checked primary
+research sources. It includes a small correctness probe, but no new performance
+measurements. Proposed improvements below are hypotheses, not speedup claims.
+
+## What is already strong
+
+`include/pixie/rank_select/support.h` indexes borrowed immutable source bits
+with storage-backed metadata, including a read-only metadata view and
+serialization. Rank uses 64-bit global counts every 65,536 bits and 16-bit
+local counts every 512 bits. Both select directions share an occurrence
+sampling budget, with a sample every 16,384 occurrences in each direction.
+
+The asymptotic metadata ratio, excluding objects, sentinels and allocation
+rounding, is
+
+$$
+\frac{64}{65536}+\frac{16}{512}+\frac{64}{16384}
+=0.0361328125.
+$$
+
+That is **3.613% of the raw source size**, not 3.613 bits per input bit.
+The two select directions together contribute about 0.391%, because their
+occurrence counts sum to the input length. Rank alone contributes about
+3.223%. Construction already builds the requested metadata in one word scan;
+select directions are optional, and a known one-count can guide allocation.
+
+The October 2 snapshot in `include/pixie/rank_select/implementations.h` reaches
+2^34 bits for random sources. For its 50% input at that size, Pixie records
+82.3 ns for rank1, 303.6 ns for select1, and about 74 MiB of auxiliary storage
+over a 2 GiB source. This is a useful indication of where to look, although
+the snapshot is a single pass and does not establish statistical significance.
+
+Existing tests cover short spans, partial words, dirty padding, disabled select,
+serialization validation, skewed zero distributions, and the full-superblock
+local rank of 65,536. Those are valuable safeguards for future experiments.
+
+## First priority: long gaps in select
+
+The decisive code is `find_superblock()` and `find_superblock_zeros()` around
+lines 640 and 670 of `support.h`. Each starts at an occurrence sample and
+linearly scans superblock counters using SIMD groups, then a scalar tail.
+Basic-block interpolation happens only after this search finishes.
+
+Sampling by occurrence count does **not** bound the physical distance between
+samples. In particular, the initial sample is superblock zero. If the vector
+contains a single one at its last position, `select(1)` starts there and scans
+the entire superblock rank directory before reaching that one. Complementing
+the bits creates the analogous case for `select0(1)`.
+
+This also matters at ordinary global densities. Consider a 50% vector whose
+first half is all zeros and second half all ones: the first one-select queries
+below the first sampling milestone scan across the initial zero run. Similar
+gaps can occur between later occurrence samples. Global density alone cannot
+predict this behavior.
+
+For a 2^34-bit vector with only a trailing one, the directory has 262,144 data
+superblocks. Search traverses roughly **2 MiB of global rank metadata**, or
+about 32,768 eight-counter groups, before the local search. These are
+code-derived counts, not measured latency. With fixed block sizes, this search
+is linear in the number of superblocks in the gap; it has no input-independent
+constant-work guarantee.
+
+A temporary C++20 probe against the current header checked a 2^26-bit vector
+with one trailing one and complementary half-and-half clustered vectors.
+The latter checked occurrence ranks 1, 8,192, 16,383, 16,384 and 16,385 in each
+relevant select direction. All returned the expected positions. The identified
+gap is performance robustness, not a demonstrated wrong answer.
+
+### Recommended experiments
+
+Start with a bounded amount of SIMD scanning followed by exponential search
+and binary search over the monotone superblock counts. For zero-select, search
+the derived zero counts. This preserves the present storage representation
+and should cap long-gap search at logarithmic rather than linear work.
+Determine the scan threshold through benchmarks.
+
+Then evaluate richer samples: exact bit positions, residual ranks, or a
+second sampling level. Exact positions enable stronger local predictions;
+residual counts might remove a dependent global-rank load. Extra metadata
+must earn its space. Merely increasing occurrence sampling frequency does
+not resolve arbitrarily long empty runs.
+
+For a strict constant-work target, study a sample tree or a select inventory
+with explicit treatment of long spans. This is a larger design change.
+Tests must cover repeated prefix counts, sampling boundaries, final partial
+blocks, and local rank 65,536 in both directions.
+
+## Second priority: measure the intended workload
+
+The registered family benchmarks cover random 12.5%, 50%, and 87.5% fills and
+a Cartesian-RMQ balanced-parentheses source. Their deterministic query pools
+are a strength. The missing dimension is local distribution and query
+dependence.
+
+| Dimension | Useful additions | Question answered |
+| --- | --- | --- |
+| Density | 0.01%, 0.1%, 1%, and complements | Does minority select degrade? |
+| Local structure | Long runs, separated clusters, changing regional density | Are samples and predictions robust? |
+| Query dependence | Independent loops and result-dependent chains | What are throughput and navigation latency? |
+| Locality | Sorted, clustered, and mixed rank/select queries | Does application reuse change the winner? |
+| Small inputs | Word, block, and superblock boundaries | When does metadata cost dominate? |
+| Memory residency | Separate warm mapped queries and first-touch experiments | What does zero-copy cost under demand paging? |
+| Platform | Native, AVX2, and scalar builds | Which improvements depend on SIMD? |
+
+The current query loop uses independent queries. Its time per operation can
+benefit from overlapping CPU execution; it is not an isolated dependent-query
+latency measurement. Wavelet-tree traversal uses answers to determine later
+queries, so that distinction matters. The QuadRank work explicitly separates
+dependent latency, independent throughput, and batching/prefetching
+[@GrootKoerkamp2026].
+
+Add diagnostic counts for superblocks scanned and interpolation misses before
+collecting expensive timing distributions. Then measure tail latency separately
+from aggregate benchmark time. Use repeated pinned runs and consistent source
+ownership, enabled operations, query pools, and memory accounting. Construction
+peak memory and view-deserialization behavior deserve their own measurements;
+retained index bytes do not describe all lifecycle costs.
+
+## Third priority: two rank-layout experiments
+
+### Paired counters while borrowing the source
+
+The paired-block method stores a shared count at the boundary between two
+blocks. Rank in the left block subtracts a suffix popcount; rank in the right
+block adds a prefix popcount. Gottlieb and Reinert study this approach and
+mask-based counting [@GottliebReinert2025].
+
+Applied to pairs of 512-bit blocks, one 16-bit local count per pair would reduce
+that metadata term from 3.125% to 1.5625%. Retaining the current global-counter
+spacing gives a nominal rank-only ratio of about **1.660%**, before padding and
+objects. This calculation describes a candidate layout, not a completed index.
+
+This is attractive because it can preserve source borrowing. However, select
+currently searches counts at every basic-block start. A paired layout changes
+those boundaries and needs additional reconstruction or a different search.
+Prototype rank first, then assess the complete rank/select tradeoff. Reducing
+bytes is insufficient if select becomes substantially slower.
+
+### Counters alongside source bits
+
+SPIDER combines source/metadata interleaving for rank with prediction-based
+select [@Laws2024]. It is an important missing comparison for large inputs.
+The relevant hypothesis is fewer cache misses, rather than cheaper popcount
+alone. Its published results are not directly comparable with Pixie's timings.
+
+Pixie's source is an unchanged borrowed packed bit sequence. Interleaving
+counters with those bits requires a new owning encoded representation or a
+producer that already supplies that layout. Keep it as a separate concrete
+implementation, including a storage-view form if useful. Count source conversion
+time, the encoded source, and any retained original copy fairly.
+
+The binary-rank part of QuadRank also combines interleaving and paired counting
+and motivates explicit batching. It is rank-focused; do not assume it supplies
+Pixie's full select contract or full target size domain [@GrootKoerkamp2026].
+
+## Fourth priority: representation diversity
+
+Dense support optimizes auxiliary overhead while retaining all source bits.
+For very sparse input, that source dominates total space. An Elias--Fano
+representation of minority positions is a natural candidate: for m positions
+in an n-bit universe, its principal space bound is approximately
+`m * (log2(n/m) + 2)` bits. Selection of stored positions is straightforward;
+rank becomes a predecessor/count problem. Complement selection needs its own
+design. Do not silently equate fast minority-select with a fast complete
+rank/select implementation [@Vigna2013].
+
+For locally repetitive input, block-adaptive encodings can choose plain,
+run-length, or minority representations. Chiu and Kempa specifically investigate
+select support for such hybrid bitvectors [@ChiuKempa2025]. This is relevant to
+wavelet nodes with uneven local statistics, but requires encoded source ownership
+and a separate construction/serialization design.
+
+The existing packed monotone adapter is not an Elias--Fano implementation.
+There is useful overlap with the separate compact integer sets/vectors note,
+but a full rank/select implementation must satisfy the bitvector contract,
+including bit access, both rank directions, capability flags, and sentinels.
+
+## A recent result worth revisiting
+
+Kurpicz, Rigi-Luperti and Sanders published *Practical Bit Vectors Supporting
+Constant Time Rank and Select in Optimal Space* in August 2026. It reports
+worst-case constant query time, configurations below 1% overhead, and substantial
+improvements on difficult inputs. The publication links to the Limnopilos
+implementation [@KurpiczEtAl2026].
+
+Pixie already benchmarks pinned 3-star code associated with the earlier
+*Theory Meets Practice* preprint. Its retained results show a real space/time
+tradeoff: for 2^34 random 50% input, about 16.08 MiB of logical metadata versus
+Pixie's 74 MiB, but slower rank in that snapshot. It does not register zero-select,
+and accounting and ownership differ.
+
+That comparison is useful evidence about **the pinned configuration**. It does
+not establish the performance of the latest publication's implementation or
+its parameter space. Reconcile the old code, the published algorithm, and the
+current software before deciding whether to implement a related sampling
+structure in Pixie. This is particularly relevant to the long-gap problem.
+
+## Proposed order of work
+
+1. Extend distribution and dependent-query benchmarks; add deterministic
+   long-gap cases to the shared specification when implementing a change.
+2. Try bounded scanning plus exponential/binary fallback with the existing
+   format. Accept only if difficult inputs improve without meaningful dense-case
+   regressions.
+3. Compare SPIDER and the published 2026 sampling design under equivalent
+   workloads and capability accounting.
+4. Prototype paired rank counters and an owning interleaved implementation as
+   separate experiments. Validate AVX2/scalar behavior and application results.
+5. Add a sparse or hybrid representation when actual consumer data justifies
+   the construction and ownership cost.
+
+For wavelet-tree consumers, also measure the effect of many small node indexes.
+The retained snapshot reports about 384 auxiliary bytes, including the index
+object, for a 1,024-bit input whose raw source is only 128 bytes. A direct-scan
+path or shared metadata arena
+may help there, but needs aggregate application measurements.
+
+I would prioritize robust select and paired rank metadata over dynamic support
+or further within-word select tuning. Dynamic bits change the immutable-source
+contract and belong to a separate family/workload discussion.
+
+Finally, fixed block sizes give the current implementation constant-fraction
+linear metadata: it is compact in practical terms, rather than an asymptotic
+`n + o(n)` construction. That does not diminish its usefulness, but strict
+succinctness and strict constant-time select are separate objectives that should
+be stated explicitly when comparing research designs.
+
+## Primary sources
+
+- [Pasta / Kurpicz 2022](https://arxiv.org/abs/2206.01149).
+- [SPIDER, SEA 2024](https://doi.org/10.4230/LIPIcs.SEA.2024.21).
+- [Paired rank blocks, 2025](https://doi.org/10.1186/s13015-025-00291-9).
+- [Hybrid select, 2025 preprint](https://arxiv.org/abs/2509.06900).
+- [QuadRank, SEA 2026](https://doi.org/10.4230/LIPIcs.SEA.2026.20).
+- [Constant-time rank/select, ESA 2026](https://doi.org/10.4230/LIPIcs.ESA.2026.8).
+
+The web fetch/index helper was unavailable because of a missing dependency;
+primary-source search excerpts were used instead. This note does not claim a
+full reproduction of any paper's experiments or a line-by-line review of all
+upstream implementations.

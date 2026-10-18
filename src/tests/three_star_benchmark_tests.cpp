@@ -1,14 +1,19 @@
 #include <gtest/gtest.h>
+#include <pixie/rank_select/three_star.h>
 
 #include <array>
 #include <bit>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <string>
 #include <vector>
 
-#include "three_star_adapter.h"
-
 namespace {
+
+using Support = pixie::ThreeStarRankSelectSupport;
+static_assert(std::derived_from<Support, pixie::RankSelectBase<Support>>);
 
 std::uint64_t splitmix64(std::uint64_t value) {
   value += 0x9E3779B97F4A7C15ull;
@@ -24,7 +29,7 @@ TEST(ThreeStarBenchmarkAdapterTest, MatchesOneRankAndSelect) {
     words[word_index] = splitmix64(word_index);
   }
 
-  pixie::benchmarks::ThreeStarRankSelectSupport support(words, kBits);
+  pixie::ThreeStarRankSelectSupport support(words, kBits);
   std::uint64_t rank = 0;
   for (std::size_t position = 0; position < kBits; ++position) {
     const bool bit = (words[position >> 6] >> (position & 63)) & 1;
@@ -42,7 +47,7 @@ TEST(ThreeStarBenchmarkAdapterTest, HandlesSmallSources) {
       0x8000000000000001ull, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
       0x8000000000000000ull,
   };
-  pixie::benchmarks::ThreeStarRankSelectSupport support(kWords, 1024);
+  pixie::ThreeStarRankSelectSupport support(kWords, 1024);
 
   EXPECT_EQ(support.rank(0), 0);
   EXPECT_EQ(support.rank(1), 1);
@@ -69,12 +74,20 @@ TEST(ThreeStarBenchmarkAdapterTest, HandlesPartialBlocksAndRepeatedBuilds) {
                       : pattern == 2 ? 0x8000000000000001ull
                                      : splitmix64(word);
       }
-      pixie::benchmarks::ThreeStarRankSelectSupport support(words, num_bits);
+      pixie::ThreeStarRankSelectSupport support(words, num_bits);
+      EXPECT_EQ(support.size(), num_bits);
+      EXPECT_FALSE(support.empty());
+      EXPECT_TRUE(support.supports_select1());
+      EXPECT_FALSE(support.supports_select0());
+      std::string expected;
       std::uint64_t rank = 0;
       for (std::size_t position = 0; position < num_bits; ++position) {
         ASSERT_EQ(support.rank(position), rank) << position;
         ASSERT_EQ(support.rank0(position), position - rank) << position;
-        if ((words[position >> 6] >> (position & 63)) & 1) {
+        const bool bit = (words[position >> 6] >> (position & 63)) & 1;
+        ASSERT_EQ(support[position], bit) << position;
+        expected.push_back(bit ? '1' : '0');
+        if (bit) {
           ASSERT_EQ(support.select(++rank), position) << rank;
         }
       }
@@ -82,6 +95,14 @@ TEST(ThreeStarBenchmarkAdapterTest, HandlesPartialBlocksAndRepeatedBuilds) {
       EXPECT_EQ(support.rank0(num_bits), num_bits - rank);
       EXPECT_EQ(support.select(0), 0);
       EXPECT_EQ(support.select(rank + 1), num_bits);
+      EXPECT_EQ(support.rank(std::numeric_limits<std::size_t>::max()), rank);
+      EXPECT_EQ(support.rank0(std::numeric_limits<std::size_t>::max()),
+                num_bits - rank);
+      EXPECT_EQ(support.select0(0), 0u);
+      EXPECT_EQ(support.select0(1), num_bits);
+      EXPECT_EQ(support.select0(std::numeric_limits<std::size_t>::max()),
+                num_bits);
+      EXPECT_EQ(support.to_string(), expected);
     }
   }
 }
