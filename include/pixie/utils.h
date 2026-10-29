@@ -119,6 +119,16 @@ class AdjListTree {
   explicit AdjListTree(const std::vector<std::vector<size_t>>& adjacency_list)
       : adj(adjacency_list) {}
 
+  /** @brief Object and reserved adjacency storage; excludes allocator metadata.
+   */
+  size_t memory_usage_bytes() const {
+    size_t bytes = sizeof(*this) + adj.capacity() * sizeof(adj[0]);
+    for (const auto& row : adj) {
+      bytes += row.capacity() * sizeof(size_t);
+    }
+    return bytes;
+  }
+
   /**
    * @brief Returns the root node
    */
@@ -149,6 +159,23 @@ class AdjListTree {
    */
   AdjListNode child(const AdjListNode& node, size_t i) const {
     return AdjListNode(adj[node.number][i + 1]);
+  }
+
+  /**
+   * @brief Synchronously visit immediate children in child-index order.
+   * @details Requires a valid node. Borrows the callback without copying;
+   * passes handles by value, ignores return values, and propagates exceptions.
+   * Leaves invoke no callbacks. Nested calls are supported; the tree must
+   * remain alive and unchanged while visiting or using retained handles.
+   */
+  template <class Visitor>
+  void for_each_child(const AdjListNode& node, Visitor&& visitor) const {
+    const auto& children = adj[node.number];
+    const auto* current = children.data() + 1;
+    const auto* end = children.data() + children.size();
+    for (; current != end; ++current) {
+      visitor(AdjListNode(*current));
+    }
   }
 
   /**

@@ -131,7 +131,8 @@ class RmMPlusMinusOne {
    * @brief Build with an exact count of +1 delta bits.
    *
    * @details Cartesian BP construction knows this count exactly, which lets the
-   * nested RankSelectSupport<> allocate select samples without a second scan.
+   * nested backend use it when supported. The default compressed backend
+   * derives the count during rank-index construction.
    */
   RmMPlusMinusOne(std::span<const std::uint64_t> bits,
                   std::size_t depth_count,
@@ -162,8 +163,8 @@ class RmMPlusMinusOne {
     if (depth_count_ > static_cast<std::size_t>(invalid_index)) {
       throw std::length_error("RMQ rmM btree index type is too small");
     }
-    rmm_ = RmM(words_, depth_count_ - 1,
-               RankSelectSupport<>::SelectSupport::kSelect0, one_count);
+    rmm_ =
+        RmM(words_, depth_count_ - 1, RmM::SelectSupport::kSelect0, one_count);
   }
 
   /**

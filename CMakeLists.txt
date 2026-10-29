@@ -713,7 +713,8 @@ if (PIXIE_DOCS)
             "${CMAKE_CURRENT_SOURCE_DIR}/include"
             "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmarks/index.md"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmarks/rank_select.md")
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmarks/rank_select.md"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmarks/trees.md")
     string(JOIN " \\\n                         " PIXIE_DOC_INPUT
             ${PIXIE_DOC_INPUT})
 

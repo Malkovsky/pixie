@@ -1485,7 +1485,13 @@ HTML_EXTRA_FILES       = "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/logo.png" \
                          "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/rank_select/rank_select_select1.svg" \
                          "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/rank_select/rank_select_select0.svg" \
                          "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/rank_select/rank_select_build.svg" \
-                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/rank_select/rank_select_auxiliary.svg"
+                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/rank_select/rank_select_auxiliary.svg" \
+                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees/tree_dfs.svg" \
+                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees/tree_dfs_children.svg" \
+                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees/tree_random_path.svg" \
+                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees/tree_random_path_children.svg" \
+                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees/tree_build.svg" \
+                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees/tree_memory.svg"
 
 # The HTML_COLORSTYLE tag can be used to specify if the generated HTML output
 # should be rendered with a dark or light theme.
@@ -1921,7 +1927,7 @@ FORMULA_MACROFILE      =
 # The default value is: NO.
 # This tag requires that the tag GENERATE_HTML is set to YES.
 
-USE_MATHJAX            = NO
+USE_MATHJAX            = YES
 
 # With MATHJAX_VERSION it is possible to specify the MathJax version to be used.
 # Note that the different versions of MathJax have different requirements with
@@ -1932,7 +1938,7 @@ USE_MATHJAX            = NO
 # The default value is: MathJax_2.
 # This tag requires that the tag USE_MATHJAX is set to YES.
 
-MATHJAX_VERSION        = MathJax_2
+MATHJAX_VERSION        = MathJax_3
 
 # When MathJax is enabled you can set the default output format to be used for
 # the MathJax output. For more details about the output format see MathJax
@@ -1950,7 +1956,7 @@ MATHJAX_VERSION        = MathJax_2
 # The default value is: HTML-CSS.
 # This tag requires that the tag USE_MATHJAX is set to YES.
 
-MATHJAX_FORMAT         = HTML-CSS
+MATHJAX_FORMAT         = SVG
 
 # When MathJax is enabled you need to specify the location relative to the HTML
 # output directory using the MATHJAX_RELPATH option. For Mathjax version 2 the

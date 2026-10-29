@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <pixie/io/file_output_sink.h>
 #include <pixie/io/mapped_file.h>
+#include <pixie/rank_select/support.h>
 #include <pixie/rmm/btree.h>
 #include <pixie/rmm/tree.h>
 #include <references/naive_rmm_tree.h>
@@ -314,8 +315,14 @@ class RmMRandomTest : public ::testing::Test {
   std::mt19937_64 rng{kSeed};
 };
 
+using BaselineRmMBTree =
+    pixie::experimental::RmMBTree<4, 32, pixie::RankSelectSupport<>>;
+using CompressedRmMBTree = pixie::experimental::RmMBTree<>;
+static_assert(std::is_same_v<CompressedRmMBTree::RankSelectBackend,
+                             pixie::RankSelectSupportCompressed<>>);
+
 using RmMImplementations =
-    testing::Types<pixie::RmMTree, pixie::experimental::RmMBTree<>>;
+    testing::Types<pixie::RmMTree, CompressedRmMBTree, BaselineRmMBTree>;
 TYPED_TEST_SUITE(RmMRandomTest, RmMImplementations);
 
 TYPED_TEST(RmMRandomTest, RandomMixedBits) {
@@ -1362,39 +1369,41 @@ TEST(RmMBTreeExperimental, RankSelectIgnoresDirtyTrailingStorage) {
   EXPECT_EQ(rm.select0(2), pixie::experimental::RmMBTree<>::npos);
 }
 
-TEST(RmMBTreeExperimental, OptionalSelectSupport) {
+template <class Tree>
+class RmMBTreeBackendTest : public testing::Test {};
+using BTreeBackends = testing::Types<CompressedRmMBTree, BaselineRmMBTree>;
+TYPED_TEST_SUITE(RmMBTreeBackendTest, BTreeBackends);
+
+TYPED_TEST(RmMBTreeBackendTest, OptionalSelectSupport) {
   const std::string bits = "101100";
   auto words = pack_words_lsb_first(bits);
-  pixie::experimental::RmMBTree<> select0_only(
-      std::span<const std::uint64_t>(words), bits.size(),
-      pixie::RankSelectSupport<>::SelectSupport::kSelect0, /*one_count=*/3);
-  pixie::experimental::RmMBTree<> select1_only(
-      std::span<const std::uint64_t>(words), bits.size(),
-      pixie::RankSelectSupport<>::SelectSupport::kSelect1, /*one_count=*/3);
-  pixie::experimental::RmMBTree<> rank_only(
-      std::span<const std::uint64_t>(words), bits.size(),
-      pixie::RankSelectSupport<>::SelectSupport::kNone, /*one_count=*/3);
+  TypeParam select0_only(std::span<const std::uint64_t>(words), bits.size(),
+                         TypeParam::SelectSupport::kSelect0, /*one_count=*/3);
+  TypeParam select1_only(std::span<const std::uint64_t>(words), bits.size(),
+                         TypeParam::SelectSupport::kSelect1, /*one_count=*/3);
+  TypeParam rank_only(std::span<const std::uint64_t>(words), bits.size(),
+                      TypeParam::SelectSupport::kNone, /*one_count=*/3);
 
   EXPECT_EQ(select0_only.rank1(bits.size()), 3u);
   EXPECT_EQ(select0_only.rank0(bits.size()), 3u);
-  EXPECT_EQ(select0_only.select1(1), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(select0_only.select1(1), TypeParam::npos);
   EXPECT_EQ(select0_only.select0(1), 1u);
   EXPECT_EQ(select0_only.select0(2), 4u);
   EXPECT_EQ(select0_only.select0(3), 5u);
-  EXPECT_EQ(select0_only.select0(4), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(select0_only.select0(4), TypeParam::npos);
 
   EXPECT_EQ(select1_only.rank1(bits.size()), 3u);
   EXPECT_EQ(select1_only.rank0(bits.size()), 3u);
   EXPECT_EQ(select1_only.select1(1), 0u);
   EXPECT_EQ(select1_only.select1(2), 2u);
   EXPECT_EQ(select1_only.select1(3), 3u);
-  EXPECT_EQ(select1_only.select1(4), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(select1_only.select0(1), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(select1_only.select1(4), TypeParam::npos);
+  EXPECT_EQ(select1_only.select0(1), TypeParam::npos);
 
   EXPECT_EQ(rank_only.rank1(bits.size()), 3u);
   EXPECT_EQ(rank_only.rank0(bits.size()), 3u);
-  EXPECT_EQ(rank_only.select1(1), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rank_only.select0(1), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rank_only.select1(1), TypeParam::npos);
+  EXPECT_EQ(rank_only.select0(1), TypeParam::npos);
 }
 
 TEST(RmMBTreeExperimental, RangeMinResultAndMemoryUsage) {

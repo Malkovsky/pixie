@@ -9,6 +9,7 @@
  */
 
 #include <cstddef>
+#include <utility>
 
 namespace pixie {
 
@@ -102,6 +103,27 @@ class TreeBase {
    */
   Node child(const Node& node, std::size_t index) const {
     return impl().child_impl(node, index);
+  }
+
+  /**
+   * @brief Visit every immediate child in zero-based child-index order.
+   * @param node Valid node handle from this tree; invalid handles are undefined
+   * behavior.
+   * @param visitor Callable invoked as an lvalue with a Node value for each
+   * child in `[0, degree(node))`. Return values are ignored; leaves invoke it
+   * zero times. Exceptions propagate and stop enumeration.
+   * @details The callback is borrowed synchronously and never copied or
+   * retained. Handles may be retained under the same lifetime rules as child():
+   * the tree and its backing data must remain alive and unchanged. Nested
+   * enumeration is supported. No heap allocation is required by enumeration
+   * itself.
+   * @par Implementation requirement
+   * `for_each_child_impl(node, visitor)` must provide these semantics without
+   * retaining callback or traversal state in the tree.
+   */
+  template <class Visitor>
+  void for_each_child(const Node& node, Visitor&& visitor) const {
+    impl().for_each_child_impl(node, std::forward<Visitor>(visitor));
   }
 
   /**

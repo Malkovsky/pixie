@@ -2,7 +2,7 @@
 
 #include <pixie/bits.h>
 #include <pixie/memory_usage.h>
-#include <pixie/rank_select/support.h>
+#include <pixie/rank_select/compressed.h>
 #include <pixie/rmm.h>
 
 #include <algorithm>
@@ -78,15 +78,30 @@ namespace pixie::experimental {
  * @tparam HighCacheLines Number of 64-byte cache lines assigned to one high
  * summary node.
  * @tparam LowFanout Number of child summaries stored in one low-level node.
+ * @tparam RankSelect Non-owning rank/select backend, defaulting to compressed
+ * support. Must provide SelectSupport, construction from (words, bit_count,
+ * SelectSupport), rank(), rank0(), select(), select0(), and owned-memory
+ * accounting. Disabled select directions and missing occurrences must return
+ * size(). An optional fourth constructor argument may accept an exact one-count
+ * hint. The source remains externally owned and immutable for the index
+ * lifetime.
  */
-template <std::size_t HighCacheLines = 4, std::size_t LowFanout = 32>
-class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
+template <std::size_t HighCacheLines = 4,
+          std::size_t LowFanout = 32,
+          class RankSelect = RankSelectSupportCompressed<>>
+class RmMBTree
+    : public RmMBase<RmMBTree<HighCacheLines, LowFanout, RankSelect>> {
  public:
+  /** @brief Rank/select implementation used by this index. */
+  using RankSelectBackend = RankSelect;
+  /** @brief Backend-specific selection of enabled select directions. */
+  using SelectSupport = typename RankSelect::SelectSupport;
+
   static_assert(HighCacheLines > 0);
   static_assert(LowFanout > 0);
 
   static constexpr std::size_t npos =
-      RmMBase<RmMBTree<HighCacheLines, LowFanout>>::npos;
+      RmMBase<RmMBTree<HighCacheLines, LowFanout, RankSelect>>::npos;
   static constexpr std::size_t kBlockBits = 512;
   static constexpr std::size_t kBlockWords = kBlockBits / 64;
   static constexpr std::size_t kCacheLineBytes = 64;
@@ -135,17 +150,28 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
    * @details This keeps the normal RmMBTree API full-featured by default while
    * allowing adapters that only need rank/select0 to skip select1 samples.
    * @param one_count Optional exact number of 1-bits for exact select-sample
-   * allocation.
+   * allocation when supported by the backend; otherwise the backend derives
+   * its counts while building the index.
    */
   RmMBTree(std::span<const std::uint64_t> words,
            std::size_t bit_count,
-           RankSelectSupport<>::SelectSupport select_support,
+           SelectSupport select_support,
            std::optional<std::size_t> one_count = std::nullopt,
            std::size_t = kBlockBits) {
     build(words, bit_count, select_support, one_count);
   }
 
   std::size_t size_impl() const { return bit_count_; }
+
+  /**
+   * @brief Read one bit from the external source words.
+   * @param position Zero-based position in [0, size()).
+   * @return 0 or 1. Positions outside the range violate the precondition.
+   */
+  std::uint8_t bit_impl(std::size_t position) const noexcept {
+    return static_cast<std::uint8_t>((bits_[position >> 6] >> (position & 63)) &
+                                     1ull);
+  }
 
   std::size_t rank1_impl(std::size_t end_position) const {
     return rank_index_ ? rank_index_->rank(end_position) : 0;
@@ -178,7 +204,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     end_position = std::min(end_position, bit_count_);
     std::size_t count = 0;
     for (std::size_t position = 0; position + 1 < end_position; ++position) {
-      count += bit(position) == 1 && bit(position + 1) == 0;
+      count += bit_impl(position) == 1 && bit_impl(position + 1) == 0;
     }
     return count;
   }
@@ -188,7 +214,8 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
       return npos;
     }
     for (std::size_t position = 0; position + 1 < bit_count_; ++position) {
-      if (bit(position) == 1 && bit(position + 1) == 0 && --rank == 0) {
+      if (bit_impl(position) == 1 && bit_impl(position + 1) == 0 &&
+          --rank == 0) {
         return position;
       }
     }
@@ -379,7 +406,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     if (open_position >= bit_count_) {
       return npos;
     }
-    if (!bit(open_position)) {
+    if (!bit_impl(open_position)) {
       return open_position;
     }
     return fwd_excess_at(open_position, -1);
@@ -389,7 +416,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     if (close_position >= bit_count_) {
       return npos;
     }
-    if (bit(close_position)) {
+    if (bit_impl(close_position)) {
       return close_position;
     }
     return bwdsearch_impl(close_position + 1, 0);
@@ -399,7 +426,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     if (position >= bit_count_) {
       return npos;
     }
-    if (!bit(position)) {
+    if (!bit_impl(position)) {
       return open_impl(position);
     }
     return bwdsearch_impl(position + 1, -2);
@@ -522,8 +549,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
    * @p bit_count.
    */
   void build(std::span<const std::uint64_t> words, std::size_t bit_count) {
-    build(words, bit_count, RankSelectSupport<>::SelectSupport::kBoth,
-          std::nullopt);
+    build(words, bit_count, SelectSupport::kBoth, std::nullopt);
   }
 
   /**
@@ -531,7 +557,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
    */
   void build(std::span<const std::uint64_t> words,
              std::size_t bit_count,
-             RankSelectSupport<>::SelectSupport select_support,
+             SelectSupport select_support,
              std::optional<std::size_t> one_count = std::nullopt) {
     const std::size_t required_words = (bit_count + 63) / 64;
     if (words.size() < required_words) {
@@ -541,7 +567,13 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
 
     bits_ = words;
     bit_count_ = bit_count;
-    rank_index_.emplace(words, bit_count, select_support, one_count);
+    if constexpr (std::is_constructible_v<
+                      RankSelect, std::span<const std::uint64_t>, std::size_t,
+                      SelectSupport, std::optional<std::size_t>>) {
+      rank_index_.emplace(words, bit_count, select_support, one_count);
+    } else {
+      rank_index_.emplace(words, bit_count, select_support);
+    }
     block_count_ = (bit_count_ + kBlockBits - 1) / kBlockBits;
     std::vector<Summary> block_summaries(block_count_);
 
@@ -675,7 +707,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     int minimum = std::numeric_limits<int>::max();
     int maximum = std::numeric_limits<int>::min();
     for (std::size_t offset = 0; offset < length; ++offset) {
-      const std::uint8_t value = bit(begin + offset);
+      const std::uint8_t value = bit_impl(begin + offset);
       summary.ones += value;
       current += value ? 1 : -1;
       if (current < minimum) {
@@ -889,7 +921,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     const std::int64_t relative_target = current + delta;
     const std::size_t block_begin = block_index * kBlockBits;
     for (std::size_t offset = start_offset; offset < length; ++offset) {
-      current += bit(block_begin + offset) ? 1 : -1;
+      current += bit_impl(block_begin + offset) ? 1 : -1;
       if (current == relative_target) {
         return block_index * kBlockBits + offset;
       }
@@ -952,7 +984,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
       if (current == relative_target) {
         return block_index * kBlockBits + prefix_length;
       }
-      current -= bit(block_begin + prefix_length - 1) ? 1 : -1;
+      current -= bit_impl(block_begin + prefix_length - 1) ? 1 : -1;
     }
     return relative_target == 0 ? block_index * kBlockBits : npos;
   }
@@ -2028,7 +2060,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
     const std::size_t length = block_size(block_index);
     std::int64_t current = 0;
     for (std::size_t offset = 0; offset < length; ++offset) {
-      current += bit(begin + offset) ? 1 : -1;
+      current += bit_impl(begin + offset) ? 1 : -1;
       if (current == target) {
         return begin + offset;
       }
@@ -2098,7 +2130,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
                                std::uint64_t rank) const {
     std::int64_t current = 0;
     for (std::size_t position = begin; position < end; ++position) {
-      current += bit(position) ? 1 : -1;
+      current += bit_impl(position) ? 1 : -1;
       if (current == target && --rank == 0) {
         return position;
       }
@@ -2184,7 +2216,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
    * @param position Bit position to consume.
    */
   void append_scanned_bit(ScanResult& result, std::size_t position) const {
-    result.block_excess += bit(position) ? 1 : -1;
+    result.block_excess += bit_impl(position) ? 1 : -1;
     if (result.block_excess < result.min_value) {
       result.min_value = result.block_excess;
       result.min_count = 1;
@@ -2203,7 +2235,7 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
    */
   void append_scanned_min_bit(MinScanResult& result,
                               std::size_t position) const {
-    result.block_excess += bit(position) ? 1 : -1;
+    result.block_excess += bit_impl(position) ? 1 : -1;
     if (result.block_excess < result.min_value) {
       result.min_value = result.block_excess;
       result.min_position = position;
@@ -2223,19 +2255,8 @@ class RmMBTree : public RmMBase<RmMBTree<HighCacheLines, LowFanout>> {
         (bits_[bit_position >> 6] >> (bit_position & 63)) & 0xffu);
   }
 
-  /**
-   * @brief Read one bit from the backing span.
-   * @details Interprets the backing words as little-endian bit order.
-   * @param position Bit position to read.
-   * @return 0 or 1.
-   */
-  std::uint8_t bit(std::size_t position) const {
-    return static_cast<std::uint8_t>((bits_[position >> 6] >> (position & 63)) &
-                                     1ull);
-  }
-
   std::span<const std::uint64_t> bits_;
-  std::optional<RankSelectSupport<>> rank_index_;
+  std::optional<RankSelect> rank_index_;
   std::size_t bit_count_ = 0;
   std::size_t block_count_ = 0;
   Summary top_summary_;
