@@ -1,10 +1,11 @@
 #pragma once
 
 #include <pixie/tree/bp.h>
+#include <pixie/tree/detail/unpack_louds.h>
 #include <pixie/tree/dfuds.h>
-#include <pixie/tree/experimental/tree_navigation_index.h>
 #include <pixie/tree/louds.h>
 #include <pixie/tree/path_view.h>
+#include <pixie/tree/root_navigation_index.h>
 #include <pixie/utils.h>
 
 #include <cstddef>
@@ -14,27 +15,28 @@
 #include <utility>
 
 #include "tree_dfs/dfs.h"
+#include "tree_dfs/inspect.h"
 
 namespace pixie::benchmarks {
 
 // Dispatch to the concrete implementations' internal unpacking kernels.
 // Source words belong to the fixture; they
 // must match the tree and need no padding past the final logical word.
-template <class Backend, class CachePolicy, class Visitor>
-void UnpackedDepthFirst(const BPTree<Backend, CachePolicy>& tree,
+template <class Backend, class Visitor>
+void UnpackedDepthFirst(const BPTree<Backend>& tree,
                         std::span<const uint64_t> words,
                         Visitor& visitor) {
   detail::tree_unpack::bp_byte(tree, words, 2 * tree.size(), visitor);
 }
-template <class Backend, class CachePolicy, class Visitor>
-void UnpackedDepthFirst(const DFUDSTree<Backend, CachePolicy>& tree,
+template <class Backend, class Visitor>
+void UnpackedDepthFirst(const DFUDSTree<Backend>& tree,
                         std::span<const uint64_t> words,
                         Visitor& visitor) {
   detail::tree_unpack::dfuds_excess_stream(tree, words, 2 * tree.size() - 1,
                                            visitor);
 }
-template <class Backend, class CachePolicy, class Visitor>
-void UnpackedDepthFirst(const LoudsTree<Backend, CachePolicy>& tree,
+template <class Backend, class Visitor>
+void UnpackedDepthFirst(const LoudsTree<Backend>& tree,
                         std::span<const uint64_t> words,
                         Visitor& visitor) {
   detail::tree_unpack::louds(tree, words, 2 * tree.size() - 1, visitor);
@@ -260,17 +262,15 @@ class ParenthesisUnpackedAccess {
   bool cached_ = false;
   bool leaf_ = false;
 };
-template <class Backend, class CachePolicy>
-auto MakeUnpackedAccess(const BPTree<Backend, CachePolicy>& tree,
+template <class Backend>
+auto MakeUnpackedAccess(const BPTree<Backend>& tree,
                         std::span<const uint64_t> words) {
-  return ParenthesisUnpackedAccess<true, BPTree<Backend, CachePolicy>>(tree,
-                                                                       words);
+  return ParenthesisUnpackedAccess<true, BPTree<Backend>>(tree, words);
 }
-template <class Backend, class CachePolicy>
-auto MakeUnpackedAccess(const DFUDSTree<Backend, CachePolicy>& tree,
+template <class Backend>
+auto MakeUnpackedAccess(const DFUDSTree<Backend>& tree,
                         std::span<const uint64_t> words) {
-  return ParenthesisUnpackedAccess<false, DFUDSTree<Backend, CachePolicy>>(
-      tree, words);
+  return ParenthesisUnpackedAccess<false, DFUDSTree<Backend>>(tree, words);
 }
 template <class Tree>
 class LoudsUnpackedAccess {
@@ -298,22 +298,20 @@ class LoudsUnpackedAccess {
   std::span<const uint64_t> words_;
   typename Tree::NodeView view_;
 };
-template <class Backend, class CachePolicy>
-auto MakeUnpackedAccess(const LoudsTree<Backend, CachePolicy>& tree,
+template <class Backend>
+auto MakeUnpackedAccess(const LoudsTree<Backend>& tree,
                         std::span<const uint64_t> words) {
-  return LoudsUnpackedAccess<LoudsTree<Backend, CachePolicy>>(tree, words);
+  return LoudsUnpackedAccess<LoudsTree<Backend>>(tree, words);
 }
 
-template <class Backend, class CachePolicy, class Visit, class Inspect>
-TraversalWork UnpackedDepthFirstInspect(
-    const LoudsTree<Backend, CachePolicy>& tree,
-    std::span<const uint64_t> words,
-    Visit&& visit,
-    Inspect&& inspect) {
+template <class Backend, class Visit, class Inspect>
+TraversalWork UnpackedDepthFirstInspect(const LoudsTree<Backend>& tree,
+                                        std::span<const uint64_t> words,
+                                        Visit&& visit,
+                                        Inspect&& inspect) {
   using Visitor = std::remove_reference_t<Visit>;
   using Inspector = std::remove_reference_t<Inspect>;
-  detail::tree_unpack::LoudsTraversal<LoudsTree<Backend, CachePolicy>, Visitor,
-                                      Inspector>
+  detail::tree_unpack::LoudsTraversal<LoudsTree<Backend>, Visitor, Inspector>
       traversal{tree, words, 2 * tree.size() - 1, visit, {}, &inspect};
   traversal.walk(tree.root(), 0);
   return {traversal.node_count, traversal.child_count};
@@ -324,25 +322,23 @@ TraversalWork ParenthesisDepthFirstInspect(const Tree& tree,
                                            std::span<const uint64_t> words,
                                            Visit& visit,
                                            Inspect& inspect) {
-  detail::tree_unpack::InspectTraversal<BP, Tree, Visit, Inspect> traversal(
-      tree, words, visit, inspect);
+  InspectTraversal<BP, Tree, Visit, Inspect> traversal(tree, words, visit,
+                                                       inspect);
   traversal.walk(tree.root());
   return {traversal.node_count, traversal.child_count};
 }
-template <class Backend, class CachePolicy, class Visit, class Inspect>
-TraversalWork UnpackedDepthFirstInspect(
-    const BPTree<Backend, CachePolicy>& tree,
-    std::span<const uint64_t> words,
-    Visit&& visit,
-    Inspect&& inspect) {
+template <class Backend, class Visit, class Inspect>
+TraversalWork UnpackedDepthFirstInspect(const BPTree<Backend>& tree,
+                                        std::span<const uint64_t> words,
+                                        Visit&& visit,
+                                        Inspect&& inspect) {
   return ParenthesisDepthFirstInspect<true>(tree, words, visit, inspect);
 }
-template <class Backend, class CachePolicy, class Visit, class Inspect>
-TraversalWork UnpackedDepthFirstInspect(
-    const DFUDSTree<Backend, CachePolicy>& tree,
-    std::span<const uint64_t> words,
-    Visit&& visit,
-    Inspect&& inspect) {
+template <class Backend, class Visit, class Inspect>
+TraversalWork UnpackedDepthFirstInspect(const DFUDSTree<Backend>& tree,
+                                        std::span<const uint64_t> words,
+                                        Visit&& visit,
+                                        Inspect&& inspect) {
   return ParenthesisDepthFirstInspect<false>(tree, words, visit, inspect);
 }
 

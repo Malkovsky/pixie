@@ -1,5 +1,11 @@
 # Succinct tree traversal kernels and the bounded path index
 
+> Historical experiment snapshot. Names, ownership, and candidate variants below
+> describe the experiments, not the current API. See the maintained
+> [experiment notes](README.md)
+> and `include/pixie/tree/root_navigation_index.h` / `traversal_context.h`
+> for the finalized implementation.
+
 Implementation note, 20 October 2026.
 
 This note describes Pixie's current LOUDS, balanced-parentheses (BP), and
@@ -87,7 +93,7 @@ source bits. Each window begins at an indexed child position and decodes
 consecutive node delimiters. Long unary runs therefore do not force an
 unbounded scan to reach a requested starting child.
 
-Source: [unpack_louds.h](../../../include/pixie/tree/detail/unpack_louds.h).
+Source: [unpack_louds.h](../../detail/unpack_louds.h).
 
 ## BP plain DFS: precomputed byte programs
 
@@ -116,7 +122,7 @@ occupies 16 KiB shared across trees. Per-traversal ancestor storage is roughly
 Beyond the cached ancestor depth, normal parent navigation provides the
 fallback.
 
-Source: [unpack_bp.h](../../../include/pixie/tree/detail/unpack_bp.h).
+Source: [unpack_bp.h](../../detail/unpack_bp.h).
 
 ## DFUDS plain DFS: degree streaming and completion excess
 
@@ -143,7 +149,7 @@ This avoids parent and last-child queries on the normal path. The stack holds
 128 cached ancestor entries, with a sentinel slot. Deeper traversal uses
 navigation until it returns to the cached portion.
 
-Source: [unpack_dfuds.h](../../../include/pixie/tree/detail/unpack_dfuds.h).
+Source: [unpack_dfuds.h](../../detail/unpack_dfuds.h).
 
 ## BP and DFUDS inspected DFS: complete-subtree unpacking
 
@@ -229,8 +235,8 @@ for descent, rather than requiring an unbounded child buffer. At recursion
 depth 128, a navigation fallback handles the subtree. The recursive child
 buffers add bounded stack storage beyond the shared decoded-record buffer.
 
-Sources: [unpack_cache.h](../../../include/pixie/tree/detail/unpack_cache.h),
-[unpack_bits.h](../../../include/pixie/tree/detail/unpack_bits.h).
+Sources: [unpack_cache.h](../../detail/unpack_cache.h),
+[unpack_bits.h](../../detail/unpack_bits.h).
 
 ## SIMD scope
 
@@ -318,7 +324,7 @@ Reported path timings therefore measure navigation, not construction. Its
 benefit is intended for repeated walks over the same immutable tree.
 
 Source:
-[tree_navigation_index.h](../../../include/pixie/tree/experimental/tree_navigation_index.h).
+[tree_navigation_index.h](../../root_navigation_index.h).
 
 ## Evaluation conventions
 
@@ -341,7 +347,7 @@ outside the repository.
 ## Additional pointer-tree reference
 
 The comparison suite also provides
-[`pixie::references::PointerTree`](../../../include/references/pointer_tree.h).
+[`pixie::references::PointerTree`](../../../../references/pointer_tree.h).
 Each node stores exactly three native pointers: first child, next sibling, and
 parent. Records live in one contiguous allocation, in either preorder or BFS
 order, to match the relevant succinct encoding's numbering.

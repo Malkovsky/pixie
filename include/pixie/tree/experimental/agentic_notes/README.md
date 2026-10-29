@@ -4,10 +4,27 @@ Consolidated 2026-10-28, before cleanup of the local profiling workspace.
 These notes preserve decisions, algorithms and representative evidence from
 the BP/DFUDS/LOUDS experiments. They are not an API stability promise or a claim
 that discarded prototypes remain reproducible after their sources are deleted.
-No experiment files were deleted while preparing these notes.
+This directory contains prose only. The archived SIMD prototype and its build
+and probe files were removed during cleanup; the algorithms, results and
+validation requirements are preserved below. Retained implementation code lives
+outside these notes.
+
+## Ownership update after review (2026-10-29)
+
+These notes describe the measured October 28 implementation. The review refactor
+keeps trees immutable, moves the runtime allowance to the external
+`TreeTraversalContext(tree, words, byte_limit)`, and removes the CLOCK/retained
+chunk cache policies and their registrations. Their results below are historical
+evidence for that decision. Root indexes remain separate and immutable; decoding
+scratch belongs to each traversal. The tables have not been remeasured after
+this refactor. RMQ explicitly retains its original uncompressed backend.
+
+The finalized API is described in [the tree usage guide](../../README.md).
 
 ## Read first
 
+- [Earlier traversal-kernel design](traversal-kernels-history.md): historical
+  description retained for context, superseded by the current code map below.
 - [Navigation and caching](navigation-and-caching.md): local query reuse,
   bounded root index, CLOCK, retained unpacking and runtime memory budgets.
 - [Decoding and SIMD](decoding-and-simd.md): streaming DFS, compiled topology
@@ -15,8 +32,6 @@ No experiment files were deleted while preparing these notes.
 - [Measurement and construction](measurement-and-construction.md): workload
   semantics, current rounded results, input generation, space accounting and
   validation requirements.
-- [Archived SIMD prototype](microtree-simd/README.md): the 128-node BP kernels,
-  exact-trace checks and optional timing probes extracted from profiling.
 
 The public-facing snapshot is [the tree benchmark page](../../../../../src/docs/benchmarks/trees.md).
 The notes below are deliberately self-contained: historical report names are
@@ -60,23 +75,24 @@ DFS also remains behind pointers. No single encoding wins every workload.
 | Responsibility | Location relative to `include/pixie/` |
 | --- | --- |
 | Tree facade and child enumeration contract | `tree.h` |
-| Encodings and local view policies | `tree/{bp,dfuds,louds,cache}.h` |
+| Encodings and local views | `tree/{bp,dfuds,louds}.h` |
 | Lazy per-node results | `tree/detail/{bp,dfuds,louds}_node_view.h` |
 | Streaming kernels and bit primitives | `tree/detail/unpack*.h` |
-| Bounded root index | `tree/experimental/tree_navigation_index.h` |
-| Combined runtime budget selection | `tree/experimental/tree_traversal_cache.h` |
-| BP compact records and vector program arguments | `tree/experimental/tree_micro_compact.h`, `tree_micro_vector.h` |
-| Shared small BP programs | `tree/experimental/tree_micro_prefetch.h` |
-| DFUDS programs/records | `tree/experimental/tree_dfuds_micro.h` |
-| LOUDS level and child-end buffers | `tree/experimental/tree_louds_prefetch.h`, `tree_louds_iterative.h` |
-| Optional general caches | `tree/experimental/second_chance_tree_cache.h`, `unpacked_tree_cache.h` |
+| Bounded root index | `tree/root_navigation_index.h` |
+| Combined runtime budget selection | `tree/traversal_context.h` |
+| BP compact records and vector program arguments | `tree/detail/bp_micro.h`, `bp_micro_vector.h` |
+| Shared small BP programs | `tree/detail/bp_micro_tables.h` |
+| DFUDS programs/records | `tree/detail/dfuds_micro.h` |
+| LOUDS level and child-end buffers | `tree/detail/louds_inspection.h`, `louds_inspection_iterative.h` |
+| Removed general-cache experiments | Historical findings in `navigation-and-caching.md` |
 
 Repository tools retained for reproduction: `scripts/benchmark_trees.py`,
 `scripts/benchmark_tree_construction.py`, `scripts/plot_tree_docs.py`, and
 `src/benchmarks/tree_construction_probe.cpp`. Input generation is in
 `src/benchmarks/tree_input.h`; exact-event and navigation tests are in
-`src/tests/tree_tests.cpp`. Some additional experimental headers remain from
-earlier candidates; their presence does not mean the final adapter selects them.
+`src/tests/tree_tests.cpp`. The retained prepared-root and prepared-event experiments target small trees.
+Their optional `tree_experimental_benchmarks` target measures exact replay and
+fallback at the admission boundary; neither is selected by the default context.
 
 ## Next iteration: hypotheses, not established wins
 

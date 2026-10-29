@@ -3,9 +3,7 @@
 #include <pixie/memory_usage.h>
 #include <pixie/rmm/tree.h>
 #include <pixie/tree.h>
-#include <pixie/tree/cache.h>
 #include <pixie/tree/detail/dfuds_node_view.h>
-#include <pixie/tree/detail/unpack_cache.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -13,21 +11,16 @@
 #include <vector>
 
 namespace pixie {
-namespace detail {
-struct NavigationChunkAccess;
-}
 
 /**
  * @brief A tree class based on the depth-first unary degree sequence (DFUDS)
  * representation
- * @tparam CachePolicy Navigation cache policy satisfying tree/cache.h.
  */
-template <typename RMMTree, class CachePolicy = LocalNavigationCache>
-class DFUDSTree : public TreeBase<DFUDSTree<RMMTree, CachePolicy>> {
+template <typename RMMTree>
+class DFUDSTree : public TreeBase<DFUDSTree<RMMTree>> {
  private:
   const size_t num_bits_;
   RMMTree rmm_;
-  const uint64_t* words_;
 
   // Sibling edges match the parent's unary ones from right to left. The last
   // child's edge is therefore the first one of that run, preceded by zero
@@ -47,53 +40,30 @@ class DFUDSTree : public TreeBase<DFUDSTree<RMMTree, CachePolicy>> {
     // Subtract those records from the child's preorder number.
     const auto number = node.number - (node.pos - open) / 2;
     // For a last child, the matching one is already the parent's record start.
-    const auto pos = starts_degree_run(open) ? open : rmm_.select0(number) + 1;
+    const auto pos = number == 0               ? 0
+                     : starts_degree_run(open) ? open
+                                               : rmm_.select0(number) + 1;
     return TreeNode(number, pos);
   }
 
  public:
   using Node = TreeNode;
 
-  /** @brief Encoding-specific query memoization used by the local cache policy.
-   */
-  using LocalNodeView = detail::DfudsNodeView<DFUDSTree>;
-  /** @brief Cache context selected by CachePolicy; owned by this tree. */
-  using Cache = typename CachePolicy::template Cache<DFUDSTree>;
-  /** @brief Node view supplied by the selected cache context. */
-  using NodeView = typename Cache::NodeView;
+  /** @brief Independent, lightweight per-node navigation memo. */
+  using NodeView = detail::DfudsNodeView<DFUDSTree>;
 
  private:
   friend class detail::DfudsNodeView<DFUDSTree>;
-  friend struct detail::NavigationChunkAccess;
-  [[no_unique_address]] Cache cache_;
-  size_t cache_limit_;
 
  public:
-  /**
-   * @brief Create an independent view for a valid node of this tree.
-   * @details The tree, its cache context, and borrowed source must outlive the
-   * returned view and remain unmoved. CachePolicy defines cache sharing and
-   * synchronization; node handles remain independent of cache entry locations.
-   */
-  NodeView navigate(TreeNode node) const {
-    return cache_.navigate(*this, node);
-  }
+  /** @brief Implement TreeBase::navigate without mutating the tree. */
+  NodeView navigate_impl(TreeNode node) const { return NodeView(*this, node); }
 
-  /** @brief Cache and traversal-buffer allowance; excludes source/RmM storage.
-   */
-  size_t cache_limit_bytes() const { return cache_limit_; }
-  /** @brief Object, owned index allocations and cache-reported storage.
-   * @details Cache policies may include reserved scratch. Excludes borrowed
-   * words, external traversal contexts and allocator metadata. */
-  size_t memory_usage_bytes() const
+  /** @brief Object and owned backend allocations; excludes borrowed words. */
+  size_t memory_usage_bytes_impl() const
     requires HasMemoryUsageBytes<RMMTree>
   {
-    return sizeof(*this) + nested_owned_memory_bytes(rmm_) +
-           nested_owned_memory_bytes(cache_);
-  }
-  /** @brief Navigation-policy storage plus reserved temporary buffers. */
-  size_t cache_memory_usage_bytes() const {
-    return cache_.memory_usage_bytes();
+    return sizeof(*this) + nested_owned_memory_bytes(rmm_);
   }
 
   /**
@@ -102,17 +72,15 @@ class DFUDSTree : public TreeBase<DFUDSTree<RMMTree, CachePolicy>> {
    * and its traversals. No padding beyond the logical final word is required.
    *
    * @param dfuds_sequence parenthesis sequence in dfuds representation
-   * @param cache_bytes Cache plus traversal-buffer limit; zero disables shared
-   * retention. Immutable constexpr tables and caller-owned views are excluded.
    */
-  explicit DFUDSTree(const std::vector<std::uint64_t>& dfuds_sequence,
-                     size_t tree_size,
-                     size_t cache_bytes = kDefaultTreeCacheBytes)
-      : num_bits_(2 * tree_size - 1),
-        rmm_(dfuds_sequence, 2 * tree_size - 1),
-        words_(dfuds_sequence.data()),
-        cache_(cache_bytes),
-        cache_limit_(cache_bytes) {}
+  explicit DFUDSTree(std::span<const std::uint64_t> dfuds_sequence,
+                     size_t tree_size)
+      : num_bits_(2 * tree_size - 1), rmm_(dfuds_sequence, 2 * tree_size - 1) {}
+
+  /** @brief Reject a temporary owning vector; this tree borrows its words. */
+  DFUDSTree(std::vector<std::uint64_t>&&, size_t) = delete;
+  /** @brief Reject a temporary const owning vector for the same reason. */
+  DFUDSTree(const std::vector<std::uint64_t>&&, size_t) = delete;
 
   /**
    * @brief Returns the root node
@@ -153,12 +121,12 @@ class DFUDSTree : public TreeBase<DFUDSTree<RMMTree, CachePolicy>> {
   /** @brief Implement TreeBase::for_each_child with local traversal state. */
   template <class Visitor>
   void for_each_child_impl(const TreeNode& node, Visitor&& visitor) const {
-    auto parent = LocalNodeView(*this, node);
+    auto parent = NodeView(*this, node);
     const auto count = parent.degree();
     if (count == 0) {
       return;
     }
-    auto child = LocalNodeView(*this, parent.first_child());
+    auto child = NodeView(*this, parent.first_child());
     for (size_t i = 0; i < count; ++i) {
       visitor(child.node());
       if (i + 1 < count) {

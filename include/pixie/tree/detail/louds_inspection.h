@@ -1,7 +1,7 @@
 #pragma once
 #include <pixie/tree/detail/unpack_louds.h>
 
-namespace pixie::experimental {
+namespace pixie::detail::tree_unpack {
 using pixie::detail::tree_unpack::emit;
 using pixie::detail::tree_unpack::louds_next;
 using pixie::detail::tree_unpack::LoudsLevel;
@@ -171,4 +171,4 @@ struct LoudsPrefetchTraversal {
     emit(visit, node, false);
   }
 };
-}  // namespace pixie::experimental
+}  // namespace pixie::detail::tree_unpack

@@ -3,9 +3,7 @@
 #include <pixie/memory_usage.h>
 #include <pixie/rmm/tree.h>
 #include <pixie/tree.h>
-#include <pixie/tree/cache.h>
 #include <pixie/tree/detail/bp_node_view.h>
-#include <pixie/tree/detail/unpack_cache.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -14,63 +12,33 @@
 #include <vector>
 
 namespace pixie {
-namespace detail {
-struct NavigationChunkAccess;
-}
 
 /**
  * @brief A tree class based on the balances parentheses (BP)
  * representation
- * @tparam CachePolicy Navigation cache policy satisfying tree/cache.h.
  */
-template <typename RMMTree, class CachePolicy = LocalNavigationCache>
-class BPTree : public TreeBase<BPTree<RMMTree, CachePolicy>> {
+template <typename RMMTree>
+class BPTree : public TreeBase<BPTree<RMMTree>> {
  private:
   const size_t num_bits_;
   RMMTree rmm_;
-  const uint64_t* words_;
 
  public:
-  /** @brief Encoding-specific query memoization used by the local cache policy.
-   */
-  using LocalNodeView = detail::BpNodeView<BPTree>;
-  /** @brief Cache context selected by CachePolicy; owned by this tree. */
-  using Cache = typename CachePolicy::template Cache<BPTree>;
-  /** @brief Node view supplied by the selected cache context. */
-  using NodeView = typename Cache::NodeView;
+  /** @brief Independent, lightweight per-node navigation memo. */
+  using NodeView = detail::BpNodeView<BPTree>;
 
  private:
   friend class detail::BpNodeView<BPTree>;
-  friend struct detail::NavigationChunkAccess;
-  [[no_unique_address]] Cache cache_;
-  size_t cache_limit_;
 
  public:
-  /**
-   * @brief Create an independent view for a valid node of this tree.
-   * @details The tree, its cache context, and borrowed source must outlive the
-   * returned view and remain unmoved. CachePolicy defines cache sharing and
-   * synchronization; node handles remain independent of cache entry locations.
-   */
-  NodeView navigate(TreeNode node) const {
-    return cache_.navigate(*this, node);
-  }
+  /** @brief Implement TreeBase::navigate without mutating the tree. */
+  NodeView navigate_impl(TreeNode node) const { return NodeView(*this, node); }
 
-  /** @brief Cache and traversal-buffer allowance; excludes source/RmM storage.
-   */
-  size_t cache_limit_bytes() const { return cache_limit_; }
-  /** @brief Object, owned index allocations and cache-reported storage.
-   * @details Cache policies may include reserved scratch. Excludes borrowed
-   * words, external traversal contexts and allocator metadata. */
-  size_t memory_usage_bytes() const
+  /** @brief Object and owned backend allocations; excludes borrowed words. */
+  size_t memory_usage_bytes_impl() const
     requires HasMemoryUsageBytes<RMMTree>
   {
-    return sizeof(*this) + nested_owned_memory_bytes(rmm_) +
-           nested_owned_memory_bytes(cache_);
-  }
-  /** @brief Navigation-policy storage plus reserved temporary buffers. */
-  size_t cache_memory_usage_bytes() const {
-    return cache_.memory_usage_bytes();
+    return sizeof(*this) + nested_owned_memory_bytes(rmm_);
   }
 
   /**
@@ -82,17 +50,14 @@ class BPTree : public TreeBase<BPTree<RMMTree, CachePolicy>> {
    * @brief Constructor from an external array of uint64_t
    * @details The source words must remain alive and immutable for this tree
    * and its traversals. No padding beyond the logical final word is required.
-   * @param cache_bytes Cache plus traversal-buffer limit; zero disables shared
-   * retention. Immutable constexpr tables and caller-owned views are excluded.
    */
-  explicit BPTree(const std::vector<std::uint64_t>& words,
-                  size_t tree_size,
-                  size_t cache_bytes = kDefaultTreeCacheBytes)
-      : num_bits_(2 * tree_size),
-        rmm_(words, 2 * tree_size),
-        words_(words.data()),
-        cache_(cache_bytes),
-        cache_limit_(cache_bytes) {}
+  explicit BPTree(std::span<const std::uint64_t> words, size_t tree_size)
+      : num_bits_(2 * tree_size), rmm_(words, 2 * tree_size) {}
+
+  /** @brief Reject a temporary owning vector; this tree borrows its words. */
+  BPTree(std::vector<std::uint64_t>&&, size_t) = delete;
+  /** @brief Reject a temporary const owning vector for the same reason. */
+  BPTree(const std::vector<std::uint64_t>&&, size_t) = delete;
 
   /**
    * @brief Returns the root node
@@ -152,7 +117,7 @@ class BPTree : public TreeBase<BPTree<RMMTree, CachePolicy>> {
     if (is_leaf_impl(node)) {
       return;
     }
-    auto child = LocalNodeView(*this, first_child_impl(node));
+    auto child = NodeView(*this, first_child_impl(node));
     while (true) {
       visitor(child.node());
       if (child.is_last_child()) {

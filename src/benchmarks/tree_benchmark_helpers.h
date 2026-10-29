@@ -1,7 +1,6 @@
 #pragma once
 
 #include <benchmark/benchmark.h>
-#include <pixie/tree/path_view.h>
 
 #include <cstddef>
 #include <limits>
@@ -71,20 +70,12 @@ std::size_t TraverseDepthFirstWithView(const Tree& tree) {
   return visited;
 }
 
-template <bool UseView = false,
-          bool UsePath = false,
-          bool Unpack = false,
-          class Tree>
+template <bool UseView, class Tree>
 void RunDepthFirstBenchmark(benchmark::State& state,
                             const Tree& tree,
-                            std::size_t tree_size,
-                            std::span<const std::uint64_t> words = {}) {
+                            std::size_t tree_size) {
   const auto traverse = [&] {
-    if constexpr (UsePath) {
-      DepthFirst<Unpack>(tree, words,
-                         [](auto node) { benchmark::DoNotOptimize(node); });
-      return tree.size();
-    } else if constexpr (UseView) {
+    if constexpr (UseView) {
       return TraverseDepthFirstWithView(tree);
     } else {
       return TraverseDepthFirst(tree);
@@ -124,23 +115,10 @@ enum class TreeWorkload {
 
 // Each random-path iteration is one complete root-to-leaf walk. Report both
 // paths and visited nodes, since different paths have different lengths.
-template <TreeWorkload Workload,
-          bool Unpack = false,
-          bool Indexed = false,
-          class Tree>
+template <TreeWorkload Workload, class Tree>
 void RunExpandedTreeBenchmark(benchmark::State& state,
                               const Tree& tree,
-                              std::size_t tree_size,
-                              std::span<const uint64_t> words = {}) {
-  std::optional<experimental::TreeNavigationIndex<Tree>> index;
-  if constexpr (Indexed) {
-    static_assert(Workload == TreeWorkload::kRandomPath ||
-                  Workload == TreeWorkload::kRandomPathChildren);
-    index.emplace(tree);
-    state.counters["navigation_index_bytes"] = index->memory_usage_bytes();
-    state.counters["navigation_index_bytes_per_node"] =
-        double(index->memory_usage_bytes()) / tree_size;
-  }
+                              std::size_t tree_size) {
   std::optional<ShiftedQueryPool> queries;
   if constexpr (Workload != TreeWorkload::kDfsChildren) {
     queries.emplace(0, std::numeric_limits<std::size_t>::max(), 43);
@@ -148,24 +126,10 @@ void RunExpandedTreeBenchmark(benchmark::State& state,
   auto observe = [](auto node) { benchmark::DoNotOptimize(node); };
   const auto traverse = [&] {
     if constexpr (Workload == TreeWorkload::kDfsChildren) {
-      if constexpr (Unpack) {
-        return UnpackedDepthFirstInspect(tree, words, observe, observe);
-      } else {
-        return DepthFirstInspect(tree, observe, observe);
-      }
+      return DepthFirstInspect(tree, observe, observe);
     } else {
-      if constexpr (Indexed) {
-        return IndexedRandomRootToLeaf<Workload ==
-                                       TreeWorkload::kRandomPathChildren>(
-            *index, *queries, observe, observe);
-      } else if constexpr (Unpack) {
-        return UnpackedRandomRootToLeaf<Workload ==
-                                        TreeWorkload::kRandomPathChildren>(
-            tree, words, *queries, observe, observe);
-      } else {
-        return RandomRootToLeaf<Workload == TreeWorkload::kRandomPathChildren>(
-            tree, *queries, observe, observe);
-      }
+      return RandomRootToLeaf<Workload == TreeWorkload::kRandomPathChildren>(
+          tree, *queries, observe, observe);
     }
   };
   auto& perf = PerfQueryWindow::instance();
@@ -210,9 +174,8 @@ void RunExpandedTreeBenchmark(benchmark::State& state,
 
 inline void TreeSizes(benchmark::internal::Benchmark* benchmark) {
   benchmark->ArgNames({"tree_size"})
-      ->RangeMultiplier(2)
-      ->Range(1ull << 8, 1ull << 26)
-      ->Arg(10000000)
+      ->RangeMultiplier(4)
+      ->Range(1ull << 10, 1ull << 26)
       ->Unit(benchmark::kMillisecond);
 }
 

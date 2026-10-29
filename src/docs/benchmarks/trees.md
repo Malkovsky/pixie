@@ -7,7 +7,10 @@ This page summarizes benchmarks for tree implementation: BP, DFUDS, LOUDS and re
 AMD Ryzen 7 8845HS (8 cores, 16 threads, 16 MiB L3), 15 GiB RAM,
 WSL2 (Linux 6.6.87.2-microsoft-standard-WSL2). GCC 13.3, C++20,
 `-O3 -DNDEBUG -march=native`; measurements pinned to CPU 0.
-Results captured October 28, 2026.
+Results captured October 28, 2026, before the ownership refactor.
+The current API supplies the same combined cache/scratch budget to the external
+`TreeTraversalContext(tree, words, byte_limit)`, rather than to the tree constructor.
+The graphs are the saved measurements, not a new run of the refactored code.
 
 ## Implementations and inputs
 

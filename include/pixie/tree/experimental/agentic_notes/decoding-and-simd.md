@@ -206,6 +206,19 @@ does not dominate the comparison.
 These were BP-only experiments. No DFUDS/LOUDS gain follows from them. The
 unfinished eight-node vector-program prototype was explicitly left unvalidated
 when the optimization iteration closed; do not promote it during cleanup.
+
+The prototype sources and standalone build harness were removed from these
+notes. To revisit the idea, reconstruct a narrow kernel from the steps above
+and compare its complete entry/return/child-handle event stream with ordinary
+tree navigation. The previous checked prototype covered all 2,056 rooted
+ordered shapes through nine nodes, random trees, chains and stars, boundary
+sizes around 32/64/128 nodes, larger fallback cases, and dirty trailing bits.
+Check native and scalar paths separately. For timing, rotate through a pool
+of input shapes, consume full handles, and compare both isolated decode/replay
+and integrated inspected DFS against the compiled microprogram control. A new
+implementation must earn its place through those measurements; the historical
+results do not validate reconstructed code.
+
 Evidence: `microtree-simd`, `microtree256-simd`, `microtree-level-simd`,
 `bp-subtree-end`, `bp-chunk-capacity`, `bp-composite-micro`,
 `compiled-handle-cache`, and `bp-vector-registered`, 2026-10-26/27.

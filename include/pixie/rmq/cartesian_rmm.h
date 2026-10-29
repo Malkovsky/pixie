@@ -68,6 +68,7 @@
  */
 
 #include <pixie/memory_usage.h>
+#include <pixie/rank_select/support.h>
 #include <pixie/rmm/btree.h>
 #include <pixie/rmq.h>
 #include <pixie/rmq/utils/succinct_monotone_stack.h>
@@ -131,8 +132,7 @@ class RmMPlusMinusOne {
    * @brief Build with an exact count of +1 delta bits.
    *
    * @details Cartesian BP construction knows this count exactly, which lets the
-   * nested backend use it when supported. The default compressed backend
-   * derives the count during rank-index construction.
+   * explicitly selected RankSelectSupport<> allocate exact select samples.
    */
   RmMPlusMinusOne(std::span<const std::uint64_t> bits,
                   std::size_t depth_count,
@@ -226,7 +226,9 @@ class RmMPlusMinusOne {
   }
 
  private:
-  using RmM = pixie::experimental::RmMBTree<HighCacheLines, LowFanout>;
+  // Preserve RMQ's measured backend independently of RmMBTree's default.
+  using RmM = pixie::experimental::
+      RmMBTree<HighCacheLines, LowFanout, pixie::RankSelectSupport<>>;
 
   std::span<const std::uint64_t> words_;
   std::size_t depth_count_ = 0;

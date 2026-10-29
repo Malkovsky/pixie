@@ -1,14 +1,16 @@
 #pragma once
 
-#include <pixie/tree/cache.h>
+#include <pixie/tree.h>
+#include <pixie/tree/traversal_budget.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <queue>
+#include <stdexcept>
 #include <vector>
 
-namespace pixie::experimental {
+namespace pixie {
 
 /**
  * @brief Bounded auxiliary navigation index for root-to-leaf walks.
@@ -18,10 +20,14 @@ namespace pixie::experimental {
  * stored contiguously. Unindexed descendants use the original tree.
  * Construction allocates at most Capacity entries within a runtime byte budget,
  * plus temporary build state. Zero disables indexing. Cursors require
- * this index to remain alive and unmoved for their lifetime.
+ * this index and its tree to remain alive and unmoved for their lifetime.
+ * Queries never mutate the index; independent cursors may be used concurrently.
+ * Copying duplicates entries and borrows the same tree. Moving invalidates
+ * existing cursors. Allocator metadata and construction scratch are excluded
+ * from the byte limit. When disabled, the inert object itself is not charged.
  */
 template <class Tree, uint32_t Capacity = 32768>
-class TreeNavigationIndex {
+class RootNavigationIndex {
   static_assert(Capacity > 0);
   static constexpr uint32_t kMissing = std::numeric_limits<uint32_t>::max();
   struct Entry {
@@ -31,12 +37,18 @@ class TreeNavigationIndex {
   };
 
  public:
-  /** @brief Build from a nonempty tree that remains alive and unchanged. */
-  explicit TreeNavigationIndex(const Tree& tree,
-                               size_t byte_limit = kDefaultTreeCacheBytes)
+  /** @brief Build a topology-only index, bounded by byte_limit and Capacity.
+   * @param tree Nonempty immutable tree exposing TreeBase navigation.
+   * @param byte_limit Active index footprint allowance; zero disables indexing.
+   * @throws std::invalid_argument if tree is empty.
+   * @details Only complete child lists are indexed. If they do not fit, cursors
+   * use ordinary navigation; there is no eviction or query-time insertion.
+   */
+  explicit RootNavigationIndex(const Tree& tree,
+                               size_t byte_limit = kDefaultTraversalBytes)
       : tree_(tree) {
-    if constexpr (requires { tree.cache_limit_bytes(); }) {
-      byte_limit = std::min(byte_limit, tree.cache_limit_bytes());
+    if (tree.empty()) {
+      throw std::invalid_argument("Root index requires a nonempty tree");
     }
     const size_t capacity =
         byte_limit > sizeof(*this)
@@ -86,13 +98,23 @@ class TreeNavigationIndex {
     }
   }
 
-  /** @brief Index object and reserved entry bytes, excluding the borrowed tree.
-   */
-  size_t memory_usage_bytes() const {
+  /** @brief Active budget charge; zero when no entries are retained. */
+  size_t budget_usage_bytes() const {
     return entries_.empty()
                ? 0
                : sizeof(*this) + entries_.capacity() * sizeof(Entry);
   }
+
+  /** @brief Actual object and reserved entries, including a disabled object.
+   * @details Excludes the borrowed tree, allocator metadata and build scratch.
+   */
+  size_t memory_usage_bytes() const {
+    return sizeof(*this) + entries_.capacity() * sizeof(Entry);
+  }
+  /** @brief Reject a temporary tree because the index borrows its identity. */
+  RootNavigationIndex(Tree&&, size_t = kDefaultTraversalBytes) = delete;
+  /** @brief Reject a temporary const tree for the same reason. */
+  RootNavigationIndex(const Tree&&, size_t = kDefaultTraversalBytes) = delete;
 
   /** @brief Independent root-to-leaf cursor borrowing this index and its tree.
    */
@@ -194,18 +216,14 @@ class TreeNavigationIndex {
     }
 
    private:
-    friend class TreeNavigationIndex;
-    explicit Cursor(const TreeNavigationIndex& owner) : owner_(&owner) {
+    friend class RootNavigationIndex;
+    explicit Cursor(const RootNavigationIndex& owner) : owner_(&owner) {
       if (owner.entries_.empty()) {
         index_ = kMissing;
         fallback_ = owner.tree_.root();
       }
     }
-    // Keep uncommon succinct navigation out of the compact indexed hot path.
-    [[gnu::noinline]] size_t uncached_degree() const {
-      return owner_->tree_.is_leaf(fallback_) ? 0
-                                              : owner_->tree_.degree(fallback_);
-    }
+    // Keep uncommon succinct navigation out of the indexed hot path.
     [[gnu::noinline]] TreeNode uncached_child(size_t i) const {
       return owner_->tree_.child(node(), i);
     }
@@ -213,16 +231,18 @@ class TreeNavigationIndex {
     [[gnu::noinline]] void uncached_for_each_child(Visitor& visitor) const {
       owner_->tree_.for_each_child(node(), visitor);
     }
-    const TreeNavigationIndex* owner_;
+    const RootNavigationIndex* owner_;
     uint32_t index_ = 0;
     TreeNode fallback_{0, 0};
   };
 
   /** @brief Return an independent cursor initially positioned at the root. */
-  Cursor cursor() const { return Cursor(*this); }
+  Cursor cursor() const& { return Cursor(*this); }
+  /** @brief Reject cursors borrowing a temporary index. */
+  Cursor cursor() const&& = delete;
 
  private:
   const Tree& tree_;
   std::vector<Entry> entries_;
 };
-}  // namespace pixie::experimental
+}  // namespace pixie

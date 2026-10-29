@@ -1,17 +1,12 @@
 #pragma once
-// Internal compiled-event helper for experimental BP traversal. The vector
-// argument keeps full root coordinates in SIMD registers on supported builds.
-// Public callbacks continue to observe TreeNode; scalar fallback is local.
-// Registered 10M inspected DFS, 2026-10-26: 76.26 ms versus 78.86 ms compact
-// scalar-argument control (Release native, CPU 0, seven interleaved repeats).
-// See profiling/bp-vector-registered-2026-10-26/REPORT.md for scope and limits.
-#include <pixie/tree/experimental/tree_micro_prefetch.h>
+// Compiled BP events carry both full-width root coordinates in a SIMD pair.
+// Scalar fallback is local; callbacks always receive ordinary TreeNode handles.
+#include <pixie/tree/detail/bp_micro_tables.h>
 #if defined(PIXIE_AVX2_SUPPORT) || defined(PIXIE_AVX512_SUPPORT)
 #include <immintrin.h>
 #endif
 
-namespace pixie::experimental::vector_micro {
-using namespace pixie::experimental::detail;
+namespace pixie::detail::bp_micro::vector_micro {
 struct Pair {
 #if defined(PIXIE_AVX2_SUPPORT) || defined(PIXIE_AVX512_SUPPORT)
   __m128i lanes;
@@ -56,21 +51,15 @@ template <size_t Id, class Visit, class Inspect, size_t... I>
   };
   (event.template operator()<I>(), ...);
 }
-template <size_t Id, unsigned Policy, class Visit, class Inspect>
+template <size_t Id, class Visit, class Inspect>
 [[gnu::noinline]] void program(Pair root, Visit& visit, Inspect& inspect) {
-  constexpr auto n = bp_micro_tables.programs[Id].nodes;
-  if constexpr (Policy == 1 || (Policy == 2 && n <= 3) ||
-                (Policy == 3 && n >= 4)) {
+  {
     events<Id>(root, visit, inspect,
                std::make_index_sequence<bp_micro_tables.programs[Id].count>{});
-  } else {
-    RunMicroEvents<Id>(
-        offset<0, 0>(root), visit, inspect,
-        std::make_index_sequence<bp_micro_tables.programs[Id].count>{});
   }
 }
-template <unsigned Policy, class Visit, class Inspect, size_t... I>
+template <class Visit, class Inspect, size_t... I>
 constexpr auto dispatch(std::index_sequence<I...>) {
-  return std::array{&program<I, Policy, Visit, Inspect>...};
+  return std::array{&program<I, Visit, Inspect>...};
 }
-}  // namespace pixie::experimental::vector_micro
+}  // namespace pixie::detail::bp_micro::vector_micro

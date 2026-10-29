@@ -10,7 +10,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace pixie::experimental::dfuds_detail {
+namespace pixie::detail::dfuds_micro {
 // Cache decoding by topology, not by node address. DFUDS degree runs encode
 // complete subtrees. Trailing bits beyond the first complete subtree are
 // irrelevant. The table holds only relative handles.
@@ -150,44 +150,21 @@ constexpr auto MicroDispatch(std::index_sequence<I...>) {
   return std::array{&RunMicroProgram<I, Visit, Inspect>...};
 }
 
-template <size_t Bits,
-          unsigned Compiled = 0,
-          bool Reservoir = false,
-          bool Absolute = false,
-          bool Excess = false,
-          bool Compact = false>
+template <size_t Bits>
 class DfudsMicroSubtree {
-  static_assert(Compiled == 0 || Compiled == 1 || Compiled == 3 ||
-                Compiled == 4);
   static_assert(Bits >= 128 && Bits % 128 == 0 && Bits <= 32768);
   static constexpr uint16_t missing = Bits / 2;
-  using Position = std::conditional_t<Absolute, size_t, uint16_t>;
-  struct FullRecord {
-    Position number, pos;
-    uint16_t parent, next, degree, program, returns;
-  };
-  struct CompactRecord {
+  using Position = size_t;
+  struct Record {
     Position number, pos;
     uint16_t parent, next, program, returns;
   };
-  using Record = std::conditional_t<Compact, CompactRecord, FullRecord>;
-  static_assert(!Compact || !Absolute || sizeof(Record) == 24);
-  static bool is_macro(const Record& record) {
-    if constexpr (Compact) {
-      return record.program & 256;
-    } else {
-      return record.degree != 0;
-    }
-  }
+  static_assert(sizeof(Record) == 24);
+  static bool is_macro(const Record& record) { return record.program & 256; }
   std::array<Record, missing + 1> records_;
   size_t count_ = 0, nodes_ = 0;
-  TreeNode root_{0, 0};
   TreeNode node(size_t i) const {
-    if constexpr (Absolute) {
-      return {records_[i].number, records_[i].pos};
-    } else {
-      return {root_.number + records_[i].number, root_.pos + records_[i].pos};
-    }
+    return {records_[i].number, records_[i].pos};
   }
 
  public:
@@ -213,15 +190,13 @@ class DfudsMicroSubtree {
     if (!length) {
       return false;
     }
-    root_ = root;
     nodes_ = (length + 1) / 2;
     count_ = 0;
     std::array<uint16_t, missing> stack, last;
-    std::array<std::conditional_t<Excess, int16_t, uint16_t>, missing>
-        remaining;
+    std::array<int16_t, missing> remaining;
     // A fitting chunk has at most Bits / 2 nodes. Completion targets range
     // from -1 to fewer than that many pending edges, fitting int16_t.
-    [[maybe_unused]] int excess = 0;
+    int excess = 0;
     size_t depth = 0, number = 0, bit = 0;
     while (bit < length) {
       const auto pattern = word_at(local, bit);
@@ -239,27 +214,15 @@ class DfudsMicroSubtree {
         }
       }
       const size_t i = count_++;
-      if constexpr (Compact) {
-        records_[i] = {Position(number + (Absolute ? root.number : 0)),
-                       Position(bit + (Absolute ? root.pos : 0)),
-                       0,
-                       missing,
-                       uint16_t((header >> 4) | (micro_length ? 0 : 256)),
-                       0};
-      } else {
-        records_[i] = {Position(number + (Absolute ? root.number : 0)),
-                       Position(bit + (Absolute ? root.pos : 0)),
-                       0,
-                       missing,
-                       uint16_t(degree),
-                       uint16_t(header >> 4),
-                       0};
-      }
+      records_[i] = {Position(number + root.number),
+                     Position(bit + root.pos),
+                     0,
+                     missing,
+                     uint16_t((header >> 4) | (micro_length ? 0 : 256)),
+                     0};
       if (depth) {
         const size_t parent = stack[depth - 1];
-        if constexpr (!Excess) {
-          --remaining[depth - 1];
-        }
+
         records_[i].parent = parent;
         records_[last[parent]].next = i;
         last[parent] = i;
@@ -267,28 +230,17 @@ class DfudsMicroSubtree {
       if (micro_length) {
         bit += micro_length;
         number += (micro_length + 1) / 2;
-        if constexpr (Excess) {
-          --excess;
-          while (depth && remaining[depth - 1] == excess) {
-            --depth;
-            ++records_[i].returns;
-          }
-        } else {
-          while (depth && !remaining[depth - 1]) {
-            --depth;
-            ++records_[i].returns;
-          }
+        --excess;
+        while (depth && remaining[depth - 1] == excess) {
+          --depth;
+          ++records_[i].returns;
         }
       } else {
         // Only macro records become parents in the decoded skeleton.
         last[i] = missing;
         stack[depth] = i;
-        if constexpr (Excess) {
-          remaining[depth++] = excess - 1;
-          excess += int(degree) - 1;
-        } else {
-          remaining[depth++] = degree;
-        }
+        remaining[depth++] = excess - 1;
+        excess += int(degree) - 1;
         bit += degree + 1;
         ++number;
       }
@@ -307,76 +259,9 @@ class DfudsMicroSubtree {
           inspect(node(c));
         }
       } else {
-        if constexpr (Compiled == 4) {
-          if (record.program == 0) {
-            RunMicroEvents<0>(node(i), visit, inspect,
-                              std::make_index_sequence<
-                                  dfuds_micro_tables.programs[0].count>{});
-          } else if (record.program == 1) {
-            RunMicroEvents<1>(node(i), visit, inspect,
-                              std::make_index_sequence<
-                                  dfuds_micro_tables.programs[1].count>{});
-          } else {
-            const auto& p = dfuds_micro_tables.programs[record.program];
-            alignas(64) uint64_t handles[48];
-            const auto root = node(i);
-            pixie::detail::tree_unpack::decode_relative_events(
-                p.events.data(), p.count, root.number, root.pos, handles);
-            for (unsigned j = 0; j < p.count; ++j) {
-              TreeNode current(handles[2 * j], handles[2 * j + 1]);
-              if (p.events[j] & 128) {
-                inspect(current);
-              } else {
-                emit(visit, current, !((p.returns >> j) & 1));
-              }
-            }
-          }
-        } else if constexpr (Compiled == 3) {
-          switch (record.program) {
-            case 0:
-              RunMicroEvents<0>(node(i), visit, inspect,
-                                std::make_index_sequence<
-                                    dfuds_micro_tables.programs[0].count>{});
-              break;
-            case 1:
-              RunMicroEvents<1>(node(i), visit, inspect,
-                                std::make_index_sequence<
-                                    dfuds_micro_tables.programs[1].count>{});
-              break;
-            case 2:
-              RunMicroEvents<2>(node(i), visit, inspect,
-                                std::make_index_sequence<
-                                    dfuds_micro_tables.programs[2].count>{});
-              break;
-            case 3:
-              RunMicroEvents<3>(node(i), visit, inspect,
-                                std::make_index_sequence<
-                                    dfuds_micro_tables.programs[3].count>{});
-              break;
-            default: {
-              static constexpr auto dispatch = MicroDispatch<Visit, Inspect>(
-                  std::make_index_sequence<197>{});
-              dispatch[record.program](node(i), visit, inspect);
-            }
-          }
-        } else if constexpr (Compiled == 1) {
-          static constexpr auto dispatch =
-              MicroDispatch<Visit, Inspect>(std::make_index_sequence<197>{});
-          dispatch[record.program](node(i), visit, inspect);
-        } else {
-          const auto& p = dfuds_micro_tables.programs[record.program];
-          const auto root = node(i);
-          for (unsigned j = 0; j < p.count; ++j) {
-            const unsigned code = p.events[j];
-            TreeNode current(root.number + (code & 7),
-                             root.pos + ((code >> 3) & 15));
-            if (code & 128) {
-              inspect(current);
-            } else {
-              emit(visit, current, !((p.returns >> j) & 1));
-            }
-          }
-        }
+        static constexpr auto dispatch =
+            MicroDispatch<Visit, Inspect>(std::make_index_sequence<197>{});
+        dispatch[record.program](node(i), visit, inspect);
         size_t completed = i;
         for (size_t r = 0; r < record.returns; ++r) {
           completed = records_[completed].parent;
@@ -389,24 +274,14 @@ class DfudsMicroSubtree {
 
 // Local traversal scratch; topology programs are immutable and shared. No
 // cache admission/lookups inside a microtree, and no tree-specific table build.
-template <size_t Bits,
-          class Tree,
-          class Visit,
-          class Inspect,
-          unsigned Compiled = 0>
+template <size_t Bits, class Tree, class Visit, class Inspect>
 class DfudsMicroTraversal {
   const Tree& tree_;
   std::span<const uint64_t> words_;
   Visit& visit_;
   Inspect& inspect_;
   size_t max_depth_;
-  DfudsMicroSubtree<Bits,
-                    Compiled >= 7 ? 1 : Compiled,
-                    Compiled == 7 || Compiled == 8,
-                    Compiled >= 8,
-                    Compiled >= 9,
-                    Compiled == 10>
-      cache_;
+  DfudsMicroSubtree<Bits> cache_;
 
  public:
   size_t nodes = 0, children = 0;
@@ -506,4 +381,4 @@ class DfudsMicroTraversal {
     }
   }
 };
-}  // namespace pixie::experimental::dfuds_detail
+}  // namespace pixie::detail::dfuds_micro

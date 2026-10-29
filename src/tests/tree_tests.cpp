@@ -2,18 +2,16 @@
 #include <pixie/rank_select/compressed.h>
 #include <pixie/rmm/btree.h>
 #include <pixie/tree/bp.h>
+#include <pixie/tree/detail/bp_micro.h>
+#include <pixie/tree/detail/bp_micro_tables.h>
+#include <pixie/tree/detail/dfuds_micro.h>
+#include <pixie/tree/detail/louds_inspection.h>
 #include <pixie/tree/dfuds.h>
-#include <pixie/tree/experimental/second_chance_tree_cache.h>
-#include <pixie/tree/experimental/tree_dfuds_micro.h>
-#include <pixie/tree/experimental/tree_louds_prefetch.h>
-#include <pixie/tree/experimental/tree_micro_compact.h>
-#include <pixie/tree/experimental/tree_micro_prefetch.h>
 #include <pixie/tree/experimental/tree_prepared_events.h>
 #include <pixie/tree/experimental/tree_prepared_root.h>
-#include <pixie/tree/experimental/tree_traversal_cache.h>
-#include <pixie/tree/experimental/unpacked_tree_cache.h>
 #include <pixie/tree/louds.h>
 #include <pixie/tree/path_view.h>
+#include <pixie/tree/traversal_context.h>
 #include <pixie/utils.h>
 #include <references/pointer_tree.h>
 
@@ -21,6 +19,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <future>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -34,14 +33,15 @@
 #include <vector>
 
 #include "../benchmarks/shifted_query_pool.h"
+#include "../benchmarks/tree_dfs/optimized.h"
 #include "../benchmarks/tree_traversal_workloads.h"
 
 namespace {
 
-template <class RankSelect, class Cache = pixie::LocalNavigationCache>
+template <class RankSelect>
 struct LoudsCase {
   static size_t bit_size(size_t nodes) { return 2 * nodes - 1; }
-  using Tree = pixie::LoudsTree<RankSelect, Cache>;
+  using Tree = pixie::LoudsTree<RankSelect>;
 
   static std::vector<std::vector<std::size_t>> order(
       std::size_t tree_size,
@@ -56,10 +56,10 @@ struct LoudsCase {
   }
 };
 
-template <class RmM, class Cache = pixie::LocalNavigationCache>
+template <class RmM>
 struct BpCase {
   static size_t bit_size(size_t nodes) { return 2 * nodes; }
-  using Tree = pixie::BPTree<RmM, Cache>;
+  using Tree = pixie::BPTree<RmM>;
 
   static std::vector<std::vector<std::size_t>> order(
       std::size_t tree_size,
@@ -74,10 +74,10 @@ struct BpCase {
   }
 };
 
-template <class RmM, class Cache = pixie::LocalNavigationCache>
+template <class RmM>
 struct DfudsCase {
   static size_t bit_size(size_t nodes) { return 2 * nodes - 1; }
-  using Tree = pixie::DFUDSTree<RmM, Cache>;
+  using Tree = pixie::DFUDSTree<RmM>;
 
   static std::vector<std::vector<std::size_t>> order(
       std::size_t tree_size,
@@ -95,30 +95,7 @@ struct DfudsCase {
 template <class Case>
 class TreeSpecificationTest : public testing::Test {};
 
-using ClockTestPolicy =
-    pixie::experimental::SecondChanceTreeCache<4096, 2, true>;
-using SnapshotClockTestPolicy =
-    pixie::experimental::SecondChanceTreeCache<4096, 32, true, true>;
-using SelectiveUnpackTestPolicy =
-    pixie::experimental::UnpackedTreeCache<false, 16384>;
-using ChunkUnpackTestPolicy =
-    pixie::experimental::UnpackedTreeCache<true, 16384>;
 using TreeCases = testing::Types<
-    LoudsCase<pixie::RankSelectSupportCompressed<>, SnapshotClockTestPolicy>,
-    BpCase<pixie::experimental::RmMBTree<>, SnapshotClockTestPolicy>,
-    DfudsCase<pixie::experimental::RmMBTree<>, SnapshotClockTestPolicy>,
-    LoudsCase<pixie::RankSelectSupportCompressed<>, SelectiveUnpackTestPolicy>,
-    BpCase<pixie::experimental::RmMBTree<>, SelectiveUnpackTestPolicy>,
-    DfudsCase<pixie::experimental::RmMBTree<>, SelectiveUnpackTestPolicy>,
-    LoudsCase<pixie::RankSelectSupportCompressed<>, ChunkUnpackTestPolicy>,
-    BpCase<pixie::experimental::RmMBTree<>, ChunkUnpackTestPolicy>,
-    DfudsCase<pixie::experimental::RmMBTree<>, ChunkUnpackTestPolicy>,
-    LoudsCase<pixie::RankSelectSupportCompressed<>, ClockTestPolicy>,
-    BpCase<pixie::experimental::RmMBTree<>, ClockTestPolicy>,
-    DfudsCase<pixie::experimental::RmMBTree<>, ClockTestPolicy>,
-    LoudsCase<pixie::RankSelectSupportCompressed<>, pixie::NoNavigationCache>,
-    BpCase<pixie::experimental::RmMBTree<>, pixie::NoNavigationCache>,
-    DfudsCase<pixie::experimental::RmMBTree<>, pixie::NoNavigationCache>,
     LoudsCase<pixie::RankSelectSupport<>>,
     LoudsCase<pixie::RankSelectSupportCompressed<>>,
     BpCase<pixie::RmMTree>,
@@ -130,37 +107,71 @@ using TreeCases = testing::Types<
         pixie::experimental::RmMBTree<4, 32, pixie::RankSelectSupport<>>>>;
 TYPED_TEST_SUITE(TreeSpecificationTest, TreeCases);
 
-TYPED_TEST(TreeSpecificationTest, RuntimeCacheBudgetPreservesNavigation) {
+TYPED_TEST(TreeSpecificationTest, BorrowedSpanAndIndependentConcurrentViews) {
   using Tree = typename TypeParam::Tree;
+  static_assert(pixie::TreeNavigationView<typename Tree::NodeView>);
+  static_assert(
+      !std::is_constructible_v<Tree, std::vector<uint64_t>&&, size_t>);
+  static_assert(
+      !std::is_constructible_v<Tree, const std::vector<uint64_t>&&, size_t>);
   std::mt19937_64 rng(42);
-  const size_t n = 257;
+  constexpr size_t n = 513;
   const auto adjacency = TypeParam::order(n, generate_random_tree(n, rng));
   const auto words = TypeParam::encode(n, adjacency);
-  for (size_t budget : {size_t(0), size_t(1), size_t(1024), size_t(4096),
-                        size_t(65536), size_t(524288)}) {
-    Tree tree(words, n, budget);
-    EXPECT_EQ(tree.cache_limit_bytes(), budget);
-    auto events = [&](pixie::TreeNode node, bool entering) {
+  const Tree tree(std::span<const uint64_t>(words), n);
+  auto inspect = [&] {
+    bool correct = true;
+    auto visit = [&](pixie::TreeNode node, bool entering) {
       if (!entering) {
         return;
       }
       auto view = tree.navigate(node);
-      EXPECT_EQ(view.degree(), tree.degree(node));
-      size_t i = 0;
+      auto independent = view;
+      const auto degree = tree.degree(node);
+      correct &= view.degree() == degree;
+      size_t index = 0;
       view.for_each_child([&](auto child) {
-        const auto expected = tree.child(node, i++);
-        EXPECT_EQ(child.number, expected.number);
-        EXPECT_EQ(child.pos, expected.pos);
-        EXPECT_EQ(tree.navigate(child).degree(), tree.degree(child));
+        const auto expected = tree.child(node, index++);
+        correct &= child.number == expected.number && child.pos == expected.pos;
       });
-      EXPECT_EQ(i, tree.degree(node));
-      EXPECT_LE(tree.cache_memory_usage_bytes(), budget);
+      correct &= index == degree;
+      if (degree) {
+        view.reset(view.first_child());
+      }
+      correct &= independent.node().number == node.number;
+      correct &= independent.degree() == degree;
+      correct &= independent.parent().pos == tree.parent(node).pos;
     };
-    pixie::detail::tree_unpack::subtree(tree, tree.root(), events);
-    Tree copy(tree);
-    EXPECT_EQ(copy.cache_limit_bytes(), budget);
-    EXPECT_EQ(copy.navigate(copy.root()).degree(), tree.degree(tree.root()));
-    EXPECT_LE(copy.cache_memory_usage_bytes(), budget);
+    pixie::detail::tree_unpack::subtree(tree, tree.root(), visit);
+    return correct;
+  };
+  auto first = std::async(std::launch::async, inspect);
+  auto second = std::async(std::launch::async, inspect);
+  EXPECT_TRUE(first.get());
+  EXPECT_TRUE(second.get());
+}
+
+struct RejectZeroSelectRmM : pixie::experimental::RmMBTree<> {
+  using Base = pixie::experimental::RmMBTree<>;
+  using Base::Base;
+  size_t select0(size_t rank) const {
+    if (rank == 0) {
+      throw std::logic_error("zero select rank");
+    }
+    return Base::select0(rank);
+  }
+};
+
+TEST(DfudsNavigationTest, RootParentDoesNotQueryZeroSelectRank) {
+  const std::vector<std::vector<size_t>> adjacency = {
+      {0, 1, 2, 3}, {0}, {0}, {0}};
+  const auto words = pixie::adj_to_dfuds(4, adjacency);
+  const pixie::DFUDSTree<RejectZeroSelectRmM> tree(words, 4);
+  for (size_t i = 0; i < 3; ++i) {
+    const auto child = tree.child(tree.root(), i);
+    EXPECT_EQ(tree.parent(child).number, 0u);
+    EXPECT_EQ(tree.parent(child).pos, 0u);
+    EXPECT_EQ(tree.navigate(child).parent().pos, 0u);
   }
 }
 
@@ -171,6 +182,37 @@ using BoundedCases =
                    DfudsCase<pixie::experimental::RmMBTree<>>,
                    LoudsCase<pixie::RankSelectSupportCompressed<>>>;
 TYPED_TEST_SUITE(BoundedTraversalTest, BoundedCases);
+
+TYPED_TEST(BoundedTraversalTest, ContextOwnershipAndAccounting) {
+  using Tree = typename TypeParam::Tree;
+  using Context = pixie::TreeTraversalContext<Tree>;
+  static_assert(
+      !std::is_constructible_v<Context, Tree&&, std::span<const uint64_t>>);
+  static_assert(
+      !std::is_constructible_v<Context, const Tree&, std::vector<uint64_t>&&>);
+  std::mt19937_64 rng(812);
+  const auto adjacency = TypeParam::order(32, generate_random_tree(32, rng));
+  const auto words = TypeParam::encode(32, adjacency);
+  Tree tree(words, 32);
+  Context disabled(tree, words, 0);
+  EXPECT_EQ(disabled.budget_usage_bytes(), 0u);
+  EXPECT_GE(disabled.memory_usage_bytes(), sizeof(Context));
+  EXPECT_THROW((Context(tree, std::span<const uint64_t>{})),
+               std::invalid_argument);
+  Context context(tree, words, 32768);
+  const auto copy = context;
+  auto first = context.cursor();
+  auto second = context.cursor();
+  auto copied = copy.cursor();
+  const auto root = second.node();
+  ASSERT_GT(first.degree(), 0u);
+  first.move_to_child(0);
+  EXPECT_EQ(second.node().number, root.number);
+  EXPECT_EQ(second.node().pos, root.pos);
+  EXPECT_EQ(copied.node().number, root.number);
+  EXPECT_EQ(copied.node().pos, root.pos);
+  EXPECT_NE(first.node().number, root.number);
+}
 
 TYPED_TEST(BoundedTraversalTest, AllWorkloadsShareBudgetAndExactEvents) {
   using Tree = typename TypeParam::Tree;
@@ -193,9 +235,10 @@ TYPED_TEST(BoundedTraversalTest, AllWorkloadsShareBudgetAndExactEvents) {
          {size_t(0), size_t(64), size_t(4096), size_t(8192), size_t(16384),
           size_t(32767), size_t(32768), size_t(32769), size_t(65536),
           size_t(81920), size_t(196608), size_t(524288)}) {
-      Tree tree(words, n, budget);
-      pixie::experimental::TreeTraversalCache cache(tree, words);
-      EXPECT_LE(cache.memory_usage_bytes(), budget);
+      Tree tree(words, n);
+      pixie::TreeTraversalContext cache(tree, words, budget);
+      pixie::benchmarks::TreeTraversalWorkloads workload(cache);
+      EXPECT_LE(cache.budget_usage_bytes(), budget);
       if (budget >= 32768) {
         EXPECT_TRUE(cache.streaming_enabled());
         EXPECT_TRUE(cache.optimized_inspection_enabled());
@@ -208,7 +251,7 @@ TYPED_TEST(BoundedTraversalTest, AllWorkloadsShareBudgetAndExactEvents) {
         expected.emplace_back(node.number, node.pos);
       };
       pixie::detail::tree_unpack::subtree(tree, tree.root(), direct);
-      cache.traverse(collect);
+      workload.traverse(collect);
       EXPECT_EQ(actual, expected);
       actual.clear();
       expected.clear();
@@ -219,7 +262,7 @@ TYPED_TEST(BoundedTraversalTest, AllWorkloadsShareBudgetAndExactEvents) {
         }
       };
       pixie::detail::tree_unpack::subtree(tree, tree.root(), ref_events);
-      const auto work = cache.inspect(collect, collect);
+      const auto work = workload.inspect(collect, collect);
       EXPECT_EQ(work.first, n);
       EXPECT_EQ(work.second, n - 1);
       EXPECT_EQ(actual, expected);
@@ -318,7 +361,7 @@ TYPED_TEST(TreeSpecificationTest,
     const auto words = TypeParam::encode(n, adjacency);
     const Tree tree(words, n);
     // Deliberately tiny: chain and star force fallback; random trees mix paths.
-    const pixie::experimental::TreeNavigationIndex<Tree, 8> index(tree);
+    const pixie::RootNavigationIndex<Tree, 8> index(tree);
     EXPECT_LE(index.memory_usage_bytes(), sizeof(index) + 8 * 32u);
     auto copy = index.cursor();
     auto original = copy;
@@ -808,8 +851,8 @@ TYPED_TEST(ParenthesisNavigationViewTest,
     adjacency[i].push_back(0);
   }
   const auto words = pixie::adj_to_dfuds(size, adjacency);
-  const auto check = [&]<class Policy>() {
-    const pixie::DFUDSTree<Backend, Policy> tree(words, size);
+  const auto check = [&]() {
+    const pixie::DFUDSTree<Backend> tree(words, size);
     auto view = tree.navigate(tree.root());
     Backend::select0_calls = 0;
     EXPECT_EQ(view.degree(), size - 1);
@@ -823,8 +866,7 @@ TYPED_TEST(ParenthesisNavigationViewTest,
     }
     EXPECT_EQ(Backend::select0_calls, 1u);
   };
-  check.template operator()<pixie::LocalNavigationCache>();
-  check.template operator()<pixie::experimental::SecondChanceTreeCache<>>();
+  check();
 }
 
 TYPED_TEST(ParenthesisNavigationViewTest, DfsReusesParenthesisSearches) {
@@ -1805,307 +1847,6 @@ TEST(PointerTreeTest, OwnershipMovesAndMissingLinks) {
   EXPECT_EQ(singleton.size(), 3u);
 }
 
-// Test policy with one shared cached degree. Unlike the production local
-// policy, two views borrow the same mutable context owned by their tree.
-struct SharedDegreeTestCache {
-  template <class Tree>
-  class Cache {
-   public:
-    explicit Cache(size_t) {}
-    size_t memory_usage_bytes() const { return sizeof(*this); }
-    class NodeView : public Tree::LocalNodeView {
-     public:
-      NodeView(const Tree& tree, pixie::TreeNode node, const Cache& owner)
-          : Tree::LocalNodeView(tree, node), tree_(&tree), owner_(&owner) {}
-      size_t degree() const {
-        if (!owner_->node_ || owner_->node_->number != this->node().number) {
-          owner_->node_ = this->node();
-          owner_->degree_ = tree_->degree(this->node());
-          ++owner_->misses_;
-        }
-        return owner_->degree_;
-      }
-      size_t misses() const { return owner_->misses_; }
-
-     private:
-      const Tree* tree_;
-      const Cache* owner_;
-    };
-    NodeView navigate(const Tree& tree, pixie::TreeNode node) const {
-      return NodeView(tree, node, *this);
-    }
-
-   private:
-    mutable std::optional<pixie::TreeNode> node_;
-    mutable size_t degree_ = 0;
-    mutable size_t misses_ = 0;
-  };
-};
-
-template <class Case>
-class TreeCachePolicyTest : public testing::Test {};
-using SharedCacheCases = testing::Types<
-    LoudsCase<pixie::RankSelectSupportCompressed<>, SharedDegreeTestCache>,
-    BpCase<pixie::experimental::RmMBTree<>, SharedDegreeTestCache>,
-    DfudsCase<pixie::experimental::RmMBTree<>, SharedDegreeTestCache>>;
-TYPED_TEST_SUITE(TreeCachePolicyTest, SharedCacheCases);
-
-TYPED_TEST(TreeCachePolicyTest, ViewsShareOnlyTheirOwningTreeContext) {
-  const std::vector<std::vector<size_t>> source = {{0, 1, 2}, {0}, {0}};
-  const auto adjacency = TypeParam::order(source.size(), source);
-  const auto words = TypeParam::encode(source.size(), adjacency);
-  using Tree = typename TypeParam::Tree;
-  const Tree tree(words, source.size());
-  const Tree other(words, source.size());
-  static_assert(
-      std::is_same_v<typename Tree::NodeView, typename Tree::Cache::NodeView>);
-  auto first = tree.navigate(tree.root());
-  auto second = tree.navigate(tree.root());
-  auto unrelated = other.navigate(other.root());
-  EXPECT_EQ(first.degree(), 2u);
-  EXPECT_EQ(second.degree(), 2u);
-  EXPECT_EQ(second.misses(), 1u);
-  EXPECT_EQ(unrelated.misses(), 0u);
-  auto copy = first;
-  first.reset(first.first_child());
-  EXPECT_EQ(first.degree(), 0u);
-  EXPECT_EQ(copy.node().number, 0u);
-  EXPECT_EQ(second.degree(), 2u);
-  EXPECT_EQ(copy.misses(), 3u);
-  EXPECT_EQ(unrelated.degree(), 2u);
-  EXPECT_EQ(unrelated.misses(), 1u);
-}
-
-template <class Case>
-class SecondChanceCacheTest : public testing::Test {};
-using ClockCases = testing::Types<
-    LoudsCase<pixie::RankSelectSupportCompressed<>, SnapshotClockTestPolicy>,
-    BpCase<pixie::experimental::RmMBTree<>, SnapshotClockTestPolicy>,
-    DfudsCase<pixie::experimental::RmMBTree<>, SnapshotClockTestPolicy>,
-    LoudsCase<pixie::RankSelectSupportCompressed<>, ClockTestPolicy>,
-    BpCase<pixie::experimental::RmMBTree<>, ClockTestPolicy>,
-    DfudsCase<pixie::experimental::RmMBTree<>, ClockTestPolicy>>;
-TYPED_TEST_SUITE(SecondChanceCacheTest, ClockCases);
-
-TYPED_TEST(SecondChanceCacheTest, CompleteListSurvivesCallbackEviction) {
-  using Tree = typename TypeParam::Tree;
-  const size_t n = 4 * Tree::Cache::capacity + 3;
-  std::vector<std::vector<size_t>> source(n);
-  source[0] = {0, 1, 2};
-  source[1] = {0};
-  source[2] = {0};
-  for (size_t i = 3; i < n; ++i) {
-    source[1].push_back(i);
-    source[i] = {1};
-  }
-  const auto adjacency = TypeParam::order(n, source);
-  const auto words = TypeParam::encode(n, adjacency);
-  const Tree tree(words, n);
-  std::vector<pixie::TreeNode> nodes;
-  auto collect = [&](auto&& self, auto node) -> void {
-    nodes.push_back(node);
-    tree.for_each_child(node, [&](auto child) { self(self, child); });
-  };
-  collect(collect, tree.root());
-  auto view = tree.navigate(tree.root());
-  EXPECT_EQ(view.degree(), 2u);
-  view.child(1);  // Populate the complete list before entering enumeration.
-  size_t count = 0;
-  view.for_each_child([&](auto child) {
-    const auto expected = tree.child(tree.root(), count++);
-    EXPECT_EQ(child.number, expected.number);
-    EXPECT_EQ(child.pos, expected.pos);
-    for (auto other : nodes) {
-      tree.navigate(other).degree();
-    }
-  });
-  EXPECT_EQ(count, 2u);
-  EXPECT_LE(view.cache_memory_usage_bytes(), 4096u);
-}
-
-TYPED_TEST(SecondChanceCacheTest, HitPromotionSurvivesTheNextSweep) {
-  using Tree = typename TypeParam::Tree;
-  constexpr auto capacity = Tree::Cache::capacity;
-  static_assert(capacity >= 4);
-  const size_t n = capacity + 4;
-  std::vector<std::vector<size_t>> source(n);
-  source[0].push_back(0);
-  for (size_t i = 1; i < n; ++i) {
-    source[0].push_back(i);
-    source[i].push_back(0);
-  }
-  const auto adjacency = TypeParam::order(n, source);
-  const auto words = TypeParam::encode(n, adjacency);
-  const Tree tree(words, n);
-  std::vector<pixie::TreeNode> nodes{tree.root()};
-  tree.for_each_child(tree.root(), [&](auto child) { nodes.push_back(child); });
-  auto query = [&](size_t i) { return tree.navigate(nodes[i]).degree(); };
-  auto view = tree.navigate(tree.root());
-  for (size_t i = 0; i < capacity; ++i) {
-    query(i);
-  }
-  EXPECT_EQ(view.cache_statistics().misses, capacity);
-  query(capacity);  // Clear recent flags and evict slot zero.
-  EXPECT_EQ(view.cache_statistics().evictions, 1u);
-  query(1);             // Promote an existing entry after its flag was cleared.
-  query(capacity + 1);  // Skip promoted slot one; evict slot two.
-  const auto misses = view.cache_statistics().misses;
-  query(1);
-  EXPECT_EQ(view.cache_statistics().misses, misses);
-  query(2);
-  EXPECT_EQ(view.cache_statistics().misses, misses + 1);
-  EXPECT_LE(view.cache_memory_usage_bytes(), 4096u);
-  // Exercise deletion/probe-chain repair and views surviving repeated eviction.
-  for (size_t pass = 0; pass < 100; ++pass) {
-    for (size_t i = 0; i < n; ++i) {
-      EXPECT_EQ(query((i * 7 + pass) % n), ((i * 7 + pass) % n) ? 0u : n - 1);
-    }
-  }
-  EXPECT_EQ(view.degree(), n - 1);
-}
-
-TYPED_TEST(SecondChanceCacheTest,
-           EnumerationSurvivesNestedEvictionAndExceptions) {
-  using Tree = typename TypeParam::Tree;
-  const size_t n = 4 * Tree::Cache::capacity + 1;
-  std::mt19937_64 rng(42);
-  const auto adjacency = TypeParam::order(n, generate_random_tree(n, rng));
-  const auto words = TypeParam::encode(n, adjacency);
-  const Tree tree(words, n);
-  std::vector<pixie::TreeNode> nodes;
-  auto collect = [&](auto&& self, auto node) -> void {
-    nodes.push_back(node);
-    tree.for_each_child(node, [&](auto child) { self(self, child); });
-  };
-  collect(collect, tree.root());
-  for (auto node : nodes) {
-    auto view = tree.navigate(node);
-    for (int pass = 0; pass < 2; ++pass) {
-      size_t i = 0;
-      EXPECT_EQ(view.degree(), tree.degree(node));
-      view.for_each_child([&](auto child) {
-        const auto expected = tree.child(node, i++);
-        EXPECT_EQ(child.number, expected.number);
-        EXPECT_EQ(child.pos, expected.pos);
-        for (auto other : nodes) {
-          tree.navigate(other).degree();
-        }
-      });
-      EXPECT_EQ(i, tree.degree(node));
-    }
-  }
-  auto root = tree.navigate(tree.root());
-  root.degree();
-  EXPECT_THROW(
-      root.for_each_child([](auto) { throw std::runtime_error("stop"); }),
-      std::runtime_error);
-  EXPECT_EQ(root.degree(), tree.degree(tree.root()));
-  EXPECT_LE(root.cache_memory_usage_bytes(), 4096u);
-}
-
-TYPED_TEST(SecondChanceCacheTest,
-           SequentialQueriesDoNotAdmitButIndexedQueriesDo) {
-  using Tree = typename TypeParam::Tree;
-  const std::vector<std::vector<size_t>> source = {{0, 1, 2}, {0}, {0}};
-  const auto adjacency = TypeParam::order(source.size(), source);
-  const auto words = TypeParam::encode(source.size(), adjacency);
-  const Tree tree(words, source.size());
-  auto view = tree.navigate(tree.root());
-  EXPECT_FALSE(view.is_leaf());
-  auto first = view.first_child();
-  view.for_each_child([](auto) {});
-  view.reset(first);
-  EXPECT_TRUE(view.is_leaf());
-  EXPECT_EQ(view.parent().number, 0u);
-  EXPECT_FALSE(view.is_last_child());
-  EXPECT_EQ(view.next_sibling().number, 2u);
-  EXPECT_EQ(view.cache_statistics().misses, 0u);
-  view.reset(tree.root());
-  EXPECT_EQ(view.degree(), 2u);
-  EXPECT_EQ(view.child(0).number, first.number);
-  view.for_each_child([](auto) {});
-  EXPECT_EQ(view.cache_statistics().misses, 1u);
-  EXPECT_GT(view.cache_statistics().hits, 0u);
-  auto independent = tree.navigate(tree.root());
-  independent.degree();
-  EXPECT_EQ(independent.cache_statistics().misses, 1u);
-  const auto hits = view.cache_statistics().hits;
-  view.reset(tree.root());
-  view.for_each_child([](auto) {});
-  EXPECT_EQ(view.cache_statistics().hits, hits);
-}
-
-}  // namespace
-
-namespace {
-template <class Case>
-class UnpackedCacheTest : public testing::Test {};
-using UnpackedCacheCases = testing::Types<
-    LoudsCase<pixie::RankSelectSupportCompressed<>, SelectiveUnpackTestPolicy>,
-    BpCase<pixie::experimental::RmMBTree<>, SelectiveUnpackTestPolicy>,
-    DfudsCase<pixie::experimental::RmMBTree<>, SelectiveUnpackTestPolicy>,
-    LoudsCase<pixie::RankSelectSupportCompressed<>, ChunkUnpackTestPolicy>,
-    BpCase<pixie::experimental::RmMBTree<>, ChunkUnpackTestPolicy>,
-    DfudsCase<pixie::experimental::RmMBTree<>, ChunkUnpackTestPolicy>>;
-TYPED_TEST_SUITE(UnpackedCacheTest, UnpackedCacheCases);
-
-TYPED_TEST(UnpackedCacheTest, NestedEvictionCopiesAndPartialChildren) {
-  using Tree = typename TypeParam::Tree;
-  constexpr size_t n = 1025;
-  std::mt19937_64 rng(73);
-  for (bool star : {false, true}) {
-    auto source = generate_random_tree(n, rng);
-    if (star) {
-      source.assign(n, {});
-      source[0].push_back(0);
-      for (size_t i = 1; i < n; ++i) {
-        source[0].push_back(i);
-        source[i].push_back(0);
-      }
-    }
-    const auto adjacency = TypeParam::order(n, source);
-    const auto words = TypeParam::encode(n, adjacency);
-    Tree tree(words, n);
-    std::vector<pixie::TreeNode> nodes;
-    auto collect = [&](auto&& self, auto node) -> void {
-      nodes.push_back(node);
-      tree.for_each_child(node, [&](auto child) { self(self, child); });
-    };
-    collect(collect, tree.root());
-    auto root = tree.navigate(tree.root());
-    root.degree();
-    size_t i = 0;
-    root.for_each_child([&](auto child) {
-      const auto expected = tree.child(tree.root(), i++);
-      EXPECT_EQ(child.number, expected.number);
-      EXPECT_EQ(child.pos, expected.pos);
-      // Churn the entire cache inside each callback. Kept views must survive.
-      for (auto other : nodes) {
-        EXPECT_EQ(tree.navigate(other).degree(), tree.degree(other));
-      }
-    });
-    EXPECT_EQ(i, tree.degree(tree.root()));
-    for (auto node : nodes) {
-      auto view = tree.navigate(node);
-      const size_t degree = tree.degree(node);
-      EXPECT_EQ(view.degree(), degree);
-      for (size_t j = 0; j < degree; ++j) {
-        const auto expected = tree.child(node, j);
-        EXPECT_EQ(view.child(j).number, expected.number);
-        EXPECT_EQ(view.child(j).pos, expected.pos);
-      }
-    }
-    EXPECT_LE(root.cache_memory_usage_bytes(), 16384u);
-    EXPECT_THROW(
-        root.for_each_child([](auto) { throw std::runtime_error("stop"); }),
-        std::runtime_error);
-    Tree copy(tree);
-    EXPECT_EQ(copy.navigate(copy.root()).degree(), tree.degree(tree.root()));
-    Tree moved(std::move(copy));
-    EXPECT_EQ(moved.navigate(moved.root()).degree(), tree.degree(tree.root()));
-    EXPECT_EQ(root.degree(), tree.degree(tree.root()));
-  }
-}
 }  // namespace
 
 namespace {
@@ -2146,77 +1887,21 @@ void CheckMicroPrefetch(const std::vector<uint64_t>& words, size_t n) {
   auto inspect = [&](auto node) {
     actual.emplace_back(node.number, node.pos, 2);
   };
-  pixie::experimental::detail::BpMicroTraversal<2048, Tree, decltype(visit),
-                                                decltype(inspect), 3>
+  pixie::detail::bp_micro::BpMicroTraversal<2048, Tree, decltype(visit),
+                                            decltype(inspect)>
       small(tree, words, visit, inspect);
   small.walk(tree.root());
   ASSERT_EQ(actual, expected);
   EXPECT_EQ(small.nodes, n);
   EXPECT_EQ(small.children, n - 1);
   actual.clear();
-  pixie::experimental::detail::BpMicroTraversal<8192, Tree, decltype(visit),
-                                                decltype(inspect), 3>
+  pixie::detail::bp_micro::BpMicroTraversal<8192, Tree, decltype(visit),
+                                            decltype(inspect)>
       large(tree, words, visit, inspect);
   large.walk(tree.root());
   ASSERT_EQ(actual, expected);
   EXPECT_EQ(large.nodes, n);
   EXPECT_EQ(large.children, n - 1);
-  actual.clear();
-  pixie::experimental::detail::BpMicroTraversal<8192, Tree, decltype(visit),
-                                                decltype(inspect), 4>
-      simd(tree, words, visit, inspect);
-  simd.walk(tree.root());
-  ASSERT_EQ(actual, expected);
-  EXPECT_EQ(simd.nodes, n);
-  EXPECT_EQ(simd.children, n - 1);
-  actual.clear();
-  pixie::experimental::detail::BpMicroTraversal<2048, Tree, decltype(visit),
-                                                decltype(inspect), 7>
-      reservoir_small(tree, words, visit, inspect);
-  reservoir_small.walk(tree.root());
-  ASSERT_EQ(actual, expected);
-  EXPECT_EQ(reservoir_small.nodes, n);
-  EXPECT_EQ(reservoir_small.children, n - 1);
-  actual.clear();
-  pixie::experimental::detail::BpMicroTraversal<8192, Tree, decltype(visit),
-                                                decltype(inspect), 7>
-      reservoir_large(tree, words, visit, inspect);
-  reservoir_large.walk(tree.root());
-  ASSERT_EQ(actual, expected);
-  EXPECT_EQ(reservoir_large.nodes, n);
-  EXPECT_EQ(reservoir_large.children, n - 1);
-  actual.clear();
-  pixie::experimental::detail::BpMicroTraversal<2048, Tree, decltype(visit),
-                                                decltype(inspect), 8>
-      absolute_small(tree, words, visit, inspect);
-  absolute_small.walk(tree.root());
-  ASSERT_EQ(actual, expected);
-  EXPECT_EQ(absolute_small.nodes, n);
-  EXPECT_EQ(absolute_small.children, n - 1);
-  actual.clear();
-  pixie::experimental::detail::BpMicroTraversal<8192, Tree, decltype(visit),
-                                                decltype(inspect), 8>
-      absolute_large(tree, words, visit, inspect);
-  absolute_large.walk(tree.root());
-  ASSERT_EQ(actual, expected);
-  EXPECT_EQ(absolute_large.nodes, n);
-  EXPECT_EQ(absolute_large.children, n - 1);
-  actual.clear();
-  pixie::experimental::compact_bp::BpMicroTraversal<8192, Tree, decltype(visit),
-                                                    decltype(inspect), 8, true>
-      compact(tree, words, visit, inspect);
-  compact.walk(tree.root());
-  ASSERT_EQ(actual, expected);
-  EXPECT_EQ(compact.nodes, n);
-  EXPECT_EQ(compact.children, n - 1);
-  actual.clear();
-  pixie::experimental::compact_bp::BpMicroTraversal<
-      8192, Tree, decltype(visit), decltype(inspect), 8, true, 1>
-      vector_arguments(tree, words, visit, inspect);
-  vector_arguments.walk(tree.root());
-  ASSERT_EQ(actual, expected);
-  EXPECT_EQ(vector_arguments.nodes, n);
-  EXPECT_EQ(vector_arguments.children, n - 1);
 }
 }  // namespace
 
@@ -2224,7 +1909,7 @@ TEST(TreeMicroPrefetchTest, ExhaustiveShortSubtrees) {
   size_t shapes = 0;
   for (unsigned key = 0; key < 8192; ++key) {
     const unsigned length =
-        pixie::experimental::detail::bp_micro_tables.headers[key] & 15;
+        pixie::detail::bp_micro::bp_micro_tables.headers[key] & 15;
     if (!length || key != (key & ((1u << (length - 1)) - 1))) {
       continue;
     }
@@ -2297,32 +1982,32 @@ void CheckLoudsPrefetch(const std::vector<uint64_t>& words, size_t n) {
     if (!nested_checked) {
       nested_checked = true;
       auto ignore = [](auto) {};
-      pixie::experimental::LoudsPrefetchTraversal<Tree, decltype(ignore),
-                                                  decltype(ignore), 8, true>
+      pixie::detail::tree_unpack::LoudsPrefetchTraversal<
+          Tree, decltype(ignore), decltype(ignore), 8, true>
           nested(tree, words, ignore, ignore);
       nested.walk(tree.root(), 0);
       EXPECT_EQ(nested.node_count, n);
       EXPECT_EQ(nested.child_count, n - 1);
     }
   };
-  pixie::experimental::LoudsPrefetchTraversal<Tree, decltype(visit),
-                                              decltype(inspect), 8, true>
+  pixie::detail::tree_unpack::LoudsPrefetchTraversal<Tree, decltype(visit),
+                                                     decltype(inspect), 8, true>
       small(tree, words, visit, inspect);
   small.walk(tree.root(), 0);
   ASSERT_EQ(actual, expected);
   ASSERT_EQ(small.node_count, n);
   ASSERT_EQ(small.child_count, n - 1);
   actual.clear();
-  pixie::experimental::LoudsPrefetchTraversal<Tree, decltype(visit),
-                                              decltype(inspect), 32, true>
+  pixie::detail::tree_unpack::LoudsPrefetchTraversal<
+      Tree, decltype(visit), decltype(inspect), 32, true>
       large(tree, words, visit, inspect);
   large.walk(tree.root(), 0);
   ASSERT_EQ(actual, expected);
   ASSERT_EQ(large.node_count, n);
   ASSERT_EQ(large.child_count, n - 1);
   actual.clear();
-  pixie::experimental::LoudsPrefetchTraversal<Tree, decltype(visit),
-                                              decltype(inspect), 32, false>
+  pixie::detail::tree_unpack::LoudsPrefetchTraversal<
+      Tree, decltype(visit), decltype(inspect), 32, false>
       scalar_cursor(tree, words, visit, inspect);
   scalar_cursor.walk(tree.root(), 0);
   ASSERT_EQ(actual, expected);
@@ -2393,40 +2078,22 @@ void CheckDfudsMicroPrefetch(const std::vector<uint64_t>& words, size_t n) {
   auto inspect = [&](auto node) {
     actual.emplace_back(node.number, node.pos, 2);
   };
-  pixie::experimental::dfuds_detail::DfudsMicroTraversal<
-      2048, Tree, decltype(visit), decltype(inspect), 8>
+  pixie::detail::dfuds_micro::DfudsMicroTraversal<2048, Tree, decltype(visit),
+                                                  decltype(inspect)>
       small(tree, words, visit, inspect);
   small.walk(tree.root());
   ASSERT_EQ(actual, expected);
   ASSERT_EQ(small.nodes, n);
   ASSERT_EQ(small.children, n - 1);
   actual.clear();
-  pixie::experimental::dfuds_detail::DfudsMicroTraversal<
-      8192, Tree, decltype(visit), decltype(inspect), 8>
+  pixie::detail::dfuds_micro::DfudsMicroTraversal<8192, Tree, decltype(visit),
+                                                  decltype(inspect)>
       large(tree, words, visit, inspect);
   large.walk(tree.root());
   ASSERT_EQ(actual, expected);
   ASSERT_EQ(large.nodes, n);
   ASSERT_EQ(large.children, n - 1);
-  actual.clear();
-  pixie::experimental::dfuds_detail::DfudsMicroTraversal<
-      8192, Tree, decltype(visit), decltype(inspect), 9>
-      excess(tree, words, visit, inspect);
-  excess.walk(tree.root());
-  ASSERT_EQ(actual, expected);
-  ASSERT_EQ(excess.nodes, n);
-  ASSERT_EQ(excess.children, n - 1);
-  actual.clear();
-  pixie::experimental::dfuds_detail::DfudsMicroTraversal<
-      8192, Tree, decltype(visit), decltype(inspect), 10>
-      compact(tree, words, visit, inspect);
-  compact.walk(tree.root());
-  ASSERT_EQ(actual, expected);
-  ASSERT_EQ(compact.nodes, n);
-  ASSERT_EQ(compact.children, n - 1);
-  using Decoder =
-      pixie::experimental::dfuds_detail::DfudsMicroSubtree<8192, 1, false,
-                                                           true>;
+  using Decoder = pixie::detail::dfuds_micro::DfudsMicroSubtree<8192>;
   pixie::experimental::PreparedRootSubtree<Decoder, 8192> prepared(
       words, 2 * n - 1, tree.root());
   for (int repeat = 0; repeat < 2; ++repeat) {
@@ -2473,7 +2140,7 @@ void CheckDfudsMicroPrefetch(const std::vector<uint64_t>& words, size_t n) {
 TEST(TreeDfudsMicroPrefetchTest, ExhaustiveShapesAndBoundaries) {
   for (unsigned key = 0; key < 8192; ++key) {
     auto length =
-        pixie::experimental::dfuds_detail::dfuds_micro_tables.headers[key] & 15;
+        pixie::detail::dfuds_micro::dfuds_micro_tables.headers[key] & 15;
     if (length && key < (1u << length)) {
       CheckDfudsMicroPrefetch({uint64_t(key)}, (length + 1) / 2);
     }

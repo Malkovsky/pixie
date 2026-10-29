@@ -1,6 +1,6 @@
 #pragma once
 
-#include <pixie/tree/experimental/tree_traversal_cache.h>
+#include <pixie/tree/traversal_context.h>
 
 #include <charconv>
 #include <cstdlib>
@@ -8,6 +8,7 @@
 #include <string_view>
 
 #include "tree_benchmark_helpers.h"
+#include "tree_dfs/optimized.h"
 
 namespace pixie::benchmarks {
 // Process-wide fixture configuration; parsed before any timed traversal.
@@ -15,7 +16,7 @@ inline size_t TreeCacheBudget() {
   static const size_t budget = [] {
     const char* raw = std::getenv("PIXIE_TREE_CACHE_BYTES");
     if (!raw) {
-      return kDefaultTreeCacheBytes;
+      return kDefaultTraversalBytes;
     }
     const std::string_view text(raw);
     size_t bytes = 0;
@@ -34,11 +35,12 @@ template <TreeWorkload Workload, class Tree>
 void RunTreeComparison(benchmark::State& state,
                        const Tree& tree,
                        std::span<const uint64_t> words) {
-  experimental::TreeTraversalCache<Tree> cache(tree, words);
-  if (cache.memory_usage_bytes() > tree.cache_limit_bytes()) {
+  TreeTraversalContext<Tree> cache(tree, words, TreeCacheBudget());
+  if (cache.budget_usage_bytes() > TreeCacheBudget()) {
     state.SkipWithError("Combined cache and scratch budget exceeded");
     return;
   }
+  TreeTraversalWorkloads workload(cache);
   std::optional<ShiftedQueryPool> queries;
   if constexpr (Workload == TreeWorkload::kRandomPath ||
                 Workload == TreeWorkload::kRandomPathChildren) {
@@ -48,10 +50,10 @@ void RunTreeComparison(benchmark::State& state,
   size_t nodes = 0, children = 0;
   for (auto _ : state) {
     if constexpr (Workload == TreeWorkload::kDfs) {
-      cache.traverse(observe);
+      workload.traverse(observe);
       nodes += tree.size();
     } else if constexpr (Workload == TreeWorkload::kDfsChildren) {
-      auto [n, c] = cache.inspect(observe, observe);
+      auto [n, c] = workload.inspect(observe, observe);
       if (n != tree.size() || c != tree.size() - 1) {
         state.SkipWithError("Incorrect traversal coverage");
         break;
@@ -68,8 +70,8 @@ void RunTreeComparison(benchmark::State& state,
     }
   }
   state.counters["nodes"] = tree.size();
-  state.counters["cache_limit_bytes"] = tree.cache_limit_bytes();
-  state.counters["cache_and_scratch_bytes"] = cache.memory_usage_bytes();
+  state.counters["cache_limit_bytes"] = TreeCacheBudget();
+  state.counters["cache_and_scratch_bytes"] = cache.budget_usage_bytes();
   state.counters["scratch_reserved_bytes"] = cache.scratch_bytes();
   state.counters["streaming_dfs"] = cache.streaming_enabled();
   state.counters["decoded_inspection"] = cache.optimized_inspection_enabled();

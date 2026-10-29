@@ -1,43 +1,23 @@
 #pragma once
 
-// Experimental compact BP decoded records. Full absolute handles plus four
-// 16-bit navigation/program fields occupy 24 bytes. MacroLast initializes
-// last-child slots only for macro nodes. This is an opt-in traversal scratch
-// layout, not a persistent cache or a change to BPTree defaults.
-// 2026-10-26 registered 10M inspected DFS: 81.33 ms versus retained 84.66 ms
-// (Release native, CPU 0, seven interleaved repetitions, 0.3 s minimum).
-// BFS pointers remain faster at 71.07 ms in a separate reference run.
-// See profiling/bp-compact-registered-2026-10-26/REPORT.md for scope and
-// limits.
-#include <pixie/tree/experimental/tree_micro_prefetch.h>
-#include <pixie/tree/experimental/tree_micro_vector.h>
-namespace pixie::experimental::compact_bp {
-using namespace pixie::experimental::detail;
-template <size_t Bits,
-          unsigned Compiled = 0,
-          bool Reservoir = false,
-          bool Absolute = false,
-          bool MacroLast = false,
-          unsigned VectorPolicy = 0>
+// Selected BP decoder: absolute handles, 24-byte records, reservoir loading,
+// macro-node links and compiled seven-node topology programs.
+#include <pixie/tree/detail/bp_micro_tables.h>
+#include <pixie/tree/detail/bp_micro_vector.h>
+namespace pixie::detail::bp_micro {
+template <size_t Bits>
 class BpMicroSubtree {
-  static_assert(Compiled == 0 || Compiled == 1 || Compiled == 3 ||
-                Compiled == 4);
   static_assert(Bits >= 128 && Bits % 128 == 0 && Bits <= 32768);
   static constexpr uint16_t missing = Bits / 2;
-  using Position = std::conditional_t<Absolute, size_t, uint16_t>;
+  using Position = size_t;
   struct Record {
     Position number, pos;
     uint16_t parent, next, program, returns;
   };
   std::array<Record, missing + 1> records_;
   size_t count_ = 0, nodes_ = 0;
-  TreeNode root_{0, 0};
   TreeNode node(size_t i) const {
-    if constexpr (Absolute) {
-      return {records_[i].number, records_[i].pos};
-    } else {
-      return {root_.number + records_[i].number, root_.pos + records_[i].pos};
-    }
+    return {records_[i].number, records_[i].pos};
   }
 
  public:
@@ -63,7 +43,6 @@ class BpMicroSubtree {
     if (!length) {
       return false;
     }
-    root_ = root;
     nodes_ = length / 2;
     count_ = 0;
     std::array<uint16_t, missing> stack, last;
@@ -82,17 +61,12 @@ class BpMicroSubtree {
     uint64_t pattern = 0;
     size_t valid = 0;
     while (bit < length) {
-      if constexpr (Reservoir) {
-        if (valid < 14) {
-          pattern = peek(bit);
-          valid = 64;
-        }
-      } else {
+      if (valid < 14) {
         pattern = peek(bit);
+        valid = 64;
       }
-      const auto closes = std::min<size_t>(
-          std::countr_zero(pattern),
-          std::min(length - bit, Reservoir ? valid : size_t{64}));
+      const auto closes = std::min<size_t>(std::countr_zero(pattern),
+                                           std::min(length - bit, valid));
       if (count_) {
         records_[count_ - 1].returns += closes;
       }
@@ -101,39 +75,26 @@ class BpMicroSubtree {
       if (bit == length) {
         break;
       }
-      if constexpr (Reservoir) {
-        pattern = closes == 64 ? 0 : pattern >> closes;
-        valid -= closes;
-        if (valid < 14) {
-          pattern = peek(bit);
-          valid = 64;
-        }
-        if (!(pattern & 1)) {
-          continue;
-        }
-      } else {
-        if (closes == 64) {
-          continue;
-        }
-        if (closes > 50) {
-          pattern = peek(bit);
-        } else {
-          pattern >>= closes;
-        }
+      pattern = closes == 64 ? 0 : pattern >> closes;
+      valid -= closes;
+      if (valid < 14) {
+        pattern = peek(bit);
+        valid = 64;
+      }
+      if (!(pattern & 1)) {
+        continue;
       }
       const uint16_t key = (pattern >> 1) & 8191;
       const auto header = bp_micro_tables.headers[key];
       const auto length = header & 15;
       const size_t i = count_++;
-      records_[i] = {Position(number + (Absolute ? root.number : 0)),
-                     Position(bit + (Absolute ? root.pos : 0)),
+      records_[i] = {Position(number + root.number),
+                     Position(bit + root.pos),
                      0,
                      missing,
                      uint16_t(header >> 4),
                      0};
-      if constexpr (!MacroLast) {
-        last[i] = missing;
-      }
+
       if (depth) {
         auto parent = stack[depth - 1];
         records_[i].parent = parent;
@@ -145,18 +106,14 @@ class BpMicroSubtree {
         number += length / 2;
       } else {
         records_[i].program = 256;
-        if constexpr (MacroLast) {
-          last[i] = missing;
-        }
+        last[i] = missing;
         stack[depth++] = i;
         ++bit;
         ++number;
       }
-      if constexpr (Reservoir) {
-        const size_t consumed = length ? length : 1;
-        pattern >>= consumed;
-        valid -= consumed;
-      }
+      const size_t consumed = length ? length : 1;
+      pattern >>= consumed;
+      valid -= consumed;
     }
     return true;
   }
@@ -172,84 +129,9 @@ class BpMicroSubtree {
           inspect(node(c));
         }
       } else {
-        if constexpr (Compiled == 4) {
-          if (record.program == 0) {
-            RunMicroEvents<0>(
-                node(i), visit, inspect,
-                std::make_index_sequence<bp_micro_tables.programs[0].count>{});
-          } else if (record.program == 1) {
-            RunMicroEvents<1>(
-                node(i), visit, inspect,
-                std::make_index_sequence<bp_micro_tables.programs[1].count>{});
-          } else {
-            const auto& p = bp_micro_tables.programs[record.program];
-            alignas(64) uint64_t handles[48];
-            const auto root = node(i);
-            pixie::detail::tree_unpack::decode_relative_events(
-                p.events.data(), p.count, root.number, root.pos, handles);
-            for (unsigned j = 0; j < p.count; ++j) {
-              TreeNode current(handles[2 * j], handles[2 * j + 1]);
-              if (p.events[j] & 128) {
-                inspect(current);
-              } else {
-                emit(visit, current, !((p.returns >> j) & 1));
-              }
-            }
-          }
-        } else if constexpr (Compiled == 3) {
-          switch (record.program) {
-            case 0:
-              RunMicroEvents<0>(node(i), visit, inspect,
-                                std::make_index_sequence<
-                                    bp_micro_tables.programs[0].count>{});
-              break;
-            case 1:
-              RunMicroEvents<1>(node(i), visit, inspect,
-                                std::make_index_sequence<
-                                    bp_micro_tables.programs[1].count>{});
-              break;
-            case 2:
-              RunMicroEvents<2>(node(i), visit, inspect,
-                                std::make_index_sequence<
-                                    bp_micro_tables.programs[2].count>{});
-              break;
-            case 3:
-              RunMicroEvents<3>(node(i), visit, inspect,
-                                std::make_index_sequence<
-                                    bp_micro_tables.programs[3].count>{});
-              break;
-            default: {
-              static constexpr auto dispatch = MicroDispatch<Visit, Inspect>(
-                  std::make_index_sequence<197>{});
-              dispatch[record.program](node(i), visit, inspect);
-            }
-          }
-        } else if constexpr (Compiled == 1) {
-          if constexpr (VectorPolicy) {
-            static constexpr auto dispatch =
-                vector_micro::dispatch<VectorPolicy, Visit, Inspect>(
-                    std::make_index_sequence<197>{});
-            dispatch[record.program](vector_micro::pack(node(i)), visit,
-                                     inspect);
-          } else {
-            static constexpr auto dispatch =
-                MicroDispatch<Visit, Inspect>(std::make_index_sequence<197>{});
-            dispatch[record.program](node(i), visit, inspect);
-          }
-        } else {
-          const auto& p = bp_micro_tables.programs[record.program];
-          const auto root = node(i);
-          for (unsigned j = 0; j < p.count; ++j) {
-            const unsigned code = p.events[j];
-            TreeNode current(root.number + (code & 7),
-                             root.pos + ((code >> 3) & 15));
-            if (code & 128) {
-              inspect(current);
-            } else {
-              emit(visit, current, !((p.returns >> j) & 1));
-            }
-          }
-        }
+        static constexpr auto dispatch = vector_micro::dispatch<Visit, Inspect>(
+            std::make_index_sequence<197>{});
+        dispatch[record.program](vector_micro::pack(node(i)), visit, inspect);
         size_t completed = i;
         for (size_t r = 0; r < record.returns; ++r) {
           completed = records_[completed].parent;
@@ -262,26 +144,14 @@ class BpMicroSubtree {
 
 // Local traversal scratch; topology programs are immutable and shared. No
 // cache admission/lookups inside a microtree, and no tree-specific table build.
-template <size_t Bits,
-          class Tree,
-          class Visit,
-          class Inspect,
-          unsigned Compiled = 0,
-          bool MacroLast = false,
-          unsigned VectorPolicy = 0>
+template <size_t Bits, class Tree, class Visit, class Inspect>
 class BpMicroTraversal {
   const Tree& tree_;
   std::span<const uint64_t> words_;
   Visit& visit_;
   Inspect& inspect_;
   size_t max_depth_;
-  BpMicroSubtree<Bits,
-                 Compiled >= 7 ? 1 : Compiled,
-                 Compiled == 7 || Compiled == 8,
-                 Compiled == 8,
-                 MacroLast,
-                 VectorPolicy>
-      cache_;
+  BpMicroSubtree<Bits> cache_;
 
  public:
   size_t nodes = 0, children = 0;
@@ -383,4 +253,4 @@ class BpMicroTraversal {
     }
   }
 };
-}  // namespace pixie::experimental::compact_bp
+}  // namespace pixie::detail::bp_micro

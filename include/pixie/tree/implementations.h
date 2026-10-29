@@ -18,8 +18,3 @@
 #include <pixie/tree/bp.h>
 #include <pixie/tree/dfuds.h>
 #include <pixie/tree/louds.h>
-
-// Bounded experimental auxiliary index for root-to-leaf navigation.
-#include <pixie/tree/experimental/second_chance_tree_cache.h>
-#include <pixie/tree/experimental/tree_navigation_index.h>
-#include <pixie/tree/experimental/unpacked_tree_cache.h>

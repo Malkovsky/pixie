@@ -8,6 +8,7 @@
  * encodings.
  */
 
+#include <concepts>
 #include <cstddef>
 #include <utility>
 
@@ -33,10 +34,37 @@ struct TreeNode {
 };
 
 /**
+ * @brief Required operations for a lightweight, per-node navigation view.
+ * @details Behavioral and lifetime requirements are specified by
+ * TreeBase::navigate.
+ */
+template <class View>
+concept TreeNavigationView =
+    std::copyable<View> &&
+    requires(View view, const View current, TreeNode node, std::size_t i) {
+      { current.node() } -> std::same_as<TreeNode>;
+      { view.reset(node) } -> std::same_as<void>;
+      { current.is_root() } -> std::same_as<bool>;
+      { current.is_leaf() } -> std::same_as<bool>;
+      { current.degree() } -> std::same_as<std::size_t>;
+      { current.child(i) } -> std::same_as<TreeNode>;
+      { current.first_child() } -> std::same_as<TreeNode>;
+      { current.parent() } -> std::same_as<TreeNode>;
+      { current.next_sibling() } -> std::same_as<TreeNode>;
+      { current.is_last_child() } -> std::same_as<bool>;
+      {
+        current.for_each_child([](TreeNode) {})
+      } -> std::same_as<void>;
+    };
+
+/**
  * @brief CRTP facade for rooted ordered trees.
  *
  * Implementations may use different succinct encodings, but expose the same
  * logical navigation operations through this facade.
+ * Implementations and their selected backends must support concurrent const
+ * queries without mutable shared navigation state. Query memoization belongs
+ * to individual views; traversal scratch and auxiliary indexes are external.
  *
  * @see `<pixie/tree/implementations.h>` for the available succinct encodings.
  */
@@ -44,6 +72,40 @@ template <class Impl>
 class TreeBase {
  public:
   using Node = TreeNode;
+
+  /**
+   * @brief Create an independent memoizing navigation view.
+   * @param node Valid handle from this tree; invalid handles are undefined
+   * behavior.
+   * @details The tree and its immutable backing data must outlive the view and
+   * remain unmoved. All query memoization belongs to the view, never the tree.
+   * Independent views may query the same const tree concurrently. Concurrent
+   * access to one view requires external synchronization.
+   * @par Implementation requirement
+   * navigate_impl(node) returns a copyable NodeView with node(), reset(node),
+   * is_root(), is_leaf(), degree(), child(i), first_child(), parent(),
+   * next_sibling(), is_last_child() and for_each_child(visitor). Queries follow
+   * the matching TreeBase semantics. Only reset changes the current node and
+   * invalidates memoized results; copies have independent memoization.
+   */
+  auto navigate(Node node) const {
+    static_assert(TreeNavigationView<typename Impl::NodeView>);
+    return impl().navigate_impl(node);
+  }
+
+  /**
+   * @brief Object bytes plus owned index allocations.
+   * @details Excludes borrowed representation words, caller-owned views,
+   * external traversal/index objects and allocator metadata.
+   * @par Implementation requirement
+   * memory_usage_bytes_impl() reports this total without allocating or mutating
+   * the tree. Available only when the selected backend supports accounting.
+   */
+  std::size_t memory_usage_bytes() const
+    requires requires(const Impl& tree) { tree.memory_usage_bytes_impl(); }
+  {
+    return impl().memory_usage_bytes_impl();
+  }
 
   /**
    * @brief Return the root node.

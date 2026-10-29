@@ -37,40 +37,17 @@ def groups(scope):
     ]
     if scope in ("all", "succinct"):
         result += [
-            ("bp", "bp_rmmbtree", True),
-            ("dfuds", "dfuds_rmmbtree", True),
-            ("louds", "louds_compressed", True),
+            ("bp", "bp_direct", True),
+            ("dfuds", "dfuds_direct", True),
+            ("louds", "louds_direct", True),
         ]
     return result
 
 
-def operations(prefix, succinct, mode="optimized"):
+def operations(prefix, succinct, mode="direct"):
     if succinct and mode == "best":
         return [prefix.split("_")[0] + "_best_" + op for op in
                 ("dfs", "dfs_children", "random_path", "random_path_children")]
-    if succinct and mode == "unpack-cache":
-        family = prefix.split("_")[0]
-        return operations(prefix, True, "comparison") + [
-            family + "_" + policy + "_" + op
-            for policy in ("selective_unpack", "chunk_unpack")
-            for op in ("dfs", "dfs_children", "random_path", "random_path_children")]
-    if succinct and mode == "comparison":
-        return operations(prefix, True, "cache") + operations(prefix, True, "optimized")
-    if succinct and mode == "cache":
-        family = prefix.split("_")[0]
-        return [prefix + "_view_dfs"] + [prefix + "_" + op for op in
-            ("dfs_children", "random_path", "random_path_children")] + [
-            family + "_clock_" + op for op in
-            ("dfs", "dfs_children", "random_path", "random_path_children")]
-    if succinct:
-        return [
-            prefix + "_unpacked_" + op
-            for op in ("dfs", "dfs_children", "random_path",
-                       "random_path_children")
-        ] + [
-            prefix + "_indexed_" + op
-            for op in ("random_path", "random_path_children")
-        ]
     return [
         prefix + "_" + op
         for op in ("dfs", "dfs_children", "random_path",
@@ -148,7 +125,7 @@ def main():
                         help="Explicit node counts, replacing --exponents")
     parser.add_argument("--first-size", type=int,
                         help="Measure this selected size before the remaining grid")
-    parser.add_argument("--succinct-mode", choices=("best", "optimized", "cache", "comparison", "unpack-cache"),
+    parser.add_argument("--succinct-mode", choices=("best", "direct"),
                         default="best")
     parser.add_argument("--random-interleaving", action="store_true")
     parser.add_argument("--cpu", type=int, default=0)
@@ -278,8 +255,8 @@ def main():
                 "generation, this sweep does not vary tree seeds. Adaptive "
                 "iteration counts may differ; query counters record work.\n\n"
                 "Succinct variants use compressed rank/select and RmMBTree for "
-                "BP/DFUDS. DFS uses unpacking. Paths include both unpacked and "
-                "bounded-index variants; index bytes are explicit counters. "
+                "BP/DFUDS. Best mode combines decoding and the bounded root "
+                "index; direct mode measures navigation without either. "
                 "References include preorder and BFS layouts. No binary RmM "
                 "or baseline LOUDS backend comparisons are included.\n\n"
                 "Run the collector again with identical arguments plus "
@@ -287,21 +264,6 @@ def main():
                 "executables/settings and validates result hashes. `bin/`, "
                 "`sources.zip`, and `collector.py` preserve this run's inputs. "
                 "Keep this user-requested dataset out of commits.\n")
-            if args.succinct_mode in ("cache", "comparison", "unpack-cache"):
-                (output / "README.md").write_text(
-                    "# Cache versus references benchmark collection\n\n"
-                    "All four workloads compare local-view memoization and "
-                    "the experimental CLOCK policy. References use vectors "
-                    "and three pointers in both preorder and BFS layouts. "
-                    "Comparison mode also retains separately named unpacked "
-                    "and fixed-root-index controls.\n\n"
-                    "status.json records completion; manifest.json preserves "
-                    "settings, commands, source hashes, and binary identity. "
-                    "Raw repetitions and aggregates are retained separately "
-                    "in each result; use only iteration rows for statistics. "
-                    "Process resource logs include setup, which is excluded "
-                    "from query timing. The dataset is user-requested and "
-                    "should remain outside commits.\n")
             if args.succinct_mode == "best":
                 (output / "README.md").write_text(
                     "# Fixed tree configurations: four workloads\n\n"

@@ -1,5 +1,5 @@
 #include <pixie/rmm/btree.h>
-#include <pixie/tree/experimental/tree_traversal_cache.h>
+#include <pixie/tree/traversal_context.h>
 #include <pixie/utils.h>
 #include <references/pointer_tree.h>
 #include <sys/resource.h>
@@ -41,16 +41,16 @@ Result succinct(size_t n, size_t budget) {
   }
   r.convert = seconds(start);
   start = Clock::now();
-  Tree tree(words, n, budget);
+  Tree tree(words, n);
   r.construct = seconds(start);
   start = Clock::now();
-  pixie::experimental::TreeTraversalCache cache(tree, words);
+  pixie::TreeTraversalContext cache(tree, words, budget);
   r.cache = seconds(start);
   r.source = words.capacity() * sizeof(uint64_t);
   r.structure = tree.memory_usage_bytes();
   r.scratch = cache.scratch_bytes();
   r.persistent = cache.memory_usage_bytes() - r.scratch;
-  if (tree.size() != n || cache.memory_usage_bytes() > budget ||
+  if (tree.size() != n || cache.budget_usage_bytes() > budget ||
       !cache.optimized_inspection_enabled()) {
     throw std::runtime_error("construction validation failed");
   }
