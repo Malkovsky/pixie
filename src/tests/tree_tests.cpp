@@ -214,19 +214,133 @@ TYPED_TEST(BoundedTraversalTest, ContextOwnershipAndAccounting) {
   EXPECT_NE(first.node().number, root.number);
 }
 
+TYPED_TEST(BoundedTraversalTest, IndexRejectsEmptyTrees) {
+  using Tree = typename TypeParam::Tree;
+  const std::vector<uint64_t> words;
+  const Tree tree(words, 0);
+  for (size_t budget : {size_t{0}, size_t{32768}}) {
+    EXPECT_THROW((pixie::RootNavigationIndex<Tree>(tree, budget)),
+                 std::invalid_argument);
+    EXPECT_THROW((pixie::TreeTraversalContext(tree, words, budget)),
+                 std::invalid_argument);
+  }
+}
+
+TYPED_TEST(BoundedTraversalTest, CursorContractsAcrossAdmissionBoundaries) {
+  using Tree = typename TypeParam::Tree;
+  using Index = pixie::RootNavigationIndex<Tree, 8>;
+  // Unequal degrees and tied priorities; more nodes than the index can hold.
+  const std::vector<std::vector<size_t>> source = {
+      {0, 1, 2, 3}, {0, 4, 5}, {0, 6}, {0}, {1, 7, 8}, {1},
+      {2, 9, 10},   {4},       {4},    {6}, {6}};
+  const auto adjacency = TypeParam::order(source.size(), source);
+  const auto words = TypeParam::encode(source.size(), adjacency);
+  const Tree tree(words, source.size());
+  for (size_t budget : {size_t{0}, sizeof(Index), sizeof(Index) + 1,
+                        sizeof(Index) + 32, size_t{32768}}) {
+    SCOPED_TRACE(budget);
+    const Index index(tree, budget);
+    EXPECT_LE(index.budget_usage_bytes(), budget);
+    auto copied_index = index;
+    auto moved_index = std::move(copied_index);
+    std::vector<typename Index::Cursor> pending{moved_index.cursor()};
+    size_t visited = 0;
+    while (!pending.empty()) {
+      auto cursor = pending.back();
+      pending.pop_back();
+      ++visited;
+      const auto node = cursor.node();
+      using Handle = std::pair<size_t, size_t>;
+      const Handle origin{node.number, node.pos};
+      std::vector<Handle> expected, actual;
+      tree.for_each_child(node, [&](auto child) {
+        expected.emplace_back(child.number, child.pos);
+      });
+      auto collect = [&, token = std::make_unique<int>(1)](auto child) {
+        actual.emplace_back(child.number, child.pos);
+      };
+      cursor.for_each_child(collect);
+      EXPECT_EQ(actual, expected);
+      ASSERT_EQ(cursor.degree(), expected.size());
+      for (size_t i = 0; i < expected.size(); ++i) {
+        SCOPED_TRACE(i);
+        // Every exception position must preserve the cursor, on hits and
+        // misses.
+        size_t calls = 0;
+        auto throwing = [&](auto) {
+          if (calls++ == i) {
+            throw std::runtime_error("stop");
+          }
+        };
+        EXPECT_THROW(cursor.for_each_child(throwing), std::runtime_error);
+        EXPECT_EQ(calls, i + 1);
+        calls = 0;
+        EXPECT_THROW(cursor.inspect_children_and_move_to_child(i, throwing),
+                     std::runtime_error);
+        EXPECT_EQ(calls, i + 1);
+        EXPECT_EQ(Handle(cursor.node().number, cursor.node().pos), origin);
+        actual.clear();
+        auto inspected = cursor;
+        inspected.inspect_children_and_move_to_child(i, collect);
+        EXPECT_EQ(actual, expected);
+        EXPECT_EQ(Handle(inspected.node().number, inspected.node().pos),
+                  expected[i]);
+        auto selected = cursor;
+        selected.move_to_child(i);
+        EXPECT_EQ(Handle(selected.node().number, selected.node().pos),
+                  expected[i]);
+        auto supplied = cursor;
+        supplied.move_to_child(i, tree.child(node, i));
+        EXPECT_EQ(Handle(supplied.node().number, supplied.node().pos),
+                  expected[i]);
+        pending.push_back(supplied);
+      }
+    }
+    EXPECT_EQ(visited, source.size());
+  }
+}
+
+TEST(TreeUnpackingTest, WordReaderZeroExtendsUnalignedSourceTails) {
+  const std::vector<uint64_t> words{0x8123456789abcdef, 0xfedcba9876543210};
+  for (size_t count = 0; count <= words.size(); ++count) {
+    const std::span<const uint64_t> source(words.data(), count);
+    for (size_t position = 0; position <= 192; ++position) {
+      uint64_t expected = 0;
+      for (size_t bit = 0; bit < 64; ++bit) {
+        const size_t at = position + bit;
+        if (at < count * 64) {
+          expected |= ((words[at / 64] >> (at % 64)) & 1) << bit;
+        }
+      }
+      EXPECT_EQ(pixie::detail::tree_unpack::word_at(source, position), expected)
+          << "words=" << count << " position=" << position;
+    }
+  }
+}
+
 TYPED_TEST(BoundedTraversalTest, AllWorkloadsShareBudgetAndExactEvents) {
   using Tree = typename TypeParam::Tree;
   std::mt19937_64 rng(812);
-  for (size_t scenario = 0; scenario < 5; ++scenario) {
+  for (size_t scenario = 0; scenario < 7; ++scenario) {
     const size_t n = scenario == 0 ? 1 : scenario == 1 ? 130 : 10001;
     auto source = generate_random_tree(n, rng);
     if (scenario >= 3) {
       source.assign(n, {});
       source[0].push_back(0);
       for (size_t i = 1; i < n; ++i) {
-        const size_t parent = scenario == 3 ? i - 1 : 0;
+        size_t parent = scenario == 3 ? i - 1 : 0;
+        if (scenario >= 5) {
+          // Deep combs force sibling transitions after falling back from
+          // bounded decoder stacks, rather than only ascending a pure chain.
+          parent = i <= 2 ? 0 : 2 * ((i - 1) / 2) - 1;
+        }
         source[parent].push_back(i);
         source[i].push_back(parent);
+      }
+    }
+    if (scenario == 6) {
+      for (auto& edges : source) {
+        std::reverse(edges.begin() + 1, edges.end());
       }
     }
     const auto adjacency = TypeParam::order(n, source);
@@ -2111,7 +2225,8 @@ void CheckDfudsMicroPrefetch(const std::vector<uint64_t>& words, size_t n) {
   pixie::experimental::PreparedTreeEvents<> events(tree);
   for (int repeat = 0; repeat < 2; ++repeat) {
     actual.clear();
-    const bool hit = events.try_walk(visit, inspect);
+    const bool hit = repeat ? events.template try_walk<true>(visit, inspect)
+                            : events.try_walk(visit, inspect);
     ASSERT_EQ(hit, n <= 4096);
     ASSERT_EQ(events.size(), hit ? n : 0u);
     if (hit) {
@@ -2134,6 +2249,9 @@ void CheckDfudsMicroPrefetch(const std::vector<uint64_t>& words, size_t n) {
   } else {
     ASSERT_TRUE(actual.empty());
   }
+  actual.clear();
+  EXPECT_EQ((events.template try_walk<true, false>(visit, inspect)), plain_hit);
+  EXPECT_EQ(actual, plain_hit ? visits_only : std::vector<Event>{});
 }
 }  // namespace
 
