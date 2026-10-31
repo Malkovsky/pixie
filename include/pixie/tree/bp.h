@@ -1,10 +1,14 @@
 #pragma once
 
+#include <pixie/memory_usage.h>
 #include <pixie/rmm/tree.h>
 #include <pixie/tree.h>
+#include <pixie/tree/detail/bp_node_view.h>
+#include <pixie/tree/detail/encoding_storage.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -14,23 +18,116 @@ namespace pixie {
  * @brief A tree class based on the balances parentheses (BP)
  * representation
  */
-template <typename RMMTree>
-class BPTree : public TreeBase<BPTree<RMMTree>> {
+template <class RMMTree,
+          detail::TreeEncodingStorage EncodingStorage = AlignedStorage>
+class BPTree;
+
+template <class B, detail::TreeEncodingStorage S>
+struct TreeTraits<BPTree<B, S>> {
+  using TreeView = BPTree<B, ReadOnlyStorageView>;
+  using NodeView = detail::BpNodeView<BPTree<B, S>>;
+};
+
+template <class RMMTree, detail::TreeEncodingStorage EncodingStorage>
+class BPTree : public TreeBase<BPTree<RMMTree, EncodingStorage>> {
  private:
-  const size_t num_bits_;
+  EncodingStorage encoding_;
+  size_t num_bits_;
   RMMTree rmm_;
 
  public:
+  using typename TreeBase<BPTree>::NodeView;
+
+ private:
+  friend class detail::BpNodeView<BPTree>;
+
+ public:
+  /** @brief Implement TreeBase::navigate without mutating the tree. */
+  NodeView navigate_impl(TreeNode node) const { return NodeView(*this, node); }
+
+  /** @brief Object, owned encoding and backend allocations; excludes borrowed
+   * words. */
+  size_t memory_usage_bytes_impl() const
+    requires HasMemoryUsageBytes<RMMTree>
+  {
+    return sizeof(*this) + encoding_owned_bytes_impl() +
+           nested_owned_memory_bytes(rmm_);
+  }
+
   /**
    * @brief A node class of BP tree
    */
   using Node = TreeNode;
 
   /**
-   * @brief Constructor from an external array of uint64_t
+   * @brief Construct from a valid encoding of tree_size nodes.
+   * @details Owning trees copy complete source words; TreeView borrows them.
+   * A view's source must stay alive, immutable and at a stable address.
+   * Invalid topology is undefined behavior. A short source throws
+   * std::invalid_argument; an unrepresentable bit count throws
+   * std::length_error.
    */
-  explicit BPTree(const std::vector<std::uint64_t>& words, size_t tree_size)
-      : num_bits_(2 * tree_size), rmm_(words, 2 * tree_size) {}
+  explicit BPTree(std::span<const uint64_t> words, size_t tree_size)
+      : BPTree(detail::tree_encoding_from_words<EncodingStorage>(
+                   words,
+                   detail::tree_encoding_bits(tree_size, true)),
+               tree_size) {}
+
+  /**
+   * @brief Take storage by value: moves transfer ownership, lvalues copy.
+   * @details ReadOnlyStorageView always borrows. AlignedStorage may have a
+   * partial final logical byte/word; its allocation supplies word padding.
+   * View storage must contain aligned complete words. Short/misaligned storage
+   * throws std::invalid_argument. Topology and size must agree.
+   */
+  explicit BPTree(EncodingStorage storage, size_t tree_size)
+      : encoding_(std::move(storage)),
+        num_bits_(detail::tree_encoding_bits(tree_size, true)),
+        rmm_(encoding_words_impl(), num_bits_) {}
+
+  /** @brief Deep-copy owning encodings and rebuild their backend references.
+   * @details TreeView copies backend metadata and borrows the same encoding.
+   */
+  BPTree(const BPTree& other)
+      : encoding_(other.encoding_), num_bits_(other.num_bits_), rmm_([&] {
+          if constexpr (std::same_as<EncodingStorage, AlignedStorage>) {
+            return RMMTree(encoding_words_impl(), num_bits_);
+          } else {
+            return other.rmm_;
+          }
+        }()) {}
+  /** @brief Copy independently; invalidates existing borrowers of *this. */
+  BPTree& operator=(const BPTree& other) {
+    if (this != &other) {
+      BPTree copy(other);
+      *this = std::move(copy);
+    }
+    return *this;
+  }
+  /** @brief Transfer storage/indexes; invalidates borrowers of the source.
+   * @details The moved-from object may only be destroyed or assigned.
+   */
+  BPTree(BPTree&&) = default;
+  /** @brief Transfer storage/indexes; invalidates borrowers of both trees. */
+  BPTree& operator=(BPTree&&) = default;
+
+  /** @brief Reject dangling views of temporary vectors. */
+  BPTree(std::vector<uint64_t>&&, size_t)
+    requires std::same_as<EncodingStorage, ReadOnlyStorageView>
+  = delete;
+  /** @brief Reject dangling views of temporary const vectors. */
+  BPTree(const std::vector<uint64_t>&&, size_t)
+    requires std::same_as<EncodingStorage, ReadOnlyStorageView>
+  = delete;
+
+  /** @brief Implement TreeBase::encoding_words. */
+  std::span<const uint64_t> encoding_words_impl() const {
+    return detail::tree_encoding_words(encoding_, num_bits_);
+  }
+  /** @brief Implement TreeBase::encoding_owned_bytes. */
+  size_t encoding_owned_bytes_impl() const {
+    return detail::tree_encoding_owned_bytes(encoding_);
+  }
 
   /**
    * @brief Returns the root node
@@ -46,7 +143,7 @@ class BPTree : public TreeBase<BPTree<RMMTree>> {
    * @brief Indicates if @p node is a leaf
    */
   bool is_leaf_impl(const Node& node) const {
-    return (node.pos + 2 == num_bits_) or rmm_.bit(node.pos + 1) == 0;
+    return rmm_.bit(node.pos + 1) == 0;
   }
 
   /**
@@ -84,6 +181,22 @@ class BPTree : public TreeBase<BPTree<RMMTree>> {
     return Node(num, pos);
   }
 
+  /** @brief Implement TreeBase::for_each_child with local traversal state. */
+  template <class Visitor>
+  void for_each_child_impl(const TreeNode& node, Visitor&& visitor) const {
+    if (is_leaf_impl(node)) {
+      return;
+    }
+    auto child = NodeView(*this, first_child_impl(node));
+    while (true) {
+      visitor(child.node());
+      if (child.is_last_child()) {
+        return;
+      }
+      child.reset(child.next_sibling());
+    }
+  }
+
   /**
    * @brief Returns the i-th child of @p node
    * Indexing starts at 0
@@ -107,8 +220,15 @@ class BPTree : public TreeBase<BPTree<RMMTree>> {
     if (node.number == 0) {
       return root_impl();
     }
+    // An opening immediately before this node identifies its parent. It is
+    // also the preceding preorder node, so neither enclose nor rank is needed.
+    if (rmm_.bit(node.pos - 1)) {
+      return Node(node.number - 1, node.pos - 1);
+    }
     size_t pos = rmm_.enclose(node.pos);
-    size_t num = rmm_.rank1(pos);
+    // Between the parent's open and this child are complete sibling subtrees,
+    // each occupying two bits per node, plus the parent's own opening bit.
+    size_t num = node.number - (node.pos - pos + 1) / 2;
     return Node(num, pos);
   }
 
@@ -116,17 +236,21 @@ class BPTree : public TreeBase<BPTree<RMMTree>> {
    * @brief Indicates if @p node is last child
    */
   bool is_last_child_impl(const Node& node) const {
-    size_t end = rmm_.close(node.pos);
-
-    return end + 2 >= num_bits_ or rmm_.bit(end + 1) == 0;
+    const size_t end = is_leaf_impl(node) ? node.pos + 1 : rmm_.close(node.pos);
+    // A non-root node's close is followed by a sibling open or a parent close.
+    return rmm_.bit(end + 1) == 0;
   }
 
   /**
    * @brief Returns next sibling of a @p node
    */
   Node next_sibling_impl(const Node& node) const {
+    // A leaf is exactly "10"; its sibling is the next preorder node.
+    if (is_leaf_impl(node)) {
+      return Node(node.number + 1, node.pos + 2);
+    }
     size_t pos = rmm_.close(node.pos) + 1;
-    size_t num = rmm_.rank1(pos + 1) - 1;
+    size_t num = node.number + (pos - node.pos) / 2;
     return Node(num, pos);
   }
 };

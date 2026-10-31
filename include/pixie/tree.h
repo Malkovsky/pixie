@@ -8,9 +8,21 @@
  * encodings.
  */
 
+#include <concepts>
 #include <cstddef>
+#include <cstdint>
+#include <span>
+#include <utility>
 
 namespace pixie {
+
+/** @brief Encoding-specific types used by TreeBase; specialize before the tree.
+ */
+template <class Impl>
+struct TreeTraits;
+
+template <class Tree, std::size_t Capacity = 128>
+class TreePathView;
 
 /**
  * @brief Logical node handle shared by succinct rooted-tree encodings.
@@ -32,10 +44,37 @@ struct TreeNode {
 };
 
 /**
+ * @brief Required operations for a lightweight, per-node navigation view.
+ * @details Behavioral and lifetime requirements are specified by
+ * TreeBase::navigate.
+ */
+template <class View>
+concept TreeNavigationView =
+    std::copyable<View> &&
+    requires(View view, const View current, TreeNode node, std::size_t i) {
+      { current.node() } -> std::same_as<TreeNode>;
+      { view.reset(node) } -> std::same_as<void>;
+      { current.is_root() } -> std::same_as<bool>;
+      { current.is_leaf() } -> std::same_as<bool>;
+      { current.degree() } -> std::same_as<std::size_t>;
+      { current.child(i) } -> std::same_as<TreeNode>;
+      { current.first_child() } -> std::same_as<TreeNode>;
+      { current.parent() } -> std::same_as<TreeNode>;
+      { current.next_sibling() } -> std::same_as<TreeNode>;
+      { current.is_last_child() } -> std::same_as<bool>;
+      {
+        current.for_each_child([](TreeNode) {})
+      } -> std::same_as<void>;
+    };
+
+/**
  * @brief CRTP facade for rooted ordered trees.
  *
  * Implementations may use different succinct encodings, but expose the same
  * logical navigation operations through this facade.
+ * Implementations and their selected backends must support concurrent const
+ * queries without mutable shared navigation state. Query memoization belongs
+ * to individual views; traversal scratch and auxiliary indexes are external.
  *
  * @see `<pixie/tree/implementations.h>` for the available succinct encodings.
  */
@@ -43,6 +82,70 @@ template <class Impl>
 class TreeBase {
  public:
   using Node = TreeNode;
+  /** @brief Tree representation borrowing encoding, owning backend metadata. */
+  using TreeView = typename TreeTraits<Impl>::TreeView;
+  /** @brief Independent per-node memoizing view borrowing this tree. */
+  using NodeView = typename TreeTraits<Impl>::NodeView;
+  /** @brief Path cursor with the default inline ancestor capacity. */
+  using PathView = TreePathView<Impl>;
+  /** @brief Path cursor with Capacity inline ancestor handles. */
+  template <std::size_t Capacity>
+  using BoundedPathView = TreePathView<Impl, Capacity>;
+
+  /** @brief Read-only complete encoding words, including final-word padding.
+   * @details Borrows this tree's storage; invalidated by assignment, move or
+   * destruction of the tree (or the backing owner for TreeView). The tree's
+   * node count defines the logical bit length. No ownership is transferred.
+   * @par Implementation requirement
+   * encoding_words_impl() returns the immutable representation as a word span.
+   */
+  std::span<const std::uint64_t> encoding_words() const {
+    return impl().encoding_words_impl();
+  }
+
+  /** @brief Allocated encoding bytes; zero for a non-owning TreeView.
+   * @par Implementation requirement
+   * encoding_owned_bytes_impl() excludes object bytes and backend metadata.
+   */
+  std::size_t encoding_owned_bytes() const {
+    return impl().encoding_owned_bytes_impl();
+  }
+
+  /**
+   * @brief Create an independent memoizing navigation view.
+   * @param node Valid handle from this tree; invalid handles are undefined
+   * behavior.
+   * @details The tree and its immutable backing data must outlive the view and
+   * remain unmoved. Assignment or moving invalidates existing borrowers;
+   * using an invalidated view is undefined behavior. All query memoization
+   * belongs to the view, never the tree. Independent views may query the same
+   * const tree concurrently. Concurrent access to one view requires external
+   * synchronization.
+   * @par Implementation requirement
+   * navigate_impl(node) returns a copyable NodeView with node(), reset(node),
+   * is_root(), is_leaf(), degree(), child(i), first_child(), parent(),
+   * next_sibling(), is_last_child() and for_each_child(visitor). Queries follow
+   * the matching TreeBase semantics. Only reset changes the current node and
+   * invalidates memoized results; copies have independent memoization.
+   */
+  auto navigate(Node node) const {
+    static_assert(TreeNavigationView<typename Impl::NodeView>);
+    return impl().navigate_impl(node);
+  }
+
+  /**
+   * @brief Object bytes plus owned index allocations.
+   * @details Includes owned encoding; excludes borrowed words, caller-owned
+   * views, external traversal/index objects and allocator metadata.
+   * @par Implementation requirement
+   * memory_usage_bytes_impl() reports this total without allocating or mutating
+   * the tree. Available only when the selected backend supports accounting.
+   */
+  std::size_t memory_usage_bytes() const
+    requires requires(const Impl& tree) { tree.memory_usage_bytes_impl(); }
+  {
+    return impl().memory_usage_bytes_impl();
+  }
 
   /**
    * @brief Return the root node.
@@ -105,6 +208,27 @@ class TreeBase {
   }
 
   /**
+   * @brief Visit every immediate child in zero-based child-index order.
+   * @param node Valid node handle from this tree; invalid handles are undefined
+   * behavior.
+   * @param visitor Callable invoked as an lvalue with a Node value for each
+   * child in `[0, degree(node))`. Return values are ignored; leaves invoke it
+   * zero times. Exceptions propagate and stop enumeration.
+   * @details The callback is borrowed synchronously and never copied or
+   * retained. Handles may be retained under the same lifetime rules as child():
+   * the tree and its backing data must remain alive and unchanged. Nested
+   * enumeration is supported. No heap allocation is required by enumeration
+   * itself.
+   * @par Implementation requirement
+   * `for_each_child_impl(node, visitor)` must provide these semantics without
+   * retaining callback or traversal state in the tree.
+   */
+  template <class Visitor>
+  void for_each_child(const Node& node, Visitor&& visitor) const {
+    impl().for_each_child_impl(node, std::forward<Visitor>(visitor));
+  }
+
+  /**
    * @brief Return the parent of @p node.
    * @param node Valid node handle from this tree.
    * @return The parent handle, or the root itself when @p node is the root.
@@ -135,3 +259,6 @@ class TreeBase {
 };
 
 }  // namespace pixie
+
+// Complete the public nested PathView aliases after defining their contract.
+#include <pixie/tree/path_view.h>

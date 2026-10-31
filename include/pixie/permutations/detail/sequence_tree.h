@@ -138,9 +138,8 @@ class SequenceTree {
     Block block;
     [[no_unique_address]] Bias bias;
   };
-  struct alignas(IndexBias ? alignof(CacheLine)
-                           : alignof(std::max_align_t)) Node
-      : ChildOrder::Header {
+  struct alignas(IndexBias ? alignof(CacheLine) : alignof(std::max_align_t))
+      Node : ChildOrder::Header {
     // pack initializes every occupied child and measure. A spare's only
     // readable slot is its free-list link, initialized by Pool::recycle.
     // Avoid clearing unused capacity during allocation preflight.

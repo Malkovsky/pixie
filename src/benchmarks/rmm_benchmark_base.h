@@ -757,6 +757,9 @@ class RmMBenchmark {
             benchmark::DoNotOptimize(result);
           }
           state.counters["N"] = static_cast<double>(dataset.N);
+          if constexpr (requires { dataset.tree.memory_usage_bytes(); }) {
+            state.counters["index_bytes"] = dataset.tree.memory_usage_bytes();
+          }
           state.counters["seed"] = static_cast<double>(args_.seed);
           const std::size_t block_bits =
               args_.block_bits_specified

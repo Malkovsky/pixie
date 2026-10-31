@@ -4,9 +4,14 @@
  * @file implementations.h
  * @brief All rooted ordered-tree encodings provided by Pixie.
  *
- * - `LoudsTree`: level-order unary degree sequence.
+ * - `LoudsTree<RankSelect>`: level-order unary degree sequence with a
+ * selectable rank/select backend (defaults to `RankSelectSupport<>`).
  * - `BPTree<RMMTree>`: balanced-parentheses encoding.
  * - `DFUDSTree<RMMTree>`: depth-first unary degree sequence.
+ *
+ * Include the individual concrete header in consumers. Traversal workloads
+ * live in the benchmark harness; encoding-specific unpacking kernels remain
+ * internal to the corresponding implementations.
  */
 
 #include <pixie/tree.h>

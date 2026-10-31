@@ -1,76 +1,68 @@
-#include <benchmark/benchmark.h>
+#include <pixie/rmm/btree.h>
 #include <pixie/tree/implementations.h>
-#include <pixie/utils.h>
 
-#include <random>
+#include "tree_family_benchmarks.h"
 
-#ifdef SDSL_SUPPORT
-#pragma message("SDSL_SUPPORT enabled")
-#include <pixie/rmm/implementations.h>
-using DFUDSTree = pixie::DFUDSTree<pixie::SdslRmMTree>;
-#else
-#pragma message("SDSL_SUPPORT disabled")
-using DFUDSTree = pixie::DFUDSTree<pixie::RmMTree>;
-#endif
+using pixie::benchmarks::RunBestTreeBenchmark;
+using pixie::benchmarks::RunDirectTreeBenchmark;
+using pixie::benchmarks::TreeLayout;
+using pixie::benchmarks::TreeSizes;
+using pixie::benchmarks::TreeWorkload;
+using Tree = pixie::DFUDSTree<pixie::experimental::RmMBTree<>>;
+using PointerTree = pixie::references::PointerTree;
 
-using Node = DFUDSTree::Node;
-using pixie::adj_to_dfuds;
+BENCHMARK_TEMPLATE(RunBestTreeBenchmark,
+                   Tree,
+                   TreeLayout::kDfuds,
+                   TreeWorkload::kDfs)
+    ->Name("dfuds_best_dfs")
+    ->Apply(TreeSizes);
 
-/**
- * DFS with O(1) extra memory
- */
-static void BM_DfudsTreeDFS(benchmark::State& state) {
-  size_t tree_size = state.range(0);
-  std::mt19937_64 rng(42);
+BENCHMARK_TEMPLATE(RunBestTreeBenchmark,
+                   Tree,
+                   TreeLayout::kDfuds,
+                   TreeWorkload::kDfsChildren)
+    ->Name("dfuds_best_dfs_children")
+    ->Apply(TreeSizes);
 
-  for (auto _ : state) {
-    state.PauseTiming();
+BENCHMARK_TEMPLATE(RunBestTreeBenchmark,
+                   Tree,
+                   TreeLayout::kDfuds,
+                   TreeWorkload::kRandomPath)
+    ->Name("dfuds_best_random_path")
+    ->Apply(TreeSizes);
 
-    std::vector<std::vector<size_t>> adj = generate_random_tree(tree_size, rng);
-    adj = dfs_order(tree_size, adj);
-    std::vector<uint64_t> dfuds = adj_to_dfuds(tree_size, adj);
-    DFUDSTree tree(dfuds, tree_size);
+BENCHMARK_TEMPLATE(RunBestTreeBenchmark,
+                   Tree,
+                   TreeLayout::kDfuds,
+                   TreeWorkload::kRandomPathChildren)
+    ->Name("dfuds_best_random_path_children")
+    ->Apply(TreeSizes);
 
-    Node cur = tree.root();
-    bool above = 1;
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   Tree,
+                   TreeLayout::kDfuds,
+                   TreeWorkload::kDfs)
+    ->Name("dfuds_direct_dfs")
+    ->Apply(TreeSizes);
 
-    state.ResumeTiming();
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   Tree,
+                   TreeLayout::kDfuds,
+                   TreeWorkload::kDfsChildren)
+    ->Name("dfuds_direct_dfs_children")
+    ->Apply(TreeSizes);
 
-    benchmark::DoNotOptimize(cur);
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   Tree,
+                   TreeLayout::kDfuds,
+                   TreeWorkload::kRandomPath)
+    ->Name("dfuds_direct_random_path")
+    ->Apply(TreeSizes);
 
-    while (true) {
-      if (above) {
-        if (tree.is_leaf(cur)) {
-          above = 0;
-        } else {
-          cur = tree.first_child(cur);
-        }
-        benchmark::DoNotOptimize(cur);
-      } else {
-        if (tree.is_last_child(cur)) {
-          cur = tree.parent(cur);
-          if (tree.is_root(cur)) {
-            break;
-          }
-          benchmark::DoNotOptimize(cur);
-        } else {
-          cur = tree.next_sibling(cur);
-          above = 1;
-          benchmark::DoNotOptimize(cur);
-        }
-      }
-    }
-  }
-}
-
-BENCHMARK(BM_DfudsTreeDFS)
-    ->ArgNames({"tree_size"})
-    ->RangeMultiplier(2)
-    ->Range(1ull << 8, 1ull << 18)
-    ->Iterations(100);
-
-BENCHMARK(BM_DfudsTreeDFS)
-    ->ArgNames({"tree_size"})
-    ->RangeMultiplier(2)
-    ->Range(1ull << 18, 1ull << 26)
-    ->Iterations(10);
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   Tree,
+                   TreeLayout::kDfuds,
+                   TreeWorkload::kRandomPathChildren)
+    ->Name("dfuds_direct_random_path_children")
+    ->Apply(TreeSizes);

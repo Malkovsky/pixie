@@ -1,73 +1,124 @@
-#include <benchmark/benchmark.h>
+#include <pixie/rmm/btree.h>
 #include <pixie/tree/implementations.h>
-#include <pixie/utils.h>
 
-#include <random>
+#include "tree_family_benchmarks.h"
 
-#ifdef SDSL_SUPPORT
-#pragma message("SDSL_SUPPORT enabled")
-#include <pixie/rmm/implementations.h>
-using BPTree = pixie::BPTree<pixie::SdslRmMTree>;
-#else
-#pragma message("SDSL_SUPPORT disabled")
-using BPTree = pixie::BPTree<pixie::RmMTree>;
-#endif
-using Node = BPTree::Node;
+using pixie::benchmarks::RunBestTreeBenchmark;
+using pixie::benchmarks::RunDirectTreeBenchmark;
+using pixie::benchmarks::TreeLayout;
+using pixie::benchmarks::TreeSizes;
+using pixie::benchmarks::TreeWorkload;
+using Tree = pixie::BPTree<pixie::experimental::RmMBTree<>>;
+using PointerTree = pixie::references::PointerTree;
 
-/**
- * DFS with O(1) extra memory
- */
-static void BM_BpTreeDFS(benchmark::State& state) {
-  size_t tree_size = state.range(0);
-  std::mt19937_64 rng(42);
+BENCHMARK_TEMPLATE(RunBestTreeBenchmark,
+                   Tree,
+                   TreeLayout::kBp,
+                   TreeWorkload::kDfs)
+    ->Name("bp_best_dfs")
+    ->Apply(TreeSizes);
 
-  for (auto _ : state) {
-    state.PauseTiming();
-    std::vector<std::vector<size_t>> adj = generate_random_tree(tree_size, rng);
-    adj = dfs_order(tree_size, adj);
-    std::vector<uint64_t> bp = pixie::adj_to_bp(tree_size, adj);
-    BPTree tree(bp, tree_size);
+BENCHMARK_TEMPLATE(RunBestTreeBenchmark,
+                   Tree,
+                   TreeLayout::kBp,
+                   TreeWorkload::kDfsChildren)
+    ->Name("bp_best_dfs_children")
+    ->Apply(TreeSizes);
 
-    Node cur = tree.root();
-    bool above = 1;
+BENCHMARK_TEMPLATE(RunBestTreeBenchmark,
+                   Tree,
+                   TreeLayout::kBp,
+                   TreeWorkload::kRandomPath)
+    ->Name("bp_best_random_path")
+    ->Apply(TreeSizes);
 
-    state.ResumeTiming();
+BENCHMARK_TEMPLATE(RunBestTreeBenchmark,
+                   Tree,
+                   TreeLayout::kBp,
+                   TreeWorkload::kRandomPathChildren)
+    ->Name("bp_best_random_path_children")
+    ->Apply(TreeSizes);
 
-    benchmark::DoNotOptimize(cur);
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   Tree,
+                   TreeLayout::kBp,
+                   TreeWorkload::kDfs)
+    ->Name("bp_direct_dfs")
+    ->Apply(TreeSizes);
 
-    while (true) {
-      if (above) {
-        if (tree.is_leaf(cur)) {
-          above = 0;
-        } else {
-          cur = tree.first_child(cur);
-        }
-        benchmark::DoNotOptimize(cur);
-      } else {
-        if (tree.is_last_child(cur)) {
-          cur = tree.parent(cur);
-          if (tree.is_root(cur)) {
-            break;
-          }
-          benchmark::DoNotOptimize(cur);
-        } else {
-          cur = tree.next_sibling(cur);
-          above = 1;
-          benchmark::DoNotOptimize(cur);
-        }
-      }
-    }
-  }
-}
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   Tree,
+                   TreeLayout::kBp,
+                   TreeWorkload::kDfsChildren)
+    ->Name("bp_direct_dfs_children")
+    ->Apply(TreeSizes);
 
-BENCHMARK(BM_BpTreeDFS)
-    ->ArgNames({"tree_size"})
-    ->RangeMultiplier(2)
-    ->Range(1ull << 8, 1ull << 18)
-    ->Iterations(100);
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   Tree,
+                   TreeLayout::kBp,
+                   TreeWorkload::kRandomPath)
+    ->Name("bp_direct_random_path")
+    ->Apply(TreeSizes);
 
-BENCHMARK(BM_BpTreeDFS)
-    ->ArgNames({"tree_size"})
-    ->RangeMultiplier(2)
-    ->Range(1ull << 18, 1ull << 26)
-    ->Iterations(10);
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   Tree,
+                   TreeLayout::kBp,
+                   TreeWorkload::kRandomPathChildren)
+    ->Name("bp_direct_random_path_children")
+    ->Apply(TreeSizes);
+
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   AdjListTree,
+                   TreeLayout::kBp,
+                   TreeWorkload::kDfs)
+    ->Name("adjlist_preorder_dfs")
+    ->Apply(TreeSizes);
+
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   AdjListTree,
+                   TreeLayout::kBp,
+                   TreeWorkload::kDfsChildren)
+    ->Name("adjlist_preorder_dfs_children")
+    ->Apply(TreeSizes);
+
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   AdjListTree,
+                   TreeLayout::kBp,
+                   TreeWorkload::kRandomPath)
+    ->Name("adjlist_preorder_random_path")
+    ->Apply(TreeSizes);
+
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   AdjListTree,
+                   TreeLayout::kBp,
+                   TreeWorkload::kRandomPathChildren)
+    ->Name("adjlist_preorder_random_path_children")
+    ->Apply(TreeSizes);
+
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   PointerTree,
+                   TreeLayout::kBp,
+                   TreeWorkload::kDfs)
+    ->Name("pointer_preorder_dfs")
+    ->Apply(TreeSizes);
+
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   PointerTree,
+                   TreeLayout::kBp,
+                   TreeWorkload::kDfsChildren)
+    ->Name("pointer_preorder_dfs_children")
+    ->Apply(TreeSizes);
+
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   PointerTree,
+                   TreeLayout::kBp,
+                   TreeWorkload::kRandomPath)
+    ->Name("pointer_preorder_random_path")
+    ->Apply(TreeSizes);
+
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   PointerTree,
+                   TreeLayout::kBp,
+                   TreeWorkload::kRandomPathChildren)
+    ->Name("pointer_preorder_random_path_children")
+    ->Apply(TreeSizes);

@@ -42,3 +42,17 @@ python3 agentic/cpp/skills/profiling/scripts/export_html.py \
 Keep captures and generated HTML outside tracked files. In select profiles,
 cycle samples on a consuming popcount can reflect a preceding data load's stall;
 inspect annotated assembly and counters before attributing the cost to popcount.
+
+## Report presentation
+
+The approved Pixie report format is the light, interactive viewer exemplified
+by `build/profiles/select1-34-50/index.html`. The shared profiling skill's bundled
+viewer already carries that layout; use it as the primary report rather than
+introducing a separate dashboard. The old build artifact is a visual reference,
+not a required input for future exports.
+
+Use Pixie branding and workload-specific titles where appropriate, while keeping
+the flame graph, frame/source panel, hotspots and controls in their standard
+order. Additional analysis or heatmaps belong in companion views. Honor the
+user's requested output directory and ensure the delivered entry-point link
+opens the interactive viewer.

@@ -384,7 +384,9 @@ require AVX-512 hardware.
 
 ## Code Style and Documentation
 
-1. Run `clang-format` before committing; use the repository's Chromium style.
+1. Run `clang-format` 21.1.8 before committing; use the repository's Chromium
+   style. CI pins this exact version. Install locally with
+   `uv tool install 'clang-format==21.1.8'`.
 2. Put library code in the `pixie` namespace; RMQ contracts and implementations
    use `pixie::rmq`.
 3. Use Doxygen comments for every public API. Base/contract headers must fully

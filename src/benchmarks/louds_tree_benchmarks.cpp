@@ -1,127 +1,124 @@
-#include <benchmark/benchmark.h>
+#include <pixie/rmm/btree.h>
 #include <pixie/tree/implementations.h>
-#include <pixie/utils.h>
 
-#include <numeric>
-#include <random>
-#include <stack>
+#include "tree_family_benchmarks.h"
 
-using pixie::LoudsNode;
-using pixie::LoudsTree;
+using pixie::benchmarks::RunBestTreeBenchmark;
+using pixie::benchmarks::RunDirectTreeBenchmark;
+using pixie::benchmarks::TreeLayout;
+using pixie::benchmarks::TreeSizes;
+using pixie::benchmarks::TreeWorkload;
+using Tree = pixie::LoudsTree<pixie::RankSelectSupportCompressed<>>;
+using PointerTree = pixie::references::PointerTree;
 
-/**
- * DFS with O(1) extra memory
- */
-static void BM_LoudsTreeDFS(benchmark::State& state) {
-  size_t tree_size = state.range(0);
-  std::mt19937_64 rng(42);
+BENCHMARK_TEMPLATE(RunBestTreeBenchmark,
+                   Tree,
+                   TreeLayout::kLouds,
+                   TreeWorkload::kDfs)
+    ->Name("louds_best_dfs")
+    ->Apply(TreeSizes);
 
-  for (auto _ : state) {
-    state.PauseTiming();
+BENCHMARK_TEMPLATE(RunBestTreeBenchmark,
+                   Tree,
+                   TreeLayout::kLouds,
+                   TreeWorkload::kDfsChildren)
+    ->Name("louds_best_dfs_children")
+    ->Apply(TreeSizes);
 
-    std::vector<std::vector<size_t>> adj = generate_random_tree(tree_size, rng);
-    adj = bfs_order(tree_size, adj);
-    std::vector<uint64_t> louds = adj_to_louds(tree_size, adj);
-    LoudsTree tree(louds, tree_size);
+BENCHMARK_TEMPLATE(RunBestTreeBenchmark,
+                   Tree,
+                   TreeLayout::kLouds,
+                   TreeWorkload::kRandomPath)
+    ->Name("louds_best_random_path")
+    ->Apply(TreeSizes);
 
-    LoudsNode cur = tree.root();
-    bool above = 1;
+BENCHMARK_TEMPLATE(RunBestTreeBenchmark,
+                   Tree,
+                   TreeLayout::kLouds,
+                   TreeWorkload::kRandomPathChildren)
+    ->Name("louds_best_random_path_children")
+    ->Apply(TreeSizes);
 
-    state.ResumeTiming();
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   Tree,
+                   TreeLayout::kLouds,
+                   TreeWorkload::kDfs)
+    ->Name("louds_direct_dfs")
+    ->Apply(TreeSizes);
 
-    benchmark::DoNotOptimize(cur);
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   Tree,
+                   TreeLayout::kLouds,
+                   TreeWorkload::kDfsChildren)
+    ->Name("louds_direct_dfs_children")
+    ->Apply(TreeSizes);
 
-    while (true) {
-      if (above) {
-        if (tree.is_leaf(cur)) {
-          above = 0;
-        } else {
-          cur = tree.first_child(cur);
-        }
-        benchmark::DoNotOptimize(cur);
-      } else {
-        if (tree.is_last_child(cur)) {
-          cur = tree.parent(cur);
-          if (tree.is_root(cur)) {
-            break;
-          }
-          benchmark::DoNotOptimize(cur);
-        } else {
-          cur = tree.next_sibling(cur);
-          above = 1;
-          benchmark::DoNotOptimize(cur);
-        }
-      }
-    }
-  }
-}
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   Tree,
+                   TreeLayout::kLouds,
+                   TreeWorkload::kRandomPath)
+    ->Name("louds_direct_random_path")
+    ->Apply(TreeSizes);
 
-/**
- * DFS with O(1) extra memory
- */
-static void BM_AdjListTreeDFS(benchmark::State& state) {
-  size_t tree_size = state.range(0);
-  std::mt19937_64 rng(42);
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   Tree,
+                   TreeLayout::kLouds,
+                   TreeWorkload::kRandomPathChildren)
+    ->Name("louds_direct_random_path_children")
+    ->Apply(TreeSizes);
 
-  for (auto _ : state) {
-    state.PauseTiming();
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   AdjListTree,
+                   TreeLayout::kLouds,
+                   TreeWorkload::kDfs)
+    ->Name("adjlist_dfs")
+    ->Apply(TreeSizes);
 
-    std::vector<std::vector<size_t>> adj = generate_random_tree(tree_size, rng);
-    adj = bfs_order(tree_size, adj);
-    AdjListTree tree(adj);
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   AdjListTree,
+                   TreeLayout::kLouds,
+                   TreeWorkload::kDfsChildren)
+    ->Name("adjlist_dfs_children")
+    ->Apply(TreeSizes);
 
-    AdjListNode cur = tree.root();
-    bool above = 1;
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   AdjListTree,
+                   TreeLayout::kLouds,
+                   TreeWorkload::kRandomPath)
+    ->Name("adjlist_random_path")
+    ->Apply(TreeSizes);
 
-    state.ResumeTiming();
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   AdjListTree,
+                   TreeLayout::kLouds,
+                   TreeWorkload::kRandomPathChildren)
+    ->Name("adjlist_random_path_children")
+    ->Apply(TreeSizes);
 
-    benchmark::DoNotOptimize(cur);
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   PointerTree,
+                   TreeLayout::kLouds,
+                   TreeWorkload::kDfs)
+    ->Name("pointer_bfs_dfs")
+    ->Apply(TreeSizes);
 
-    while (true) {
-      if (above) {
-        if (tree.is_leaf(cur)) {
-          above = 0;
-        } else {
-          cur = tree.first_child(cur);
-        }
-        benchmark::DoNotOptimize(cur);
-      } else {
-        if (tree.is_last_child(cur)) {
-          cur = tree.parent(cur);
-          if (tree.is_root(cur)) {
-            break;
-          }
-          benchmark::DoNotOptimize(cur);
-        } else {
-          cur = tree.next_sibling(cur);
-          above = 1;
-          benchmark::DoNotOptimize(cur);
-        }
-      }
-    }
-  }
-}
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   PointerTree,
+                   TreeLayout::kLouds,
+                   TreeWorkload::kDfsChildren)
+    ->Name("pointer_bfs_dfs_children")
+    ->Apply(TreeSizes);
 
-BENCHMARK(BM_LoudsTreeDFS)
-    ->ArgNames({"tree_size"})
-    ->RangeMultiplier(2)
-    ->Range(1ull << 8, 1ull << 18)
-    ->Iterations(100);
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   PointerTree,
+                   TreeLayout::kLouds,
+                   TreeWorkload::kRandomPath)
+    ->Name("pointer_bfs_random_path")
+    ->Apply(TreeSizes);
 
-BENCHMARK(BM_LoudsTreeDFS)
-    ->ArgNames({"tree_size"})
-    ->RangeMultiplier(2)
-    ->Range(1ull << 18, 1ull << 26)
-    ->Iterations(10);
-
-BENCHMARK(BM_AdjListTreeDFS)
-    ->ArgNames({"tree_size"})
-    ->RangeMultiplier(2)
-    ->Range(1ull << 8, 1ull << 18)
-    ->Iterations(100);
-
-BENCHMARK(BM_AdjListTreeDFS)
-    ->ArgNames({"tree_size"})
-    ->RangeMultiplier(2)
-    ->Range(1ull << 18, 1ull << 26)
-    ->Iterations(10);
+BENCHMARK_TEMPLATE(RunDirectTreeBenchmark,
+                   PointerTree,
+                   TreeLayout::kLouds,
+                   TreeWorkload::kRandomPathChildren)
+    ->Name("pointer_bfs_random_path_children")
+    ->Apply(TreeSizes);

@@ -597,6 +597,12 @@ if (PIXIE_BENCHMARKS)
             benchmark
             ${PIXIE_DIAGNOSTICS_LIBS})
 
+    add_executable(tree_experimental_benchmarks EXCLUDE_FROM_ALL
+            src/benchmarks/tree_experimental_benchmarks.cpp)
+    target_include_directories(tree_experimental_benchmarks PRIVATE include)
+    target_link_libraries(tree_experimental_benchmarks
+            benchmark benchmark_main ${PIXIE_DIAGNOSTICS_LIBS})
+
     add_executable(bp_tree_benchmarks
             src/benchmarks/bp_tree_benchmarks.cpp)
     target_include_directories(bp_tree_benchmarks
@@ -713,7 +719,8 @@ if (PIXIE_DOCS)
             "${CMAKE_CURRENT_SOURCE_DIR}/include"
             "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmarks/index.md"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmarks/rank_select.md")
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmarks/rank_select.md"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/docs/benchmarks/trees.md")
     string(JOIN " \\\n                         " PIXIE_DOC_INPUT
             ${PIXIE_DOC_INPUT})
 
