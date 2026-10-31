@@ -41,7 +41,7 @@ class MappedFile {
                               "Failed to open mapped file");
     }
 
-    struct stat status {};
+    struct stat status{};
     if (::fstat(descriptor, &status) == -1) {
       const int error = errno;
       close_descriptor(descriptor);

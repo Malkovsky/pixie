@@ -1069,7 +1069,9 @@ TEST(SequenceTreeFailure, ConstructionFailureReclaimsPartialLevels) {
   using Tree = SequenceTree<IntegerBlock, 4>;
   const auto expected = data<Tree>(511);
   Tree::test_reset_counters();
-  { auto tree = build<Tree>(expected); }
+  {
+    auto tree = build<Tree>(expected);
+  }
   const auto allocations = Tree::test_counters.allocations;
   for (std::size_t i = 0; i < allocations; ++i) {
     Tree::test_fail_after(i);

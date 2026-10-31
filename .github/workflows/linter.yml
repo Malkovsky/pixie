@@ -13,16 +13,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install clang-format
-        run: sudo apt-get update && sudo apt-get install -y clang-format
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install clang-format 21.1.8
+        run: python -m pip install 'clang-format==21.1.8'
 
       - name: Run clang-format check
         run: |
-          # Find all C/C++ files and check formatting
-          FILES=$(find . -regex '.*\.\(cpp\|hpp\|cc\|c\|h\)')
-          echo "Checking formatting on:"
-          echo "$FILES"
           clang-format --version
-          
-          # Run clang-format in "diff" mode to see issues
-          clang-format --dry-run --Werror $FILES
+          git ls-files -z -- '*.cpp' '*.hpp' '*.cc' '*.c' '*.h' |
+            xargs -0 -r clang-format --dry-run --Werror

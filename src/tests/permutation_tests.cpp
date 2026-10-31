@@ -335,7 +335,9 @@ TYPED_TEST(PermutationSpec,
       std::remove_cvref_t<decltype(std::declval<const P&>().test_tree())>;
   constexpr auto capacity = Tree::block_capacity;
   Tree::test_reset_counters();
-  { auto probe = P::identity(capacity * 19 + 1); }
+  {
+    auto probe = P::identity(capacity * 19 + 1);
+  }
   const auto construction_allocations = Tree::test_counters.allocations;
   for (std::size_t fail = 0; fail <= construction_allocations; ++fail) {
     Tree::test_fail_after(fail);
