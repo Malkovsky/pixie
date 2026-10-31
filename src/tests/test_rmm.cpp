@@ -1316,47 +1316,47 @@ TEST(RmMBTreeExperimental, SdslStyleParenthesesIndexing) {
   EXPECT_EQ(rm.enclose(0), pixie::experimental::RmMBTree<>::npos);
 }
 
-TEST(RmMBTreeExperimental, EmptyInput) {
+template <class Tree>
+class RmMBTreeBackendTest : public testing::Test {};
+using BTreeBackends = testing::Types<CompressedRmMBTree, BaselineRmMBTree>;
+TYPED_TEST_SUITE(RmMBTreeBackendTest, BTreeBackends);
+
+TYPED_TEST(RmMBTreeBackendTest, EmptyInput) {
   std::vector<std::uint64_t> words;
-  pixie::experimental::RmMBTree<> rm(std::span<const std::uint64_t>(words),
-                                     /*bit_count=*/0);
+  TypeParam rm(std::span<const std::uint64_t>(words), /*bit_count=*/0);
 
   EXPECT_EQ(rm.size(), 0u);
   EXPECT_EQ(rm.rank1(0), 0u);
   EXPECT_EQ(rm.rank0(0), 0u);
-  EXPECT_EQ(rm.select1(1), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.select0(1), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.select1(1), TypeParam::npos);
+  EXPECT_EQ(rm.select0(1), TypeParam::npos);
   EXPECT_EQ(rm.rank10(0), 0u);
-  EXPECT_EQ(rm.select10(1), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.select10(1), TypeParam::npos);
   EXPECT_EQ(rm.excess(0), 0);
-  EXPECT_EQ(rm.fwdsearch(0, 0), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.bwdsearch(0, 0), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.range_min_query_pos(0, 0),
-            pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.fwdsearch(0, 0), TypeParam::npos);
+  EXPECT_EQ(rm.bwdsearch(0, 0), TypeParam::npos);
+  EXPECT_EQ(rm.range_min_query_pos(0, 0), TypeParam::npos);
   EXPECT_EQ(rm.range_min_query_val(0, 0), 0);
-  EXPECT_EQ(rm.range_max_query_pos(0, 0),
-            pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.range_max_query_pos(0, 0), TypeParam::npos);
   EXPECT_EQ(rm.range_max_query_val(0, 0), 0);
   EXPECT_EQ(rm.mincount(0, 0), 0u);
-  EXPECT_EQ(rm.minselect(0, 0, 1), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.close(0), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.open(0), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.enclose(0), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.minselect(0, 0, 1), TypeParam::npos);
+  EXPECT_EQ(rm.close(0), TypeParam::npos);
+  EXPECT_EQ(rm.open(0), TypeParam::npos);
+  EXPECT_EQ(rm.enclose(0), TypeParam::npos);
 }
 
-TEST(RmMBTreeExperimental, SpanConstructorRejectsShortInputStorage) {
+TYPED_TEST(RmMBTreeBackendTest, SpanConstructorRejectsShortInputStorage) {
   std::vector<std::uint64_t> words(1, 0);
   EXPECT_THROW(
-      (pixie::experimental::RmMBTree<>(std::span<const std::uint64_t>(words),
-                                       /*bit_count=*/65)),
+      (TypeParam(std::span<const std::uint64_t>(words), /*bit_count=*/65)),
       std::invalid_argument);
 }
 
-TEST(RmMBTreeExperimental, RankSelectIgnoresDirtyTrailingStorage) {
+TYPED_TEST(RmMBTreeBackendTest, RankSelectIgnoresDirtyTrailingStorage) {
   std::vector<std::uint64_t> words = {
       0b101ull, std::numeric_limits<std::uint64_t>::max()};
-  pixie::experimental::RmMBTree<> rm(std::span<const std::uint64_t>(words),
-                                     /*bit_count=*/3);
+  TypeParam rm(std::span<const std::uint64_t>(words), /*bit_count=*/3);
 
   EXPECT_EQ(rm.rank1(3), 2u);
   EXPECT_EQ(rm.rank1(128), 2u);
@@ -1364,15 +1364,10 @@ TEST(RmMBTreeExperimental, RankSelectIgnoresDirtyTrailingStorage) {
   EXPECT_EQ(rm.rank0(128), 1u);
   EXPECT_EQ(rm.select1(1), 0u);
   EXPECT_EQ(rm.select1(2), 2u);
-  EXPECT_EQ(rm.select1(3), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.select1(3), TypeParam::npos);
   EXPECT_EQ(rm.select0(1), 1u);
-  EXPECT_EQ(rm.select0(2), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.select0(2), TypeParam::npos);
 }
-
-template <class Tree>
-class RmMBTreeBackendTest : public testing::Test {};
-using BTreeBackends = testing::Types<CompressedRmMBTree, BaselineRmMBTree>;
-TYPED_TEST_SUITE(RmMBTreeBackendTest, BTreeBackends);
 
 TYPED_TEST(RmMBTreeBackendTest, OptionalSelectSupport) {
   const std::string bits = "101100";
@@ -1462,56 +1457,46 @@ TEST(RmMBTreeExperimental, RangeMinResultAndMemoryUsage) {
   EXPECT_EQ(out_of_bounds.value, 0);
 }
 
-TEST(RmMBTreeExperimental, ParenthesesOnUnmatchedBoundaryBits) {
+TYPED_TEST(RmMBTreeBackendTest, ParenthesesOnUnmatchedBoundaryBits) {
   const std::string bits = "1";
   auto words = pack_words_lsb_first(bits);
-  pixie::experimental::RmMBTree<> rm(std::span<const std::uint64_t>(words),
-                                     bits.size());
+  TypeParam rm(std::span<const std::uint64_t>(words), bits.size());
 
-  EXPECT_EQ(rm.close(0), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.close(0), TypeParam::npos);
   EXPECT_EQ(rm.open(0), 0u);
-  EXPECT_EQ(rm.enclose(0), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.enclose(0), TypeParam::npos);
 }
 
-TEST(RmMBTreeExperimental, InvalidArgumentsGuards) {
+TYPED_TEST(RmMBTreeBackendTest, InvalidArgumentsGuards) {
   const std::string bits = "101100";
   auto words = pack_words_lsb_first(bits);
-  pixie::experimental::RmMBTree<> rm(std::span<const std::uint64_t>(words),
-                                     bits.size());
+  TypeParam rm(std::span<const std::uint64_t>(words), bits.size());
 
-  EXPECT_EQ(rm.select1(0), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.select1(4), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.select0(0), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.select0(4), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.select10(0), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.select10(3), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.fwdsearch(bits.size(), 0),
-            pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.bwdsearch(0, 0), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.bwdsearch(bits.size() + 1, 0),
-            pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.range_min_query_pos(3, 2),
-            pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.range_min_query_pos(0, bits.size()),
-            pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.select1(0), TypeParam::npos);
+  EXPECT_EQ(rm.select1(4), TypeParam::npos);
+  EXPECT_EQ(rm.select0(0), TypeParam::npos);
+  EXPECT_EQ(rm.select0(4), TypeParam::npos);
+  EXPECT_EQ(rm.select10(0), TypeParam::npos);
+  EXPECT_EQ(rm.select10(3), TypeParam::npos);
+  EXPECT_EQ(rm.fwdsearch(bits.size(), 0), TypeParam::npos);
+  EXPECT_EQ(rm.bwdsearch(0, 0), TypeParam::npos);
+  EXPECT_EQ(rm.bwdsearch(bits.size() + 1, 0), TypeParam::npos);
+  EXPECT_EQ(rm.range_min_query_pos(3, 2), TypeParam::npos);
+  EXPECT_EQ(rm.range_min_query_pos(0, bits.size()), TypeParam::npos);
   EXPECT_EQ(rm.range_min_query_val(3, 2), 0);
   EXPECT_EQ(rm.range_min_query_val(0, bits.size()), 0);
-  EXPECT_EQ(rm.range_max_query_pos(3, 2),
-            pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.range_max_query_pos(0, bits.size()),
-            pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.range_max_query_pos(3, 2), TypeParam::npos);
+  EXPECT_EQ(rm.range_max_query_pos(0, bits.size()), TypeParam::npos);
   EXPECT_EQ(rm.range_max_query_val(3, 2), 0);
   EXPECT_EQ(rm.range_max_query_val(0, bits.size()), 0);
   EXPECT_EQ(rm.mincount(3, 2), 0u);
   EXPECT_EQ(rm.mincount(0, bits.size()), 0u);
-  EXPECT_EQ(rm.minselect(0, bits.size() - 1, 0),
-            pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.minselect(3, 2, 1), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.minselect(0, bits.size(), 1),
-            pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.close(bits.size()), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.open(bits.size()), pixie::experimental::RmMBTree<>::npos);
-  EXPECT_EQ(rm.enclose(bits.size()), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.minselect(0, bits.size() - 1, 0), TypeParam::npos);
+  EXPECT_EQ(rm.minselect(3, 2, 1), TypeParam::npos);
+  EXPECT_EQ(rm.minselect(0, bits.size(), 1), TypeParam::npos);
+  EXPECT_EQ(rm.close(bits.size()), TypeParam::npos);
+  EXPECT_EQ(rm.open(bits.size()), TypeParam::npos);
+  EXPECT_EQ(rm.enclose(bits.size()), TypeParam::npos);
 }
 
 TEST(RmMBTreeExperimental, PartialBlockSearchesAndTailMinSelect) {
