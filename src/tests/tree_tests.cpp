@@ -228,7 +228,14 @@ TYPED_TEST(TreeSpecificationTest, EncodingOwnershipCopyAndMove) {
   Tree moved(std::move(copy));
   EXPECT_EQ(moved.encoding_words().data(), address);
   check(moved);
+  // Moved-from trees support assignment; restore both ownership modes.
+  copy = assigned;
+  check(copy);
   assigned = std::move(moved);
+  EXPECT_EQ(assigned.encoding_words().data(), address);
+  check(assigned);
+  const Tree& self = assigned;
+  assigned = self;
   EXPECT_EQ(assigned.encoding_words().data(), address);
   check(assigned);
   View view(assigned.encoding_words(), n);
@@ -237,6 +244,14 @@ TYPED_TEST(TreeSpecificationTest, EncodingOwnershipCopyAndMove) {
   pixie::TreeTraversalContext context(view, 32768);
   EXPECT_EQ(context.source_words().data(), view.encoding_words().data());
   if constexpr (owns) {
+    Tree from_lvalue = [&] {
+      pixie::AlignedStorage source{std::span<const uint64_t>(expected_words)};
+      Tree result(source, n);
+      EXPECT_NE(result.encoding_words().data(), source.as_words64().data());
+      std::ranges::fill(source.writable_bytes(), std::byte{0});
+      return result;
+    }();
+    check(from_lvalue);
     pixie::AlignedStorage storage(TypeParam::bit_size(n));
     auto padded = storage.as_lines();
     std::memcpy(std::as_writable_bytes(padded).data(), expected_words.data(),
@@ -258,6 +273,14 @@ TYPED_TEST(TreeSpecificationTest, RejectsInvalidEncodingStorage) {
   EXPECT_THROW((Tree(empty, 2)), std::invalid_argument);
   EXPECT_THROW((Tree(empty, std::numeric_limits<size_t>::max())),
                std::length_error);
+  EXPECT_THROW((View(pixie::ReadOnlyStorageView{}, 1)), std::invalid_argument);
+  if constexpr (!std::is_same_v<Tree, View>) {
+    EXPECT_THROW((Tree(pixie::AlignedStorage{}, 1)), std::invalid_argument);
+    // Allocation padding is not additional logical encoding capacity.
+    pixie::AlignedStorage short_source(8);
+    ASSERT_GE(short_source.padded_size_bytes(), 16u);
+    EXPECT_THROW((Tree(std::move(short_source), 33)), std::invalid_argument);
+  }
   alignas(8) std::array<std::byte, 24> bytes{};
   EXPECT_THROW((View(pixie::ReadOnlyStorageView(
                          std::span<const std::byte>(bytes).subspan(1, 8)),
@@ -267,6 +290,58 @@ TYPED_TEST(TreeSpecificationTest, RejectsInvalidEncodingStorage) {
                          std::span<const std::byte>(bytes).first(1)),
                      1)),
                std::invalid_argument);
+}
+
+TYPED_TEST(TreeSpecificationTest, EncodingStorageWordBoundaries) {
+  using Tree = typename TypeParam::Tree;
+  constexpr bool owns = !std::is_same_v<Tree, typename Tree::TreeView>;
+  std::mt19937_64 rng(942);
+  for (size_t n : {0u, 1u, 31u, 32u, 33u, 63u, 64u, 65u}) {
+    SCOPED_TRACE(n);
+    std::vector<uint64_t> words;
+    std::vector<std::vector<size_t>> adjacency;
+    if (n) {
+      adjacency = TypeParam::order(n, generate_random_tree(n, rng));
+      words = TypeParam::encode(n, adjacency);
+    }
+    const size_t bits = n ? TypeParam::bit_size(n) : 0;
+    pixie::AlignedStorage storage(bits);
+    if (!words.empty()) {
+      std::ranges::copy(std::as_bytes(std::span(words)),
+                        std::as_writable_bytes(storage.as_lines()).begin());
+    }
+    const auto address = storage.padded_view().as_words64().data();
+    const Tree tree = [&] {
+      if constexpr (owns) {
+        return Tree(std::move(storage), n);
+      } else {
+        return Tree(storage.padded_view(), n);
+      }
+    }();
+    EXPECT_EQ(tree.size(), n);
+    EXPECT_EQ(tree.encoding_words().data(), address);
+    EXPECT_EQ(tree.encoding_words().size(), bits / 64 + (bits % 64 != 0));
+    EXPECT_TRUE(std::ranges::equal(tree.encoding_words(), words));
+    EXPECT_EQ(tree.encoding_owned_bytes(),
+              owns ? ((bits + 511) / 512) * 64 : 0);
+    if (n) {
+      EXPECT_EQ(tree.degree(tree.root()), adjacency[0].size() - 1);
+      size_t i = 1;
+      tree.for_each_child(tree.root(), [&](auto child) {
+        ASSERT_LT(i, adjacency[0].size());
+        EXPECT_EQ(child.number, adjacency[0][i++]);
+        EXPECT_EQ(tree.parent(child).number, 0u);
+      });
+      EXPECT_EQ(i, adjacency[0].size());
+    }
+    // Trailing source words must neither become part of the encoding nor
+    // increase an owning tree's allocation.
+    const auto expected = words;
+    words.resize(words.size() + 16, ~uint64_t{0});
+    const Tree padded_input(words, n);
+    EXPECT_TRUE(std::ranges::equal(padded_input.encoding_words(), expected));
+    EXPECT_EQ(padded_input.encoding_owned_bytes(), tree.encoding_owned_bytes());
+  }
 }
 
 struct RejectZeroSelectRmM : pixie::experimental::RmMBTree<> {
