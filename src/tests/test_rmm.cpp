@@ -1401,8 +1401,8 @@ TYPED_TEST(RmMBTreeBackendTest, OptionalSelectSupport) {
   EXPECT_EQ(rank_only.select0(1), TypeParam::npos);
 }
 
-TEST(RmMBTreeExperimental, RangeMinResultAndMemoryUsage) {
-  using Tree = pixie::experimental::RmMBTree<>;
+TYPED_TEST(RmMBTreeBackendTest, RangeMinResultAndMemoryUsage) {
+  using Tree = TypeParam;
 
   Tree empty;
   EXPECT_GE(empty.memory_usage_bytes(), sizeof(Tree));
@@ -1499,7 +1499,7 @@ TYPED_TEST(RmMBTreeBackendTest, InvalidArgumentsGuards) {
   EXPECT_EQ(rm.enclose(bits.size()), TypeParam::npos);
 }
 
-TEST(RmMBTreeExperimental, PartialBlockSearchesAndTailMinSelect) {
+TYPED_TEST(RmMBTreeBackendTest, PartialBlockSearchesAndTailMinSelect) {
   std::string bits;
   bits.reserve(385);
   for (size_t i = 0; i < 385; ++i) {
@@ -1507,8 +1507,7 @@ TEST(RmMBTreeExperimental, PartialBlockSearchesAndTailMinSelect) {
   }
 
   auto words = pack_words_lsb_first(bits);
-  pixie::experimental::RmMBTree<> rm(std::span<const std::uint64_t>(words),
-                                     bits.size());
+  TypeParam rm(std::span<const std::uint64_t>(words), bits.size());
   NaiveRmM nv(bits);
 
   const std::array<size_t, 9> positions = {
