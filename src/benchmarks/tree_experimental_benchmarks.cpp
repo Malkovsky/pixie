@@ -24,7 +24,7 @@ void Prepared(benchmark::State& state) {
     words = pixie::benchmarks::DfudsFromBp(words, n);
   }
   Tree tree(words, n);
-  pixie::TreeTraversalContext context(tree, words);
+  pixie::TreeTraversalContext context(tree);
   pixie::benchmarks::TreeTraversalWorkloads fallback(context);
   auto prepared = [&] {
     if constexpr (Events) {

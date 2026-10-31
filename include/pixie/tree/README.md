@@ -1,15 +1,37 @@
 # Tree navigation and traversal contexts
 
 BP, DFUDS and LOUDS expose the same `TreeBase` navigation contract.
-Their encoded words are borrowed: keep the words alive and immutable for the
-tree's lifetime. Use the concrete header for the chosen representation.
+Trees own their encoded words in `AlignedStorage` by default. Construction
+from a word span copies; construction from an `AlignedStorage` rvalue transfers
+its allocation. Use the concrete header for the chosen representation.
+
+Each tree inherits `TreeView`, `NodeView`, `PathView` and
+`BoundedPathView<Capacity>` aliases from `TreeBase`. `TreeView` is the same
+representation with `ReadOnlyStorageView`: it borrows aligned complete encoding
+words, but owns its constructed backend metadata. Its backing bytes must remain
+alive, immutable and at a stable address. It can also be built directly from a
+read-only storage view. This is distinct from a per-node `NodeView`.
+
+Owning copies duplicate the encoding and rebuild backend references; view copies
+share encoding and copy backend metadata. Moves transfer storage and indexes.
+Assignment, moving or destruction invalidates existing node views, indexes and
+traversal contexts borrowing that tree; using invalidated borrowers is undefined
+behavior. Moved-from trees may only be destroyed or assigned.
+
+`encoding_words()` exposes a read-only span of complete encoding words.
+`encoding_owned_bytes()` reports allocation bytes (zero for a view), and
+`memory_usage_bytes()` includes owned encoding and backend allocations.
+Serialization is not implemented for these tree types.
 
 ```cpp
 #include <pixie/tree/louds.h>
 #include <pixie/tree/root_navigation_index.h>
 
 // words contains a valid LOUDS encoding of node_count nodes.
-pixie::LoudsTree<> tree(words, node_count);
+pixie::LoudsTree<> tree(words, node_count);  // Owns a copy.
+using Tree = decltype(tree);
+Tree::TreeView representation(tree.encoding_words(), node_count);
+Tree::PathView path(tree);
 auto view = tree.navigate(tree.root());
 const auto degree = view.degree();
 
@@ -28,7 +50,7 @@ move or be destroyed while a cursor uses them.
 
 `TreeTraversalContext<Tree>` in `pixie/tree/traversal_context.h` combines
 this index with a decoding buffer plan. Construct it with
-`(tree, words, byte_limit)`; the default is 512 KiB, and 32 KiB retains
+`(tree, byte_limit)`; the default is 512 KiB, and 32 KiB retains
 optimized decoding. It exposes root cursors, selected chunk/depth sizes and
 scratch accounting. It does not expose a public DFS event API. The selected
 decoding kernels are internal implementation details under `tree/detail`;

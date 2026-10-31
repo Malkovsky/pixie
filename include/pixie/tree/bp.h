@@ -4,6 +4,7 @@
 #include <pixie/rmm/tree.h>
 #include <pixie/tree.h>
 #include <pixie/tree/detail/bp_node_view.h>
+#include <pixie/tree/detail/encoding_storage.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -17,15 +18,25 @@ namespace pixie {
  * @brief A tree class based on the balances parentheses (BP)
  * representation
  */
-template <typename RMMTree>
-class BPTree : public TreeBase<BPTree<RMMTree>> {
+template <class RMMTree,
+          detail::TreeEncodingStorage EncodingStorage = AlignedStorage>
+class BPTree;
+
+template <class B, detail::TreeEncodingStorage S>
+struct TreeTraits<BPTree<B, S>> {
+  using TreeView = BPTree<B, ReadOnlyStorageView>;
+  using NodeView = detail::BpNodeView<BPTree<B, S>>;
+};
+
+template <class RMMTree, detail::TreeEncodingStorage EncodingStorage>
+class BPTree : public TreeBase<BPTree<RMMTree, EncodingStorage>> {
  private:
-  const size_t num_bits_;
+  EncodingStorage encoding_;
+  size_t num_bits_;
   RMMTree rmm_;
 
  public:
-  /** @brief Independent, lightweight per-node navigation memo. */
-  using NodeView = detail::BpNodeView<BPTree>;
+  using typename TreeBase<BPTree>::NodeView;
 
  private:
   friend class detail::BpNodeView<BPTree>;
@@ -34,11 +45,13 @@ class BPTree : public TreeBase<BPTree<RMMTree>> {
   /** @brief Implement TreeBase::navigate without mutating the tree. */
   NodeView navigate_impl(TreeNode node) const { return NodeView(*this, node); }
 
-  /** @brief Object and owned backend allocations; excludes borrowed words. */
+  /** @brief Object, owned encoding and backend allocations; excludes borrowed
+   * words. */
   size_t memory_usage_bytes_impl() const
     requires HasMemoryUsageBytes<RMMTree>
   {
-    return sizeof(*this) + nested_owned_memory_bytes(rmm_);
+    return sizeof(*this) + encoding_owned_bytes_impl() +
+           nested_owned_memory_bytes(rmm_);
   }
 
   /**
@@ -47,17 +60,74 @@ class BPTree : public TreeBase<BPTree<RMMTree>> {
   using Node = TreeNode;
 
   /**
-   * @brief Constructor from an external array of uint64_t
-   * @details The source words must remain alive and immutable for this tree
-   * and its traversals. No padding beyond the logical final word is required.
+   * @brief Construct from a valid encoding of tree_size nodes.
+   * @details Owning trees copy complete source words; TreeView borrows them.
+   * A view's source must stay alive, immutable and at a stable address.
+   * Invalid topology is undefined behavior. A short source throws
+   * std::invalid_argument; an unrepresentable bit count throws
+   * std::length_error.
    */
-  explicit BPTree(std::span<const std::uint64_t> words, size_t tree_size)
-      : num_bits_(2 * tree_size), rmm_(words, 2 * tree_size) {}
+  explicit BPTree(std::span<const uint64_t> words, size_t tree_size)
+      : BPTree(detail::tree_encoding_from_words<EncodingStorage>(
+                   words,
+                   detail::tree_encoding_bits(tree_size, true)),
+               tree_size) {}
 
-  /** @brief Reject a temporary owning vector; this tree borrows its words. */
-  BPTree(std::vector<std::uint64_t>&&, size_t) = delete;
-  /** @brief Reject a temporary const owning vector for the same reason. */
-  BPTree(const std::vector<std::uint64_t>&&, size_t) = delete;
+  /**
+   * @brief Take storage by value: moves transfer ownership, lvalues copy.
+   * @details ReadOnlyStorageView always borrows. AlignedStorage may have a
+   * partial final logical byte/word; its allocation supplies word padding.
+   * View storage must contain aligned complete words. Short/misaligned storage
+   * throws std::invalid_argument. Topology and size must agree.
+   */
+  explicit BPTree(EncodingStorage storage, size_t tree_size)
+      : encoding_(std::move(storage)),
+        num_bits_(detail::tree_encoding_bits(tree_size, true)),
+        rmm_(encoding_words_impl(), num_bits_) {}
+
+  /** @brief Deep-copy owning encodings and rebuild their backend references.
+   * @details TreeView copies backend metadata and borrows the same encoding.
+   */
+  BPTree(const BPTree& other)
+      : encoding_(other.encoding_), num_bits_(other.num_bits_), rmm_([&] {
+          if constexpr (std::same_as<EncodingStorage, AlignedStorage>) {
+            return RMMTree(encoding_words_impl(), num_bits_);
+          } else {
+            return other.rmm_;
+          }
+        }()) {}
+  /** @brief Copy independently; invalidates existing borrowers of *this. */
+  BPTree& operator=(const BPTree& other) {
+    if (this != &other) {
+      BPTree copy(other);
+      *this = std::move(copy);
+    }
+    return *this;
+  }
+  /** @brief Transfer storage/indexes; invalidates borrowers of the source.
+   * @details The moved-from object may only be destroyed or assigned.
+   */
+  BPTree(BPTree&&) = default;
+  /** @brief Transfer storage/indexes; invalidates borrowers of both trees. */
+  BPTree& operator=(BPTree&&) = default;
+
+  /** @brief Reject dangling views of temporary vectors. */
+  BPTree(std::vector<uint64_t>&&, size_t)
+    requires std::same_as<EncodingStorage, ReadOnlyStorageView>
+  = delete;
+  /** @brief Reject dangling views of temporary const vectors. */
+  BPTree(const std::vector<uint64_t>&&, size_t)
+    requires std::same_as<EncodingStorage, ReadOnlyStorageView>
+  = delete;
+
+  /** @brief Implement TreeBase::encoding_words. */
+  std::span<const uint64_t> encoding_words_impl() const {
+    return detail::tree_encoding_words(encoding_, num_bits_);
+  }
+  /** @brief Implement TreeBase::encoding_owned_bytes. */
+  size_t encoding_owned_bytes_impl() const {
+    return detail::tree_encoding_owned_bytes(encoding_);
+  }
 
   /**
    * @brief Returns the root node

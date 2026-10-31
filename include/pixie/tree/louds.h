@@ -3,6 +3,7 @@
 #include <pixie/memory_usage.h>
 #include <pixie/rank_select/support.h>
 #include <pixie/tree.h>
+#include <pixie/tree/detail/encoding_storage.h>
 #include <pixie/tree/detail/louds_children.h>
 #include <pixie/tree/detail/louds_node_view.h>
 
@@ -24,9 +25,8 @@ using LoudsNode = TreeNode;
  * @tparam RankSelect Rank/select backend constructible from packed source words
  * and a bit count, with both select directions enabled by default. It must
  * provide size(), operator[], select() and select0() with RankSelectBase
- * semantics. Source words must remain alive and immutable for the tree
- * lifetime, even when the selected backend owns a copy: the word-level
- * navigation shortcuts read the original source directly.
+ * semantics. EncodingStorage owns the source by default; the TreeView
+ * specialization borrows immutable source words.
  * @details Each BFS-ordered node is encoded as one followed by one zero per
  * child. A handle stores its zero-based BFS number and the position of its one.
  * Siblings therefore occupy consecutive one delimiters. The parent delimiter
@@ -34,9 +34,20 @@ using LoudsNode = TreeNode;
  * sibling and parent navigation use a single-word search for those delimiters,
  * falling back to indexed select when the delimiter lies outside that word.
  */
-template <class RankSelect = RankSelectSupport<>>
-class LoudsTree : public TreeBase<LoudsTree<RankSelect>> {
+template <class RankSelect = RankSelectSupport<>,
+          detail::TreeEncodingStorage EncodingStorage = AlignedStorage>
+class LoudsTree;
+
+template <class B, detail::TreeEncodingStorage S>
+struct TreeTraits<LoudsTree<B, S>> {
+  using TreeView = LoudsTree<B, ReadOnlyStorageView>;
+  using NodeView = detail::LoudsNodeView<LoudsTree<B, S>>;
+};
+
+template <class RankSelect, detail::TreeEncodingStorage EncodingStorage>
+class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
  private:
+  EncodingStorage encoding_;
   RankSelect bv;
   const std::uint64_t* words_;
 
@@ -63,8 +74,7 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect>> {
   }
 
  public:
-  /** @brief Independent, lightweight per-node navigation memo. */
-  using NodeView = detail::LoudsNodeView<LoudsTree>;
+  using typename TreeBase<LoudsTree>::NodeView;
 
  private:
   friend class detail::LoudsNodeView<LoudsTree>;
@@ -73,24 +83,96 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect>> {
   /** @brief Implement TreeBase::navigate without mutating the tree. */
   NodeView navigate_impl(TreeNode node) const { return NodeView(*this, node); }
 
-  /** @brief Object and owned backend allocations; excludes borrowed words. */
+  /** @brief Object, owned encoding and backend allocations; excludes borrowed
+   * words. */
   size_t memory_usage_bytes_impl() const
     requires HasMemoryUsageBytes<RankSelect>
   {
-    return sizeof(*this) + nested_owned_memory_bytes(bv);
+    return sizeof(*this) + encoding_owned_bytes_impl() +
+           nested_owned_memory_bytes(bv);
   }
 
   /**
-   * @brief Constructor from an external array of uint64_t
+   * @brief Construct from a valid encoding of tree_size nodes.
+   * @details Owning trees copy complete source words; TreeView borrows them.
+   * A view's source must stay alive, immutable and at a stable address.
+   * Invalid topology is undefined behavior. A short source throws
+   * std::invalid_argument; an unrepresentable bit count throws
+   * std::length_error.
    */
-  explicit LoudsTree(std::span<const uint64_t> louds, size_t tree_size)
-      : bv(louds, 2 * tree_size - 1), words_(louds.data()) {}
+  explicit LoudsTree(std::span<const uint64_t> words, size_t tree_size)
+      : LoudsTree(detail::tree_encoding_from_words<EncodingStorage>(
+                      words,
+                      detail::tree_encoding_bits(tree_size, false)),
+                  tree_size) {}
 
-  /** @brief Reject a temporary owning vector; this tree borrows its words. */
-  LoudsTree(std::vector<std::uint64_t>&&, size_t) = delete;
-  /** @brief Reject a temporary const owning vector for the same reason. */
-  LoudsTree(const std::vector<std::uint64_t>&&, size_t) = delete;
+  /**
+   * @brief Take storage by value: moves transfer ownership, lvalues copy.
+   * @details ReadOnlyStorageView always borrows. AlignedStorage may have a
+   * partial final logical byte/word; its allocation supplies word padding.
+   * View storage must contain aligned complete words. Short/misaligned storage
+   * throws std::invalid_argument. Topology and size must agree.
+   */
+  explicit LoudsTree(EncodingStorage storage, size_t tree_size)
+      : encoding_(std::move(storage)),
+        bv(encoding_words_for_size(tree_size),
+           detail::tree_encoding_bits(tree_size, false)),
+        words_(encoding_words_for_size(tree_size).data()) {}
 
+  /** @brief Deep-copy owning encodings and rebuild their backend references.
+   * @details TreeView copies backend metadata and borrows the same encoding.
+   */
+  LoudsTree(const LoudsTree& other)
+      : encoding_(other.encoding_),
+        bv([&] {
+          if constexpr (std::same_as<EncodingStorage, AlignedStorage>) {
+            return RankSelect(encoding_words_for_size(other.size()),
+                              other.bv.size());
+          } else {
+            return other.bv;
+          }
+        }()),
+        words_(encoding_words_for_size(other.size()).data()) {}
+  /** @brief Copy independently; invalidates existing borrowers of *this. */
+  LoudsTree& operator=(const LoudsTree& other) {
+    if (this != &other) {
+      LoudsTree copy(other);
+      *this = std::move(copy);
+    }
+    return *this;
+  }
+  /** @brief Transfer storage/indexes; invalidates borrowers of the source.
+   * @details The moved-from object may only be destroyed or assigned.
+   */
+  LoudsTree(LoudsTree&&) = default;
+  /** @brief Transfer storage/indexes; invalidates borrowers of both trees. */
+  LoudsTree& operator=(LoudsTree&&) = default;
+
+  /** @brief Reject dangling views of temporary vectors. */
+  LoudsTree(std::vector<uint64_t>&&, size_t)
+    requires std::same_as<EncodingStorage, ReadOnlyStorageView>
+  = delete;
+  /** @brief Reject dangling views of temporary const vectors. */
+  LoudsTree(const std::vector<uint64_t>&&, size_t)
+    requires std::same_as<EncodingStorage, ReadOnlyStorageView>
+  = delete;
+
+  /** @brief Implement TreeBase::encoding_words. */
+  std::span<const uint64_t> encoding_words_impl() const {
+    return detail::tree_encoding_words(encoding_, bv.size());
+  }
+  /** @brief Implement TreeBase::encoding_owned_bytes. */
+  size_t encoding_owned_bytes_impl() const {
+    return detail::tree_encoding_owned_bytes(encoding_);
+  }
+
+ private:
+  std::span<const uint64_t> encoding_words_for_size(size_t nodes) const {
+    return detail::tree_encoding_words(
+        encoding_, detail::tree_encoding_bits(nodes, false));
+  }
+
+ public:
   /**
    * @brief Returns the root node
    */

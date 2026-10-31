@@ -19,6 +19,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <future>
 #include <limits>
 #include <memory>
@@ -93,9 +94,24 @@ struct DfudsCase {
 };
 
 template <class Case>
+struct ViewCase : Case {
+  using Tree = typename Case::Tree::TreeView;
+};
+
+template <class Case>
 class TreeSpecificationTest : public testing::Test {};
 
 using TreeCases = testing::Types<
+    ViewCase<LoudsCase<pixie::RankSelectSupport<>>>,
+    ViewCase<LoudsCase<pixie::RankSelectSupportCompressed<>>>,
+    ViewCase<BpCase<pixie::RmMTree>>,
+    ViewCase<BpCase<pixie::experimental::RmMBTree<>>>,
+    ViewCase<DfudsCase<pixie::RmMTree>>,
+    ViewCase<DfudsCase<pixie::experimental::RmMBTree<>>>,
+    ViewCase<BpCase<
+        pixie::experimental::RmMBTree<4, 32, pixie::RankSelectSupport<>>>>,
+    ViewCase<DfudsCase<
+        pixie::experimental::RmMBTree<4, 32, pixie::RankSelectSupport<>>>>,
     LoudsCase<pixie::RankSelectSupport<>>,
     LoudsCase<pixie::RankSelectSupportCompressed<>>,
     BpCase<pixie::RmMTree>,
@@ -107,13 +123,15 @@ using TreeCases = testing::Types<
         pixie::experimental::RmMBTree<4, 32, pixie::RankSelectSupport<>>>>;
 TYPED_TEST_SUITE(TreeSpecificationTest, TreeCases);
 
-TYPED_TEST(TreeSpecificationTest, BorrowedSpanAndIndependentConcurrentViews) {
+TYPED_TEST(TreeSpecificationTest, IndependentConcurrentViews) {
   using Tree = typename TypeParam::Tree;
   static_assert(pixie::TreeNavigationView<typename Tree::NodeView>);
   static_assert(
-      !std::is_constructible_v<Tree, std::vector<uint64_t>&&, size_t>);
+      std::is_constructible_v<Tree, std::vector<uint64_t>&&, size_t> ==
+      !std::is_same_v<Tree, typename Tree::TreeView>);
   static_assert(
-      !std::is_constructible_v<Tree, const std::vector<uint64_t>&&, size_t>);
+      std::is_constructible_v<Tree, const std::vector<uint64_t>&&, size_t> ==
+      !std::is_same_v<Tree, typename Tree::TreeView>);
   std::mt19937_64 rng(42);
   constexpr size_t n = 513;
   const auto adjacency = TypeParam::order(n, generate_random_tree(n, rng));
@@ -151,6 +169,106 @@ TYPED_TEST(TreeSpecificationTest, BorrowedSpanAndIndependentConcurrentViews) {
   EXPECT_TRUE(second.get());
 }
 
+TYPED_TEST(TreeSpecificationTest, EncodingOwnershipCopyAndMove) {
+  using Tree = typename TypeParam::Tree;
+  using View = typename Tree::TreeView;
+  constexpr bool owns = !std::is_same_v<Tree, View>;
+  static_assert(std::is_same_v<typename View::TreeView, View>);
+  static_assert(
+      std::is_same_v<typename Tree::PathView, pixie::TreePathView<Tree>>);
+  static_assert(std::is_same_v<typename Tree::template BoundedPathView<2>,
+                               pixie::TreePathView<Tree, 2>>);
+  std::mt19937_64 rng(91);
+  constexpr size_t n = 257;
+  const auto adjacency = TypeParam::order(n, generate_random_tree(n, rng));
+  auto words = TypeParam::encode(n, adjacency);
+  const auto expected_words = words;
+  auto check = [&](const auto& tree) {
+    EXPECT_EQ(tree.size(), n);
+    EXPECT_TRUE(std::ranges::equal(tree.encoding_words(), expected_words));
+    std::vector<pixie::TreeNode> pending{tree.root()};
+    size_t visited = 0;
+    while (!pending.empty()) {
+      const auto node = pending.back();
+      pending.pop_back();
+      ++visited;
+      EXPECT_EQ(tree.degree(node), adjacency[node.number].size() - 1);
+      if (node.number) {
+        EXPECT_EQ(tree.parent(node).number, adjacency[node.number][0]);
+      }
+      tree.for_each_child(node, [&](auto child) { pending.push_back(child); });
+    }
+    EXPECT_EQ(visited, n);
+    typename std::remove_cvref_t<decltype(tree)>::PathView path(tree);
+    path.move_to_first_child();
+    path.move_to_parent();
+    EXPECT_TRUE(path.is_root());
+  };
+  auto tree = std::make_unique<Tree>(words, n);
+  EXPECT_EQ(tree->encoding_words().data() == words.data(), !owns);
+  EXPECT_EQ(tree->encoding_owned_bytes() == 0, !owns);
+  if constexpr (pixie::HasMemoryUsageBytes<Tree>) {
+    EXPECT_GE(tree->memory_usage_bytes(),
+              sizeof(Tree) + tree->encoding_owned_bytes());
+  }
+  Tree copy(*tree);
+  EXPECT_EQ(copy.encoding_words().data() == tree->encoding_words().data(),
+            !owns);
+  Tree assigned(words, n);
+  assigned = *tree;
+  tree.reset();
+  if constexpr (owns) {
+    words.assign(words.size(), 0);
+    words.clear();
+    words.shrink_to_fit();
+  }
+  check(copy);
+  check(assigned);
+  const auto address = copy.encoding_words().data();
+  Tree moved(std::move(copy));
+  EXPECT_EQ(moved.encoding_words().data(), address);
+  check(moved);
+  assigned = std::move(moved);
+  EXPECT_EQ(assigned.encoding_words().data(), address);
+  check(assigned);
+  View view(assigned.encoding_words(), n);
+  EXPECT_EQ(view.encoding_owned_bytes(), 0u);
+  check(view);
+  pixie::TreeTraversalContext context(view, 32768);
+  EXPECT_EQ(context.source_words().data(), view.encoding_words().data());
+  if constexpr (owns) {
+    pixie::AlignedStorage storage(TypeParam::bit_size(n));
+    auto padded = storage.as_lines();
+    std::memcpy(std::as_writable_bytes(padded).data(), expected_words.data(),
+                expected_words.size() * 8);
+    const auto data = storage.padded_view().as_words64().data();
+    Tree consumed(std::move(storage), n);
+    EXPECT_EQ(consumed.encoding_words().data(), data);
+    check(consumed);
+    // Temporary word vectors are safe for the copying owning constructor.
+    Tree temporary(std::vector<uint64_t>(expected_words), n);
+    check(temporary);
+  }
+}
+
+TYPED_TEST(TreeSpecificationTest, RejectsInvalidEncodingStorage) {
+  using Tree = typename TypeParam::Tree;
+  using View = typename Tree::TreeView;
+  const std::vector<uint64_t> empty;
+  EXPECT_THROW((Tree(empty, 2)), std::invalid_argument);
+  EXPECT_THROW((Tree(empty, std::numeric_limits<size_t>::max())),
+               std::length_error);
+  alignas(8) std::array<std::byte, 24> bytes{};
+  EXPECT_THROW((View(pixie::ReadOnlyStorageView(
+                         std::span<const std::byte>(bytes).subspan(1, 8)),
+                     1)),
+               std::invalid_argument);
+  EXPECT_THROW((View(pixie::ReadOnlyStorageView(
+                         std::span<const std::byte>(bytes).first(1)),
+                     1)),
+               std::invalid_argument);
+}
+
 struct RejectZeroSelectRmM : pixie::experimental::RmMBTree<> {
   using Base = pixie::experimental::RmMBTree<>;
   using Base::Base;
@@ -186,20 +304,18 @@ TYPED_TEST_SUITE(BoundedTraversalTest, BoundedCases);
 TYPED_TEST(BoundedTraversalTest, ContextOwnershipAndAccounting) {
   using Tree = typename TypeParam::Tree;
   using Context = pixie::TreeTraversalContext<Tree>;
-  static_assert(
-      !std::is_constructible_v<Context, Tree&&, std::span<const uint64_t>>);
+  static_assert(!std::is_constructible_v<Context, Tree&&>);
   static_assert(
       !std::is_constructible_v<Context, const Tree&, std::vector<uint64_t>&&>);
   std::mt19937_64 rng(812);
   const auto adjacency = TypeParam::order(32, generate_random_tree(32, rng));
   const auto words = TypeParam::encode(32, adjacency);
   Tree tree(words, 32);
-  Context disabled(tree, words, 0);
+  Context disabled(tree, 0);
   EXPECT_EQ(disabled.budget_usage_bytes(), 0u);
   EXPECT_GE(disabled.memory_usage_bytes(), sizeof(Context));
-  EXPECT_THROW((Context(tree, std::span<const uint64_t>{})),
-               std::invalid_argument);
-  Context context(tree, words, 32768);
+  EXPECT_EQ(disabled.source_words().data(), tree.encoding_words().data());
+  Context context(tree, 32768);
   const auto copy = context;
   auto first = context.cursor();
   auto second = context.cursor();
@@ -221,7 +337,7 @@ TYPED_TEST(BoundedTraversalTest, IndexRejectsEmptyTrees) {
   for (size_t budget : {size_t{0}, size_t{32768}}) {
     EXPECT_THROW((pixie::RootNavigationIndex<Tree>(tree, budget)),
                  std::invalid_argument);
-    EXPECT_THROW((pixie::TreeTraversalContext(tree, words, budget)),
+    EXPECT_THROW((pixie::TreeTraversalContext(tree, budget)),
                  std::invalid_argument);
   }
 }
@@ -350,7 +466,7 @@ TYPED_TEST(BoundedTraversalTest, AllWorkloadsShareBudgetAndExactEvents) {
           size_t(32767), size_t(32768), size_t(32769), size_t(65536),
           size_t(81920), size_t(196608), size_t(524288)}) {
       Tree tree(words, n);
-      pixie::TreeTraversalContext cache(tree, words, budget);
+      pixie::TreeTraversalContext cache(tree, budget);
       pixie::benchmarks::TreeTraversalWorkloads workload(cache);
       EXPECT_LE(cache.budget_usage_bytes(), budget);
       if (budget >= 32768) {

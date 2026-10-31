@@ -13,7 +13,7 @@ outside these notes.
 
 These notes describe the measured October 28 implementation. The review refactor
 keeps trees immutable, moves the runtime allowance to the external
-`TreeTraversalContext(tree, words, byte_limit)`, and removes the CLOCK/retained
+`TreeTraversalContext(tree, byte_limit)`, and removes the CLOCK/retained
 chunk cache policies and their registrations. Their results below are historical
 evidence for that decision. Root indexes remain separate and immutable; decoding
 scratch belongs to each traversal. The tables have not been remeasured after

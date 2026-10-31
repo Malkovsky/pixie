@@ -4,6 +4,7 @@
 #include <pixie/rmm/tree.h>
 #include <pixie/tree.h>
 #include <pixie/tree/detail/dfuds_node_view.h>
+#include <pixie/tree/detail/encoding_storage.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -16,10 +17,21 @@ namespace pixie {
  * @brief A tree class based on the depth-first unary degree sequence (DFUDS)
  * representation
  */
-template <typename RMMTree>
-class DFUDSTree : public TreeBase<DFUDSTree<RMMTree>> {
+template <class RMMTree,
+          detail::TreeEncodingStorage EncodingStorage = AlignedStorage>
+class DFUDSTree;
+
+template <class B, detail::TreeEncodingStorage S>
+struct TreeTraits<DFUDSTree<B, S>> {
+  using TreeView = DFUDSTree<B, ReadOnlyStorageView>;
+  using NodeView = detail::DfudsNodeView<DFUDSTree<B, S>>;
+};
+
+template <class RMMTree, detail::TreeEncodingStorage EncodingStorage>
+class DFUDSTree : public TreeBase<DFUDSTree<RMMTree, EncodingStorage>> {
  private:
-  const size_t num_bits_;
+  EncodingStorage encoding_;
+  size_t num_bits_;
   RMMTree rmm_;
 
   // Sibling edges match the parent's unary ones from right to left. The last
@@ -49,8 +61,7 @@ class DFUDSTree : public TreeBase<DFUDSTree<RMMTree>> {
  public:
   using Node = TreeNode;
 
-  /** @brief Independent, lightweight per-node navigation memo. */
-  using NodeView = detail::DfudsNodeView<DFUDSTree>;
+  using typename TreeBase<DFUDSTree>::NodeView;
 
  private:
   friend class detail::DfudsNodeView<DFUDSTree>;
@@ -59,28 +70,84 @@ class DFUDSTree : public TreeBase<DFUDSTree<RMMTree>> {
   /** @brief Implement TreeBase::navigate without mutating the tree. */
   NodeView navigate_impl(TreeNode node) const { return NodeView(*this, node); }
 
-  /** @brief Object and owned backend allocations; excludes borrowed words. */
+  /** @brief Object, owned encoding and backend allocations; excludes borrowed
+   * words. */
   size_t memory_usage_bytes_impl() const
     requires HasMemoryUsageBytes<RMMTree>
   {
-    return sizeof(*this) + nested_owned_memory_bytes(rmm_);
+    return sizeof(*this) + encoding_owned_bytes_impl() +
+           nested_owned_memory_bytes(rmm_);
   }
 
   /**
-   * @brief Constructor from an external array of uint64_t
-   * @details The source words must remain alive and immutable for this tree
-   * and its traversals. No padding beyond the logical final word is required.
-   *
-   * @param dfuds_sequence parenthesis sequence in dfuds representation
+   * @brief Construct from a valid encoding of tree_size nodes.
+   * @details Owning trees copy complete source words; TreeView borrows them.
+   * A view's source must stay alive, immutable and at a stable address.
+   * Invalid topology is undefined behavior. A short source throws
+   * std::invalid_argument; an unrepresentable bit count throws
+   * std::length_error.
    */
-  explicit DFUDSTree(std::span<const std::uint64_t> dfuds_sequence,
-                     size_t tree_size)
-      : num_bits_(2 * tree_size - 1), rmm_(dfuds_sequence, 2 * tree_size - 1) {}
+  explicit DFUDSTree(std::span<const uint64_t> words, size_t tree_size)
+      : DFUDSTree(detail::tree_encoding_from_words<EncodingStorage>(
+                      words,
+                      detail::tree_encoding_bits(tree_size, false)),
+                  tree_size) {}
 
-  /** @brief Reject a temporary owning vector; this tree borrows its words. */
-  DFUDSTree(std::vector<std::uint64_t>&&, size_t) = delete;
-  /** @brief Reject a temporary const owning vector for the same reason. */
-  DFUDSTree(const std::vector<std::uint64_t>&&, size_t) = delete;
+  /**
+   * @brief Take storage by value: moves transfer ownership, lvalues copy.
+   * @details ReadOnlyStorageView always borrows. AlignedStorage may have a
+   * partial final logical byte/word; its allocation supplies word padding.
+   * View storage must contain aligned complete words. Short/misaligned storage
+   * throws std::invalid_argument. Topology and size must agree.
+   */
+  explicit DFUDSTree(EncodingStorage storage, size_t tree_size)
+      : encoding_(std::move(storage)),
+        num_bits_(detail::tree_encoding_bits(tree_size, false)),
+        rmm_(encoding_words_impl(), num_bits_) {}
+
+  /** @brief Deep-copy owning encodings and rebuild their backend references.
+   * @details TreeView copies backend metadata and borrows the same encoding.
+   */
+  DFUDSTree(const DFUDSTree& other)
+      : encoding_(other.encoding_), num_bits_(other.num_bits_), rmm_([&] {
+          if constexpr (std::same_as<EncodingStorage, AlignedStorage>) {
+            return RMMTree(encoding_words_impl(), num_bits_);
+          } else {
+            return other.rmm_;
+          }
+        }()) {}
+  /** @brief Copy independently; invalidates existing borrowers of *this. */
+  DFUDSTree& operator=(const DFUDSTree& other) {
+    if (this != &other) {
+      DFUDSTree copy(other);
+      *this = std::move(copy);
+    }
+    return *this;
+  }
+  /** @brief Transfer storage/indexes; invalidates borrowers of the source.
+   * @details The moved-from object may only be destroyed or assigned.
+   */
+  DFUDSTree(DFUDSTree&&) = default;
+  /** @brief Transfer storage/indexes; invalidates borrowers of both trees. */
+  DFUDSTree& operator=(DFUDSTree&&) = default;
+
+  /** @brief Reject dangling views of temporary vectors. */
+  DFUDSTree(std::vector<uint64_t>&&, size_t)
+    requires std::same_as<EncodingStorage, ReadOnlyStorageView>
+  = delete;
+  /** @brief Reject dangling views of temporary const vectors. */
+  DFUDSTree(const std::vector<uint64_t>&&, size_t)
+    requires std::same_as<EncodingStorage, ReadOnlyStorageView>
+  = delete;
+
+  /** @brief Implement TreeBase::encoding_words. */
+  std::span<const uint64_t> encoding_words_impl() const {
+    return detail::tree_encoding_words(encoding_, num_bits_);
+  }
+  /** @brief Implement TreeBase::encoding_owned_bytes. */
+  size_t encoding_owned_bytes_impl() const {
+    return detail::tree_encoding_owned_bytes(encoding_);
+  }
 
   /**
    * @brief Returns the root node

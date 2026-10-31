@@ -28,7 +28,6 @@ template <class Tree, TreeLayout Layout>
 const auto& GetTreeFixture(std::size_t size) {
   struct Fixture {
     std::size_t size;
-    std::vector<std::uint64_t> words;
     std::unique_ptr<Tree> tree;
     explicit Fixture(std::size_t n) : size(n) {
       if constexpr (kReferenceTree<Tree>) {
@@ -38,7 +37,7 @@ const auto& GetTreeFixture(std::size_t size) {
                                    : dfs_order(n, generate_random_tree(n, rng));
         tree = std::make_unique<Tree>(adjacency);
       } else {
-        words = GenerateRandomBp(n);
+        auto words = GenerateRandomBp(n);
         if constexpr (Layout == TreeLayout::kDfuds) {
           words = DfudsFromBp(words, n);
         } else if constexpr (Layout == TreeLayout::kLouds) {
@@ -71,13 +70,13 @@ void RunDirectTreeBenchmark(benchmark::State& state) {
     RunExpandedTreeBenchmark<Workload>(state, tree, fixture.size);
   }
   if constexpr (!kReferenceTree<Tree>) {
-    state.counters["input_bytes"] = fixture.words.capacity() * sizeof(uint64_t);
+    state.counters["input_bytes"] = tree.encoding_owned_bytes();
   }
 }
 
 template <class Tree, TreeLayout Layout, TreeWorkload Workload>
 void RunBestTreeBenchmark(benchmark::State& state) {
   const auto& fixture = GetTreeFixture<Tree, Layout>(state.range(0));
-  RunTreeComparison<Workload>(state, *fixture.tree, fixture.words);
+  RunTreeComparison<Workload>(state, *fixture.tree);
 }
 }  // namespace pixie::benchmarks

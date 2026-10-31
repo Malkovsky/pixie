@@ -7,10 +7,11 @@ This page summarizes benchmarks for tree implementation: BP, DFUDS, LOUDS and re
 AMD Ryzen 7 8845HS (8 cores, 16 threads, 16 MiB L3), 15 GiB RAM,
 WSL2 (Linux 6.6.87.2-microsoft-standard-WSL2). GCC 13.3, C++20,
 `-O3 -DNDEBUG -march=native`; measurements pinned to CPU 0.
-Results captured October 28, 2026, before the ownership refactor.
-The current API supplies the same combined cache/scratch budget to the external
-`TreeTraversalContext(tree, words, byte_limit)`, rather than to the tree constructor.
-The graphs are the saved measurements, not a new run of the refactored code.
+Results captured October 30, 2026, at commit `8e72c47`, after the ownership
+refactor, before the subsequent owning-encoding change. These graphs retain
+that measured revision. The current API takes a combined cache/scratch budget
+through `TreeTraversalContext(tree, byte_limit)`; trees now own their encodings
+by default.
 
 ## Implementations and inputs
 
@@ -76,12 +77,16 @@ python3 scripts/benchmark_trees.py --scope references \
 c++ -O3 -DNDEBUG -march=native -std=c++20 -Wall -Wextra -Werror -Iinclude \
   src/benchmarks/tree_construction_probe.cpp -o "$out/construction-probe"
 python3 scripts/benchmark_tree_construction.py --binary "$out/construction-probe" \
-  --output-dir "$out/construction" --exponents 10 12 14 16 18 20 22 24 26
+  --construction-mode consume --output-dir "$out/construction" --exponents 10 12 14 16 18 20 22 24 26
 
 python3 scripts/plot_tree_docs.py --reference "$out/references/combined.json" \
   --cache32 "$out/32/combined.json" --cache512 "$out/512/combined.json" \
   --construction "$out/construction/results.json" --output-dir "$out/graphs"
 ```
+
+Use `--construction-mode copy` in a separate output directory to include copying
+prepared encoding words in construction timing. The consuming mode prepares aligned
+storage before construction, and includes that preparation in full setup.
 
 ## Results
 

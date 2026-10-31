@@ -19,7 +19,7 @@ namespace pixie {
  * inline, with no allocations. Copies have independent traversal state.
  * Concurrent access to one cursor requires external synchronization.
  */
-template <class Tree, std::size_t Capacity = 128>
+template <class Tree, std::size_t Capacity>
 class TreePathView {
  public:
   /** @brief Start at the root of a valid nonempty tree. */

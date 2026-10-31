@@ -32,10 +32,8 @@ inline size_t TreeCacheBudget() {
 // One configuration per encoding, with the same index/scratch reservation for
 // every workload. No per-size or per-workload selection of policy winners.
 template <TreeWorkload Workload, class Tree>
-void RunTreeComparison(benchmark::State& state,
-                       const Tree& tree,
-                       std::span<const uint64_t> words) {
-  TreeTraversalContext<Tree> cache(tree, words, TreeCacheBudget());
+void RunTreeComparison(benchmark::State& state, const Tree& tree) {
+  TreeTraversalContext<Tree> cache(tree, TreeCacheBudget());
   if (cache.budget_usage_bytes() > TreeCacheBudget()) {
     state.SkipWithError("Combined cache and scratch budget exceeded");
     return;

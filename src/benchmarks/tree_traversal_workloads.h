@@ -22,21 +22,21 @@ namespace pixie::benchmarks {
 // Dispatch to the concrete implementations' internal unpacking kernels.
 // Source words belong to the fixture; they
 // must match the tree and need no padding past the final logical word.
-template <class Backend, class Visitor>
-void UnpackedDepthFirst(const BPTree<Backend>& tree,
+template <class Backend, class Storage, class Visitor>
+void UnpackedDepthFirst(const BPTree<Backend, Storage>& tree,
                         std::span<const uint64_t> words,
                         Visitor& visitor) {
   detail::tree_unpack::bp_byte(tree, words, 2 * tree.size(), visitor);
 }
-template <class Backend, class Visitor>
-void UnpackedDepthFirst(const DFUDSTree<Backend>& tree,
+template <class Backend, class Storage, class Visitor>
+void UnpackedDepthFirst(const DFUDSTree<Backend, Storage>& tree,
                         std::span<const uint64_t> words,
                         Visitor& visitor) {
   detail::tree_unpack::dfuds_excess_stream(tree, words, 2 * tree.size() - 1,
                                            visitor);
 }
-template <class Backend, class Visitor>
-void UnpackedDepthFirst(const LoudsTree<Backend>& tree,
+template <class Backend, class Storage, class Visitor>
+void UnpackedDepthFirst(const LoudsTree<Backend, Storage>& tree,
                         std::span<const uint64_t> words,
                         Visitor& visitor) {
   detail::tree_unpack::louds(tree, words, 2 * tree.size() - 1, visitor);
@@ -262,15 +262,16 @@ class ParenthesisUnpackedAccess {
   bool cached_ = false;
   bool leaf_ = false;
 };
-template <class Backend>
-auto MakeUnpackedAccess(const BPTree<Backend>& tree,
+template <class Backend, class Storage>
+auto MakeUnpackedAccess(const BPTree<Backend, Storage>& tree,
                         std::span<const uint64_t> words) {
-  return ParenthesisUnpackedAccess<true, BPTree<Backend>>(tree, words);
+  return ParenthesisUnpackedAccess<true, BPTree<Backend, Storage>>(tree, words);
 }
-template <class Backend>
-auto MakeUnpackedAccess(const DFUDSTree<Backend>& tree,
+template <class Backend, class Storage>
+auto MakeUnpackedAccess(const DFUDSTree<Backend, Storage>& tree,
                         std::span<const uint64_t> words) {
-  return ParenthesisUnpackedAccess<false, DFUDSTree<Backend>>(tree, words);
+  return ParenthesisUnpackedAccess<false, DFUDSTree<Backend, Storage>>(tree,
+                                                                       words);
 }
 template <class Tree>
 class LoudsUnpackedAccess {
@@ -298,20 +299,21 @@ class LoudsUnpackedAccess {
   std::span<const uint64_t> words_;
   typename Tree::NodeView view_;
 };
-template <class Backend>
-auto MakeUnpackedAccess(const LoudsTree<Backend>& tree,
+template <class Backend, class Storage>
+auto MakeUnpackedAccess(const LoudsTree<Backend, Storage>& tree,
                         std::span<const uint64_t> words) {
-  return LoudsUnpackedAccess<LoudsTree<Backend>>(tree, words);
+  return LoudsUnpackedAccess<LoudsTree<Backend, Storage>>(tree, words);
 }
 
-template <class Backend, class Visit, class Inspect>
-TraversalWork UnpackedDepthFirstInspect(const LoudsTree<Backend>& tree,
+template <class Backend, class Storage, class Visit, class Inspect>
+TraversalWork UnpackedDepthFirstInspect(const LoudsTree<Backend, Storage>& tree,
                                         std::span<const uint64_t> words,
                                         Visit&& visit,
                                         Inspect&& inspect) {
   using Visitor = std::remove_reference_t<Visit>;
   using Inspector = std::remove_reference_t<Inspect>;
-  detail::tree_unpack::LoudsTraversal<LoudsTree<Backend>, Visitor, Inspector>
+  detail::tree_unpack::LoudsTraversal<LoudsTree<Backend, Storage>, Visitor,
+                                      Inspector>
       traversal{tree, words, 2 * tree.size() - 1, visit, {}, &inspect};
   traversal.walk(tree.root(), 0);
   return {traversal.node_count, traversal.child_count};
@@ -327,15 +329,15 @@ TraversalWork ParenthesisDepthFirstInspect(const Tree& tree,
   traversal.walk(tree.root());
   return {traversal.node_count, traversal.child_count};
 }
-template <class Backend, class Visit, class Inspect>
-TraversalWork UnpackedDepthFirstInspect(const BPTree<Backend>& tree,
+template <class Backend, class Storage, class Visit, class Inspect>
+TraversalWork UnpackedDepthFirstInspect(const BPTree<Backend, Storage>& tree,
                                         std::span<const uint64_t> words,
                                         Visit&& visit,
                                         Inspect&& inspect) {
   return ParenthesisDepthFirstInspect<true>(tree, words, visit, inspect);
 }
-template <class Backend, class Visit, class Inspect>
-TraversalWork UnpackedDepthFirstInspect(const DFUDSTree<Backend>& tree,
+template <class Backend, class Storage, class Visit, class Inspect>
+TraversalWork UnpackedDepthFirstInspect(const DFUDSTree<Backend, Storage>& tree,
                                         std::span<const uint64_t> words,
                                         Visit&& visit,
                                         Inspect&& inspect) {

@@ -12,16 +12,16 @@ namespace pixie {
 namespace detail::tree_traversal {
 template <class Tree>
 struct Encoding;
-template <class B>
-struct Encoding<BPTree<B>> {
+template <class B, detail::TreeEncodingStorage S>
+struct Encoding<BPTree<B, S>> {
   static constexpr int value = 0;
 };
-template <class B>
-struct Encoding<DFUDSTree<B>> {
+template <class B, detail::TreeEncodingStorage S>
+struct Encoding<DFUDSTree<B, S>> {
   static constexpr int value = 1;
 };
-template <class B>
-struct Encoding<LoudsTree<B>> {
+template <class B, detail::TreeEncodingStorage S>
+struct Encoding<LoudsTree<B, S>> {
   static constexpr int value = 2;
 };
 struct SizingVisitor {
@@ -31,13 +31,13 @@ struct SizingVisitor {
 
 /**
  * @brief Runtime-budgeted root index and decoding configuration.
- * @details Borrows a nonempty immutable tree and its matching encoded words;
- * both must outlive this object and its cursors. Its constructor's byte limit
- * covers this external context, the immutable root index and peak explicit
- * traversal buffers. The tree owns none of these resources. Up to half the
- * available bytes are assigned to decoding, capped at 192 KiB for BP/DFUDS and
- * 80 KiB for LOUDS. Plain streaming needs only 4 KiB and remains available when
- * inspected decoding cannot fit. Remaining bytes hold the root index. The
+ * @details Borrows a nonempty immutable tree and obtains its encoded words;
+ * the tree must outlive this object and its cursors. Its constructor's byte
+ * limit covers this external context, the immutable root index and peak
+ * explicit traversal buffers. The tree owns none of these resources. Up to half
+ * the available bytes are assigned to decoding, capped at 192 KiB for BP/DFUDS
+ * and 80 KiB for LOUDS. Plain streaming needs only 4 KiB and remains available
+ * when inspected decoding cannot fit. Remaining bytes hold the root index. The
  * constructor selects compiled chunk/level sizes; BP/DFUDS cached recursion
  * depth is additionally computed at runtime.
  *
@@ -122,30 +122,23 @@ class TreeTraversalContext {
   }
 
  public:
-  /** @brief Select index and scratch sizes within byte_limit; words match tree.
+  /** @brief Select index and scratch sizes within byte_limit.
    * @details After construction this context is read-only. Each
    * traversal consumer owns its mutable scratch. The allowance covers one
    * active traversal; callers budget simultaneous or nested traversals
    * separately. The tree, context and immutable words must remain alive and
    * unmoved while borrowed cursors or decoding operations use them.
-   * @throws std::invalid_argument if the tree is empty or words are too short.
-   * A sufficiently long but mismatched encoding violates the precondition.
+   * @throws std::invalid_argument if the tree is empty.
    */
   TreeTraversalContext(const Tree& tree,
-                       std::span<const uint64_t> words,
                        size_t byte_limit = kDefaultTraversalBytes)
       : tree_(tree),
-        words_(words),
+        words_(tree.encoding_words()),
         plan_(choose_plan(byte_limit)),
         index_(tree,
                byte_limit >= sizeof(*this) + plan_.scratch
                    ? byte_limit - overhead() - plan_.scratch
-                   : 0) {
-    const size_t bits = 2 * tree.size() - (encoding == 0 ? 0 : 1);
-    if (words.size() < bits / 64 + (bits % 64 != 0)) {
-      throw std::invalid_argument("Traversal context source is too short");
-    }
-  }
+                   : 0) {}
   /** @brief Peak explicit traversal-buffer allowance, including decoder loads.
    */
   size_t scratch_bytes() const { return plan_.scratch; }
@@ -174,23 +167,9 @@ class TreeTraversalContext {
     return overhead() + index_.memory_usage_bytes() + plan_.scratch;
   }
   /** @brief Reject a temporary tree because this context borrows it. */
-  TreeTraversalContext(Tree&&,
-                       std::span<const uint64_t>,
-                       size_t = kDefaultTraversalBytes) = delete;
+  TreeTraversalContext(Tree&&, size_t = kDefaultTraversalBytes) = delete;
   /** @brief Reject a temporary const tree for the same reason. */
-  TreeTraversalContext(const Tree&&,
-                       std::span<const uint64_t>,
-                       size_t = kDefaultTraversalBytes) = delete;
-  /** @brief Reject temporary source vectors; callers supply long-lived words.
-   */
-  TreeTraversalContext(const Tree&,
-                       std::vector<uint64_t>&&,
-                       size_t = kDefaultTraversalBytes) = delete;
-  /** @brief Reject temporary const source vectors for the same reason. */
-  TreeTraversalContext(const Tree&,
-                       const std::vector<uint64_t>&&,
-                       size_t = kDefaultTraversalBytes) = delete;
-
+  TreeTraversalContext(const Tree&&, size_t = kDefaultTraversalBytes) = delete;
   /** @brief Independent root cursor borrowing this index and its tree. */
   auto cursor() const& { return index_.cursor(); }
   /** @brief Reject cursors borrowing a temporary context. */

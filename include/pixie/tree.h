@@ -10,9 +10,19 @@
 
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
+#include <span>
 #include <utility>
 
 namespace pixie {
+
+/** @brief Encoding-specific types used by TreeBase; specialize before the tree.
+ */
+template <class Impl>
+struct TreeTraits;
+
+template <class Tree, std::size_t Capacity = 128>
+class TreePathView;
 
 /**
  * @brief Logical node handle shared by succinct rooted-tree encodings.
@@ -72,15 +82,45 @@ template <class Impl>
 class TreeBase {
  public:
   using Node = TreeNode;
+  /** @brief Tree representation borrowing encoding, owning backend metadata. */
+  using TreeView = typename TreeTraits<Impl>::TreeView;
+  /** @brief Independent per-node memoizing view borrowing this tree. */
+  using NodeView = typename TreeTraits<Impl>::NodeView;
+  /** @brief Path cursor with the default inline ancestor capacity. */
+  using PathView = TreePathView<Impl>;
+  /** @brief Path cursor with Capacity inline ancestor handles. */
+  template <std::size_t Capacity>
+  using BoundedPathView = TreePathView<Impl, Capacity>;
+
+  /** @brief Read-only complete encoding words, including final-word padding.
+   * @details Borrows this tree's storage; invalidated by assignment, move or
+   * destruction of the tree (or the backing owner for TreeView). The tree's
+   * node count defines the logical bit length. No ownership is transferred.
+   * @par Implementation requirement
+   * encoding_words_impl() returns the immutable representation as a word span.
+   */
+  std::span<const std::uint64_t> encoding_words() const {
+    return impl().encoding_words_impl();
+  }
+
+  /** @brief Allocated encoding bytes; zero for a non-owning TreeView.
+   * @par Implementation requirement
+   * encoding_owned_bytes_impl() excludes object bytes and backend metadata.
+   */
+  std::size_t encoding_owned_bytes() const {
+    return impl().encoding_owned_bytes_impl();
+  }
 
   /**
    * @brief Create an independent memoizing navigation view.
    * @param node Valid handle from this tree; invalid handles are undefined
    * behavior.
    * @details The tree and its immutable backing data must outlive the view and
-   * remain unmoved. All query memoization belongs to the view, never the tree.
-   * Independent views may query the same const tree concurrently. Concurrent
-   * access to one view requires external synchronization.
+   * remain unmoved. Assignment or moving invalidates existing borrowers;
+   * using an invalidated view is undefined behavior. All query memoization
+   * belongs to the view, never the tree. Independent views may query the same
+   * const tree concurrently. Concurrent access to one view requires external
+   * synchronization.
    * @par Implementation requirement
    * navigate_impl(node) returns a copyable NodeView with node(), reset(node),
    * is_root(), is_leaf(), degree(), child(i), first_child(), parent(),
@@ -95,8 +135,8 @@ class TreeBase {
 
   /**
    * @brief Object bytes plus owned index allocations.
-   * @details Excludes borrowed representation words, caller-owned views,
-   * external traversal/index objects and allocator metadata.
+   * @details Includes owned encoding; excludes borrowed words, caller-owned
+   * views, external traversal/index objects and allocator metadata.
    * @par Implementation requirement
    * memory_usage_bytes_impl() reports this total without allocating or mutating
    * the tree. Available only when the selected backend supports accounting.
@@ -219,3 +259,6 @@ class TreeBase {
 };
 
 }  // namespace pixie
+
+// Complete the public nested PathView aliases after defining their contract.
+#include <pixie/tree/path_view.h>
