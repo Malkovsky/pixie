@@ -8,6 +8,12 @@ namespace pixie::benchmarks {
 template <class Tree>
 class TreeTraversalWorkloads {
   static constexpr int encoding = detail::tree_traversal::Encoding<Tree>::value;
+  using Profiles =
+      std::conditional_t<encoding == 2,
+                         detail::tree_traversal::LoudsProfiles,
+                         detail::tree_traversal::ParenthesisProfiles>;
+  template <size_t Index>
+  using Profile = typename Profiles::template At<Index>;
   template <size_t Bits, class V, class I>
   using ParenthesisWalk = std::conditional_t<
       encoding == 0,
@@ -38,29 +44,38 @@ class TreeTraversalWorkloads {
    */
   template <class Visitor, class Inspector>
   std::pair<size_t, size_t> inspect(Visitor& visit, Inspector& child) const {
+    // Keep switch dispatch and separate execution frames. Profile additions
+    // must extend dispatch explicitly rather than silently using the fallback.
     if constexpr (encoding == 2) {
+      static_assert(Profiles::size == 5);
       switch (context_.cached_depth()) {
-        case 128:
-          return inspect_louds<128, 32>(visit, child);
-        case 64:
-          return inspect_louds<64, 16>(visit, child);
-        case 32:
-          return inspect_louds<32, 16>(visit, child);
-        case 16:
-          return inspect_louds<16, 8>(visit, child);
-        case 8:
-          return inspect_louds<8, 8>(visit, child);
+        case Profile<0>::depth:
+          return inspect_louds<Profile<0>::depth, Profile<0>::children>(visit,
+                                                                        child);
+        case Profile<1>::depth:
+          return inspect_louds<Profile<1>::depth, Profile<1>::children>(visit,
+                                                                        child);
+        case Profile<2>::depth:
+          return inspect_louds<Profile<2>::depth, Profile<2>::children>(visit,
+                                                                        child);
+        case Profile<3>::depth:
+          return inspect_louds<Profile<3>::depth, Profile<3>::children>(visit,
+                                                                        child);
+        case Profile<4>::depth:
+          return inspect_louds<Profile<4>::depth, Profile<4>::children>(visit,
+                                                                        child);
       }
     } else {
+      static_assert(Profiles::size == 4);
       switch (context_.decoded_chunk_bits()) {
-        case 8192:
-          return inspect_parentheses<8192>(visit, child);
-        case 2048:
-          return inspect_parentheses<2048>(visit, child);
-        case 512:
-          return inspect_parentheses<512>(visit, child);
-        case 128:
-          return inspect_parentheses<128>(visit, child);
+        case Profile<0>::bits:
+          return inspect_parentheses<Profile<0>::bits>(visit, child);
+        case Profile<1>::bits:
+          return inspect_parentheses<Profile<1>::bits>(visit, child);
+        case Profile<2>::bits:
+          return inspect_parentheses<Profile<2>::bits>(visit, child);
+        case Profile<3>::bits:
+          return inspect_parentheses<Profile<3>::bits>(visit, child);
       }
     }
     size_t nodes = 0, children = 0;

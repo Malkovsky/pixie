@@ -4,6 +4,7 @@
 #include <pixie/tree/detail/bp_micro.h>
 #include <pixie/tree/detail/dfuds_micro.h>
 #include <pixie/tree/detail/louds_inspection_iterative.h>
+#include <pixie/tree/detail/traversal_profiles.h>
 #include <pixie/tree/dfuds.h>
 #include <pixie/tree/louds.h>
 #include <pixie/tree/root_navigation_index.h>
@@ -99,24 +100,20 @@ class TreeTraversalContext {
     const size_t available = budget - sizeof(TreeTraversalContext);
     const size_t allowance = std::min(size_t{encoding == 2 ? 80 : 192} * 1024,
                                       std::max(kStreamBytes, available / 2));
-    if constexpr (encoding == 2) {
-      for (auto p :
-           {louds_plan<128, 32>(allowance), louds_plan<64, 16>(allowance),
-            louds_plan<32, 16>(allowance), louds_plan<16, 8>(allowance),
-            louds_plan<8, 8>(allowance)}) {
-        if (p.depth) {
-          return p;
-        }
-      }
-    } else {
-      for (auto p :
-           {parentheses_plan<8192>(allowance),
-            parentheses_plan<2048>(allowance), parentheses_plan<512>(allowance),
-            parentheses_plan<128>(allowance)}) {
-        if (p.depth) {
-          return p;
-        }
-      }
+    using Profiles =
+        std::conditional_t<encoding == 2, detail::tree_traversal::LoudsProfiles,
+                           detail::tree_traversal::ParenthesisProfiles>;
+    Plan plan;
+    if (Profiles::visit_until([&](auto profile) {
+          using Profile = decltype(profile);
+          if constexpr (encoding == 2) {
+            plan = louds_plan<Profile::depth, Profile::children>(allowance);
+          } else {
+            plan = parentheses_plan<Profile::bits>(allowance);
+          }
+          return plan.depth != 0;
+        })) {
+      return plan;
     }
     return {kStreamBytes, 0, 0};
   }
