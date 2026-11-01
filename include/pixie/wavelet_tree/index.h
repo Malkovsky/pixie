@@ -5,6 +5,7 @@
 #include <pixie/packed_bit_builder.h>
 #include <pixie/rank_select/support.h>
 #include <pixie/wavelet_tree.h>
+#include <pixie/wavelet_tree/detail/compact_rank_select.h>
 #include <pixie/wavelet_tree/detail/huffman_build_table.h>
 #include <pixie/wavelet_tree/detail/wavelet_partition.h>
 
@@ -15,6 +16,7 @@
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <queue>
 #include <span>
 #include <stdexcept>
@@ -37,10 +39,19 @@ class WaveletTreeIndex
  private:
   using node_index_t = size_t;
   static constexpr node_index_t npos = std::numeric_limits<node_index_t>::max();
+  using alphabet_index_t = Symbol;
+  static constexpr alphabet_index_t alphabet_npos =
+      std::numeric_limits<alphabet_index_t>::max();
   static constexpr std::array<std::uint8_t, 8> kSerializationMagic = {
       'P', 'X', 'W', 'A', 'V', 'E', 'T', '\0'};
-  static constexpr std::uint32_t kSerializationVersion = 5;
+  static constexpr std::uint32_t kSerializationVersion = 6;
   static constexpr std::size_t kSerializationHeaderBytes = 24;
+  static constexpr std::size_t kPackedByteCodeLengthBytes =
+      detail::kByteAlphabetSize / 2;
+  enum class SerializedShape : std::uint32_t {
+    kExplicit = 0,
+    kCanonicalByteHuffman = 1,
+  };
 #if defined(__APPLE__) && defined(__aarch64__)
   static constexpr std::size_t kByteConstructionBlockSize = 16 * 1024;
 #else
@@ -70,6 +81,7 @@ class WaveletTreeIndex
     std::size_t middle;
     Storage bit_vector_data;
     RankSelectSupport<Storage> data;
+    std::optional<detail::CompactWaveletRankSelect<Storage>> compact_data;
 
     WaveletNode() = default;
 
@@ -80,13 +92,20 @@ class WaveletTreeIndex
           middle(node.middle),
           bit_vector_data(node.bit_vector_data),
           data([&] {
+            if (node.compact_data.has_value()) {
+              return RankSelectSupport<Storage>();
+            }
             if constexpr (std::same_as<Storage, AlignedStorage>) {
               return RankSelectSupport<Storage>(bit_vector_data.as_words64(),
                                                 node.data.size());
             } else {
               return node.data;
             }
-          }()) {}
+          }()) {
+      if (node.compact_data.has_value()) {
+        compact_data.emplace(bit_vector_data.as_words64(), *node.compact_data);
+      }
+    }
 
     WaveletNode& operator=(const WaveletNode& node) {
       if (this != &node) {
@@ -98,6 +117,47 @@ class WaveletTreeIndex
 
     WaveletNode(WaveletNode&&) noexcept = default;
     WaveletNode& operator=(WaveletNode&&) noexcept = default;
+
+    std::size_t bit_count() const {
+      return compact_data.has_value() ? compact_data->size() : data.size();
+    }
+
+    std::size_t one_count() const {
+      return compact_data.has_value() ? compact_data->one_count()
+                                      : data.rank(data.size());
+    }
+
+    int bit(std::size_t position) const {
+      return compact_data.has_value() ? compact_data->bit(position)
+                                      : data[position];
+    }
+
+    std::size_t rank(std::size_t position) const {
+      return compact_data.has_value() ? compact_data->rank(position)
+                                      : data.rank(position);
+    }
+
+    std::size_t rank0(std::size_t position) const {
+      return compact_data.has_value() ? compact_data->rank0(position)
+                                      : data.rank0(position);
+    }
+
+    std::size_t select(std::size_t rank) const {
+      return compact_data.has_value() ? compact_data->select(rank)
+                                      : data.select(rank);
+    }
+
+    std::size_t select0(std::size_t rank) const {
+      return compact_data.has_value() ? compact_data->select0(rank)
+                                      : data.select0(rank);
+    }
+
+    void validate_index(DeserializationValidation validation) const {
+      if (validation == DeserializationValidation::kFull &&
+          compact_data.has_value()) {
+        compact_data->validate_contents();
+      }
+    }
 
     WaveletNode(PreWaveletNode&& node)
       requires(std::same_as<Storage, AlignedStorage>)
@@ -111,14 +171,25 @@ class WaveletTreeIndex
           RankSelectSupport<Storage>(bit_vector_data.as_words64(), bit_count);
     }
 
+    void serialize_payload(BinaryWriter& writer) const {
+      bit_vector_data.serialize(writer);
+      data.serialize(writer);
+    }
+
     /** @brief Write one node in canonical little-endian form. */
     void serialize(BinaryWriter& writer) const {
       writer.write_size(parent);
       writer.write_size(left_child);
       writer.write_size(right_child);
       writer.write_u64(middle);
-      bit_vector_data.serialize(writer);
-      data.serialize(writer);
+      serialize_payload(writer);
+    }
+
+    void deserialize_payload(BinaryReader& reader,
+                             DeserializationValidation validation) {
+      bit_vector_data = Storage::deserialize(reader);
+      data = RankSelectSupport<Storage>::deserialize(
+          reader, bit_vector_data.as_words64(), validation);
     }
 
     /** @brief Construct one checked node from @p reader. */
@@ -129,9 +200,7 @@ class WaveletTreeIndex
       result.left_child = reader.read_size();
       result.right_child = reader.read_size();
       result.middle = reader.read_u64();
-      result.bit_vector_data = Storage::deserialize(reader);
-      result.data = RankSelectSupport<Storage>::deserialize(
-          reader, result.bit_vector_data.as_words64(), validation);
+      result.deserialize_payload(reader, validation);
       return result;
     }
   };
@@ -140,15 +209,345 @@ class WaveletTreeIndex
   size_t data_size_ = 0;
   node_index_t root_ = npos;
   std::vector<WaveletNode> nodes_;
-  std::vector<node_index_t> leaves_;
-  std::vector<size_t> permutation_, inverse_permutation_;
+  std::vector<alphabet_index_t> leaves_;
+  std::vector<alphabet_index_t> permutation_, inverse_permutation_;
+  bool canonical_byte_huffman_ = false;
+  bool compact_node_indexes_ = false;
+
+  template <bool Compact>
+  static int node_bit(const WaveletNode& node, std::size_t position) {
+    if constexpr (Compact) {
+      return node.compact_data->bit(position);
+    }
+    return node.data[position];
+  }
+
+  template <bool Compact>
+  static std::size_t node_rank(const WaveletNode& node, std::size_t position) {
+    if constexpr (Compact) {
+      return node.compact_data->rank(position);
+    }
+    return node.data.rank(position);
+  }
+
+  template <bool Compact>
+  static std::size_t node_rank0(const WaveletNode& node, std::size_t position) {
+    if constexpr (Compact) {
+      return node.compact_data->rank0(position);
+    }
+    return node.data.rank0(position);
+  }
+
+  template <bool Compact>
+  static std::size_t node_select(const WaveletNode& node, std::size_t rank) {
+    if constexpr (Compact) {
+      return node.compact_data->select(rank);
+    }
+    return node.data.select(rank);
+  }
+
+  template <bool Compact>
+  static std::size_t node_select0(const WaveletNode& node, std::size_t rank) {
+    if constexpr (Compact) {
+      return node.compact_data->select0(rank);
+    }
+    return node.data.select0(rank);
+  }
+
+  static alphabet_index_t compact_node_index(node_index_t node) {
+    if (node == npos) {
+      return alphabet_npos;
+    }
+    if (node >= alphabet_npos) {
+      throw std::length_error(
+          "Wavelet-tree node index does not fit its symbol type");
+    }
+    return static_cast<alphabet_index_t>(node);
+  }
+
+  static node_index_t expand_node_index(alphabet_index_t node) {
+    return node == alphabet_npos ? npos : static_cast<node_index_t>(node);
+  }
+
+  static void write_alphabet_index(BinaryWriter& writer,
+                                   alphabet_index_t index) {
+    if constexpr (sizeof(alphabet_index_t) == sizeof(std::uint8_t)) {
+      writer.write_u8(index);
+    } else if constexpr (sizeof(alphabet_index_t) == sizeof(std::uint16_t)) {
+      writer.write_u16(index);
+    } else if constexpr (sizeof(alphabet_index_t) == sizeof(std::uint32_t)) {
+      writer.write_u32(index);
+    } else {
+      static_assert(sizeof(alphabet_index_t) == sizeof(std::uint64_t));
+      writer.write_u64(index);
+    }
+  }
+
+  static alphabet_index_t read_alphabet_index(BinaryReader& reader) {
+    if constexpr (sizeof(alphabet_index_t) == sizeof(std::uint8_t)) {
+      return reader.read_u8();
+    } else if constexpr (sizeof(alphabet_index_t) == sizeof(std::uint16_t)) {
+      return reader.read_u16();
+    } else if constexpr (sizeof(alphabet_index_t) == sizeof(std::uint32_t)) {
+      return reader.read_u32();
+    } else {
+      static_assert(sizeof(alphabet_index_t) == sizeof(std::uint64_t));
+      return reader.read_u64();
+    }
+  }
+
+  static Storage make_storage(std::span<const std::byte> bytes)
+    requires(std::same_as<Storage, AlignedStorage> ||
+             std::same_as<Storage, ReadOnlyStorageView>)
+  {
+    return Storage(bytes);
+  }
+
+  static void consume_alignment(BinaryReader& reader) {
+    const std::size_t remainder = reader.byte_offset() % alignof(std::uint64_t);
+    const std::size_t padding =
+        remainder == 0 ? 0 : alignof(std::uint64_t) - remainder;
+    for (std::size_t index = 0; index < padding; ++index) {
+      const std::size_t offset = reader.byte_offset();
+      if (reader.read_u8() != 0) {
+        throw SerializationError("Non-zero wavelet-tree alignment padding",
+                                 offset);
+      }
+    }
+  }
+
+  static std::size_t compact_count_width(std::size_t data_size) {
+    if (data_size <= std::numeric_limits<std::uint16_t>::max()) {
+      return sizeof(std::uint16_t);
+    }
+    if (data_size <= std::numeric_limits<std::uint32_t>::max()) {
+      return sizeof(std::uint32_t);
+    }
+    return sizeof(std::uint64_t);
+  }
+
+  static void write_compact_count(BinaryWriter& writer,
+                                  std::size_t width,
+                                  std::size_t count) {
+    if (width == sizeof(std::uint16_t)) {
+      writer.write_u16(static_cast<std::uint16_t>(count));
+    } else if (width == sizeof(std::uint32_t)) {
+      writer.write_u32(static_cast<std::uint32_t>(count));
+    } else {
+      writer.write_u64(count);
+    }
+  }
+
+  static std::size_t read_compact_count(BinaryReader& reader,
+                                        std::size_t width) {
+    if (width == sizeof(std::uint16_t)) {
+      return reader.read_u16();
+    }
+    if (width == sizeof(std::uint32_t)) {
+      return reader.read_u32();
+    }
+    return reader.read_size();
+  }
+
+  std::array<std::uint8_t, detail::kByteAlphabetSize>
+  huffman_byte_code_lengths() const
+    requires(std::same_as<Symbol, std::uint8_t>)
+  {
+    std::array<std::uint8_t, detail::kByteAlphabetSize> lengths{};
+    if (data_size_ == 0) {
+      return lengths;
+    }
+    if (root_ == npos) {
+      lengths[inverse_permutation_.front()] = 1;
+      return lengths;
+    }
+
+    for (std::size_t symbol = 0; symbol < alphabet_size_; ++symbol) {
+      const std::size_t rank = permutation_[symbol];
+      if (leaves_[rank] == alphabet_npos) {
+        continue;
+      }
+      std::size_t length = 0;
+      for (node_index_t node = expand_node_index(leaves_[rank]); node != npos;
+           node = nodes_[node].parent) {
+        ++length;
+      }
+      if (length > detail::kMaximumHuffmanCodeLength) {
+        throw std::logic_error(
+            "Byte Huffman tree exceeds its serialized code-length limit");
+      }
+      lengths[symbol] = static_cast<std::uint8_t>(length);
+    }
+    return lengths;
+  }
+
+  void serialize_huffman_byte_code_lengths(BinaryWriter& writer) const
+    requires(std::same_as<Symbol, std::uint8_t>)
+  {
+    const auto lengths = huffman_byte_code_lengths();
+    for (std::size_t byte = 0; byte < kPackedByteCodeLengthBytes; ++byte) {
+      writer.write_u8(static_cast<std::uint8_t>(lengths[2 * byte] |
+                                                (lengths[2 * byte + 1] << 4U)));
+    }
+  }
+
+  static std::array<std::uint8_t, detail::kByteAlphabetSize>
+  deserialize_huffman_byte_code_lengths(BinaryReader& reader) {
+    std::array<std::uint8_t, detail::kByteAlphabetSize> lengths{};
+    for (std::size_t byte = 0; byte < kPackedByteCodeLengthBytes; ++byte) {
+      const std::uint8_t packed = reader.read_u8();
+      lengths[2 * byte] = packed & 0x0fU;
+      lengths[2 * byte + 1] = packed >> 4U;
+    }
+    return lengths;
+  }
+
+  void serialize_compact_huffman_nodes(BinaryWriter& writer) const
+    requires(std::same_as<Symbol, std::uint8_t>)
+  {
+    using CompactIndex = detail::CompactWaveletRankSelect<Storage>;
+    const std::size_t count_width = compact_count_width(data_size_);
+    for (const WaveletNode& node : nodes_) {
+      write_compact_count(writer, count_width, node.one_count());
+    }
+    writer.align_to(alignof(std::uint64_t));
+
+    for (const WaveletNode& node : nodes_) {
+      const std::size_t expected_bytes =
+          CompactIndex::word_bytes(node.bit_count());
+      const std::span<const std::byte> bytes = node.bit_vector_data.as_bytes();
+      if (bytes.size() != expected_bytes) {
+        throw std::logic_error(
+            "Wavelet-node storage does not match its logical bit length");
+      }
+      writer.write_bytes(bytes);
+    }
+
+    for (const WaveletNode& node : nodes_) {
+      const std::size_t block_count =
+          1 + (node.bit_count() - 1) / CompactIndex::kBasicBlockBits;
+      for (std::size_t block = 0; block < block_count; ++block) {
+        if (block % CompactIndex::kBasicBlocksPerSuperBlock == 0) {
+          continue;
+        }
+        const std::size_t position = block * CompactIndex::kBasicBlockBits;
+        const std::size_t super_begin = position /
+                                        CompactIndex::kSuperBlockBits *
+                                        CompactIndex::kSuperBlockBits;
+        const std::size_t local_rank =
+            node.rank(position) - node.rank(super_begin);
+        writer.write_u16(static_cast<std::uint16_t>(local_rank));
+      }
+    }
+    writer.align_to(alignof(std::uint64_t));
+
+    for (const WaveletNode& node : nodes_) {
+      const std::size_t super_count =
+          1 + (node.bit_count() - 1) / CompactIndex::kSuperBlockBits;
+      if (super_count <= 1) {
+        continue;
+      }
+      for (std::size_t super = 0; super <= super_count; ++super) {
+        const std::size_t position =
+            super == super_count ? node.bit_count()
+                                 : super * CompactIndex::kSuperBlockBits;
+        writer.write_size(node.rank(position));
+      }
+    }
+
+    for (const WaveletNode& node : nodes_) {
+      const std::size_t one_count = node.one_count();
+      const std::size_t zero_count = node.bit_count() - one_count;
+      for (std::size_t sample = 1;
+           sample <= one_count / CompactIndex::kSelectSampleFrequency;
+           ++sample) {
+        writer.write_size(
+            node.select(sample * CompactIndex::kSelectSampleFrequency) /
+            CompactIndex::kSuperBlockBits);
+      }
+      for (std::size_t sample = 1;
+           sample <= zero_count / CompactIndex::kSelectSampleFrequency;
+           ++sample) {
+        writer.write_size(
+            node.select0(sample * CompactIndex::kSelectSampleFrequency) /
+            CompactIndex::kSuperBlockBits);
+      }
+    }
+  }
+
+  void deserialize_compact_huffman_nodes(BinaryReader& reader)
+    requires(std::same_as<Symbol, std::uint8_t> &&
+             (std::same_as<Storage, AlignedStorage> ||
+              std::same_as<Storage, ReadOnlyStorageView>))
+  {
+    using CompactIndex = detail::CompactWaveletRankSelect<Storage>;
+    if (nodes_.empty()) {
+      return;
+    }
+
+    const std::size_t count_width = compact_count_width(data_size_);
+    std::vector<std::size_t> one_counts(nodes_.size());
+    std::vector<std::size_t> bit_counts(nodes_.size());
+    bit_counts[root_] = data_size_;
+    for (node_index_t node_index = 0; node_index < nodes_.size();
+         ++node_index) {
+      WaveletNode& node = nodes_[node_index];
+      const std::size_t bit_count = bit_counts[node_index];
+      const std::size_t one_count = read_compact_count(reader, count_width);
+      if (bit_count == 0 || one_count == 0 || one_count >= bit_count) {
+        throw std::invalid_argument(
+            "Invalid compact wavelet-node branch counts");
+      }
+      one_counts[node_index] = one_count;
+      if (node.left_child != npos) {
+        bit_counts[node.left_child] = bit_count - one_count;
+      }
+      if (node.right_child != npos) {
+        bit_counts[node.right_child] = one_count;
+      }
+    }
+    consume_alignment(reader);
+
+    for (node_index_t node = 0; node < nodes_.size(); ++node) {
+      nodes_[node].bit_vector_data = make_storage(
+          reader.read_bytes(CompactIndex::word_bytes(bit_counts[node])));
+    }
+
+    std::vector<Storage> basic_ranks(nodes_.size());
+    for (node_index_t node = 0; node < nodes_.size(); ++node) {
+      basic_ranks[node] = make_storage(
+          reader.read_bytes(CompactIndex::basic_rank_bytes(bit_counts[node])));
+    }
+    consume_alignment(reader);
+
+    std::vector<Storage> super_ranks(nodes_.size());
+    for (node_index_t node = 0; node < nodes_.size(); ++node) {
+      super_ranks[node] = make_storage(
+          reader.read_bytes(CompactIndex::super_rank_bytes(bit_counts[node])));
+    }
+
+    std::vector<Storage> select_samples(nodes_.size());
+    for (node_index_t node = 0; node < nodes_.size(); ++node) {
+      select_samples[node] =
+          make_storage(reader.read_bytes(CompactIndex::select_sample_bytes(
+              bit_counts[node], one_counts[node])));
+    }
+
+    for (node_index_t node = 0; node < nodes_.size(); ++node) {
+      nodes_[node].compact_data.emplace(
+          nodes_[node].bit_vector_data.as_words64(), bit_counts[node],
+          one_counts[node], std::move(basic_ranks[node]),
+          std::move(super_ranks[node]), std::move(select_samples[node]));
+    }
+  }
 
   void validate_deserialized_topology(
       DeserializationValidation validation) const {
     if (root_ == npos) {
       if (validation == DeserializationValidation::kFull &&
-          std::ranges::any_of(leaves_,
-                              [](node_index_t leaf) { return leaf != npos; })) {
+          std::ranges::any_of(leaves_, [](alphabet_index_t leaf) {
+            return leaf != alphabet_npos;
+          })) {
         throw std::invalid_argument(
             "Invalid serialized empty wavelet-tree leaves");
       }
@@ -205,12 +604,11 @@ class WaveletTreeIndex
       }
 
       const std::size_t one_count =
-          validation == DeserializationValidation::kFull
-              ? metadata.data.rank(metadata.data.size())
-              : 0;
+          validation == DeserializationValidation::kFull ? metadata.one_count()
+                                                         : 0;
       const std::size_t zero_count =
           validation == DeserializationValidation::kFull
-              ? metadata.data.size() - one_count
+              ? metadata.bit_count() - one_count
               : 0;
       const auto validate_branch = [&](node_index_t child,
                                        std::size_t symbol_begin,
@@ -218,7 +616,7 @@ class WaveletTreeIndex
                                        std::size_t expected_size) {
         if (child != npos) {
           if (validation == DeserializationValidation::kFull &&
-              nodes_[child].data.size() != expected_size) {
+              nodes_[child].bit_count() != expected_size) {
             throw std::invalid_argument(
                 "Serialized wavelet-tree child has the wrong length");
           }
@@ -229,9 +627,9 @@ class WaveletTreeIndex
           bool has_mapped_symbol = false;
           for (std::size_t symbol = symbol_begin; symbol < symbol_end;
                ++symbol) {
-            if (leaves_[symbol] == node) {
+            if (expand_node_index(leaves_[symbol]) == node) {
               has_mapped_symbol = true;
-            } else if (leaves_[symbol] != npos) {
+            } else if (leaves_[symbol] != alphabet_npos) {
               throw std::invalid_argument(
                   "Serialized wavelet-tree leaf map disagrees with topology");
             }
@@ -278,12 +676,12 @@ class WaveletTreeIndex
     requires(std::same_as<Storage, AlignedStorage>)
   {
     if (end - begin == 1) {
-      leaves_[begin] = parent;
+      leaves_[begin] = compact_node_index(parent);
       return npos;
     }
     if (prefix_sum[end] == prefix_sum[begin]) {
       for (size_t symbol = begin; symbol < end; symbol++) {
-        leaves_[symbol] = parent;
+        leaves_[symbol] = compact_node_index(parent);
       }
       return npos;
     }
@@ -320,6 +718,23 @@ class WaveletTreeIndex
     return subtree_counts[source_node] = left + right;
   }
 
+  void initialize_huffman_byte_mapping(const detail::HuffmanBuildTable& table)
+    requires(std::same_as<Symbol, std::uint8_t>)
+  {
+    leaves_.assign(alphabet_size_, alphabet_npos);
+    permutation_.resize(alphabet_size_);
+    inverse_permutation_.resize(alphabet_size_);
+
+    std::size_t unused_rank = table.symbol_count;
+    for (std::size_t symbol = 0; symbol < alphabet_size_; ++symbol) {
+      const std::size_t rank = table.code_lengths[symbol] == 0
+                                   ? unused_rank++
+                                   : table.symbol_to_rank[symbol];
+      permutation_[symbol] = static_cast<alphabet_index_t>(rank);
+      inverse_permutation_[rank] = static_cast<alphabet_index_t>(symbol);
+    }
+  }
+
   node_index_t materialize_huffman_node(
       const detail::HuffmanBuildTable& table,
       std::int16_t source_node,
@@ -332,7 +747,7 @@ class WaveletTreeIndex
   {
     const detail::HuffmanBuildNode& source = table.tree[source_node];
     if (source.symbol >= 0) {
-      leaves_[table.symbol_to_rank[source.symbol]] = parent;
+      leaves_[table.symbol_to_rank[source.symbol]] = compact_node_index(parent);
       return npos;
     }
 
@@ -350,6 +765,43 @@ class WaveletTreeIndex
     return result;
   }
 
+  node_index_t materialize_deserialized_huffman_node(
+      const detail::HuffmanBuildTable& table,
+      std::int16_t source_node,
+      node_index_t parent)
+    requires(std::same_as<Symbol, std::uint8_t>)
+  {
+    const detail::HuffmanBuildNode& source = table.tree[source_node];
+    if (source.symbol >= 0) {
+      leaves_[table.symbol_to_rank[source.symbol]] = compact_node_index(parent);
+      return npos;
+    }
+
+    const node_index_t result = nodes_.size();
+    nodes_.emplace_back();
+    nodes_[result].parent = parent;
+    nodes_[result].middle =
+        static_cast<std::size_t>(table.split_rank[source_node]) + 1;
+    nodes_[result].left_child =
+        materialize_deserialized_huffman_node(table, source.left, result);
+    nodes_[result].right_child =
+        materialize_deserialized_huffman_node(table, source.right, result);
+    return result;
+  }
+
+  void reconstruct_huffman_byte_topology(const detail::HuffmanBuildTable& table)
+    requires(std::same_as<Symbol, std::uint8_t>)
+  {
+    initialize_huffman_byte_mapping(table);
+    nodes_.clear();
+    if (table.symbol_count < 2) {
+      root_ = npos;
+      return;
+    }
+    nodes_.reserve(table.symbol_count - 1);
+    root_ = materialize_deserialized_huffman_node(table, table.root, npos);
+  }
+
   void build_huffman_byte_topology(std::span<const std::size_t> symbol_counts,
                                    std::vector<PreWaveletNode>& nodes)
     requires(std::same_as<Symbol, std::uint8_t> &&
@@ -357,17 +809,7 @@ class WaveletTreeIndex
   {
     const detail::HuffmanBuildTable table =
         detail::build_huffman_table(symbol_counts);
-    permutation_.resize(alphabet_size_);
-    inverse_permutation_.resize(alphabet_size_);
-
-    std::size_t unused_rank = table.symbol_count;
-    for (std::size_t symbol = 0; symbol < alphabet_size_; ++symbol) {
-      const std::size_t rank = symbol_counts[symbol] == 0
-                                   ? unused_rank++
-                                   : table.symbol_to_rank[symbol];
-      permutation_[symbol] = rank;
-      inverse_permutation_[rank] = symbol;
-    }
+    initialize_huffman_byte_mapping(table);
     if (table.symbol_count < 2) {
       root_ = npos;
       return;
@@ -595,6 +1037,7 @@ class WaveletTreeIndex
    * segment in the dst
    *
    */
+  template <bool Compact>
   void copy_segment_content(node_index_t node,
                             size_t begin,
                             size_t end,
@@ -603,8 +1046,9 @@ class WaveletTreeIndex
     if (begin == end) {
       return;
     }
-    const size_t rank = nodes_[node].data.rank(begin), rank0 = begin - rank;
-    const size_t right = nodes_[node].data.rank(end) - rank,
+    const size_t rank = node_rank<Compact>(nodes_[node], begin);
+    const size_t rank0 = begin - rank;
+    const size_t right = node_rank<Compact>(nodes_[node], end) - rank,
                  left = (end - begin) - right;
 
     if (nodes_[node].left_child == npos) {
@@ -612,15 +1056,17 @@ class WaveletTreeIndex
           tmp.begin(), static_cast<long long>(left),
           static_cast<Symbol>(inverse_permutation_[nodes_[node].middle - 1]));
     } else {
-      copy_segment_content(nodes_[node].left_child, rank0, rank0 + left,
-                           tmp.subspan(0, left), dst.subspan(0, left));
+      copy_segment_content<Compact>(nodes_[node].left_child, rank0,
+                                    rank0 + left, tmp.subspan(0, left),
+                                    dst.subspan(0, left));
     }
     if (nodes_[node].right_child == npos) {
       std::fill(tmp.begin() + static_cast<long long>(left), tmp.end(),
                 static_cast<Symbol>(inverse_permutation_[nodes_[node].middle]));
     } else {
-      copy_segment_content(nodes_[node].right_child, rank, rank + right,
-                           tmp.subspan(left, right), dst.subspan(left, right));
+      copy_segment_content<Compact>(nodes_[node].right_child, rank,
+                                    rank + right, tmp.subspan(left, right),
+                                    dst.subspan(left, right));
     }
 
     size_t j = 0, k = left;
@@ -666,13 +1112,16 @@ class WaveletTreeIndex
           "Wavelet-tree symbol counts must match the alphabet size");
     }
     alphabet_size_ = alphabet_size;
+    if constexpr (std::same_as<Symbol, std::uint8_t>) {
+      canonical_byte_huffman_ = build_type == WaveletTreeBuildType::Huffman;
+    }
     for (const std::size_t count : symbol_counts) {
       if (count > std::numeric_limits<std::size_t>::max() - data_size_) {
         throw std::length_error("Wavelet-tree input is too large");
       }
       data_size_ += count;
     }
-    leaves_.assign(alphabet_size_, npos);
+    leaves_.assign(alphabet_size_, alphabet_npos);
 
     std::vector<PreWaveletNode> nodes;
     if constexpr (std::same_as<Symbol, std::uint8_t>) {
@@ -869,7 +1318,8 @@ class WaveletTreeIndex
    * @return Number of specified symbols in [0, pos)
    *
    */
-  size_t rank_impl(Symbol symbol, size_t pos) const {
+  template <bool Compact>
+  size_t rank_with_layout(Symbol symbol, size_t pos) const {
     std::size_t symbol_index = static_cast<std::size_t>(symbol);
     if (symbol_index >= alphabet_size_) [[unlikely]] {
       return 0;
@@ -878,20 +1328,25 @@ class WaveletTreeIndex
     if (root_ == npos) [[unlikely]] {
       return data_size_ != 0 && symbol_index == 0 ? pos : 0;
     }
-    if (leaves_[symbol_index] == npos) [[unlikely]] {
+    if (leaves_[symbol_index] == alphabet_npos) [[unlikely]] {
       return 0;
     }
     for (node_index_t current = root_; current != npos;) {
       const WaveletNode& node = nodes_[current];
       if (symbol_index < node.middle) {
-        pos = node.data.rank0(pos);
+        pos = node_rank0<Compact>(node, pos);
         current = node.left_child;
       } else {
-        pos = node.data.rank(pos);
+        pos = node_rank<Compact>(node, pos);
         current = node.right_child;
       }
     }
     return pos;
+  }
+
+  size_t rank_impl(Symbol symbol, size_t pos) const {
+    return compact_node_indexes_ ? rank_with_layout<true>(symbol, pos)
+                                 : rank_with_layout<false>(symbol, pos);
   }
 
   /**
@@ -902,7 +1357,8 @@ class WaveletTreeIndex
    * @return Symbol index, or size() if rank is out of range
    *
    */
-  size_t select_impl(Symbol symbol, size_t rank) const {
+  template <bool Compact>
+  size_t select_with_layout(Symbol symbol, size_t rank) const {
     std::size_t symbol_index = static_cast<std::size_t>(symbol);
     if (symbol_index >= alphabet_size_ || data_size_ == 0 || rank == 0)
         [[unlikely]] {
@@ -912,19 +1368,56 @@ class WaveletTreeIndex
     if (root_ == npos) [[unlikely]] {
       return symbol_index == 0 && rank <= data_size_ ? rank - 1 : data_size_;
     }
-    if (leaves_[symbol_index] == npos) [[unlikely]] {
+    if (leaves_[symbol_index] == alphabet_npos) [[unlikely]] {
       return data_size_;
     }
-    node_index_t current = leaves_[symbol_index];
+    node_index_t current = expand_node_index(leaves_[symbol_index]);
     for (; current != npos; current = nodes_[current].parent) {
       const WaveletNode& node = nodes_[current];
       if (symbol_index < node.middle) {
-        rank = node.data.select0(rank) + 1;
+        rank = node_select0<Compact>(node, rank) + 1;
       } else {
-        rank = node.data.select(rank) + 1;
+        rank = node_select<Compact>(node, rank) + 1;
       }
     }
     return rank - 1;
+  }
+
+  size_t select_impl(Symbol symbol, size_t rank) const {
+    return compact_node_indexes_ ? select_with_layout<true>(symbol, rank)
+                                 : select_with_layout<false>(symbol, rank);
+  }
+
+  /** @brief Read one valid logical position without allocating output. */
+  template <bool Compact>
+  Symbol access_with_layout(std::size_t position) const {
+    if (root_ == npos) [[unlikely]] {
+      return static_cast<Symbol>(inverse_permutation_.front());
+    }
+
+    std::size_t lower = 0;
+    std::size_t upper = alphabet_size_;
+    for (node_index_t current = root_; current != npos;) {
+      const WaveletNode& node = nodes_[current];
+      if (node_bit<Compact>(node, position) == 0) {
+        position = node_rank0<Compact>(node, position);
+        upper = node.middle;
+        current = node.left_child;
+      } else {
+        position = node_rank<Compact>(node, position);
+        lower = node.middle;
+        current = node.right_child;
+      }
+    }
+    if (lower >= upper || lower >= inverse_permutation_.size()) {
+      throw std::logic_error("Wavelet-tree access reached an invalid leaf");
+    }
+    return static_cast<Symbol>(inverse_permutation_[lower]);
+  }
+
+  Symbol access_impl(std::size_t position) const {
+    return compact_node_indexes_ ? access_with_layout<true>(position)
+                                 : access_with_layout<false>(position);
   }
 
   /**
@@ -954,8 +1447,15 @@ class WaveletTreeIndex
       throw std::length_error("Wavelet-tree segment is too large");
     }
     std::vector<Symbol> result(2 * length);
-    copy_segment_content(root_, begin, end, std::span(result).first(length),
-                         std::span(result).subspan(length));
+    if (compact_node_indexes_) {
+      copy_segment_content<true>(root_, begin, end,
+                                 std::span(result).first(length),
+                                 std::span(result).subspan(length));
+    } else {
+      copy_segment_content<false>(root_, begin, end,
+                                  std::span(result).first(length),
+                                  std::span(result).subspan(length));
+    }
     result.resize(length);
     return result;
   }
@@ -985,16 +1485,33 @@ class WaveletTreeIndex
 
     writer.write_size(alphabet_size_);
     writer.write_size(data_size_);
-    writer.write_size(root_);
-    writer.write_size(nodes_.size());
-    for (const WaveletNode& node : nodes_) {
-      node.serialize(writer);
+    SerializedShape shape = SerializedShape::kExplicit;
+    if constexpr (std::same_as<Symbol, std::uint8_t>) {
+      if (canonical_byte_huffman_) {
+        shape = SerializedShape::kCanonicalByteHuffman;
+      }
     }
-    for (const node_index_t leaf : leaves_) {
-      writer.write_size(leaf);
+    writer.write_u32(static_cast<std::uint32_t>(shape));
+    writer.write_u32(0);
+
+    if constexpr (std::same_as<Symbol, std::uint8_t>) {
+      if (shape == SerializedShape::kCanonicalByteHuffman) {
+        serialize_huffman_byte_code_lengths(writer);
+        serialize_compact_huffman_nodes(writer);
+      }
     }
-    for (const size_t idx : permutation_) {
-      writer.write_size(idx);
+    if (shape == SerializedShape::kExplicit) {
+      writer.write_size(root_);
+      writer.write_size(nodes_.size());
+      for (const WaveletNode& node : nodes_) {
+        node.serialize(writer);
+      }
+      for (const alphabet_index_t leaf : leaves_) {
+        write_alphabet_index(writer, leaf);
+      }
+      for (const alphabet_index_t index : permutation_) {
+        write_alphabet_index(writer, index);
+      }
     }
 
     const std::size_t unpadded_size = writer.size_bytes() - artifact_begin;
@@ -1054,47 +1571,84 @@ class WaveletTreeIndex
     result.alphabet_size_ = payload.read_size();
     result.validate_alphabet_size(result.alphabet_size_);
     result.data_size_ = payload.read_size();
-    result.root_ = payload.read_size();
-    const std::size_t node_count = payload.read_size();
-    const std::vector<WaveletNode> empty_nodes;
-    if (node_count > empty_nodes.max_size()) {
-      throw std::length_error(
-          "Serialized wavelet-tree node count is too large");
+    const std::uint32_t shape_value = payload.read_u32();
+    if (shape_value > static_cast<std::uint32_t>(
+                          SerializedShape::kCanonicalByteHuffman) ||
+        payload.read_u32() != 0) {
+      throw std::invalid_argument("Invalid serialized wavelet-tree shape");
     }
-    constexpr std::size_t kMinimumNodeBytes =
-        4 * sizeof(std::uint64_t) + sizeof(std::uint64_t);
-    if (node_count > payload.remaining() / kMinimumNodeBytes) {
-      throw SerializationError("Truncated serialized wavelet-tree nodes",
-                               payload.byte_offset());
-    }
-    result.nodes_.resize(node_count);
-    for (auto& node : result.nodes_) {
-      node = WaveletNode::deserialize(payload, validation);
-    }
-    const std::vector<node_index_t> empty_indices;
-    if (result.alphabet_size_ > empty_indices.max_size() ||
-        result.alphabet_size_ >
-            payload.remaining() / (2 * sizeof(std::uint64_t))) {
-      throw std::length_error("Serialized wavelet-tree alphabet is too large");
-    }
-    result.leaves_.resize(result.alphabet_size_);
-    for (node_index_t& leaf : result.leaves_) {
-      leaf = payload.read_size();
-    }
-    result.permutation_.resize(result.alphabet_size_);
-    for (size_t& index : result.permutation_) {
-      index = payload.read_size();
-    }
-    result.inverse_permutation_.resize(result.alphabet_size_);
-    std::vector<bool> seen(result.alphabet_size_);
-    for (size_t i = 0; i < result.alphabet_size_; i++) {
-      if (result.permutation_[i] >= result.alphabet_size_ ||
-          seen[result.permutation_[i]]) {
+    const SerializedShape shape = static_cast<SerializedShape>(shape_value);
+
+    if (shape == SerializedShape::kCanonicalByteHuffman) {
+      if constexpr (std::same_as<Symbol, std::uint8_t>) {
+        const auto code_lengths =
+            deserialize_huffman_byte_code_lengths(payload);
+        if (std::ranges::any_of(code_lengths.begin() + result.alphabet_size_,
+                                code_lengths.end(), [](std::uint8_t length) {
+                                  return length != 0;
+                                })) {
+          throw std::invalid_argument(
+              "Serialized Huffman symbol is outside the alphabet");
+        }
+        const detail::HuffmanBuildTable table =
+            detail::build_huffman_table_from_code_lengths(code_lengths);
+        if ((result.data_size_ == 0) != (table.symbol_count == 0)) {
+          throw std::invalid_argument(
+              "Serialized Huffman lengths disagree with the data size");
+        }
+        result.canonical_byte_huffman_ = true;
+        result.compact_node_indexes_ = true;
+        result.reconstruct_huffman_byte_topology(table);
+        result.deserialize_compact_huffman_nodes(payload);
+      } else {
         throw std::invalid_argument(
-            "Invalid serialized wavelet-tree permutation");
+            "Canonical byte Huffman shape requires byte symbols");
       }
-      seen[result.permutation_[i]] = true;
-      result.inverse_permutation_[result.permutation_[i]] = i;
+    } else {
+      result.root_ = payload.read_size();
+      const std::size_t node_count = payload.read_size();
+      const std::vector<WaveletNode> empty_nodes;
+      if (node_count > empty_nodes.max_size()) {
+        throw std::length_error(
+            "Serialized wavelet-tree node count is too large");
+      }
+      constexpr std::size_t kMinimumNodeBytes =
+          4 * sizeof(std::uint64_t) + sizeof(std::uint64_t);
+      if (node_count > payload.remaining() / kMinimumNodeBytes) {
+        throw SerializationError("Truncated serialized wavelet-tree nodes",
+                                 payload.byte_offset());
+      }
+      result.nodes_.resize(node_count);
+      for (auto& node : result.nodes_) {
+        node = WaveletNode::deserialize(payload, validation);
+      }
+      const std::vector<alphabet_index_t> empty_indices;
+      if (result.alphabet_size_ > empty_indices.max_size() ||
+          result.alphabet_size_ >
+              payload.remaining() / (2 * sizeof(alphabet_index_t))) {
+        throw std::length_error(
+            "Serialized wavelet-tree alphabet is too large");
+      }
+      result.leaves_.resize(result.alphabet_size_);
+      for (alphabet_index_t& leaf : result.leaves_) {
+        leaf = read_alphabet_index(payload);
+      }
+      result.permutation_.resize(result.alphabet_size_);
+      for (alphabet_index_t& index : result.permutation_) {
+        index = read_alphabet_index(payload);
+      }
+      result.inverse_permutation_.resize(result.alphabet_size_);
+      std::vector<bool> seen(result.alphabet_size_);
+      for (size_t i = 0; i < result.alphabet_size_; i++) {
+        if (result.permutation_[i] >= result.alphabet_size_ ||
+            seen[result.permutation_[i]]) {
+          throw std::invalid_argument(
+              "Invalid serialized wavelet-tree permutation");
+        }
+        seen[result.permutation_[i]] = true;
+        result.inverse_permutation_[result.permutation_[i]] =
+            static_cast<alphabet_index_t>(i);
+      }
     }
     const auto valid_node_index = [&result](node_index_t index) {
       return index == npos || index < result.nodes_.size();
@@ -1103,8 +1657,8 @@ class WaveletTreeIndex
         (result.nodes_.empty() != (result.root_ == npos))) {
       throw std::invalid_argument("Invalid serialized wavelet-tree root");
     }
-    for (const node_index_t leaf : result.leaves_) {
-      if (!valid_node_index(leaf)) {
+    for (const alphabet_index_t leaf : result.leaves_) {
+      if (!valid_node_index(expand_node_index(leaf))) {
         throw std::invalid_argument("Invalid serialized wavelet-tree leaf");
       }
     }
@@ -1112,14 +1666,15 @@ class WaveletTreeIndex
       if (!valid_node_index(node.parent) ||
           !valid_node_index(node.left_child) ||
           !valid_node_index(node.right_child) ||
-          node.data.size() > node.bit_vector_data.size_bits() ||
+          node.bit_count() > node.bit_vector_data.size_bits() ||
           node.middle == 0 || node.middle >= result.alphabet_size_) {
         throw std::invalid_argument("Invalid serialized wavelet-tree node");
       }
+      node.validate_index(validation);
     }
     result.validate_deserialized_topology(validation);
     if (result.root_ != npos &&
-        result.nodes_[result.root_].data.size() != result.data_size_) {
+        result.nodes_[result.root_].bit_count() != result.data_size_) {
       throw std::invalid_argument(
           "Serialized wavelet-tree root has the wrong length");
     }
