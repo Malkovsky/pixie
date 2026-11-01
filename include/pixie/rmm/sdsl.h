@@ -11,21 +11,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <sdsl/bit_vectors.hpp>
-
-// SDSL keeps the generic excess-search primitives private and exposes only
-// navigation wrappers such as find_close/find_open. The Pixie comparison
-// backend needs direct fwdsearch/bwdsearch, so expose them in this optional
-// adapter instead of benchmarking a naive fallback.
-#define private public
 #include <sdsl/bp_support_sada.hpp>
-#undef private
-
 #include <span>
 #include <utility>
-#include <vector>
 
 namespace pixie {
 
+/// Optional comparison adapter over SDSL's public balanced-parentheses API.
+/// Input must be a balanced-parentheses sequence. Generic excess searches are
+/// unavailable: SDSL exposes them only as private implementation details.
 class SdslRmMTree : public RmMBase<SdslRmMTree> {
  public:
   using BpSupport = sdsl::bp_support_sada<>;
@@ -48,16 +42,10 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
     zeros_ = size_ - ones_;
 
     bits_ = sdsl::bit_vector(size_);
-    prefix_excess_.assign(size_ + 1, 0);
-    int current_excess = 0;
     for (std::size_t i = 0; i < size_; ++i) {
       const bool bit = (words[i >> 6] >> (i & 63)) & 1u;
       bits_[i] = bit;
-      current_excess += bit ? 1 : -1;
-      prefix_excess_[i + 1] = current_excess;
-      max_excess_ = std::max(max_excess_, current_excess);
     }
-    build_excess_bounds();
     tree_ = BpSupport(&bits_);
   }
 
@@ -65,12 +53,6 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
       : size_(other.size_),
         ones_(other.ones_),
         zeros_(other.zeros_),
-        max_excess_(other.max_excess_),
-        prefix_excess_(other.prefix_excess_),
-        prefix_min_excess_(other.prefix_min_excess_),
-        prefix_max_excess_(other.prefix_max_excess_),
-        suffix_min_excess_(other.suffix_min_excess_),
-        suffix_max_excess_(other.suffix_max_excess_),
         bits_(other.bits_) {
     reset_support();
   }
@@ -82,12 +64,6 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
     size_ = other.size_;
     ones_ = other.ones_;
     zeros_ = other.zeros_;
-    max_excess_ = other.max_excess_;
-    prefix_excess_ = other.prefix_excess_;
-    prefix_min_excess_ = other.prefix_min_excess_;
-    prefix_max_excess_ = other.prefix_max_excess_;
-    suffix_min_excess_ = other.suffix_min_excess_;
-    suffix_max_excess_ = other.suffix_max_excess_;
     bits_ = other.bits_;
     reset_support();
     return *this;
@@ -97,12 +73,6 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
       : size_(other.size_),
         ones_(other.ones_),
         zeros_(other.zeros_),
-        max_excess_(other.max_excess_),
-        prefix_excess_(std::move(other.prefix_excess_)),
-        prefix_min_excess_(std::move(other.prefix_min_excess_)),
-        prefix_max_excess_(std::move(other.prefix_max_excess_)),
-        suffix_min_excess_(std::move(other.suffix_min_excess_)),
-        suffix_max_excess_(std::move(other.suffix_max_excess_)),
         bits_(std::move(other.bits_)) {
     reset_support();
   }
@@ -114,12 +84,6 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
     size_ = other.size_;
     ones_ = other.ones_;
     zeros_ = other.zeros_;
-    max_excess_ = other.max_excess_;
-    prefix_excess_ = std::move(other.prefix_excess_);
-    prefix_min_excess_ = std::move(other.prefix_min_excess_);
-    prefix_max_excess_ = std::move(other.prefix_max_excess_);
-    suffix_min_excess_ = std::move(other.suffix_min_excess_);
-    suffix_max_excess_ = std::move(other.suffix_max_excess_);
     bits_ = std::move(other.bits_);
     reset_support();
     return *this;
@@ -141,7 +105,7 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
     if (end_position >= size_) {
       return zeros_;
     }
-    return tree_.preceding_closing_parentheses(end_position);
+    return end_position - rank1_impl(end_position);
   }
 
   std::size_t select1_impl(std::size_t rank) const {
@@ -162,65 +126,8 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
     return tree_.excess(std::min(end_position, size_) - 1);
   }
 
-  std::size_t fwdsearch_impl(std::size_t start_position, int delta) const {
-    if (start_position >= size_) {
-      return npos;
-    }
-    const int target = prefix_excess_[start_position] + delta;
-    if (target > max_excess_) {
-      return npos;
-    }
-
-    if (start_position == 0) {
-      const int first_excess = bits_[0] ? 1 : -1;
-      if (first_excess == delta) {
-        return 0;
-      }
-      if (!suffix_contains(2, target)) {
-        return npos;
-      }
-      const std::size_t position =
-          tree_.fwd_excess(0, static_cast<typename BpSupport::difference_type>(
-                                  delta - first_excess));
-      return position < size_ ? position : npos;
-    }
-
-    if (!suffix_contains(start_position + 1, target)) {
-      return npos;
-    }
-    const std::size_t position = tree_.fwd_excess(
-        start_position - 1,
-        static_cast<typename BpSupport::difference_type>(delta));
-    return position < size_ ? position : npos;
-  }
-
-  std::size_t bwdsearch_impl(std::size_t start_position, int delta) const {
-    if (start_position == 0 || start_position > size_) {
-      return npos;
-    }
-
-    const std::size_t anchor = start_position - 1;
-    const int target = prefix_excess_[start_position] + delta;
-    if (target > max_excess_) {
-      return npos;
-    }
-    if (prefix_excess_[anchor] == target) {
-      return anchor;
-    }
-    if (anchor == 0) {
-      return npos;
-    }
-    if (!prefix_contains(anchor - 1, target)) {
-      return npos;
-    }
-
-    const std::size_t position = tree_.bwd_excess(
-        anchor, static_cast<typename BpSupport::difference_type>(delta));
-    if (position == static_cast<std::size_t>(-1)) {
-      return target == 0 ? 0 : npos;
-    }
-    return position < size_ ? position + 1 : npos;
-  }
+  std::size_t fwdsearch(std::size_t, int) const = delete;
+  std::size_t bwdsearch(std::size_t, int) const = delete;
 
   std::size_t range_min_query_pos_impl(std::size_t range_begin,
                                        std::size_t range_end) const {
@@ -278,58 +185,15 @@ class SdslRmMTree : public RmMBase<SdslRmMTree> {
   }
 
   int bit_impl(const size_t& position) const noexcept {
-    return (bits_[position >> 6] >> (position & 63)) & 1u;
+    return bits_[position];
   }
 
  private:
   void reset_support() { tree_ = BpSupport(&bits_); }
 
-  void build_excess_bounds() {
-    prefix_min_excess_.resize(size_ + 1);
-    prefix_max_excess_.resize(size_ + 1);
-    suffix_min_excess_.resize(size_ + 1);
-    suffix_max_excess_.resize(size_ + 1);
-
-    prefix_min_excess_[0] = prefix_excess_[0];
-    prefix_max_excess_[0] = prefix_excess_[0];
-    for (std::size_t i = 1; i <= size_; ++i) {
-      prefix_min_excess_[i] =
-          std::min(prefix_min_excess_[i - 1], prefix_excess_[i]);
-      prefix_max_excess_[i] =
-          std::max(prefix_max_excess_[i - 1], prefix_excess_[i]);
-    }
-
-    suffix_min_excess_[size_] = prefix_excess_[size_];
-    suffix_max_excess_[size_] = prefix_excess_[size_];
-    for (std::size_t i = size_; i > 0;) {
-      --i;
-      suffix_min_excess_[i] =
-          std::min(prefix_excess_[i], suffix_min_excess_[i + 1]);
-      suffix_max_excess_[i] =
-          std::max(prefix_excess_[i], suffix_max_excess_[i + 1]);
-    }
-  }
-
-  bool suffix_contains(std::size_t boundary_begin, int target) const {
-    return boundary_begin <= size_ &&
-           suffix_min_excess_[boundary_begin] <= target &&
-           target <= suffix_max_excess_[boundary_begin];
-  }
-
-  bool prefix_contains(std::size_t boundary_end, int target) const {
-    return prefix_min_excess_[boundary_end] <= target &&
-           target <= prefix_max_excess_[boundary_end];
-  }
-
   std::size_t size_{};
   std::size_t ones_{};
   std::size_t zeros_{};
-  int max_excess_{};
-  std::vector<int> prefix_excess_;
-  std::vector<int> prefix_min_excess_;
-  std::vector<int> prefix_max_excess_;
-  std::vector<int> suffix_min_excess_;
-  std::vector<int> suffix_max_excess_;
   sdsl::bit_vector bits_;
   BpSupport tree_;
 };

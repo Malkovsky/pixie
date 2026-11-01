@@ -651,20 +651,24 @@ class RmMBenchmark {
                    return dataset.tree.excess(
                        pool.inds_any[sample_index % pool.inds_any.size()]);
                  });
-      RegisterOp("fwdsearch", data,
-                 [](const Dataset& dataset, std::size_t sample_index) {
-                   const auto& pool = dataset.pool;
-                   return dataset.tree.fwdsearch(
-                       pool.inds[sample_index % pool.inds.size()],
-                       pool.deltas[sample_index % pool.deltas.size()]);
-                 });
-      RegisterOp("bwdsearch", data,
-                 [](const Dataset& dataset, std::size_t sample_index) {
-                   const auto& pool = dataset.pool;
-                   return dataset.tree.bwdsearch(
-                       pool.inds_1N[sample_index % pool.inds_1N.size()],
-                       pool.deltas[sample_index % pool.deltas.size()]);
-                 });
+      if constexpr (requires(const Tree& tree) { tree.fwdsearch(0, 0); }) {
+        RegisterOp("fwdsearch", data,
+                   [](const Dataset& dataset, std::size_t sample_index) {
+                     const auto& pool = dataset.pool;
+                     return dataset.tree.fwdsearch(
+                         pool.inds[sample_index % pool.inds.size()],
+                         pool.deltas[sample_index % pool.deltas.size()]);
+                   });
+      }
+      if constexpr (requires(const Tree& tree) { tree.bwdsearch(0, 0); }) {
+        RegisterOp("bwdsearch", data,
+                   [](const Dataset& dataset, std::size_t sample_index) {
+                     const auto& pool = dataset.pool;
+                     return dataset.tree.bwdsearch(
+                         pool.inds_1N[sample_index % pool.inds_1N.size()],
+                         pool.deltas[sample_index % pool.deltas.size()]);
+                   });
+      }
       RegisterOp("range_min_query_pos", data,
                  [](const Dataset& dataset, std::size_t sample_index) {
                    const auto& pool = dataset.pool;

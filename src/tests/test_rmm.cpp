@@ -666,16 +666,16 @@ TEST(RmMEdgeCases, SpanConstructorRejectsShortInputStorage) {
 #ifdef SDSL_SUPPORT
 TEST(RmMSdslEdgeCases, IgnoresWordsBeyondBitCount) {
   std::vector<std::uint64_t> words = {
-      0b101ull, std::numeric_limits<std::uint64_t>::max()};
+      0b0011ull, std::numeric_limits<std::uint64_t>::max()};
   pixie::SdslRmMTree rm(std::span<const std::uint64_t>(words),
-                        /*bit_count=*/3,
+                        /*bit_count=*/4,
                         /*unused=*/0);
 
-  EXPECT_EQ(rm.size(), 3u);
+  EXPECT_EQ(rm.size(), 4u);
   EXPECT_EQ(rm.rank1(3), 2u);
   EXPECT_EQ(rm.rank0(3), 1u);
   EXPECT_EQ(rm.select1(1), 0u);
-  EXPECT_EQ(rm.select1(2), 2u);
+  EXPECT_EQ(rm.select1(2), 1u);
   EXPECT_EQ(rm.select1(3), pixie::SdslRmMTree::npos);
 }
 
@@ -695,35 +695,49 @@ TEST(RmMSdslEdgeCases, ParenthesesNavigationMatchesNaive) {
   }
 }
 
-TEST(RmMSdslEdgeCases, ForwardBackwardSearchMatchesNaive) {
+template <class T>
+concept HasGenericExcessSearch = requires(const T& tree) {
+  tree.fwdsearch(0, 0);
+  tree.bwdsearch(0, 0);
+};
+static_assert(!HasGenericExcessSearch<pixie::SdslRmMTree>);
+static_assert(HasGenericExcessSearch<pixie::RmMBTree<>>);
+
+TEST(RmMSdslEdgeCases, PublicRankSelectAndExcessMatchNaive) {
   const std::string bits = "11101001011000";
   auto words = pack_words_lsb_first(bits);
   pixie::SdslRmMTree rm(std::span<const std::uint64_t>(words), bits.size(),
                         /*unused=*/0);
   NaiveRmM nv(bits);
 
-  for (size_t position = 0; position < bits.size(); ++position) {
-    for (int delta : {-4, -2, -1, 0, 1, 2, 4}) {
-      SCOPED_TRACE(::testing::Message()
-                   << "position=" << position << " delta=" << delta);
-      EXPECT_EQ(rm.fwdsearch(position, delta), nv.fwdsearch(position, delta));
-      EXPECT_EQ(rm.bwdsearch(position + 1, delta),
-                nv.bwdsearch(position + 1, delta));
+  for (size_t position = 0; position <= bits.size(); ++position) {
+    SCOPED_TRACE(position);
+    EXPECT_EQ(rm.rank1(position), nv.rank1(position));
+    EXPECT_EQ(rm.rank0(position), nv.rank0(position));
+    EXPECT_EQ(rm.excess(position), nv.excess(position));
+    if (position < bits.size()) {
+      EXPECT_EQ(rm.bit(position), bits[position] == '1');
     }
+  }
+  for (size_t rank = 1; rank <= bits.size() / 2; ++rank) {
+    EXPECT_EQ(rm.select1(rank), nv.select1(rank));
   }
 }
 
-TEST(RmMSdslEdgeCases, ExcessSearchSupportsNegativeTargets) {
-  const std::string bits = "001011";
+TEST(RmMSdslEdgeCases, PublicNavigationAcrossBlocks) {
+  const std::string bits = std::string(8193, '1') + std::string(8193, '0');
   auto words = pack_words_lsb_first(bits);
   pixie::SdslRmMTree rm(std::span<const std::uint64_t>(words), bits.size(),
                         /*unused=*/0);
   NaiveRmM nv(bits);
 
-  EXPECT_EQ(rm.fwdsearch(0, -1), nv.fwdsearch(0, -1));
-  EXPECT_EQ(rm.fwdsearch(0, -2), nv.fwdsearch(0, -2));
-  EXPECT_EQ(rm.bwdsearch(2, 0), nv.bwdsearch(2, 0));
-  EXPECT_EQ(rm.bwdsearch(3, 1), nv.bwdsearch(3, 1));
+  for (size_t position : {0u, 1u, 63u, 64u, 255u, 256u, 8191u, 8192u, 8193u,
+                          16383u, 16384u, 16385u}) {
+    SCOPED_TRACE(position);
+    EXPECT_EQ(rm.close(position), nv.close(position));
+    EXPECT_EQ(rm.open(position), nv.open(position));
+    EXPECT_EQ(rm.enclose(position), nv.enclose(position));
+  }
 }
 #endif
 
