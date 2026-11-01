@@ -2,7 +2,8 @@
 
 ## Overview
 
-This directory contains academic materials related to the Pixie succinct data structures library. It serves as a centralized repository for published papers, presentations, technical reports, bibliography, and other scholarly resources that document the design, implementation, and evaluation of Pixie.
+This directory contains academic materials related to the Pixie succinct data structures library. It serves as a centralized repository for published papers, presentations, technical reports, bibliography, and other scholarly resources that document the design, implementation, and evaluation of Pixie. Note that by default this is not the place to save drafts or experiment results,
+these are for matured and polished findings only, if not explicitly asked by the operator please don't expand the content here.
 
 Materials are authored in [Quarto](https://quarto.org) for rich rendering (math, tables, code, citations). Research notes may use plain markdown.
 
@@ -11,7 +12,7 @@ Materials are authored in [Quarto](https://quarto.org) for rich rendering (math,
 ```
 academic/
 ├── _extensions/             # Shared Quarto extensions (ACM journal format)
-│   └── quarto-journals/acm/ # ACM acm-pdf extension
+│   └── quarto-journals/acm/ # ACM acm-pdf extension, untracked in git
 ├── papers/                  # Research papers (standalone Quarto projects)
 │   └── <paper-name>/        # Each paper in its own directory
 │       ├── _quarto.yml      # Paper's own Quarto project (type: default)
