@@ -372,7 +372,8 @@ if (PIXIE_TESTS)
             ${PIXIE_DIAGNOSTICS_LIBS})
 
     add_executable(serialization_tests
-            src/tests/serialization_tests.cpp)
+            src/tests/serialization_tests.cpp
+            src/tests/tree_serialization_tests.cpp)
     target_include_directories(serialization_tests
             PUBLIC include)
     target_link_libraries(serialization_tests
@@ -503,18 +504,6 @@ if (PIXIE_BENCHMARKS)
             ${PIXIE_DIAGNOSTICS_LIBS})
     if (PIXIE_THIRD_PARTY_BACKENDS)
         target_include_directories(rmm_benchmarks
-                PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
-    endif ()
-
-    add_executable(rmm_btree_benchmarks
-            src/benchmarks/rmm_btree_benchmarks.cpp)
-    target_include_directories(rmm_btree_benchmarks
-            PUBLIC include)
-    target_link_libraries(rmm_btree_benchmarks
-            benchmark
-            ${PIXIE_DIAGNOSTICS_LIBS})
-    if (PIXIE_THIRD_PARTY_BACKENDS)
-        target_include_directories(rmm_btree_benchmarks
                 PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
     endif ()
 
@@ -680,7 +669,6 @@ if (PIXIE_BENCHMARKS)
             bit_sequence_benchmarks
             rank_select_benchmarks
             rmm_benchmarks
-            rmm_btree_benchmarks
             rmq_benchmarks
             louds_tree_benchmarks
             wavelet_tree_benchmarks

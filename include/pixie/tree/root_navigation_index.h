@@ -1,5 +1,6 @@
 #pragma once
 
+#include <pixie/detail/serialization_frame.h>
 #include <pixie/tree.h>
 #include <pixie/tree/traversal_budget.h>
 
@@ -27,7 +28,8 @@ namespace pixie {
  * from the byte limit. When disabled, the inert object itself is not charged.
  */
 template <class Tree, uint32_t Capacity = 32768>
-class RootNavigationIndex {
+class RootNavigationIndex
+    : public SerializationBase<RootNavigationIndex<Tree, Capacity>> {
   static_assert(Capacity > 0);
   static constexpr uint32_t kMissing = std::numeric_limits<uint32_t>::max();
   struct Entry {
@@ -37,6 +39,133 @@ class RootNavigationIndex {
   };
 
  public:
+  /** @brief Borrow the indexed tree; the caller retains its lifetime. */
+  const Tree& tree() const { return tree_; }
+
+  /** @brief Write the immutable entries as a separate versioned artifact.
+   * @details Stores node handles, degrees and child offsets, not the tree,
+   * cursors, vector spare capacity or construction queue. No hash is stored.
+   */
+  void serialize_impl(BinaryWriter& writer) const {
+    const auto begin = detail::begin_frame(writer, kSerializationTag);
+    writer.write_size(tree_.size());
+    writer.write_size(entries_.size());
+    for (const auto& entry : entries_) {
+      writer.write_size(entry.node.number);
+      writer.write_size(entry.node.pos);
+      writer.write_size(entry.degree);
+      writer.write_u64(entry.first);
+    }
+    detail::end_frame(writer, begin);
+  }
+
+  /** @brief Restore entries without expanding the tree or rebuilding the cache.
+   * @param reader Cursor advanced by one artifact only on success.
+   * @param tree Original immutable tree, which must outlive the index/cursors.
+   * @param byte_limit Maximum retained footprint, including this index object.
+   * @param validation Quick checks bounds and connected, nonoverlapping child
+   * lists. Full also verifies cached handles and degrees against the tree.
+   * @details The caller identifies the original tree; matching sizes do not
+   * prove identity. Artifacts exceeding Capacity or the budget are rejected,
+   * not truncated. Empty saved indexes remain disabled and charge zero bytes.
+   * @throws std::invalid_argument for malformed data, empty/wrong-sized tree,
+   * mismatched full-validation contents or an insufficient budget.
+   */
+  static RootNavigationIndex deserialize_impl(
+      BinaryReader& reader,
+      const Tree& tree,
+      size_t byte_limit = kDefaultTraversalBytes,
+      DeserializationValidation validation =
+          DeserializationValidation::kQuick) {
+    auto candidate = reader;
+    auto payload = detail::read_frame(candidate, kSerializationTag);
+    if (tree.empty() || payload.read_size() != tree.size()) {
+      throw std::invalid_argument("Root index tree size mismatch");
+    }
+    const auto count = payload.read_size();
+    const auto capacity =
+        byte_limit > sizeof(RootNavigationIndex)
+            ? (byte_limit - sizeof(RootNavigationIndex)) / sizeof(Entry)
+            : 0;
+    if (count > Capacity || count > tree.size() || count > capacity ||
+        count > payload.remaining() / 32) {
+      throw std::invalid_argument(
+          "Root index exceeds artifact or cache budget");
+    }
+    RootNavigationIndex result(tree, 0);
+    result.entries_.reserve(count);
+    if (result.entries_.capacity() > capacity) {
+      throw std::invalid_argument("Root index allocation exceeds cache budget");
+    }
+    std::vector<bool> referenced(count, false);
+    for (size_t i = 0; i < count; ++i) {
+      const auto number = payload.read_size();
+      const auto pos = payload.read_size();
+      const auto degree = payload.read_size();
+      const auto first = payload.read_u64();
+      if (number >= tree.size() || pos >= tree.encoding_words().size() * 64 ||
+          degree >= tree.size() || first > kMissing) {
+        throw std::invalid_argument("Invalid root index entry");
+      }
+      if (first != kMissing) {
+        if (!degree || first <= i || first > count || degree > count - first) {
+          throw std::invalid_argument("Invalid cached child range");
+        }
+        for (size_t j = first; j < first + degree; ++j) {
+          if (referenced[j]) {
+            throw std::invalid_argument("Overlapping cached child lists");
+          }
+          referenced[j] = true;
+        }
+      }
+      result.entries_.push_back(
+          {{number, pos}, degree, static_cast<uint32_t>(first)});
+    }
+    payload.require_zero_padding(7);
+    if (count) {
+      const auto root = tree.root();
+      if (result.entries_[0].node.number != root.number ||
+          result.entries_[0].node.pos != root.pos ||
+          std::find(referenced.begin() + 1, referenced.end(), false) !=
+              referenced.end()) {
+        throw std::invalid_argument("Disconnected root index");
+      }
+      if (validation == DeserializationValidation::kFull) {
+        // Forward-only child references ensure each handle is authenticated
+        // by its parent before it is ever used for a tree navigation query.
+        for (const auto& entry : result.entries_) {
+          if (tree.degree(entry.node) != entry.degree) {
+            throw std::invalid_argument("Cached degree mismatch");
+          }
+          if (entry.first == kMissing) {
+            continue;
+          }
+          size_t i = entry.first;
+          tree.for_each_child(entry.node, [&](TreeNode child) {
+            const auto stored = result.entries_[i++].node;
+            if (stored.number != child.number || stored.pos != child.pos) {
+              throw std::invalid_argument("Cached child mismatch");
+            }
+          });
+        }
+      }
+    }
+    reader = candidate;
+    return result;
+  }
+
+  /** @brief Reject restoration against a temporary tree. */
+  static RootNavigationIndex deserialize_impl(
+      BinaryReader&,
+      Tree&&,
+      size_t = kDefaultTraversalBytes,
+      DeserializationValidation = DeserializationValidation::kQuick) = delete;
+  /** @brief Reject restoration against a temporary const tree. */
+  static RootNavigationIndex deserialize_impl(
+      BinaryReader&,
+      const Tree&&,
+      size_t = kDefaultTraversalBytes,
+      DeserializationValidation = DeserializationValidation::kQuick) = delete;
   /** @brief Build a topology-only index, bounded by byte_limit and Capacity.
    * @param tree Nonempty immutable tree exposing TreeBase navigation.
    * @param byte_limit Active index footprint allowance; zero disables indexing.
@@ -242,6 +371,7 @@ class RootNavigationIndex {
   Cursor cursor() const&& = delete;
 
  private:
+  static constexpr uint64_t kSerializationTag = 0x314e525458495050ULL;
   const Tree& tree_;
   std::vector<Entry> entries_;
 };

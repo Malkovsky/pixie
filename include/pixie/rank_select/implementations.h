@@ -9,7 +9,7 @@
  * - `RankSelectSupportView`: non-owning source bits with read-only metadata.
  * - `RankSelectSupportCompressed<>`: interleaved packed ranks and adaptive
  *   Elias--Fano select samples with validated source prefetch. Borrows source
- *   words and owns metadata; no serialization.
+ *   words and owns metadata; supports owning metadata serialization.
  * - `PastaRankSelectSupport`: optional Pasta backend owning a converted source
  *   copy and its rank/select metadata.
  * - `SdslRankSelectSupport`: optional SDSL rank-v and MCL select backend.

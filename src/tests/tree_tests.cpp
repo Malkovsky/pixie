@@ -104,23 +104,16 @@ class TreeSpecificationTest : public testing::Test {};
 using TreeCases = testing::Types<
     ViewCase<LoudsCase<pixie::RankSelectSupport<>>>,
     ViewCase<LoudsCase<pixie::RankSelectSupportCompressed<>>>,
-    ViewCase<BpCase<pixie::RmMTree>>,
-    ViewCase<BpCase<pixie::experimental::RmMBTree<>>>,
-    ViewCase<DfudsCase<pixie::RmMTree>>,
-    ViewCase<DfudsCase<pixie::experimental::RmMBTree<>>>,
-    ViewCase<BpCase<
-        pixie::experimental::RmMBTree<4, 32, pixie::RankSelectSupport<>>>>,
-    ViewCase<DfudsCase<
-        pixie::experimental::RmMBTree<4, 32, pixie::RankSelectSupport<>>>>,
+    ViewCase<BpCase<pixie::RmMBTree<>>>,
+    ViewCase<DfudsCase<pixie::RmMBTree<>>>,
+    ViewCase<BpCase<pixie::RmMBTree<4, 32, pixie::RankSelectSupport<>>>>,
+    ViewCase<DfudsCase<pixie::RmMBTree<4, 32, pixie::RankSelectSupport<>>>>,
     LoudsCase<pixie::RankSelectSupport<>>,
     LoudsCase<pixie::RankSelectSupportCompressed<>>,
-    BpCase<pixie::RmMTree>,
-    BpCase<pixie::experimental::RmMBTree<>>,
-    DfudsCase<pixie::RmMTree>,
-    DfudsCase<pixie::experimental::RmMBTree<>>,
-    BpCase<pixie::experimental::RmMBTree<4, 32, pixie::RankSelectSupport<>>>,
-    DfudsCase<
-        pixie::experimental::RmMBTree<4, 32, pixie::RankSelectSupport<>>>>;
+    BpCase<pixie::RmMBTree<>>,
+    DfudsCase<pixie::RmMBTree<>>,
+    BpCase<pixie::RmMBTree<4, 32, pixie::RankSelectSupport<>>>,
+    DfudsCase<pixie::RmMBTree<4, 32, pixie::RankSelectSupport<>>>>;
 TYPED_TEST_SUITE(TreeSpecificationTest, TreeCases);
 
 TYPED_TEST(TreeSpecificationTest, IndependentConcurrentViews) {
@@ -344,8 +337,8 @@ TYPED_TEST(TreeSpecificationTest, EncodingStorageWordBoundaries) {
   }
 }
 
-struct RejectZeroSelectRmM : pixie::experimental::RmMBTree<> {
-  using Base = pixie::experimental::RmMBTree<>;
+struct RejectZeroSelectRmM : pixie::RmMBTree<> {
+  using Base = pixie::RmMBTree<>;
   using Base::Base;
   size_t select0(size_t rank) const {
     if (rank == 0) {
@@ -371,8 +364,8 @@ TEST(DfudsNavigationTest, RootParentDoesNotQueryZeroSelectRank) {
 template <class Case>
 class BoundedTraversalTest : public testing::Test {};
 using BoundedCases =
-    testing::Types<BpCase<pixie::experimental::RmMBTree<>>,
-                   DfudsCase<pixie::experimental::RmMBTree<>>,
+    testing::Types<BpCase<pixie::RmMBTree<>>,
+                   DfudsCase<pixie::RmMBTree<>>,
                    LoudsCase<pixie::RankSelectSupportCompressed<>>>;
 TYPED_TEST_SUITE(BoundedTraversalTest, BoundedCases);
 
@@ -1142,7 +1135,8 @@ struct CountingNavigationRmM : Backend {
 template <class Backend>
 class ParenthesisNavigationViewTest : public testing::Test {};
 using NavigationRmMBackends =
-    testing::Types<pixie::RmMTree, pixie::experimental::RmMBTree<>>;
+    testing::Types<pixie::RmMBTree<>,
+                   pixie::RmMBTree<4, 32, pixie::RankSelectSupport<>>>;
 TYPED_TEST_SUITE(ParenthesisNavigationViewTest, NavigationRmMBackends);
 
 TYPED_TEST(ParenthesisNavigationViewTest,
@@ -1873,7 +1867,7 @@ TYPED_TEST(TreeSpecificationTest, InspectedDfsCountsDeepFallbackEvents) {
 
 template <bool BP, size_t Bits = 256>
 void CheckBoundedUnpackingCache() {
-  using RmM = pixie::experimental::RmMBTree<>;
+  using RmM = pixie::RmMBTree<>;
   using Tree =
       std::conditional_t<BP, pixie::BPTree<RmM>, pixie::DFUDSTree<RmM>>;
   for (size_t n : {size_t{1}, Bits / 2 - 1, Bits / 2, Bits / 2 + 1}) {
@@ -2158,7 +2152,7 @@ namespace {
 // Compare one interleaved callback stream: every child's inspection must happen
 // before descent, not merely produce the right independent lists of handles.
 void CheckMicroPrefetch(const std::vector<uint64_t>& words, size_t n) {
-  using Tree = pixie::BPTree<pixie::experimental::RmMBTree<>>;
+  using Tree = pixie::BPTree<pixie::RmMBTree<>>;
   const Tree tree(words, n);
   using Event = std::tuple<size_t, size_t, unsigned>;
   std::vector<Event> expected, actual;
@@ -2349,7 +2343,7 @@ TEST(TreeLoudsPrefetchTest, BoundariesShapesAndNestedTraversal) {
 
 namespace {
 void CheckDfudsMicroPrefetch(const std::vector<uint64_t>& words, size_t n) {
-  using Tree = pixie::DFUDSTree<pixie::experimental::RmMBTree<>>;
+  using Tree = pixie::DFUDSTree<pixie::RmMBTree<>>;
   const Tree tree(words, n);
   using Event = std::tuple<size_t, size_t, unsigned>;
   std::vector<Event> expected, actual;
@@ -2480,7 +2474,7 @@ TEST(TreeDfudsMicroPrefetchTest, ExhaustiveShapesAndBoundaries) {
 }
 
 TEST(TreePreparedEventsTest, EmptyAndNestedReplay) {
-  using Tree = pixie::DFUDSTree<pixie::experimental::RmMBTree<>>;
+  using Tree = pixie::DFUDSTree<pixie::RmMBTree<>>;
   const std::vector<uint64_t> empty_words;
   const Tree empty(empty_words, 0);
   const pixie::experimental::PreparedTreeEvents<> empty_cache(empty);

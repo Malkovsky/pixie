@@ -1,5 +1,5 @@
 """
-Plot RmMTree benchmark results (optionally compared with sdsl-lite).
+Plot RmMBTree benchmark results (optionally compared with sdsl-lite).
 
 This script reads a JSON produced by `rmm_benchmarks` and, optionally, a JSON
 with benchmarks for sdsl-lite. For each operation, it draws a scatter plot
@@ -110,7 +110,7 @@ def smooth(points: list[tuple[int, float]], window: int) -> list[float]:
 def main():
     ap = argparse.ArgumentParser(
         description=(
-            "Read JSON with RmMTree benchmark results (and optionally "
+            "Read JSON with RmMBTree benchmark results (and optionally "
             "sdsl-lite results) and plot time per operation versus "
             "sequence size N for each operation."
         ),
@@ -125,7 +125,7 @@ def main():
     ap.add_argument(
         "json",
         metavar="JSON",
-        help="Path to the JSON file with RmMTree results (output of rmm_benchmarks).",
+        help="Path to the JSON file with RmMBTree results (output of rmm_benchmarks).",
     )
     ap.add_argument(
         "--sdsl-json",
@@ -214,7 +214,7 @@ def main():
                 marker="o",
                 markersize=3,
                 linewidth=0.85,
-                label="Pixie RmMTree",
+                label="Pixie RmMBTree",
             )
 
         if d_sdsl:
@@ -244,9 +244,9 @@ def main():
         plt.xlabel("Sequence size N (bits)")
         plt.ylabel("Time per operation, ns")
         if d_sdsl:
-            plt.title(f"RmMTree comparison: {op}")
+            plt.title(f"RmMBTree comparison: {op}")
         else:
-            plt.title(f"RmMTree: {op}")
+            plt.title(f"RmMBTree: {op}")
         plt.grid(True, which="both", linestyle="--", alpha=0.4)
         plt.legend(loc="best")
         out = os.path.join(args.save_dir, f"{op}.png")

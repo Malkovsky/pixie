@@ -8,6 +8,8 @@
  * encodings.
  */
 
+#include <pixie/serialization.h>
+
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -79,7 +81,7 @@ concept TreeNavigationView =
  * @see `<pixie/tree/implementations.h>` for the available succinct encodings.
  */
 template <class Impl>
-class TreeBase {
+class TreeBase : public SerializationBase<Impl> {
  public:
   using Node = TreeNode;
   /** @brief Tree representation borrowing encoding, owning backend metadata. */

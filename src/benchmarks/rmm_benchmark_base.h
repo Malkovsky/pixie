@@ -192,6 +192,12 @@ class RmMBenchmark {
   int Run(int argc, char** argv) {
     benchmark::MaybeReenterWithoutASLR(argc, argv);
     ParseArgsAndStrip(argc, argv);
+    if (args_.block_bits_specified &&
+        args_.block_bits != RmMBenchmarkTraits<Tree>::DefaultBlockBits) {
+      std::cerr << "This backend has a fixed block size of "
+                << RmMBenchmarkTraits<Tree>::DefaultBlockBits << " bits\n";
+      return 1;
+    }
     AddDefaultBenchmarkArgs(argc, argv);
 
     benchmark::Initialize(&argc, argv);
@@ -415,11 +421,7 @@ class RmMBenchmark {
     N = data->N;
 
     data->words = PackWordsLsbFirst(data->bits);
-    const std::size_t block_bits =
-        args_.block_bits_specified ? args_.block_bits
-                                   : RmMBenchmarkTraits<Tree>::DefaultBlockBits;
-    data->tree =
-        Tree(std::span<const std::uint64_t>(data->words), N, block_bits);
+    data->tree = Tree(std::span<const std::uint64_t>(data->words), N);
     FillPools(*data, rng);
     return data;
   }

@@ -62,6 +62,7 @@ class BlockedMonotoneSamples {
   using metadata_storage_type = MetadataStorage;
 
   BlockedMonotoneSamples() = default;
+  bool operator==(const BlockedMonotoneSamples&) const = default;
 
   explicit BlockedMonotoneSamples(std::span<const std::uint64_t> values)
     requires MutableMetadataStorage<MetadataStorage>
@@ -118,6 +119,58 @@ class BlockedMonotoneSamples {
     return storage_.allocated_bytes() + offsets_.allocated_bytes();
   }
 
+  void serialize(BinaryWriter& writer) const {
+    storage_.serialize(writer);
+    offsets_.serialize(writer);
+  }
+
+  static BlockedMonotoneSamples deserialize(BinaryReader& reader)
+    requires MutableMetadataStorage<MetadataStorage>
+  {
+    BlockedMonotoneSamples result;
+    result.storage_ = decltype(storage_)::deserialize(reader);
+    result.offsets_ = decltype(offsets_)::deserialize(reader);
+    return result;
+  }
+
+  void validate(size_t count, uint64_t limit) const {
+    const size_t groups = count / 32 + (count % 32 != 0);
+    if (offsets_.size() != groups) {
+      throw std::invalid_argument("Invalid compressed sample directory");
+    }
+    size_t offset = 0;
+    uint64_t previous = 0;
+    for (size_t g = 0; g < groups; ++g) {
+      const size_t n = std::min(size_t{32}, count - g * 32);
+      const auto width = offsets_[g] >> 58;
+      const size_t words = 2 + (n * width + 63) / 64;
+      if (width > 59 || (offsets_[g] & kOffsetMask) != offset ||
+          words > storage_.size() - offset) {
+        throw std::invalid_argument("Invalid compressed sample record");
+      }
+      const auto* record = storage_.data() + offset;
+      if (static_cast<size_t>(std::popcount(record[1])) != n) {
+        throw std::invalid_argument("Invalid compressed unary sample");
+      }
+      for (size_t i = 0; i < n; ++i) {
+        const auto high = ::select_64(record[1], i) - i;
+        const auto delta =
+            (high << width) + read_monotone_low(record + 2, i, width);
+        if (high > (UINT64_MAX >> width) || record[0] > limit ||
+            delta > limit - record[0] || record[0] + delta < previous) {
+          throw std::invalid_argument("Invalid compressed sample value");
+        }
+        previous = record[0] + delta;
+      }
+      offset += words;
+    }
+    if (offset != storage_.size()) {
+      throw std::invalid_argument("Unexpected compressed sample payload");
+    }
+  }
+
+  bool empty() const { return offsets_.empty() && storage_.empty(); }
+
  protected:
   static constexpr std::uint64_t kOffsetMask = (std::uint64_t{1} << 58) - 1;
   MetadataArray<std::uint64_t, MetadataStorage> storage_;
@@ -127,6 +180,7 @@ class BlockedMonotoneSamples {
 struct SampleWideGroup {
   std::uint64_t begin = 0;
   std::uint64_t mask = 0;
+  bool operator==(const SampleWideGroup&) const = default;
 };
 
 // An empty key list allocates no bitmap. Callers only query the map for mixed
@@ -167,6 +221,49 @@ template <class Base>
 class BitmapMonotoneSamples : public Base {
  public:
   BitmapMonotoneSamples() = default;
+  bool operator==(const BitmapMonotoneSamples&) const = default;
+
+  void serialize(BinaryWriter& writer) const {
+    Base::serialize(writer);
+    wide_.serialize(writer, [](BinaryWriter& out, SampleWideGroup value) {
+      out.write_u64(value.begin);
+      out.write_u64(value.mask);
+    });
+  }
+
+  static BitmapMonotoneSamples deserialize(BinaryReader& reader) {
+    BitmapMonotoneSamples result;
+    static_cast<Base&>(result) = Base::deserialize(reader);
+    result.wide_ =
+        decltype(wide_)::deserialize(reader, 16, [](BinaryReader& in) {
+          return SampleWideGroup{in.read_u64(), in.read_u64()};
+        });
+    return result;
+  }
+
+  void validate(size_t count, uint64_t limit, size_t wide_count) const {
+    Base::validate(count, limit);
+    if (wide_.empty()) {
+      if (wide_count) {
+        throw std::invalid_argument("Missing wide sample map");
+      }
+      return;
+    }
+    if (wide_.size() != count / 32 + (count % 32 != 0)) {
+      throw std::invalid_argument("Invalid wide sample map size");
+    }
+    size_t next = 0;
+    for (size_t g = 0; g < wide_.size(); ++g) {
+      const auto valid = std::min(size_t{32}, count - g * 32);
+      if (wide_[g].begin != next || (wide_[g].mask >> valid) != 0) {
+        throw std::invalid_argument("Invalid wide sample map");
+      }
+      next += std::popcount(wide_[g].mask);
+    }
+    if (next != wide_count) {
+      throw std::invalid_argument("Invalid wide sample count");
+    }
+  }
   BitmapMonotoneSamples(std::span<const std::uint64_t> values,
                         std::span<const std::uint64_t> wide = {})
       : Base(values),

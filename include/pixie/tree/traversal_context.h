@@ -136,6 +136,25 @@ class TreeTraversalContext {
                byte_limit >= sizeof(*this) + plan_.scratch
                    ? byte_limit - overhead() - plan_.scratch
                    : 0) {}
+  /** @brief Adopt a restored root index and choose a fresh decoding plan.
+   * @details The index keeps borrowing its original tree. No nodes are
+   * expanded. The budget includes this context, retained entries and traversal
+   * scratch.
+   * @throws std::invalid_argument if the chosen plan and index do not fit the
+   * budget. Save root_index() to persist the immutable portion of a context.
+   */
+  explicit TreeTraversalContext(RootNavigationIndex<Tree> index,
+                                size_t byte_limit = kDefaultTraversalBytes)
+      : tree_(index.tree()),
+        words_(tree_.encoding_words()),
+        plan_(choose_plan(byte_limit)),
+        index_(std::move(index)) {
+    if (budget_usage_bytes() > byte_limit) {
+      throw std::invalid_argument(
+          "Restored root index exceeds traversal budget");
+    }
+  }
+
   /** @brief Peak explicit traversal-buffer allowance, including decoder loads.
    */
   size_t scratch_bytes() const { return plan_.scratch; }

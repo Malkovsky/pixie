@@ -8,6 +8,8 @@
 #include <pixie/serialization.h>
 #include <pixie/split_span.h>
 #include <pixie/storage/aligned.h>
+#include <pixie/tree/implementations.h>
+#include <pixie/tree/root_navigation_index.h>
 #include <pixie/wavelet_tree/implementations.h>
 
 #include <algorithm>
@@ -19,6 +21,8 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+
+#include "tree_input.h"
 
 namespace {
 
@@ -451,6 +455,69 @@ void BM_RankSelectSerialize(benchmark::State& state) {
   set_artifact_counters(state, bit_count, artifact.size());
 }
 
+template <bool Load,
+          pixie::DeserializationValidation Validation,
+          class T,
+          class Restore>
+void component_iterations(benchmark::State& state,
+                          const T& value,
+                          size_t n,
+                          Restore restore) {
+  const auto artifact = serialize_to_vector(value);
+  if constexpr (Load) {
+    deserialize_iterations(state, as_const_span(artifact), restore);
+  } else {
+    std::vector<std::byte> destination(artifact.size());
+    std::vector<std::byte> staging(kDefaultStagingBytes);
+    serialize_iterations(state, value, as_writable_span(destination),
+                         as_writable_span(staging));
+  }
+  set_artifact_counters(state, n, artifact.size());
+}
+
+template <class Index, bool Load, pixie::DeserializationValidation Validation>
+void BM_NavigationIndexArtifact(benchmark::State& state) {
+  const auto n = static_cast<size_t>(state.range(0));
+  const auto words = make_words(n);
+  const Index index(words, n);
+  component_iterations<Load, Validation>(
+      state, index, n, [&](pixie::BinaryReader& reader) {
+        return Index::deserialize(reader, words, Validation);
+      });
+}
+
+using SerializedBP = pixie::BPTree<pixie::RmMBTree<>>;
+using SerializedDFUDS = pixie::DFUDSTree<pixie::RmMBTree<>>;
+using SerializedLOUDS = pixie::LoudsTree<pixie::RankSelectSupportCompressed<>>;
+
+template <class Tree,
+          bool RootIndex,
+          bool Load,
+          pixie::DeserializationValidation Validation>
+void BM_TreeArtifact(benchmark::State& state) {
+  const auto n = static_cast<size_t>(state.range(0));
+  auto words = pixie::benchmarks::GenerateRandomBp(n);
+  if constexpr (std::same_as<Tree, SerializedDFUDS>) {
+    words = pixie::benchmarks::DfudsFromBp(words, n);
+  } else if constexpr (std::same_as<Tree, SerializedLOUDS>) {
+    words = pixie::benchmarks::LoudsFromBp(words, n);
+  }
+  const Tree tree(words, n);
+  if constexpr (RootIndex) {
+    const pixie::RootNavigationIndex<Tree> index(tree);
+    component_iterations<Load, Validation>(
+        state, index, n, [&](pixie::BinaryReader& reader) {
+          return pixie::RootNavigationIndex<Tree>::deserialize(
+              reader, tree, pixie::kDefaultTraversalBytes, Validation);
+        });
+  } else {
+    component_iterations<Load, Validation>(
+        state, tree, n, [&](pixie::BinaryReader& reader) {
+          return Tree::deserialize(reader, Validation);
+        });
+  }
+}
+
 template <pixie::DeserializationValidation Validation>
 void BM_RankSelectDeserializeOwningImpl(benchmark::State& state) {
   const std::size_t bit_count = static_cast<std::size_t>(state.range(0));
@@ -478,31 +545,6 @@ void BM_RankSelectDeserializeViewImpl(benchmark::State& state) {
                                reader, words, Validation);
                          });
   set_artifact_counters(state, bit_count, artifact.size_bytes());
-}
-
-void BM_RmMSerialize(benchmark::State& state) {
-  const std::size_t bit_count = static_cast<std::size_t>(state.range(0));
-  const std::vector<std::uint64_t> words = make_words(bit_count);
-  const pixie::RmMTree index(words, bit_count);
-  const std::vector<std::byte> artifact = serialize_to_vector(index);
-  std::vector<std::byte> destination(artifact.size());
-  std::vector<std::byte> staging(kDefaultStagingBytes);
-  serialize_iterations(state, index, as_writable_span(destination),
-                       as_writable_span(staging));
-  set_artifact_counters(state, bit_count, artifact.size());
-}
-
-template <pixie::DeserializationValidation Validation>
-void BM_RmMDeserializeImpl(benchmark::State& state) {
-  const std::size_t bit_count = static_cast<std::size_t>(state.range(0));
-  const std::vector<std::uint64_t> words = make_words(bit_count);
-  const pixie::RmMTree index(words, bit_count);
-  const std::vector<std::byte> artifact = serialize_to_vector(index);
-  deserialize_iterations(
-      state, as_const_span(artifact), [&](pixie::BinaryReader& reader) {
-        return pixie::RmMTree::deserialize(reader, words, Validation);
-      });
-  set_artifact_counters(state, bit_count, artifact.size());
 }
 
 using RmqIndex = pixie::rmq::CartesianHybridBTree<std::int64_t>;
@@ -697,7 +739,6 @@ void BM_WaveletTreeDeserializeViewImpl(benchmark::State& state) {
 
 PIXIE_DESERIALIZATION_WRAPPERS(BM_RankSelectDeserializeOwning)
 PIXIE_DESERIALIZATION_WRAPPERS(BM_RankSelectDeserializeView)
-PIXIE_DESERIALIZATION_WRAPPERS(BM_RmMDeserialize)
 PIXIE_DESERIALIZATION_WRAPPERS(BM_RmqDeserialize)
 PIXIE_DESERIALIZATION_WRAPPERS(BM_WaveletTreeDeserializeView)
 PIXIE_DESERIALIZATION_WRAPPERS(BM_PackedIntegerVectorDeserializeOwning)
@@ -804,13 +845,36 @@ BENCHMARK(BM_BinaryReaderU64MappedWarm)
       ->PIXIE_SERIALIZATION_TIMING()
 
 PIXIE_STRUCTURE_BENCHMARK(BM_RankSelectSerialize);
+
+#define PIXIE_COMPONENT_CASE(name, ...) \
+  BENCHMARK_TEMPLATE(name, __VA_ARGS__) \
+      ->Arg(1 << 10)                    \
+      ->Arg(1 << 16)                    \
+      ->Arg(1 << 20)                    \
+      ->ArgName("N")                    \
+      ->PIXIE_SERIALIZATION_TIMING()
+#define PIXIE_COMPONENT_CASES(name, ...)                          \
+  PIXIE_COMPONENT_CASE(name, __VA_ARGS__, false,                  \
+                       pixie::DeserializationValidation::kQuick); \
+  PIXIE_COMPONENT_CASE(name, __VA_ARGS__, true,                   \
+                       pixie::DeserializationValidation::kQuick); \
+  PIXIE_COMPONENT_CASE(name, __VA_ARGS__, true,                   \
+                       pixie::DeserializationValidation::kFull)
+PIXIE_COMPONENT_CASES(BM_NavigationIndexArtifact,
+                      pixie::RankSelectSupportCompressed<>);
+PIXIE_COMPONENT_CASES(BM_NavigationIndexArtifact, pixie::RmMBTree<>);
+PIXIE_COMPONENT_CASES(BM_TreeArtifact, SerializedBP, false);
+PIXIE_COMPONENT_CASES(BM_TreeArtifact, SerializedDFUDS, false);
+PIXIE_COMPONENT_CASES(BM_TreeArtifact, SerializedLOUDS, false);
+PIXIE_COMPONENT_CASES(BM_TreeArtifact, SerializedBP, true);
+PIXIE_COMPONENT_CASES(BM_TreeArtifact, SerializedDFUDS, true);
+PIXIE_COMPONENT_CASES(BM_TreeArtifact, SerializedLOUDS, true);
+#undef PIXIE_COMPONENT_CASES
+#undef PIXIE_COMPONENT_CASE
 PIXIE_STRUCTURE_BENCHMARK(BM_RankSelectDeserializeOwningQuick);
 PIXIE_STRUCTURE_BENCHMARK(BM_RankSelectDeserializeOwningFull);
 PIXIE_STRUCTURE_BENCHMARK(BM_RankSelectDeserializeViewQuick);
 PIXIE_STRUCTURE_BENCHMARK(BM_RankSelectDeserializeViewFull);
-PIXIE_STRUCTURE_BENCHMARK(BM_RmMSerialize);
-PIXIE_STRUCTURE_BENCHMARK(BM_RmMDeserializeQuick);
-PIXIE_STRUCTURE_BENCHMARK(BM_RmMDeserializeFull);
 PIXIE_STRUCTURE_BENCHMARK(BM_RmqSerialize);
 PIXIE_STRUCTURE_BENCHMARK(BM_RmqDeserializeQuick);
 PIXIE_STRUCTURE_BENCHMARK(BM_RmqDeserializeFull);

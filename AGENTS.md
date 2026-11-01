@@ -12,7 +12,7 @@ Current library families are:
 - positional and monotone packed integer vectors;
 - owning permutations with rebased consuming merge and permutable sequences with
   unchanged-value consuming merge;
-- range min-max (RmM) indexes;
+- range min-max (RmM) indexes via `pixie::RmMBTree<>` in `rmm/btree.h`;
 - static range-minimum-query (RMQ) indexes;
 - rooted-tree encodings (LOUDS, balanced parentheses, and DFUDS);
 - aligned owning storage, read-only storage views, and mapped-file resources;

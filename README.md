@@ -13,7 +13,7 @@
 ## Outline
 
 - **Rank/select support**: fundamental primitive to efficiently map bits and their positions in a bit vector.
-- **Range min-max tree**: fundamental primitive for efficient computation of excess queries mainly for navigation in balanced parenthesis sequences.
+- **Range min-max tree**: `pixie::RmMBTree<>` in `pixie/rmm/btree.h` supports excess queries and navigation in balanced parenthesis sequences, with compressed rank/select by default.
 - **Succinct trees**: static variants of $2$-bit per entry trees, i.e. LOUDS ($2.072$ bits per node), DFUDS, BP (both $2.358$ per node), a cache budget of 512 KiB allows to outperform pointer-based impelmentations.
 [Tree benchmarks](https://malkovsky.github.io/pixie/benchmarks_trees.html) 
 - **Wavelet tree**, i.e. static structure that supposts rank/select on arbitrary finite alphabets, supports building a Huffman archieve with $\mathcal{O}(\ell\log \sigma)$ extraction of arbitrary segment with length $\ell$ over an alphabet of size $\sigma$.
@@ -63,6 +63,15 @@ const auto minimum = rmq.range_min(1, 6); // 1
 ---
 
 ## Tests and benchmarks
+
+The native RmM implementation is `pixie::RmMBTree<HighCacheLines, LowFanout,
+RankSelect>`. It borrows immutable encoding words and owns its index metadata.
+The former `pixie::experimental::RmMBTree` namespace and legacy `RmMTree`
+implementation have been retired, including the latter's serialization API.
+RmMBTree now serializes its hierarchy and rank/select metadata independently of
+its source bits. Tree artifacts compose the encoding and navigation backend;
+the bounded root navigation index has a separate artifact. See
+[tree serialization and ownership](include/pixie/tree/README.md).
 
 Pixie uses CTest for its internal suite:
 

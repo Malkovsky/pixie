@@ -6,6 +6,7 @@
 #include <pixie/tree/detail/encoding_storage.h>
 #include <pixie/tree/detail/louds_children.h>
 #include <pixie/tree/detail/louds_node_view.h>
+#include <pixie/tree/detail/serialization.h>
 
 #include <bit>
 #include <cstdint>
@@ -47,6 +48,11 @@ struct TreeTraits<LoudsTree<B, S>> {
 template <class RankSelect, detail::TreeEncodingStorage EncodingStorage>
 class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
  private:
+  LoudsTree(EncodingStorage storage, size_t bits, RankSelect backend)
+      : encoding_(std::move(storage)),
+        bv(std::move(backend)),
+        words_(detail::tree_encoding_words(encoding_, bits).data()) {}
+
   EncodingStorage encoding_;
   RankSelect bv;
   const std::uint64_t* words_;
@@ -74,6 +80,76 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
   }
 
  public:
+  /** @brief Write one tree artifact: encoding, node count and nested backend.
+   * @details External root indexes and active traversal state are not included.
+   */
+  void serialize_impl(BinaryWriter& writer) const
+    requires Serializable<RankSelect>
+  {
+    const auto begin = detail::begin_frame(
+        writer,
+        detail::tree_serialization_tag(detail::TreeEncodingKind::kLOUDS));
+    writer.write_size(this->size());
+    detail::write_tree_encoding(
+        writer, encoding_words_impl(),
+        detail::tree_encoding_bits(this->size(), false));
+    bv.serialize(writer);
+    detail::end_frame(writer, begin);
+  }
+
+  /** @brief Restore a complete tree without rebuilding its navigation index.
+   * @param reader Cursor advanced only after successful restoration.
+   * @param validation Quick checks framing, sizes and backend metadata; it
+   * assumes the saved topology and metadata correspond. Full also scans and
+   * validates topology and source-derived backend data.
+   * @details Owning trees copy the encoding. TreeView borrows word-aligned
+   * backing bytes, which must remain alive and immutable. Backend ownership
+   * follows its deserializer. No hashes or traversal caches are restored.
+   * @throws std::invalid_argument for malformed or incompatible artifacts;
+   * allocation and size exceptions propagate. Failure leaves reader unchanged.
+   */
+  static LoudsTree deserialize_impl(
+      BinaryReader& reader,
+      DeserializationValidation validation = DeserializationValidation::kQuick)
+    requires Deserializable<RankSelect,
+                            std::span<const uint64_t>,
+                            DeserializationValidation>
+  {
+    auto candidate = reader;
+    auto payload = detail::read_frame(
+        candidate,
+        detail::tree_serialization_tag(detail::TreeEncodingKind::kLOUDS));
+    const auto nodes = payload.read_size();
+    const auto bits = detail::tree_encoding_bits(nodes, false);
+    auto encoding = detail::read_tree_encoding<EncodingStorage>(payload, bits);
+    const auto words = detail::tree_encoding_words(encoding, bits);
+    auto backend = RankSelect::deserialize(payload, words, validation);
+    if (backend.size() != bits) {
+      throw std::invalid_argument("Tree backend size mismatch");
+    }
+    if constexpr (requires {
+                    backend.supports_select1();
+                    backend.supports_select0();
+                  }) {
+      if (!backend.supports_select1() || !backend.supports_select0()) {
+        throw std::invalid_argument(
+            "Tree backend requires both select directions");
+      }
+    }
+    const auto ones = backend.rank(bits);
+    if (ones != nodes) {
+      throw std::invalid_argument("Tree backend population mismatch");
+    }
+    if (validation == DeserializationValidation::kFull) {
+      detail::validate_tree_topology(words, nodes,
+                                     detail::TreeEncodingKind::kLOUDS);
+    }
+    payload.require_zero_padding(7);
+    LoudsTree result(std::move(encoding), bits, std::move(backend));
+    reader = candidate;
+    return result;
+  }
+
   using typename TreeBase<LoudsTree>::NodeView;
 
  private:

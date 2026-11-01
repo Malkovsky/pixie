@@ -1,9 +1,6 @@
 #include <gtest/gtest.h>
-#include <pixie/io/file_output_sink.h>
-#include <pixie/io/mapped_file.h>
 #include <pixie/rank_select/support.h>
 #include <pixie/rmm/btree.h>
-#include <pixie/rmm/tree.h>
 #include <references/naive_rmm_tree.h>
 
 #ifdef SDSL_SUPPORT
@@ -14,7 +11,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
 #include <limits>
 #include <random>
 #include <span>
@@ -315,14 +311,12 @@ class RmMRandomTest : public ::testing::Test {
   std::mt19937_64 rng{kSeed};
 };
 
-using BaselineRmMBTree =
-    pixie::experimental::RmMBTree<4, 32, pixie::RankSelectSupport<>>;
-using CompressedRmMBTree = pixie::experimental::RmMBTree<>;
+using BaselineRmMBTree = pixie::RmMBTree<4, 32, pixie::RankSelectSupport<>>;
+using CompressedRmMBTree = pixie::RmMBTree<>;
 static_assert(std::is_same_v<CompressedRmMBTree::RankSelectBackend,
                              pixie::RankSelectSupportCompressed<>>);
 
-using RmMImplementations =
-    testing::Types<pixie::RmMTree, CompressedRmMBTree, BaselineRmMBTree>;
+using RmMImplementations = testing::Types<CompressedRmMBTree, BaselineRmMBTree>;
 TYPED_TEST_SUITE(RmMRandomTest, RmMImplementations);
 
 TYPED_TEST(RmMRandomTest, RandomMixedBits) {
@@ -376,9 +370,9 @@ static void run_case_repeated_span_construction(const std::string& bits,
                                                 std::mt19937_64& rng) {
   const size_t N = bits.size();
   auto span_words = pack_words_lsb_first(bits);
-  pixie::RmMTree rm_s(std::span<const std::uint64_t>(span_words), N);
+  pixie::RmMBTree<> rm_s(std::span<const std::uint64_t>(span_words), N);
   auto words = pack_words_lsb_first(bits);
-  pixie::RmMTree rm_w(std::span<const std::uint64_t>(words), N);
+  pixie::RmMBTree<> rm_w(std::span<const std::uint64_t>(words), N);
 
   std::uniform_int_distribution<size_t> pos_i(0, N);
   std::uniform_int_distribution<size_t> pos_i_nz(0, N ? N - 1 : 0);
@@ -482,7 +476,7 @@ TEST(RmMConstructionTest, RepeatedSpanConstruction) {
 
 TEST(RmMEdgeCases, EmptyInput) {
   std::vector<std::uint64_t> words;
-  pixie::RmMTree rm(std::span<const std::uint64_t>(words), 0);
+  pixie::RmMBTree<> rm(std::span<const std::uint64_t>(words), 0);
   NaiveRmM nv(std::string{});
   EXPECT_EQ(rm.rank1(0), nv.rank1(0));
   EXPECT_EQ(rm.rank0(0), nv.rank0(0));
@@ -495,7 +489,8 @@ TEST(RmMEdgeCases, EmptyInput) {
   EXPECT_EQ(rm.range_max_query_pos(0, 0), nv.range_max_query_pos(0, 0));
 }
 
-static void expect_rank_select_equal(const pixie::RmMTree& rm,
+template <class Tree>
+static void expect_rank_select_equal(const Tree& rm,
                                      const NaiveRmM& nv,
                                      size_t n) {
   for (size_t x = 0; x <= n; ++x) {
@@ -519,7 +514,8 @@ static void expect_rank_select_equal(const pixie::RmMTree& rm,
   }
 }
 
-static void expect_range_ops_equal(const pixie::RmMTree& rm,
+template <class Tree>
+static void expect_range_ops_equal(const Tree& rm,
                                    const NaiveRmM& nv,
                                    size_t n) {
   if (n == 0) {
@@ -548,276 +544,6 @@ static void expect_range_ops_equal(const pixie::RmMTree& rm,
   }
 }
 
-static std::vector<std::byte> serialize_rmm(const pixie::RmMTree& tree) {
-  pixie::VectorOutputSink output;
-  pixie::BinaryWriter writer(output);
-  tree.serialize(writer);
-  writer.finish();
-  return output.take();
-}
-
-static void overwrite_i32(std::vector<std::byte>& bytes,
-                          std::size_t offset,
-                          std::int32_t value) {
-  const std::uint32_t encoded = static_cast<std::uint32_t>(value);
-  for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
-    bytes[offset + byte] =
-        static_cast<std::byte>((encoded >> (byte * 8)) & 0xffu);
-  }
-}
-
-static void expect_rmm_serialization_round_trip(const std::string& bits) {
-  auto words = pack_words_lsb_first(bits);
-  const pixie::RmMTree original(std::span<const std::uint64_t>(words),
-                                bits.size(),
-                                /*leaf_block_bits=*/128);
-  std::vector<std::byte> artifact = serialize_rmm(original);
-  pixie::BinaryReader reader(artifact);
-  const pixie::RmMTree restored = pixie::RmMTree::deserialize(reader, words);
-
-  EXPECT_TRUE(reader.empty());
-  EXPECT_EQ(serialize_rmm(restored), artifact);
-  artifact.clear();
-  artifact.shrink_to_fit();
-
-  const NaiveRmM naive(bits);
-  expect_rank_select_equal(restored, naive, bits.size());
-  expect_range_ops_equal(restored, naive, bits.size());
-  if (!bits.empty()) {
-    const std::array<int, 7> deltas = {-9, -2, -1, 0, 1, 2, 9};
-    const std::size_t step = std::max<std::size_t>(1, bits.size() / 17);
-    for (std::size_t position = 0; position < bits.size(); position += step) {
-      EXPECT_EQ(restored.close(position), naive.close(position));
-      EXPECT_EQ(restored.open(position), naive.open(position));
-      EXPECT_EQ(restored.enclose(position), naive.enclose(position));
-      for (const int delta : deltas) {
-        EXPECT_EQ(restored.fwdsearch(position, delta),
-                  naive.fwdsearch(position, delta));
-        EXPECT_EQ(restored.bwdsearch(position + 1, delta),
-                  naive.bwdsearch(position + 1, delta));
-      }
-    }
-  }
-}
-
-TEST(RmMSerializationTest, RoundTripsOwningMetadataAtBoundaries) {
-  std::mt19937_64 rng(20260718);
-  for (const std::size_t size :
-       std::array<std::size_t, 10>{0, 1, 63, 64, 65, 127, 128, 129, 256, 777}) {
-    SCOPED_TRACE(::testing::Message() << "size=" << size);
-    expect_rmm_serialization_round_trip(random_bits(rng, size));
-  }
-}
-
-TEST(RmMSerializationTest, AdvancesAcrossConcatenatedArtifacts) {
-  const std::string bits = "11101001011000";
-  auto words = pack_words_lsb_first(bits);
-  const pixie::RmMTree original(words, bits.size(), 64);
-  pixie::VectorOutputSink output;
-  pixie::BinaryWriter writer(output);
-  original.serialize(writer);
-  original.serialize(writer);
-  writer.finish();
-  const auto artifacts = output.take();
-  pixie::BinaryReader reader(artifacts);
-
-  const auto first = pixie::RmMTree::deserialize(reader, words);
-  EXPECT_FALSE(reader.empty());
-  const auto second = pixie::RmMTree::deserialize(reader, words);
-  EXPECT_TRUE(reader.empty());
-  EXPECT_EQ(first.range_min_query_pos(0, bits.size() - 1),
-            second.range_min_query_pos(0, bits.size() - 1));
-}
-
-TEST(RmMSerializationTest, SerializesDirectlyToMappedFile) {
-  const std::string bits = "1110100101100011010010110010";
-  auto words = pack_words_lsb_first(bits);
-  const pixie::RmMTree original(words, bits.size(), 64);
-  const auto path = std::filesystem::temp_directory_path() /
-                    "pixie_rmm_serialization_test.bin";
-  std::filesystem::remove(path);
-  {
-    pixie::io::FileOutputSink output(path);
-    std::array<std::byte, 13> staging{};
-    pixie::BinaryWriter writer(output, staging);
-    original.serialize(writer);
-    writer.finish();
-  }
-
-  pixie::io::MappedFile file(path);
-  for (const auto validation : {pixie::DeserializationValidation::kQuick,
-                                pixie::DeserializationValidation::kFull}) {
-    pixie::BinaryReader reader(file.as_bytes());
-    const pixie::RmMTree restored =
-        pixie::RmMTree::deserialize(reader, words, validation);
-    EXPECT_TRUE(reader.empty());
-    EXPECT_EQ(restored.range_min_query_pos(0, bits.size() - 1),
-              original.range_min_query_pos(0, bits.size() - 1));
-    EXPECT_EQ(restored.range_max_query_pos(0, bits.size() - 1),
-              original.range_max_query_pos(0, bits.size() - 1));
-  }
-  std::filesystem::remove(path);
-}
-
-TEST(RmMSerializationTest,
-     FullValidationRejectsSameLengthSourceMismatchTransactionally) {
-  const std::string bits = "1110100101100011010010110010";
-  auto words = pack_words_lsb_first(bits);
-  const pixie::RmMTree original(words, bits.size(), 64);
-  const std::vector<std::byte> artifact = serialize_rmm(original);
-  std::vector<std::uint64_t> different_words = words;
-  different_words[0] ^= std::uint64_t{1} << 7;
-
-  pixie::BinaryReader quick_reader(artifact);
-  EXPECT_NO_THROW((void)pixie::RmMTree::deserialize(
-      quick_reader, different_words, pixie::DeserializationValidation::kQuick));
-  EXPECT_TRUE(quick_reader.empty());
-
-  pixie::BinaryReader full_reader(artifact);
-  EXPECT_THROW((void)pixie::RmMTree::deserialize(
-                   full_reader, different_words,
-                   pixie::DeserializationValidation::kFull),
-               std::invalid_argument);
-  EXPECT_EQ(full_reader.position(), 0u);
-}
-
-TEST(RmMSerializationTest,
-     FullValidationRejectsExactLeafCorruptionTransactionally) {
-  const std::string bits(64, '1');
-  const auto words = pack_words_lsb_first(bits);
-  const pixie::RmMTree original(words, bits.size(), 64);
-  std::vector<std::byte> artifact = serialize_rmm(original);
-
-  pixie::BinaryReader layout_reader(artifact);
-  layout_reader.skip(8 * sizeof(std::uint64_t));
-  const std::size_t segment_count = layout_reader.read_size();
-  layout_reader.skip(segment_count * sizeof(std::uint32_t));
-  const std::size_t total_count = layout_reader.read_size();
-  ASSERT_EQ(total_count, 2u);
-  const std::size_t total_data = layout_reader.position();
-  overwrite_i32(artifact, total_data + sizeof(std::int32_t), 62);
-
-  pixie::BinaryReader quick_reader(artifact);
-  EXPECT_NO_THROW((void)pixie::RmMTree::deserialize(
-      quick_reader, words, pixie::DeserializationValidation::kQuick));
-  EXPECT_TRUE(quick_reader.empty());
-
-  pixie::BinaryReader full_reader(artifact);
-  EXPECT_THROW((void)pixie::RmMTree::deserialize(
-                   full_reader, words, pixie::DeserializationValidation::kFull),
-               std::invalid_argument);
-  EXPECT_EQ(full_reader.position(), 0u);
-}
-
-TEST(RmMSerializationTest,
-     FullValidationCoversBinaryUnaryAndEmptyInternalNodes) {
-  constexpr std::size_t kBitCount = 257;
-  const std::array<std::string, 3> inputs = {
-      std::string(kBitCount, '1'), std::string(kBitCount, '0'), [] {
-        std::string bits(kBitCount, '0');
-        for (std::size_t position = 0; position < bits.size(); position += 2) {
-          bits[position] = '1';
-        }
-        return bits;
-      }()};
-
-  for (const std::string& bits : inputs) {
-    const auto words = pack_words_lsb_first(bits);
-    const pixie::RmMTree original(words, bits.size(), 64);
-    const std::vector<std::byte> artifact = serialize_rmm(original);
-    pixie::BinaryReader reader(artifact);
-    const pixie::RmMTree restored = pixie::RmMTree::deserialize(
-        reader, words, pixie::DeserializationValidation::kFull);
-    EXPECT_TRUE(reader.empty());
-    EXPECT_EQ(restored.range_min_query_pos(0, bits.size() - 1),
-              original.range_min_query_pos(0, bits.size() - 1));
-  }
-}
-
-TEST(RmMSerializationTest,
-     FullValidationRejectsExactInternalCorruptionTransactionally) {
-  const std::string bits(257, '1');
-  const auto words = pack_words_lsb_first(bits);
-  const pixie::RmMTree original(words, bits.size(), 64);
-  std::vector<std::byte> artifact = serialize_rmm(original);
-
-  pixie::BinaryReader layout_reader(artifact);
-  layout_reader.skip(8 * sizeof(std::uint64_t));
-  const std::size_t segment_count = layout_reader.read_size();
-  layout_reader.skip(segment_count * sizeof(std::uint32_t));
-  const std::size_t total_count = layout_reader.read_size();
-  ASSERT_EQ(total_count, 13u);
-  const std::size_t total_data = layout_reader.position();
-  overwrite_i32(artifact, total_data + sizeof(std::int32_t), 255);
-
-  pixie::BinaryReader quick_reader(artifact);
-  EXPECT_NO_THROW((void)pixie::RmMTree::deserialize(
-      quick_reader, words, pixie::DeserializationValidation::kQuick));
-  EXPECT_TRUE(quick_reader.empty());
-
-  pixie::BinaryReader full_reader(artifact);
-  EXPECT_THROW((void)pixie::RmMTree::deserialize(
-                   full_reader, words, pixie::DeserializationValidation::kFull),
-               std::invalid_argument);
-  EXPECT_EQ(full_reader.position(), 0u);
-}
-
-TEST(RmMSerializationTest, RejectsCorruptionWithoutAdvancingInput) {
-  const std::string bits(257, '1');
-  auto words = pack_words_lsb_first(bits);
-  const pixie::RmMTree original(words, bits.size(), 128);
-  const auto valid = serialize_rmm(original);
-
-  const auto expect_rejected = [&](std::vector<std::byte> artifact) {
-    for (const auto validation : {pixie::DeserializationValidation::kQuick,
-                                  pixie::DeserializationValidation::kFull}) {
-      pixie::BinaryReader reader(artifact);
-      EXPECT_THROW((void)pixie::RmMTree::deserialize(reader, words, validation),
-                   std::exception);
-      EXPECT_EQ(reader.position(), 0u);
-    }
-  };
-  const auto overwrite = [](std::vector<std::byte>& artifact,
-                            std::size_t offset, auto value) {
-    using Value = decltype(value);
-    using Unsigned = std::make_unsigned_t<Value>;
-    const Unsigned encoded = static_cast<Unsigned>(value);
-    for (std::size_t byte = 0; byte < sizeof(Value); ++byte) {
-      artifact[offset + byte] =
-          static_cast<std::byte>((encoded >> (byte * 8)) & Unsigned{0xff});
-    }
-  };
-
-  auto bad_magic = valid;
-  bad_magic[0] ^= std::byte{1};
-  expect_rejected(std::move(bad_magic));
-
-  auto bad_version = valid;
-  overwrite(bad_version, 8, std::uint32_t{2});
-  expect_rejected(std::move(bad_version));
-
-  auto bad_source_count = valid;
-  overwrite(bad_source_count, 24, std::uint64_t{bits.size() + 1});
-  expect_rejected(std::move(bad_source_count));
-
-  auto impossible_vector = valid;
-  overwrite(impossible_vector, 64, std::numeric_limits<std::uint64_t>::max());
-  expect_rejected(std::move(impossible_vector));
-
-  std::span<const std::byte> truncated =
-      std::span<const std::byte>(valid).first(valid.size() - 1);
-  pixie::BinaryReader truncated_reader(truncated);
-  EXPECT_THROW((void)pixie::RmMTree::deserialize(truncated_reader, words),
-               std::invalid_argument);
-  EXPECT_EQ(truncated_reader.position(), 0u);
-
-  std::span<const std::uint64_t> short_words;
-  pixie::BinaryReader reader(valid);
-  EXPECT_THROW((void)pixie::RmMTree::deserialize(reader, short_words),
-               std::invalid_argument);
-  EXPECT_EQ(reader.position(), 0u);
-}
-
 TEST(RmMEdgeCases, MultiwordPattern10AcrossWordBoundaries) {
   const size_t n = 640;
   std::string bits(n, '1');
@@ -832,8 +558,7 @@ TEST(RmMEdgeCases, MultiwordPattern10AcrossWordBoundaries) {
   }
 
   auto words = pack_words_lsb_first(bits);
-  pixie::RmMTree rm(std::span<const std::uint64_t>(words), bits.size(),
-                    /*leaf_block_bits=*/256);
+  pixie::RmMBTree<> rm(std::span<const std::uint64_t>(words), bits.size());
   NaiveRmM nv(bits);
 
   expect_rank_select_equal(rm, nv, n);
@@ -848,9 +573,8 @@ TEST(RmMEdgeCases, PartialLastLeafSelects) {
     mostly_zero[i] = '1';
   }
   auto mostly_zero_words = pack_words_lsb_first(mostly_zero);
-  pixie::RmMTree rm_select1(std::span<const std::uint64_t>(mostly_zero_words),
-                            mostly_zero.size(),
-                            /*leaf_block_bits=*/256);
+  pixie::RmMBTree<> rm_select1(
+      std::span<const std::uint64_t>(mostly_zero_words), mostly_zero.size());
   NaiveRmM nv_select1(mostly_zero);
   expect_rank_select_equal(rm_select1, nv_select1, n);
 
@@ -859,15 +583,14 @@ TEST(RmMEdgeCases, PartialLastLeafSelects) {
     mostly_one[i] = '0';
   }
   auto mostly_one_words = pack_words_lsb_first(mostly_one);
-  pixie::RmMTree rm_select0(std::span<const std::uint64_t>(mostly_one_words),
-                            mostly_one.size(),
-                            /*leaf_block_bits=*/256);
+  pixie::RmMBTree<> rm_select0(std::span<const std::uint64_t>(mostly_one_words),
+                               mostly_one.size());
   NaiveRmM nv_select0(mostly_one);
   expect_rank_select_equal(rm_select0, nv_select0, n);
 }
 
 TEST(RmMEdgeCases, Select10OnIncompleteInternalNode) {
-  constexpr size_t leaf_block_bits = 256;
+  constexpr size_t leaf_block_bits = pixie::RmMBTree<>::kBlockBits;
   const size_t n = (leaf_block_bits * 2) + 32;  // exactly 3 leaves
   std::string bits(n, '1');
 
@@ -878,8 +601,7 @@ TEST(RmMEdgeCases, Select10OnIncompleteInternalNode) {
   }
 
   auto words = pack_words_lsb_first(bits);
-  pixie::RmMTree rm(std::span<const std::uint64_t>(words), bits.size(),
-                    leaf_block_bits);
+  pixie::RmMBTree<> rm(std::span<const std::uint64_t>(words), bits.size());
   NaiveRmM nv(bits);
 
   const size_t pairs10 = nv.rank10(n);
@@ -901,32 +623,31 @@ TEST(RmMEdgeCases, InvalidArgumentsGuards) {
   }
 
   auto words = pack_words_lsb_first(bits);
-  pixie::RmMTree rm(std::span<const std::uint64_t>(words), bits.size(),
-                    /*leaf_block_bits=*/256);
+  pixie::RmMBTree<> rm(std::span<const std::uint64_t>(words), bits.size());
 
-  EXPECT_EQ(rm.select1(0), pixie::RmMTree::npos);
-  EXPECT_EQ(rm.select0(0), pixie::RmMTree::npos);
-  EXPECT_EQ(rm.select10(0), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.select1(0), pixie::RmMBTree<>::npos);
+  EXPECT_EQ(rm.select0(0), pixie::RmMBTree<>::npos);
+  EXPECT_EQ(rm.select10(0), pixie::RmMBTree<>::npos);
 
-  EXPECT_EQ(rm.fwdsearch(n, 0), pixie::RmMTree::npos);
-  EXPECT_EQ(rm.bwdsearch(0, 0), pixie::RmMTree::npos);
-  EXPECT_EQ(rm.bwdsearch(n + 1, 0), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.fwdsearch(n, 0), pixie::RmMBTree<>::npos);
+  EXPECT_EQ(rm.bwdsearch(0, 0), pixie::RmMBTree<>::npos);
+  EXPECT_EQ(rm.bwdsearch(n + 1, 0), pixie::RmMBTree<>::npos);
 
-  EXPECT_EQ(rm.range_min_query_pos(10, 9), pixie::RmMTree::npos);
-  EXPECT_EQ(rm.range_min_query_pos(0, n), pixie::RmMTree::npos);
-  EXPECT_EQ(rm.range_max_query_pos(10, 9), pixie::RmMTree::npos);
-  EXPECT_EQ(rm.range_max_query_pos(0, n), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.range_min_query_pos(10, 9), pixie::RmMBTree<>::npos);
+  EXPECT_EQ(rm.range_min_query_pos(0, n), pixie::RmMBTree<>::npos);
+  EXPECT_EQ(rm.range_max_query_pos(10, 9), pixie::RmMBTree<>::npos);
+  EXPECT_EQ(rm.range_max_query_pos(0, n), pixie::RmMBTree<>::npos);
   EXPECT_EQ(rm.range_min_query_val(10, 9), 0);
   EXPECT_EQ(rm.range_max_query_val(10, 9), 0);
   EXPECT_EQ(rm.mincount(10, 9), 0);
-  EXPECT_EQ(rm.minselect(10, 9, 1), pixie::RmMTree::npos);
-  EXPECT_EQ(rm.minselect(0, n - 1, 0), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.minselect(10, 9, 1), pixie::RmMBTree<>::npos);
+  EXPECT_EQ(rm.minselect(0, n - 1, 0), pixie::RmMBTree<>::npos);
 
-  EXPECT_EQ(rm.close(n), pixie::RmMTree::npos);
-  EXPECT_EQ(rm.open(0), pixie::RmMTree::npos);
-  EXPECT_EQ(rm.open(n + 1), pixie::RmMTree::npos);
-  EXPECT_EQ(rm.enclose(0), pixie::RmMTree::npos);
-  EXPECT_EQ(rm.enclose(n + 1), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.close(n), pixie::RmMBTree<>::npos);
+  EXPECT_EQ(rm.open(0), pixie::RmMBTree<>::npos);
+  EXPECT_EQ(rm.open(n + 1), pixie::RmMBTree<>::npos);
+  EXPECT_EQ(rm.enclose(0), pixie::RmMBTree<>::npos);
+  EXPECT_EQ(rm.enclose(n + 1), pixie::RmMBTree<>::npos);
 }
 
 /**
@@ -938,7 +659,7 @@ TEST(RmMEdgeCases, SpanConstructorRejectsShortInputStorage) {
   const size_t bit_count = 300;
 
   EXPECT_THROW(
-      (void)pixie::RmMTree(std::span<const std::uint64_t>(words), bit_count),
+      (void)pixie::RmMBTree<>(std::span<const std::uint64_t>(words), bit_count),
       std::invalid_argument);
 }
 
@@ -1006,33 +727,28 @@ TEST(RmMSdslEdgeCases, ExcessSearchSupportsNegativeTargets) {
 }
 #endif
 
-/**
- * Same bitvector built through different configuration paths (auto vs explicit
- * leaf size and different overhead caps). Query
- * results must be identical.
- */
-TEST(RmMEdgeCases, ExplicitBuildParametersAndOverheadCap) {
+// Compile-time fanout choices must preserve the common query contract.
+TEST(RmMEdgeCases, DifferentFanoutsMatchReference) {
   std::mt19937_64 rng(42);
-  const size_t n = 128;
+  const size_t n = 512 * 40 + 37;
   const std::string bits = random_bits(rng, n);
   NaiveRmM nv(bits);
 
   auto words = pack_words_lsb_first(bits);
   const std::span<const std::uint64_t> word_span(words);
-  pixie::RmMTree rm_auto(word_span, n, 0, 1.f);
-  pixie::RmMTree rm_explicit(word_span, n, 512, 2.f);
-  pixie::RmMTree rm_span(word_span, n, 256, 1.f);
+  pixie::RmMBTree<> rm_default(word_span, n);
+  pixie::RmMBTree<2, 16> rm_compact(word_span, n);
+  pixie::RmMBTree<8, 8> rm_wide(word_span, n);
 
-  expect_rank_select_equal(rm_auto, nv, n);
-  expect_range_ops_equal(rm_auto, nv, n);
-  expect_rank_select_equal(rm_explicit, nv, n);
-  expect_range_ops_equal(rm_explicit, nv, n);
-  expect_rank_select_equal(rm_span, nv, n);
-  expect_range_ops_equal(rm_span, nv, n);
+  expect_rank_select_equal(rm_default, nv, n);
+  expect_range_ops_equal(rm_default, nv, n);
+  expect_rank_select_equal(rm_compact, nv, n);
+  expect_range_ops_equal(rm_compact, nv, n);
+  expect_rank_select_equal(rm_wide, nv, n);
+  expect_range_ops_equal(rm_wide, nv, n);
 }
 
 TEST(RmMEdgeCases, BoundaryHeavyQueries) {
-  constexpr size_t leaf_block_bits = 128;
   const size_t n = 777;
   std::string bits(n, '0');
   for (size_t i = 0; i < n; ++i) {
@@ -1043,7 +759,7 @@ TEST(RmMEdgeCases, BoundaryHeavyQueries) {
   }
 
   auto words = pack_words_lsb_first(bits);
-  pixie::RmMTree rm(std::span<const std::uint64_t>(words), n, leaf_block_bits);
+  pixie::RmMBTree<> rm(std::span<const std::uint64_t>(words), n);
   NaiveRmM nv(bits);
 
   for (size_t end_position : std::array<size_t, 12>{0, 1, 63, 64, 65, 127, 128,
@@ -1111,7 +827,7 @@ TEST(RmMEdgeCases, BoundaryHeavyQueries) {
 TEST(RmMEdgeCases, SdslStyleParenthesesIndexing) {
   const std::string bits = "11101001011000";
   auto words = pack_words_lsb_first(bits);
-  pixie::RmMTree rm(std::span<const std::uint64_t>(words), bits.size());
+  pixie::RmMBTree<> rm(std::span<const std::uint64_t>(words), bits.size());
 
   EXPECT_EQ(rm.close(0), bits.size() - 1);
   EXPECT_EQ(rm.close(1), 6u);
@@ -1122,7 +838,7 @@ TEST(RmMEdgeCases, SdslStyleParenthesesIndexing) {
   EXPECT_EQ(rm.open(6), 1u);
   EXPECT_EQ(rm.enclose(1), 0u);
   EXPECT_EQ(rm.enclose(3), 2u);
-  EXPECT_EQ(rm.enclose(0), pixie::RmMTree::npos);
+  EXPECT_EQ(rm.enclose(0), pixie::RmMBTree<>::npos);
 }
 
 TYPED_TEST(RmMRandomTest, LongRandom) {
@@ -1151,8 +867,7 @@ static void run_btree_case_and_compare(const std::string& bits,
                                        std::mt19937_64& rng,
                                        size_t ops_per_case) {
   auto words = pack_words_lsb_first(bits);
-  pixie::experimental::RmMBTree<> rm(std::span<const std::uint64_t>(words),
-                                     bits.size());
+  pixie::RmMBTree<> rm(std::span<const std::uint64_t>(words), bits.size());
   NaiveRmM nv(bits);
 
   const size_t N = bits.size();
@@ -1284,7 +999,7 @@ static void run_btree_case_and_compare(const std::string& bits,
   }
 }
 
-TEST(RmMBTreeExperimental, DifferentialRandom) {
+TEST(RmMBTreeTest, DifferentialRandom) {
   std::mt19937_64 rng(kSeed);
   std::uniform_int_distribution<int> len_u(1, 4096);
   for (size_t iter = 0; iter < 10; ++iter) {
@@ -1292,7 +1007,7 @@ TEST(RmMBTreeExperimental, DifferentialRandom) {
   }
 }
 
-TEST(RmMBTreeExperimental, DifferentialBoundarySizes) {
+TEST(RmMBTreeTest, DifferentialBoundarySizes) {
   std::mt19937_64 rng(kSeed);
   for (size_t n :
        std::array<size_t, 9>{1, 63, 64, 511, 512, 513, 1023, 1024, 2049}) {
@@ -1300,11 +1015,10 @@ TEST(RmMBTreeExperimental, DifferentialBoundarySizes) {
   }
 }
 
-TEST(RmMBTreeExperimental, SdslStyleParenthesesIndexing) {
+TEST(RmMBTreeTest, SdslStyleParenthesesIndexing) {
   const std::string bits = "11101001011000";
   auto words = pack_words_lsb_first(bits);
-  pixie::experimental::RmMBTree<> rm(std::span<const std::uint64_t>(words),
-                                     bits.size());
+  pixie::RmMBTree<> rm(std::span<const std::uint64_t>(words), bits.size());
 
   EXPECT_EQ(rm.close(0), bits.size() - 1);
   EXPECT_EQ(rm.close(1), 6u);
@@ -1313,7 +1027,7 @@ TEST(RmMBTreeExperimental, SdslStyleParenthesesIndexing) {
   EXPECT_EQ(rm.open(6), 1u);
   EXPECT_EQ(rm.enclose(1), 0u);
   EXPECT_EQ(rm.enclose(3), 2u);
-  EXPECT_EQ(rm.enclose(0), pixie::experimental::RmMBTree<>::npos);
+  EXPECT_EQ(rm.enclose(0), pixie::RmMBTree<>::npos);
 }
 
 template <class Tree>
@@ -1554,13 +1268,12 @@ TYPED_TEST(RmMBTreeBackendTest, PartialBlockSearchesAndTailMinSelect) {
   }
 }
 
-TEST(RmMBTreeExperimental, FwdBwdSearchAcrossHighLevels) {
+TEST(RmMBTreeTest, FwdBwdSearchAcrossHighLevels) {
   std::mt19937_64 rng(kSeed);
   const size_t n = 512 * 32 * 8 + 4096;
   const std::string bits = random_bits(rng, n);
   auto words = pack_words_lsb_first(bits);
-  pixie::experimental::RmMBTree<> rm(std::span<const std::uint64_t>(words),
-                                     bits.size());
+  pixie::RmMBTree<> rm(std::span<const std::uint64_t>(words), bits.size());
   NaiveRmM nv(bits);
 
   const std::array<size_t, 10> positions = {
@@ -1586,8 +1299,8 @@ TEST(RmMBTreeExperimental, FwdBwdSearchAcrossHighLevels) {
   }
 }
 
-TEST(RmMBTreeExperimental, BwdSearchReturnsNodeBoundaryWithoutDescend) {
-  using Tree = pixie::experimental::RmMBTree<>;
+TEST(RmMBTreeTest, BwdSearchReturnsNodeBoundaryWithoutDescend) {
+  using Tree = pixie::RmMBTree<>;
 
   const auto check_boundary = [](size_t start, size_t target) {
     const std::string bits(start, '1');
@@ -1611,7 +1324,7 @@ TEST(RmMBTreeExperimental, BwdSearchReturnsNodeBoundaryWithoutDescend) {
   check_boundary(3 * high_span, high_span);
 }
 
-TEST(RmMBTreeExperimental, MinCountAndMinSelectAcrossNodeBoundaries) {
+TEST(RmMBTreeTest, MinCountAndMinSelectAcrossNodeBoundaries) {
   std::string bits;
   bits.reserve(512 * 40 + 37);
   for (size_t i = 0; i < 512 * 40 + 37; ++i) {
@@ -1619,8 +1332,7 @@ TEST(RmMBTreeExperimental, MinCountAndMinSelectAcrossNodeBoundaries) {
   }
 
   auto words = pack_words_lsb_first(bits);
-  pixie::experimental::RmMBTree<> rm(std::span<const std::uint64_t>(words),
-                                     bits.size());
+  pixie::RmMBTree<> rm(std::span<const std::uint64_t>(words), bits.size());
   NaiveRmM nv(bits);
 
   const std::array<std::pair<size_t, size_t>, 4> ranges = {
@@ -1650,7 +1362,7 @@ TEST(RmMBTreeExperimental, MinCountAndMinSelectAcrossNodeBoundaries) {
 
 TEST(RmMTest, RankBasic) {
   std::vector<std::uint64_t> bits = {0b10110};
-  pixie::RmMTree rm(std::span<const std::uint64_t>(bits), 5);
+  pixie::RmMBTree<> rm(std::span<const std::uint64_t>(bits), 5);
 
   EXPECT_EQ(rm.rank1(0), 0);  // No bits
   EXPECT_EQ(rm.rank1(1), 0);  // 0
@@ -1662,7 +1374,7 @@ TEST(RmMTest, RankBasic) {
 
 TEST(RmMTest, RankWithZeros) {
   std::vector<std::uint64_t> bits = {0};
-  pixie::RmMTree rm(std::span<const std::uint64_t>(bits), 5);
+  pixie::RmMBTree<> rm(std::span<const std::uint64_t>(bits), 5);
 
   for (size_t i = 0; i <= 5; i++) {
     EXPECT_EQ(rm.rank1(i), 0);
@@ -1671,7 +1383,7 @@ TEST(RmMTest, RankWithZeros) {
 
 TEST(RmMTest, SelectBasic) {
   std::vector<std::uint64_t> bits = {0b1100010110010110};
-  pixie::RmMTree rm(std::span<const std::uint64_t>(bits), 16);
+  pixie::RmMBTree<> rm(std::span<const std::uint64_t>(bits), 16);
 
   EXPECT_EQ(rm.select1(1), 1);
   EXPECT_EQ(rm.select1(2), 2);
@@ -1691,7 +1403,7 @@ TEST(RmMTest, MainRankTest) {
   }
 
   size_t rm_size = 65536 * 32 * 64;
-  pixie::RmMTree rm(std::span<const std::uint64_t>(bits), rm_size);
+  pixie::RmMBTree<> rm(std::span<const std::uint64_t>(bits), rm_size);
   size_t rank = 0;
   for (size_t i = 0; i < rm_size; ++i) {
     ASSERT_EQ(rank, rm.rank1(i));
@@ -1707,7 +1419,7 @@ TEST(RmMTest, MainSelectTest) {
   }
 
   size_t rm_size = 65536 * 32 * 64;
-  pixie::RmMTree rm(std::span<const std::uint64_t>(bits), rm_size);
+  pixie::RmMBTree<> rm(std::span<const std::uint64_t>(bits), rm_size);
   size_t rank = 0;
 
   for (size_t i = 0; i < rm_size; ++i) {

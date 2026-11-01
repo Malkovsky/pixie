@@ -34,6 +34,11 @@ python3 scripts/excess_benchmark_table.py \
 
 The RmM comparison uses operations available in both Pixie and sdsl-lite over the same power-of-two tree sizes. Pixie's benchmark harness only constructs query pools needed by the selected operations.
 
+The native executable now benchmarks `pixie::RmMBTree<>`, with compressed
+rank/select by default. Pass `--rank_select_backend=baseline` for the other
+backend. Blocks are fixed at 512 bits. The figures below retain historical
+measurements of the removed `RmMTree`; they are not measurements of RmMBTree.
+
 Pixie command:
 
 ```sh

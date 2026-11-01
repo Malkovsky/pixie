@@ -10,10 +10,8 @@
 namespace {
 template <bool Dfuds, bool Events>
 void Prepared(benchmark::State& state) {
-  using Tree =
-      std::conditional_t<Dfuds,
-                         pixie::DFUDSTree<pixie::experimental::RmMBTree<>>,
-                         pixie::BPTree<pixie::experimental::RmMBTree<>>>;
+  using Tree = std::conditional_t<Dfuds, pixie::DFUDSTree<pixie::RmMBTree<>>,
+                                  pixie::BPTree<pixie::RmMBTree<>>>;
   using Decoder =
       std::conditional_t<Dfuds,
                          pixie::detail::dfuds_micro::DfudsMicroSubtree<8192>,

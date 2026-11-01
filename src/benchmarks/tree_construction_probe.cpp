@@ -13,7 +13,7 @@
 #include "tree_input.h"
 
 using Clock = std::chrono::steady_clock;
-using Rmm = pixie::experimental::RmMBTree<>;
+using Rmm = pixie::RmMBTree<>;
 using Bp = pixie::BPTree<Rmm>;
 using Dfuds = pixie::DFUDSTree<Rmm>;
 using Louds = pixie::LoudsTree<pixie::RankSelectSupportCompressed<>>;

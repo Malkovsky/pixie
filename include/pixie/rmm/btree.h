@@ -18,7 +18,7 @@
 #include <utility>
 #include <vector>
 
-namespace pixie::experimental {
+namespace pixie {
 
 /**
  * @brief Cache-aligned btree implementation of the range min-max index.
@@ -90,7 +90,9 @@ template <std::size_t HighCacheLines = 4,
           std::size_t LowFanout = 32,
           class RankSelect = RankSelectSupportCompressed<>>
 class RmMBTree
-    : public RmMBase<RmMBTree<HighCacheLines, LowFanout, RankSelect>> {
+    : public RmMBase<RmMBTree<HighCacheLines, LowFanout, RankSelect>>,
+      public SerializationBase<
+          RmMBTree<HighCacheLines, LowFanout, RankSelect>> {
  public:
   /** @brief Rank/select implementation used by this index. */
   using RankSelectBackend = RankSelect;
@@ -115,6 +117,109 @@ class RmMBTree
       static_cast<std::size_t>(std::numeric_limits<std::int16_t>::max()));
 
   RmMBTree() = default;
+
+  /** @brief Report the embedded backend's one-select configuration. */
+  bool supports_select1_impl() const {
+    return rank_index_ && rank_index_->supports_select1();
+  }
+  /** @brief Report the embedded backend's zero-select configuration. */
+  bool supports_select0_impl() const {
+    return rank_index_ && rank_index_->supports_select0();
+  }
+
+  /** @brief Serialize the hierarchy and nested rank/select metadata, not bits.
+   * @details The versioned artifact records both fanouts. The backend supplies
+   * its own serialization format; use the same backend type when loading.
+   */
+  void serialize_impl(BinaryWriter& writer) const
+    requires Serializable<RankSelect>
+  {
+    const auto begin = detail::begin_frame(writer, kSerializationTag);
+    writer.write_size(HighCacheLines);
+    writer.write_size(LowFanout);
+    writer.write_size(bit_count_);
+    writer.write_u64(rank_index_.has_value());
+    if (rank_index_) {
+      rank_index_->serialize(writer);
+    }
+    writer.write_u64(top_summary_.size_bits);
+    writer.write_u64(top_summary_.ones);
+    writer.write_i64(top_summary_.block_excess);
+    writer.write_i64(top_summary_.min_excess);
+    writer.write_i64(top_summary_.max_excess);
+    writer.write_u64(top_summary_.min_count);
+    for (const auto& level : low_levels_) {
+      write_nodes(writer, level);
+    }
+    for (const auto& level : high_levels_) {
+      write_nodes(writer, level);
+    }
+    detail::end_frame(writer, begin);
+  }
+
+  /** @brief Restore saved hierarchy and backend over caller-owned bits.
+   * @param reader Cursor advanced by one artifact only on success.
+   * @param words Immutable source, which must outlive the result.
+   * @param validation Quick validates dimensions and summary consistency; full
+   * additionally checks leaf summaries and rank/select against source bits.
+   * @details Metadata is owned. No tree construction or hashing occurs in quick
+   * mode; the caller must supply the original encoding. Fanouts must match.
+   * @throws std::invalid_argument for malformed data, configuration mismatch or
+   * insufficient source words. Allocation and size exceptions propagate.
+   */
+  static RmMBTree deserialize_impl(
+      BinaryReader& reader,
+      std::span<const uint64_t> words,
+      DeserializationValidation validation = DeserializationValidation::kQuick)
+    requires Deserializable<RankSelect,
+                            std::span<const uint64_t>,
+                            DeserializationValidation>
+  {
+    auto candidate = reader;
+    auto payload = detail::read_frame(candidate, kSerializationTag);
+    if (payload.read_size() != HighCacheLines ||
+        payload.read_size() != LowFanout) {
+      throw std::invalid_argument("Incompatible RmMBTree fanouts");
+    }
+    RmMBTree result;
+    result.bits_ = words;
+    result.bit_count_ = payload.read_size();
+    if (result.bit_count_ > INT64_MAX ||
+        result.bit_count_ / 64 + (result.bit_count_ % 64 != 0) > words.size()) {
+      throw std::invalid_argument("Invalid RmMBTree source size");
+    }
+    const auto has_rank = payload.read_u64();
+    if (has_rank > 1 || (!has_rank && result.bit_count_)) {
+      throw std::invalid_argument("Invalid RmMBTree rank marker");
+    }
+    if (has_rank) {
+      result.rank_index_ = RankSelect::deserialize(payload, words, validation);
+      if (result.rank_index_->size() != result.bit_count_) {
+        throw std::invalid_argument("Invalid RmMBTree rank size");
+      }
+    }
+    result.top_summary_ = {payload.read_u64(), payload.read_u64(),
+                           payload.read_i64(), payload.read_i64(),
+                           payload.read_i64(), payload.read_u64()};
+    result.block_count_ =
+        result.bit_count_ / kBlockBits + (result.bit_count_ % kBlockBits != 0);
+    result.level_counts_.push_back(result.block_count_);
+    if (result.block_count_) {
+      auto count = result.block_count_ / kLowFanout +
+                   (result.block_count_ % kLowFanout != 0);
+      result.low_levels_.push_back(read_nodes<LowNode>(payload, count));
+      result.level_counts_.push_back(count);
+      do {
+        count = count / kHighFanout + (count % kHighFanout != 0);
+        result.high_levels_.push_back(read_nodes<HighNode>(payload, count));
+        result.level_counts_.push_back(count);
+      } while (count > 1);
+    }
+    payload.require_zero_padding(7);
+    result.validate_metadata(validation);
+    reader = candidate;
+    return result;
+  }
   RmMBTree(const RmMBTree&) = default;
   RmMBTree(RmMBTree&&) noexcept = default;
   RmMBTree& operator=(const RmMBTree&) = default;
@@ -132,15 +237,16 @@ class RmMBTree
    * @brief Construct an RmM btree over an external bit-vector span.
    * @details The tree stores a non-owning view of @p words and builds its
    * rank/select helper plus min-max summaries over the first @p bit_count bits.
-   * The optional block-size argument is accepted for API compatibility; this
-   * implementation uses the fixed 512-bit block size.
+   * The block size is fixed at 512 bits; hierarchy fanouts are template
+   * parameters. The caller keeps the source alive and immutable.
    * @param words External little-endian 64-bit words that contain the bit
    * sequence.
    * @param bit_count Number of valid bits in @p words.
+   * @throws std::invalid_argument if the source contains fewer than bit_count
+   * bits. Unused bits and words after bit_count are ignored.
    */
   explicit RmMBTree(std::span<const std::uint64_t> words,
-                    std::size_t bit_count,
-                    std::size_t = kBlockBits) {
+                    std::size_t bit_count) {
     build(words, bit_count);
   }
 
@@ -461,6 +567,7 @@ class RmMBTree
     std::int64_t min_excess = 0;
     std::int64_t max_excess = 0;
     std::uint64_t min_count = 0;
+    bool operator==(const Summary&) const = default;
   };
 
   template <class Excess, class Count, std::size_t Fanout>
@@ -472,6 +579,7 @@ class RmMBTree
     std::array<Excess, Fanout> min_excess{};
     std::array<Excess, Fanout> max_excess{};
     std::array<Count, Fanout> min_count{};
+    bool operator==(const SummaryNode&) const = default;
   };
 
   using LowNode = SummaryNode<std::int16_t, std::uint16_t, kLowFanout>;
@@ -480,6 +588,140 @@ class RmMBTree
   static_assert(alignof(HighNode) == kCacheLineBytes);
   static_assert(sizeof(LowNode) % kCacheLineBytes == 0);
   static_assert(sizeof(HighNode) % kCacheLineBytes == 0);
+
+  static constexpr uint64_t kSerializationTag = 0x31424d5258495050ULL;
+
+  template <class Node>
+  static void write_nodes(BinaryWriter& writer,
+                          const std::vector<Node>& nodes) {
+    for (const auto& node : nodes) {
+      for (auto value : node.prefix_excess) {
+        detail::write_integral(writer, value);
+      }
+      for (auto value : node.min_excess) {
+        detail::write_integral(writer, value);
+      }
+      for (auto value : node.max_excess) {
+        detail::write_integral(writer, value);
+      }
+      for (auto value : node.min_count) {
+        detail::write_integral(writer, value);
+      }
+    }
+  }
+
+  template <class Node>
+  static std::vector<Node> read_nodes(BinaryReader& reader, size_t count) {
+    constexpr auto bytes =
+        Node::kFanout * (3 * sizeof(typename Node::ExcessType) +
+                         sizeof(typename Node::CountType));
+    if (count > reader.remaining() / bytes) {
+      throw std::invalid_argument("Truncated RmMBTree level");
+    }
+    std::vector<Node> nodes(count);
+    for (auto& node : nodes) {
+      for (auto& value : node.prefix_excess) {
+        value = detail::read_integral<typename Node::ExcessType>(reader);
+      }
+      for (auto& value : node.min_excess) {
+        value = detail::read_integral<typename Node::ExcessType>(reader);
+      }
+      for (auto& value : node.max_excess) {
+        value = detail::read_integral<typename Node::ExcessType>(reader);
+      }
+      for (auto& value : node.min_count) {
+        value = detail::read_integral<typename Node::CountType>(reader);
+      }
+    }
+    return nodes;
+  }
+
+  void validate_metadata(DeserializationValidation validation) const {
+    if (!block_count_) {
+      if (top_summary_ != Summary{}) {
+        throw std::invalid_argument("Invalid empty RmMBTree summary");
+      }
+      return;
+    }
+    // Validate leaves first. Once these are valid, all higher summaries are
+    // checked against bounded arithmetic on the previously validated level.
+    for (size_t i = 0; i < block_count_; ++i) {
+      const auto summary = summary_at(0, i);
+      const auto length = std::min(kBlockBits, bit_count_ - i * kBlockBits);
+      const auto bound = static_cast<int64_t>(length);
+      if (summary.block_excess < -bound || summary.block_excess > bound ||
+          (summary.block_excess + bound) % 2 || summary.min_excess < -bound ||
+          summary.max_excess > bound ||
+          summary.min_excess > summary.max_excess ||
+          summary.min_excess > summary.block_excess ||
+          summary.max_excess < summary.block_excess || !summary.min_count ||
+          summary.min_count > length) {
+        throw std::invalid_argument("Invalid RmMBTree leaf summary");
+      }
+      if (validation == DeserializationValidation::kFull) {
+        const auto expected = summarize_bits(i * kBlockBits, length);
+        if (summary.block_excess != expected.block_excess ||
+            summary.min_excess != expected.min_excess ||
+            summary.max_excess != expected.max_excess ||
+            summary.min_count != expected.min_count) {
+          throw std::invalid_argument("RmMBTree summary does not match source");
+        }
+      }
+    }
+    for (size_t level = 1; level < total_levels(); ++level) {
+      const auto check_padding = [](const auto& node, size_t used) {
+        for (size_t slot = used; slot < node.kFanout; ++slot) {
+          if (node.prefix_excess[slot] || node.min_excess[slot] ||
+              node.max_excess[slot] || node.min_count[slot]) {
+            throw std::invalid_argument("Nonzero RmMBTree node padding");
+          }
+        }
+      };
+      Summary top;
+      const auto fanout = fanout_to_parent(level - 1);
+      const auto used = level_count(level - 1) % fanout;
+      if (used) {
+        if (level == 1) {
+          check_padding(low_levels_[0].back(), used);
+        } else {
+          check_padding(high_levels_[level - 2].back(), used);
+        }
+      }
+      for (size_t parent = 0; parent < level_count(level); ++parent) {
+        Summary combined;
+        for (size_t i = parent * fanout;
+             i < std::min(level_count(level - 1), (parent + 1) * fanout); ++i) {
+          auto child = summary_at(level - 1, i);
+          child.size_bits =
+              node_end_bit(level - 1, i) - node_start_bit(level - 1, i);
+          child.ones = static_cast<uint64_t>(
+              (static_cast<__int128>(child.size_bits) + child.block_excess) /
+              2);
+          combined = append(combined, child);
+        }
+        if (level + 1 == total_levels()) {
+          top = combined;
+        } else {
+          const auto& node = high_levels_[level - 1][parent / kHighFanout];
+          const auto slot = parent % kHighFanout;
+          const auto before = slot ? node.prefix_excess[slot - 1] : 0;
+          if (static_cast<__int128>(node.prefix_excess[slot]) - before !=
+                  combined.block_excess ||
+              node.min_excess[slot] != combined.min_excess ||
+              node.max_excess[slot] != combined.max_excess ||
+              node.min_count[slot] != combined.min_count) {
+            throw std::invalid_argument("Inconsistent RmMBTree hierarchy");
+          }
+        }
+      }
+      if (level + 1 == total_levels() && top != top_summary_) {
+        throw std::invalid_argument("Invalid RmMBTree top summary");
+      }
+    }
+    if (top_summary_.ones != rank1_impl(bit_count_)) {
+      throw std::invalid_argument("Inconsistent RmMBTree total rank");
+    }
+  }
 
   struct ByteAgg {
     std::int8_t block_excess = 0;
@@ -2265,4 +2507,4 @@ class RmMBTree
   std::vector<std::vector<HighNode>> high_levels_;
 };
 
-}  // namespace pixie::experimental
+}  // namespace pixie

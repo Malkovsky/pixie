@@ -8,7 +8,7 @@ using pixie::benchmarks::RunDirectTreeBenchmark;
 using pixie::benchmarks::TreeLayout;
 using pixie::benchmarks::TreeSizes;
 using pixie::benchmarks::TreeWorkload;
-using Tree = pixie::BPTree<pixie::experimental::RmMBTree<>>;
+using Tree = pixie::BPTree<pixie::RmMBTree<>>;
 using PointerTree = pixie::references::PointerTree;
 
 BENCHMARK_TEMPLATE(RunBestTreeBenchmark,
