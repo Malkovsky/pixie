@@ -255,6 +255,7 @@ class RmMBTree
    *
    * @details This keeps the normal RmMBTree API full-featured by default while
    * allowing adapters that only need rank/select0 to skip select1 samples.
+   * The block size remains fixed at kBlockBits.
    * @param one_count Optional exact number of 1-bits for exact select-sample
    * allocation when supported by the backend; otherwise the backend derives
    * its counts while building the index.
@@ -262,8 +263,7 @@ class RmMBTree
   RmMBTree(std::span<const std::uint64_t> words,
            std::size_t bit_count,
            SelectSupport select_support,
-           std::optional<std::size_t> one_count = std::nullopt,
-           std::size_t = kBlockBits) {
+           std::optional<std::size_t> one_count = std::nullopt) {
     build(words, bit_count, select_support, one_count);
   }
 
@@ -801,7 +801,7 @@ class RmMBTree
              std::size_t bit_count,
              SelectSupport select_support,
              std::optional<std::size_t> one_count = std::nullopt) {
-    const std::size_t required_words = (bit_count + 63) / 64;
+    const std::size_t required_words = bit_count / 64 + (bit_count % 64 != 0);
     if (words.size() < required_words) {
       throw std::invalid_argument(
           "RmMBTree input span is shorter than bit_count");
@@ -816,16 +816,15 @@ class RmMBTree
     } else {
       rank_index_.emplace(words, bit_count, select_support);
     }
-    block_count_ = (bit_count_ + kBlockBits - 1) / kBlockBits;
+    block_count_ = bit_count_ / kBlockBits + (bit_count_ % kBlockBits != 0);
     std::vector<Summary> block_summaries(block_count_);
 
     for (std::size_t block_index = 0; block_index < block_count_;
          ++block_index) {
       const std::size_t block_begin = block_index * kBlockBits;
-      const std::size_t block_end =
-          std::min(bit_count_, block_begin + kBlockBits);
-      block_summaries[block_index] =
-          summarize_bits(block_begin, block_end - block_begin);
+      const std::size_t block_length =
+          std::min(kBlockBits, bit_count_ - block_begin);
+      block_summaries[block_index] = summarize_bits(block_begin, block_length);
     }
 
     build_levels(block_summaries);

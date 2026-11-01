@@ -498,9 +498,11 @@ void BM_TreeArtifact(benchmark::State& state) {
   const auto n = static_cast<size_t>(state.range(0));
   auto words = pixie::benchmarks::GenerateRandomBp(n);
   if constexpr (std::same_as<Tree, SerializedDFUDS>) {
-    words = pixie::benchmarks::DfudsFromBp(words, n);
+    words = pixie::benchmarks::ConvertBpEncoding<
+        pixie::detail::TreeEncodingKind::kDFUDS>(words, n);
   } else if constexpr (std::same_as<Tree, SerializedLOUDS>) {
-    words = pixie::benchmarks::LoudsFromBp(words, n);
+    words = pixie::benchmarks::ConvertBpEncoding<
+        pixie::detail::TreeEncodingKind::kLOUDS>(words, n);
   }
   const Tree tree(words, n);
   if constexpr (RootIndex) {

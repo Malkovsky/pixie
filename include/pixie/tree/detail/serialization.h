@@ -5,8 +5,6 @@
 
 namespace pixie::detail {
 
-enum class TreeEncodingKind : uint64_t { kBP = 1, kDFUDS = 2, kLOUDS = 3 };
-
 inline uint64_t tree_serialization_tag(TreeEncodingKind kind) {
   return 0x3152540058495050ULL + (static_cast<uint64_t>(kind) << 32);
 }
@@ -77,6 +75,69 @@ inline void validate_tree_topology(std::span<const uint64_t> words,
   if ((nodes && pending != 0) || ones != expected_ones) {
     throw std::invalid_argument("Invalid tree topology counts");
   }
+}
+
+template <TreeEncodingKind Kind, class Backend>
+void serialize_tree(BinaryWriter& writer,
+                    size_t nodes,
+                    std::span<const uint64_t> words,
+                    const Backend& backend) {
+  const auto begin = begin_frame(writer, tree_serialization_tag(Kind));
+  writer.write_size(nodes);
+  write_tree_encoding(writer, words,
+                      tree_encoding_bits(nodes, Kind == TreeEncodingKind::kBP));
+  backend.serialize(writer);
+  end_frame(writer, begin);
+}
+
+// Construct the final tree before committing the reader. The factory transfers
+// the encoding allocation and its borrowing backend together, without exposing
+// an intermediate state whose copy could leave the backend bound to old words.
+template <TreeEncodingKind Kind,
+          TreeEncodingStorage Storage,
+          class Backend,
+          class Construct>
+auto deserialize_tree(BinaryReader& reader,
+                      DeserializationValidation validation,
+                      Construct construct) {
+  auto candidate = reader;
+  auto payload = read_frame(candidate, tree_serialization_tag(Kind));
+  const auto nodes = payload.read_size();
+  const auto bits = tree_encoding_bits(nodes, Kind == TreeEncodingKind::kBP);
+  auto encoding = read_tree_encoding<Storage>(payload, bits);
+  const auto words = tree_encoding_words(encoding, bits);
+  auto backend = Backend::deserialize(payload, words, validation);
+  if (backend.size() != bits) {
+    throw std::invalid_argument("Tree backend size mismatch");
+  }
+  if constexpr (requires {
+                  backend.supports_select1();
+                  backend.supports_select0();
+                }) {
+    if (!backend.supports_select1() || !backend.supports_select0()) {
+      throw std::invalid_argument(
+          "Tree backend requires both select directions");
+    }
+  }
+  const auto ones = [&] {
+    if constexpr (Kind == TreeEncodingKind::kLOUDS) {
+      return backend.rank(bits);
+    } else {
+      return backend.rank1(bits);
+    }
+  }();
+  const auto expected_ones =
+      Kind == TreeEncodingKind::kDFUDS && nodes ? nodes - 1 : nodes;
+  if (ones != expected_ones) {
+    throw std::invalid_argument("Tree backend population mismatch");
+  }
+  if (validation == DeserializationValidation::kFull) {
+    validate_tree_topology(words, nodes, Kind);
+  }
+  payload.require_zero_padding(7);
+  auto result = construct(std::move(encoding), bits, std::move(backend));
+  reader = candidate;
+  return result;
 }
 
 }  // namespace pixie::detail

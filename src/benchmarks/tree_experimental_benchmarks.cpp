@@ -19,7 +19,8 @@ void Prepared(benchmark::State& state) {
   const size_t n = state.range(0);
   auto words = pixie::benchmarks::GenerateRandomBp(n);
   if constexpr (Dfuds) {
-    words = pixie::benchmarks::DfudsFromBp(words, n);
+    words = pixie::benchmarks::ConvertBpEncoding<
+        pixie::detail::TreeEncodingKind::kDFUDS>(words, n);
   }
   Tree tree(words, n);
   pixie::TreeTraversalContext context(tree);

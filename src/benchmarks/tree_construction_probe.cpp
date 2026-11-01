@@ -35,9 +35,11 @@ Result succinct(size_t n, size_t budget, bool copy_input) {
   r.generate = seconds(start);
   start = Clock::now();
   if constexpr (std::is_same_v<Tree, Dfuds>) {
-    words = pixie::benchmarks::DfudsFromBp(words, n);
+    words = pixie::benchmarks::ConvertBpEncoding<
+        pixie::detail::TreeEncodingKind::kDFUDS>(words, n);
   } else if constexpr (std::is_same_v<Tree, Louds>) {
-    words = pixie::benchmarks::LoudsFromBp(words, n);
+    words = pixie::benchmarks::ConvertBpEncoding<
+        pixie::detail::TreeEncodingKind::kLOUDS>(words, n);
   }
   pixie::AlignedStorage encoding;
   if (!copy_input) {

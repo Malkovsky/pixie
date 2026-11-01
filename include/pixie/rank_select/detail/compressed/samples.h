@@ -48,6 +48,31 @@ inline void write_monotone_low(std::uint64_t* words,
   }
 }
 
+// Both packed sample layouts use a base, unary high word and packed low bits.
+// Callers first validate their record bounds, low offset and width (<= 59).
+// Return the last decoded value to carry monotonicity across record boundaries.
+inline uint64_t validate_monotone_record(const uint64_t* record,
+                                         size_t low_offset,
+                                         size_t count,
+                                         unsigned width,
+                                         uint64_t limit,
+                                         uint64_t previous) {
+  if (static_cast<size_t>(std::popcount(record[1])) != count) {
+    throw std::invalid_argument("Invalid compressed unary sample");
+  }
+  for (size_t i = 0; i < count; ++i) {
+    const auto high = ::select_64(record[1], i) - i;
+    const auto delta =
+        (high << width) + read_monotone_low(record + low_offset, i, width);
+    if (high > (UINT64_MAX >> width) || record[0] > limit ||
+        delta > limit - record[0] || record[0] + delta < previous) {
+      throw std::invalid_argument("Invalid compressed sample value");
+    }
+    previous = record[0] + delta;
+  }
+  return previous;
+}
+
 /**
  * @brief Internal block Elias--Fano array of non-decreasing 64-bit integers.
  * @details Each group of up to 32 values stores a base, a unary high word,
@@ -149,19 +174,7 @@ class BlockedMonotoneSamples {
         throw std::invalid_argument("Invalid compressed sample record");
       }
       const auto* record = storage_.data() + offset;
-      if (static_cast<size_t>(std::popcount(record[1])) != n) {
-        throw std::invalid_argument("Invalid compressed unary sample");
-      }
-      for (size_t i = 0; i < n; ++i) {
-        const auto high = ::select_64(record[1], i) - i;
-        const auto delta =
-            (high << width) + read_monotone_low(record + 2, i, width);
-        if (high > (UINT64_MAX >> width) || record[0] > limit ||
-            delta > limit - record[0] || record[0] + delta < previous) {
-          throw std::invalid_argument("Invalid compressed sample value");
-        }
-        previous = record[0] + delta;
-      }
+      previous = validate_monotone_record(record, 2, n, width, limit, previous);
       offset += words;
     }
     if (offset != storage_.size()) {

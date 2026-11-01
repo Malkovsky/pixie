@@ -60,24 +60,13 @@ class PositionSamples {
     for (size_t g = 0; g < groups; ++g) {
       const auto* record = group(g);
       const auto n = std::min(size_t{32}, count - g * 32);
-      if (static_cast<size_t>(std::popcount(record[1])) != n) {
-        throw std::invalid_argument("Invalid position unary sample");
-      }
+      previous = validate_monotone_record(record, low_offset_, n, width_, limit,
+                                          previous);
       if (low_offset_ == 4) {
         if (record[2] != next || (record[3] >> n)) {
           throw std::invalid_argument("Invalid position wide map");
         }
         next += std::popcount(record[3]);
-      }
-      for (size_t i = 0; i < n; ++i) {
-        const auto high = ::select_64(record[1], i) - i;
-        const auto delta = (high << width_) +
-                           read_monotone_low(record + low_offset_, i, width_);
-        if (high > (UINT64_MAX >> width_) || record[0] > limit ||
-            delta > limit - record[0] || record[0] + delta < previous) {
-          throw std::invalid_argument("Invalid position sample value");
-        }
-        previous = record[0] + delta;
       }
     }
     if (next != wide_count) {

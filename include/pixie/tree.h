@@ -130,10 +130,13 @@ class TreeBase : public SerializationBase<Impl> {
    * the matching TreeBase semantics. Only reset changes the current node and
    * invalidates memoized results; copies have independent memoization.
    */
-  auto navigate(Node node) const {
+  auto navigate(Node node) const& {
     static_assert(TreeNavigationView<typename Impl::NodeView>);
     return impl().navigate_impl(node);
   }
+
+  /** @brief Reject a navigation view borrowing a temporary tree. */
+  auto navigate(Node) const&& = delete;
 
   /**
    * @brief Object bytes plus owned index allocations.

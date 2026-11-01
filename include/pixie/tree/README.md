@@ -37,11 +37,18 @@ auto restored = Tree::deserialize(reader);
 
 `deserialize(reader, DeserializationValidation::kQuick)` restores saved metadata
 without rebuilding it from the encoding. It checks framing, configuration,
-dimensions and internal metadata consistency, and assumes the original valid
-encoding and its corresponding metadata. `kFull` additionally verifies topology
-and source-derived metadata; this scans the encoding and can allocate temporary
-metadata for validation. No hash or artifact identity is computed. Deserializers
-advance the input cursor only on success and consume exactly one artifact.
+dimensions and internal metadata consistency. It is intended for trusted
+artifacts: the caller must provide a valid encoding and its corresponding
+metadata. Successful quick loading does not guarantee safe queries on arbitrary
+malformed input. It may scan metadata, and owning loaders still copy the encoding.
+
+`kFull` additionally verifies topology and source-derived metadata; this scans
+the encoding and can allocate temporary metadata for validation. For example,
+BP bits `1010` can have consistent navigation metadata but describe two roots,
+so full tree validation rejects them. Neither mode computes a hash or establishes
+artifact identity or authenticity: full validation checks consistency with the
+supplied contents. Deserializers advance the input cursor only on success and
+consume exactly one artifact.
 
 Owning trees copy the encoding. `Tree::TreeView::deserialize` borrows the
 artifact's word-aligned encoding bytes; the backing storage must stay alive,
@@ -50,6 +57,35 @@ into owning allocations. A TreeView is therefore not a wholly zero-copy index.
 Artifact offsets and backing addresses must keep embedded encoding words
 aligned to eight bytes for view loading. File placement and bundling belong to
 the application; multiple artifacts can be written to the same writer.
+
+Owning trees also accept an ordered tree as a converting-constructor argument,
+for example `DFUDSTree<RmMBTree<>> dfuds(bp)`. The source provides `size()`,
+`root()`, `degree(node)`, `first_child(node)` and `next_sibling(node)`. It must
+describe a valid ordered tree, with stable handles during construction; sibling
+navigation is called only when a next sibling exists. No CRTP inheritance is
+required. Child order is preserved, but node numbers and bit positions belong
+to the destination representation. The result owns its encoding and rebuilt
+navigation metadata; it retains no source handles or caches. TreeView cannot
+be a conversion destination. Same-type construction remains ordinary copying.
+
+Conversion shares an internal DFS stream with entry, degree and exit events
+for every node, including leaves. BP and DFUDS sources use their microtree
+decoders; LOUDS sources use decoded child traversal. Generic sources use
+navigation with an ancestor stack. The traversal producer is independent of
+the destination encoding, so converters are not implemented pair by pair.
+
+BP and DFUDS write directly into destination storage. LOUDS stages packed
+degree records by depth and concatenates them: DFS restricted to one depth has
+the same sibling order as BFS. This produces BFS-ordered output without a queue
+of node handles. It requires O(nodes) packed staging bits plus O(height) level
+records and vector capacity overhead. There is no per-node degree array.
+
+Construction uses `size_t` counts. Its temporary memory is independent of the
+query traversal-cache budget: decoded producers have fixed explicit scratch
+allowances, generic traversal needs O(height) handles, and LOUDS additionally
+needs the staging storage above. A root navigation cache is not built for
+conversion. The constructor from encoding words remains available and avoids
+traversal when the encoding already exists.
 
 ```cpp
 #include <pixie/tree/louds.h>
@@ -81,7 +117,8 @@ only immutable entries. Restore it with
 `RootNavigationIndex<Tree>::deserialize(reader, tree, byte_limit, validation)`.
 The caller must provide the corresponding tree; quick validation checks entry
 bounds and connected child ranges but cannot identify a different same-sized
-tree. Full validation checks each cached node and child list against the tree.
+tree. Full validation checks each cached node and child list against the tree;
+it does not establish the identity of topology outside the indexed region.
 Loading never expands the indexed region. Insufficient budgets are rejected,
 and allocator spare capacity from the original index is not persisted.
 

@@ -11,6 +11,8 @@
 
 #include <random>
 
+#include "tree_encoding_test_utils.h"
+
 namespace {
 using pixie::DeserializationValidation;
 using Compressed = pixie::RankSelectSupportCompressed<>;
@@ -40,21 +42,22 @@ template <class B, class S>
 struct TreeFormat<pixie::BPTree<B, S>> {
   static constexpr uint64_t invalid_two_node_encoding = 0b0101;
   static auto encode(size_t n, const std::vector<std::vector<size_t>>& adj) {
-    return pixie::adj_to_bp(n, adj);
+    return EncodeReference<pixie::detail::TreeEncodingKind::kBP>(n, adj);
   }
 };
 template <class B, class S>
 struct TreeFormat<pixie::DFUDSTree<B, S>> {
   static constexpr uint64_t invalid_two_node_encoding = 0b010;
   static auto encode(size_t n, const std::vector<std::vector<size_t>>& adj) {
-    return pixie::adj_to_dfuds(n, adj);
+    return EncodeReference<pixie::detail::TreeEncodingKind::kDFUDS>(n, adj);
   }
 };
 template <class B, class S>
 struct TreeFormat<pixie::LoudsTree<B, S>> {
   static constexpr uint64_t invalid_two_node_encoding = 0b011;
   static auto encode(size_t n, const std::vector<std::vector<size_t>>& adj) {
-    return adj_to_louds(n, bfs_order(n, adj));
+    return EncodeReference<pixie::detail::TreeEncodingKind::kLOUDS>(
+        n, bfs_order(n, adj));
   }
 };
 

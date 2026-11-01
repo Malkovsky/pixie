@@ -3,7 +3,9 @@
 #include <pixie/memory_usage.h>
 #include <pixie/rmm/btree.h>
 #include <pixie/tree.h>
+#include <pixie/tree/detail/bp_micro.h>
 #include <pixie/tree/detail/bp_node_view.h>
+#include <pixie/tree/detail/construction.h>
 #include <pixie/tree/detail/encoding_storage.h>
 #include <pixie/tree/detail/serialization.h>
 
@@ -24,6 +26,27 @@ template <class RMMTree,
 class BPTree;
 
 template <class B, detail::TreeEncodingStorage S>
+struct detail::ConstructionTraversal<BPTree<B, S>> {
+  using Tree = BPTree<B, S>;
+  template <class Enter, class Leave>
+  static void walk(const Tree& tree, Enter& enter, Leave& leave) {
+    inspected_construction_dfs(
+        tree, enter, leave, [&](auto& visit, auto& child) {
+          bp_micro::BpMicroTraversal<8192, Tree,
+                                     std::remove_reference_t<decltype(visit)>,
+                                     std::remove_reference_t<decltype(child)>>
+              traversal(tree, tree.encoding_words(), visit, child, 128);
+          traversal.walk(tree.root());
+        });
+  }
+  static constexpr size_t scratch_bytes() {
+    using Callback = void (*)(TreeNode);
+    return bp_micro::BpMicroTraversal<8192, Tree, Callback,
+                                      Callback>::scratch_bytes(128);
+  }
+};
+
+template <class B, detail::TreeEncodingStorage S>
 struct TreeTraits<BPTree<B, S>> {
   using TreeView = BPTree<B, ReadOnlyStorageView>;
   using NodeView = detail::BpNodeView<BPTree<B, S>>;
@@ -42,19 +65,34 @@ class BPTree : public TreeBase<BPTree<RMMTree, EncodingStorage>> {
   RMMTree rmm_;
 
  public:
+  /**
+   * @brief Construct an owning copy of another ordered tree's topology.
+   * @details Preserves child order, but assigns destination node numbers and
+   * bit positions. Source must satisfy detail::OrderedTreeSource and describe
+   * a valid tree of size() nodes. Its handles must remain valid during this
+   * call; no source storage is retained. Navigation metadata is rebuilt.
+   * Succinct sources use decoded DFS; other sources use O(height) navigation
+   * scratch. LOUDS output additionally stages O(size()) packed bits and
+   * O(height) level records; vector capacity adds allocation overhead.
+   * Construction scratch is independent of the query traversal-cache budget.
+   * Allocation and unrepresentable-size exceptions propagate.
+   */
+  template <detail::OrderedTreeSource Source>
+    requires(std::same_as<EncodingStorage, AlignedStorage> &&
+             !std::same_as<std::remove_cvref_t<Source>, BPTree>)
+  explicit BPTree(const Source& source)
+      : BPTree(detail::construct_tree_encoding<detail::TreeEncodingKind::kBP>(
+                   source),
+               source.size()) {}
+
   /** @brief Write one tree artifact: encoding, node count and nested backend.
    * @details External root indexes and active traversal state are not included.
    */
   void serialize_impl(BinaryWriter& writer) const
     requires Serializable<RMMTree>
   {
-    const auto begin = detail::begin_frame(
-        writer, detail::tree_serialization_tag(detail::TreeEncodingKind::kBP));
-    writer.write_size(this->size());
-    detail::write_tree_encoding(writer, encoding_words_impl(),
-                                detail::tree_encoding_bits(this->size(), true));
-    rmm_.serialize(writer);
-    detail::end_frame(writer, begin);
+    detail::serialize_tree<detail::TreeEncodingKind::kBP>(
+        writer, this->size(), encoding_words_impl(), rmm_);
   }
 
   /** @brief Restore a complete tree without rebuilding its navigation index.
@@ -75,39 +113,12 @@ class BPTree : public TreeBase<BPTree<RMMTree, EncodingStorage>> {
                             std::span<const uint64_t>,
                             DeserializationValidation>
   {
-    auto candidate = reader;
-    auto payload = detail::read_frame(
-        candidate,
-        detail::tree_serialization_tag(detail::TreeEncodingKind::kBP));
-    const auto nodes = payload.read_size();
-    const auto bits = detail::tree_encoding_bits(nodes, true);
-    auto encoding = detail::read_tree_encoding<EncodingStorage>(payload, bits);
-    const auto words = detail::tree_encoding_words(encoding, bits);
-    auto backend = RMMTree::deserialize(payload, words, validation);
-    if (backend.size() != bits) {
-      throw std::invalid_argument("Tree backend size mismatch");
-    }
-    if constexpr (requires {
-                    backend.supports_select1();
-                    backend.supports_select0();
-                  }) {
-      if (!backend.supports_select1() || !backend.supports_select0()) {
-        throw std::invalid_argument(
-            "Tree backend requires both select directions");
-      }
-    }
-    const auto ones = backend.rank1(bits);
-    if (ones != nodes) {
-      throw std::invalid_argument("Tree backend population mismatch");
-    }
-    if (validation == DeserializationValidation::kFull) {
-      detail::validate_tree_topology(words, nodes,
-                                     detail::TreeEncodingKind::kBP);
-    }
-    payload.require_zero_padding(7);
-    BPTree result(std::move(encoding), bits, std::move(backend));
-    reader = candidate;
-    return result;
+    return detail::deserialize_tree<detail::TreeEncodingKind::kBP,
+                                    EncodingStorage, RMMTree>(
+        reader, validation,
+        [](EncodingStorage&& encoding, size_t bits, RMMTree&& backend) {
+          return BPTree(std::move(encoding), bits, std::move(backend));
+        });
   }
 
   using typename TreeBase<BPTree>::NodeView;
@@ -329,26 +340,4 @@ class BPTree : public TreeBase<BPTree<RMMTree, EncodingStorage>> {
   }
 };
 
-std::vector<uint64_t> adj_to_bp(size_t tree_size,
-                                const std::vector<std::vector<size_t>>& adj) {
-  size_t bp_size = tree_size * 2;
-  std::vector<uint64_t> bp((bp_size + 63) / 64, 0);
-  std::vector<std::pair<size_t, size_t>> stack;
-  stack.push_back(std::make_pair(0, 0));
-  size_t pos = 0;
-  bp[pos >> 6] = bp[pos >> 6] | (1ULL << (pos & 63));
-  while (!stack.empty()) {
-    auto& [v, p] = stack.back();
-    p++;
-    if (p >= adj[v].size()) {
-      pos++;
-      stack.pop_back();
-      continue;
-    }
-    pos++;
-    bp[pos >> 6] = bp[pos >> 6] | (1ULL << (pos & 63));
-    stack.push_back(std::make_pair(adj[v][p], 0));
-  }
-  return bp;
-}
 }  // namespace pixie

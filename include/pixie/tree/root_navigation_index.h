@@ -83,10 +83,7 @@ class RootNavigationIndex
       throw std::invalid_argument("Root index tree size mismatch");
     }
     const auto count = payload.read_size();
-    const auto capacity =
-        byte_limit > sizeof(RootNavigationIndex)
-            ? (byte_limit - sizeof(RootNavigationIndex)) / sizeof(Entry)
-            : 0;
+    const auto capacity = entry_capacity(byte_limit);
     if (count > Capacity || count > tree.size() || count > capacity ||
         count > payload.remaining() / 32) {
       throw std::invalid_argument(
@@ -131,7 +128,7 @@ class RootNavigationIndex
         throw std::invalid_argument("Disconnected root index");
       }
       if (validation == DeserializationValidation::kFull) {
-        // Forward-only child references ensure each handle is authenticated
+        // Forward-only child references ensure each handle is validated
         // by its parent before it is ever used for a tree navigation query.
         for (const auto& entry : result.entries_) {
           if (tree.degree(entry.node) != entry.degree) {
@@ -180,10 +177,7 @@ class RootNavigationIndex
       throw std::invalid_argument("Root index requires a nonempty tree");
     }
     const size_t capacity =
-        byte_limit > sizeof(*this)
-            ? std::min({size_t(Capacity), tree.size(),
-                        (byte_limit - sizeof(*this)) / sizeof(Entry)})
-            : 0;
+        std::min({size_t(Capacity), tree.size(), entry_capacity(byte_limit)});
     if (!capacity) {
       return;
     }
@@ -372,6 +366,13 @@ class RootNavigationIndex
 
  private:
   static constexpr uint64_t kSerializationTag = 0x314e525458495050ULL;
+
+  static size_t entry_capacity(size_t byte_limit) {
+    return byte_limit > sizeof(RootNavigationIndex)
+               ? (byte_limit - sizeof(RootNavigationIndex)) / sizeof(Entry)
+               : 0;
+  }
+
   const Tree& tree_;
   std::vector<Entry> entries_;
 };

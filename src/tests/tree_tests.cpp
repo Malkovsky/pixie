@@ -36,8 +36,142 @@
 #include "../benchmarks/shifted_query_pool.h"
 #include "../benchmarks/tree_dfs/optimized.h"
 #include "../benchmarks/tree_traversal_workloads.h"
+#include "tree_encoding_test_utils.h"
 
 namespace {
+
+TEST(TreeConversion, ExhaustiveSourceEncodingsAndNormalizedEvents) {
+  using Bp = pixie::BPTree<pixie::RmMBTree<>>;
+  using Dfuds = pixie::DFUDSTree<pixie::RmMBTree<>>;
+  using Louds = pixie::LoudsTree<pixie::RankSelectSupportCompressed<>>;
+  for (size_t n = 1; n <= 7; ++n) {
+    for (uint64_t bits = 1; bits < (uint64_t{1} << (2 * n)); bits += 2) {
+      int excess = 0;
+      bool valid = true;
+      for (size_t i = 0; i < 2 * n; ++i) {
+        excess += (bits >> i & 1) ? 1 : -1;
+        if (excess <= 0 && i + 1 != 2 * n) {
+          valid = false;
+          break;
+        }
+      }
+      if (!valid || excess) {
+        continue;
+      }
+      const Bp bp(std::span(&bits, 1), n);
+      const Dfuds dfuds(bp);
+      const Louds louds(dfuds);
+      EXPECT_EQ(Bp(dfuds).encoding_words()[0], bits);
+      EXPECT_EQ(Bp(louds).encoding_words()[0], bits);
+      auto check_events = [&](const auto& tree) {
+        std::vector<pixie::TreeNode> path;
+        size_t entries = 0, exits = 0, edges = 0;
+        pixie::detail::construction_dfs(
+            tree,
+            [&](auto node, size_t degree) {
+              EXPECT_EQ(degree, tree.degree(node));
+              if (!path.empty()) {
+                EXPECT_EQ(tree.parent(node).number, path.back().number);
+                EXPECT_EQ(tree.parent(node).pos, path.back().pos);
+              }
+              path.push_back(node);
+              ++entries;
+              edges += degree;
+            },
+            [&](auto node) {
+              ASSERT_FALSE(path.empty());
+              EXPECT_EQ(path.back().number, node.number);
+              EXPECT_EQ(path.back().pos, node.pos);
+              path.pop_back();
+              ++exits;
+            });
+        EXPECT_TRUE(path.empty());
+        EXPECT_EQ(entries, n);
+        EXPECT_EQ(exits, n);
+        EXPECT_EQ(edges, n - 1);
+      };
+      check_events(bp);
+      check_events(dfuds);
+      check_events(louds);
+    }
+  }
+}
+
+TEST(TreeConversion, KnownOrderedEncodings) {
+  using Bp = pixie::BPTree<pixie::RmMBTree<>>;
+  using Dfuds = pixie::DFUDSTree<pixie::RmMBTree<>>;
+  using Louds = pixie::LoudsTree<pixie::RankSelectSupportCompressed<>>;
+  const uint64_t star = 0b001011, chain = 0b000111;
+  const Bp star_tree(std::span(&star, 1), 3),
+      chain_tree(std::span(&chain, 1), 3);
+  EXPECT_EQ(Dfuds(star_tree).encoding_words()[0], 0b00011);
+  EXPECT_EQ(Louds(star_tree).encoding_words()[0], 0b11001);
+  EXPECT_EQ(Dfuds(chain_tree).encoding_words()[0], 0b00101);
+  EXPECT_EQ(Louds(chain_tree).encoding_words()[0], 0b10101);
+}
+
+TEST(TreeConversion, OrderedTopologyAcrossSourcesAndDestinations) {
+  using Bp = pixie::BPTree<pixie::RmMBTree<>>;
+  using Dfuds = pixie::DFUDSTree<pixie::RmMBTree<>>;
+  using Louds = pixie::LoudsTree<pixie::RankSelectSupportCompressed<>>;
+  static_assert(!std::is_constructible_v<Bp::TreeView, const Louds&>);
+  static_assert(!std::is_constructible_v<Dfuds::TreeView, const Bp&>);
+  static_assert(!std::is_constructible_v<Louds::TreeView, const Dfuds&>);
+  std::mt19937_64 rng(42);
+  for (size_t n : {size_t{0}, size_t{1}, size_t{2}, size_t{33}, size_t{257},
+                   size_t{4097}, size_t{8193}}) {
+    for (int shape = 0; shape < 3; ++shape) {
+      std::vector<std::vector<size_t>> adjacency(n);
+      if (n) {
+        adjacency[0].push_back(0);
+      }
+      for (size_t i = 1; i < n; ++i) {
+        const size_t parent = shape == 0 ? i - 1 : shape == 1 ? 0 : rng() % i;
+        adjacency[i].push_back(parent);
+        adjacency[parent].push_back(i);
+      }
+      const auto expected_bp =
+          n ? EncodeReference<pixie::detail::TreeEncodingKind::kBP>(n,
+                                                                    adjacency)
+            : std::vector<uint64_t>{};
+      const auto expected_dfuds =
+          n ? EncodeReference<pixie::detail::TreeEncodingKind::kDFUDS>(
+                  n, adjacency)
+            : std::vector<uint64_t>{};
+      const auto expected_louds =
+          n ? EncodeReference<pixie::detail::TreeEncodingKind::kLOUDS>(
+                  n, bfs_order(n, adjacency))
+            : std::vector<uint64_t>{};
+      auto check = [&](const auto& source) {
+        Bp bp(source);
+        Dfuds dfuds(source);
+        Louds louds(source);
+        EXPECT_EQ(bp.size(), n);
+        EXPECT_EQ(dfuds.size(), n);
+        EXPECT_EQ(louds.size(), n);
+        EXPECT_TRUE(std::ranges::equal(bp.encoding_words(), expected_bp));
+        EXPECT_TRUE(std::ranges::equal(dfuds.encoding_words(), expected_dfuds));
+        EXPECT_TRUE(std::ranges::equal(louds.encoding_words(), expected_louds));
+      };
+      AdjListTree reference(adjacency);
+      pixie::references::PointerTree pointers(adjacency);
+      check(reference);
+      check(pointers);
+      Bp bp(reference);
+      Dfuds dfuds(reference);
+      Louds louds(reference);
+      check(bp);
+      check(dfuds);
+      check(louds);
+      check(Bp::TreeView(bp.encoding_words(), n));
+      check(Dfuds::TreeView(dfuds.encoding_words(), n));
+      check(Louds::TreeView(louds.encoding_words(), n));
+      // Conversion owns its encoding and does not borrow the temporary source.
+      Bp independent{Louds(reference)};
+      check(independent);
+    }
+  }
+}
 
 template <class RankSelect>
 struct LoudsCase {
@@ -53,7 +187,8 @@ struct LoudsCase {
   static std::vector<std::uint64_t> encode(
       std::size_t tree_size,
       const std::vector<std::vector<std::size_t>>& adjacency) {
-    return adj_to_louds(tree_size, adjacency);
+    return EncodeReference<pixie::detail::TreeEncodingKind::kLOUDS>(tree_size,
+                                                                    adjacency);
   }
 };
 
@@ -71,7 +206,8 @@ struct BpCase {
   static std::vector<std::uint64_t> encode(
       std::size_t tree_size,
       const std::vector<std::vector<std::size_t>>& adjacency) {
-    return pixie::adj_to_bp(tree_size, adjacency);
+    return EncodeReference<pixie::detail::TreeEncodingKind::kBP>(tree_size,
+                                                                 adjacency);
   }
 };
 
@@ -89,7 +225,8 @@ struct DfudsCase {
   static std::vector<std::uint64_t> encode(
       std::size_t tree_size,
       const std::vector<std::vector<std::size_t>>& adjacency) {
-    return pixie::adj_to_dfuds(tree_size, adjacency);
+    return EncodeReference<pixie::detail::TreeEncodingKind::kDFUDS>(tree_size,
+                                                                    adjacency);
   }
 };
 
@@ -119,6 +256,15 @@ TYPED_TEST_SUITE(TreeSpecificationTest, TreeCases);
 TYPED_TEST(TreeSpecificationTest, IndependentConcurrentViews) {
   using Tree = typename TypeParam::Tree;
   static_assert(pixie::TreeNavigationView<typename Tree::NodeView>);
+  static_assert(std::is_constructible_v<typename Tree::PathView, Tree&>);
+  static_assert(std::is_constructible_v<typename Tree::PathView, const Tree&>);
+  static_assert(!std::is_constructible_v<typename Tree::PathView, Tree&&>);
+  static_assert(
+      !std::is_constructible_v<typename Tree::PathView, const Tree&&>);
+  static_assert(requires(const Tree& tree) { tree.navigate({0, 0}); });
+  static_assert(!requires(Tree&& tree) { std::move(tree).navigate({0, 0}); });
+  static_assert(
+      !requires(const Tree&& tree) { std::move(tree).navigate({0, 0}); });
   static_assert(
       std::is_constructible_v<Tree, std::vector<uint64_t>&&, size_t> ==
       !std::is_same_v<Tree, typename Tree::TreeView>);
@@ -351,7 +497,8 @@ struct RejectZeroSelectRmM : pixie::RmMBTree<> {
 TEST(DfudsNavigationTest, RootParentDoesNotQueryZeroSelectRank) {
   const std::vector<std::vector<size_t>> adjacency = {
       {0, 1, 2, 3}, {0}, {0}, {0}};
-  const auto words = pixie::adj_to_dfuds(4, adjacency);
+  const auto words =
+      EncodeReference<pixie::detail::TreeEncodingKind::kDFUDS>(4, adjacency);
   const pixie::DFUDSTree<RejectZeroSelectRmM> tree(words, 4);
   for (size_t i = 0; i < 3; ++i) {
     const auto child = tree.child(tree.root(), i);
@@ -926,7 +1073,9 @@ TYPED_TEST(LoudsNavigationViewTest, TraversalReusesSelectAndInvalidatesOnMove) {
         }
       }
       const auto adjacency = bfs_order(size, source);
-      const auto words = adj_to_louds(size, adjacency);
+      const auto words =
+          EncodeReference<pixie::detail::TreeEncodingKind::kLOUDS>(size,
+                                                                   adjacency);
       const Tree tree(words, size);
       const AdjListTree reference(adjacency);
       auto view = tree.navigate(tree.root());
@@ -979,7 +1128,8 @@ TYPED_TEST(LoudsNavigationViewTest, TraversalReusesSelectAndInvalidatesOnMove) {
 TYPED_TEST(LoudsNavigationViewTest, ViewsAndCopiesHaveIndependentCaches) {
   using Backend = CountingNavigationRankSelect<TypeParam>;
   const std::vector<std::vector<std::size_t>> adjacency = {{0, 1, 2}, {0}, {0}};
-  const auto words = adj_to_louds(3, adjacency);
+  const auto words =
+      EncodeReference<pixie::detail::TreeEncodingKind::kLOUDS>(3, adjacency);
   const pixie::LoudsTree<Backend> tree(words, 3);
   const auto first = tree.first_child(tree.root());
   auto a = tree.navigate(first);
@@ -1149,7 +1299,8 @@ TYPED_TEST(ParenthesisNavigationViewTest,
     adjacency[0].push_back(i);
     adjacency[i].push_back(0);
   }
-  const auto words = pixie::adj_to_dfuds(size, adjacency);
+  const auto words =
+      EncodeReference<pixie::detail::TreeEncodingKind::kDFUDS>(size, adjacency);
   const auto check = [&]() {
     const pixie::DFUDSTree<Backend> tree(words, size);
     auto view = tree.navigate(tree.root());
@@ -1215,9 +1366,11 @@ TYPED_TEST(ParenthesisNavigationViewTest, DfsReusesParenthesisSearches) {
     EXPECT_EQ(Backend::close_calls, dfuds ? 0 : nonleaf_nonroot);
     EXPECT_EQ(Backend::rank_calls, 0u);
   };
-  const auto dfuds = pixie::adj_to_dfuds(size, adjacency);
+  const auto dfuds =
+      EncodeReference<pixie::detail::TreeEncodingKind::kDFUDS>(size, adjacency);
   check(pixie::DFUDSTree<Backend>(dfuds, size), true);
-  const auto bp = pixie::adj_to_bp(size, adjacency);
+  const auto bp =
+      EncodeReference<pixie::detail::TreeEncodingKind::kBP>(size, adjacency);
   check(pixie::BPTree<Backend>(bp, size), false);
 }
 
@@ -1233,7 +1386,8 @@ TYPED_TEST(LoudsNavigationViewTest, DegreeSiblingAndFirstChildShareSelects) {
     adjacency[1].push_back(i);
     adjacency[i] = {1};
   }
-  const auto words = adj_to_louds(size, adjacency);
+  const auto words =
+      EncodeReference<pixie::detail::TreeEncodingKind::kLOUDS>(size, adjacency);
   const pixie::LoudsTree<Backend> tree(words, size);
   auto view = tree.navigate(tree.first_child(tree.root()));
   Backend::one_selects = Backend::zero_selects = 0;
@@ -1879,8 +2033,11 @@ void CheckBoundedUnpackingCache() {
         adjacency[i].push_back(parent);
         adjacency[parent].push_back(i);
       }
-      auto words = BP ? pixie::adj_to_bp(n, adjacency)
-                      : pixie::adj_to_dfuds(n, adjacency);
+      auto words =
+          BP ? EncodeReference<pixie::detail::TreeEncodingKind::kBP>(n,
+                                                                     adjacency)
+             : EncodeReference<pixie::detail::TreeEncodingKind::kDFUDS>(
+                   n, adjacency);
       const size_t bits = 2 * n - (BP ? 0 : 1);
       if (bits % 64) {
         words.back() |= ~uint64_t{0} << (bits % 64);
@@ -2233,7 +2390,8 @@ TEST(TreeMicroPrefetchTest, BoundariesAndDeepShapes) {
         }
       }
       auto adjacency = dfs_order(n, source);
-      auto words = pixie::adj_to_bp(n, adjacency);
+      auto words =
+          EncodeReference<pixie::detail::TreeEncodingKind::kBP>(n, adjacency);
       if ((2 * n) % 64) {
         words.back() |= ~uint64_t{0} << ((2 * n) % 64);
       }
@@ -2332,7 +2490,8 @@ TEST(TreeLoudsPrefetchTest, BoundariesShapesAndNestedTraversal) {
         }
       }
       adj = bfs_order(n, adj);
-      auto words = adj_to_louds(n, adj);
+      auto words =
+          EncodeReference<pixie::detail::TreeEncodingKind::kLOUDS>(n, adj);
       if ((2 * n - 1) % 64) {
         words.back() |= ~uint64_t{0} << ((2 * n - 1) % 64);
       }
@@ -2463,7 +2622,8 @@ TEST(TreeDfudsMicroPrefetchTest, ExhaustiveShapesAndBoundaries) {
         }
       }
       adj = dfs_order(n, adj);
-      auto words = pixie::adj_to_dfuds(n, adj);
+      auto words =
+          EncodeReference<pixie::detail::TreeEncodingKind::kDFUDS>(n, adj);
       CheckDfudsMicroPrefetch(words, n);
       if ((2 * n - 1) % 64) {
         words.back() |= ~uint64_t{0} << ((2 * n - 1) % 64);

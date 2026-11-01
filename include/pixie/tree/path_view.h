@@ -25,6 +25,9 @@ class TreePathView {
   /** @brief Start at the root of a valid nonempty tree. */
   explicit TreePathView(const Tree& tree) : view_(tree.navigate(tree.root())) {}
 
+  /** @brief Reject a path cursor borrowing a temporary tree. */
+  TreePathView(const Tree&&) = delete;
+
   /** @brief Return the current node handle by value. */
   TreeNode node() const { return view_.node(); }
   /** @brief Return the edge distance from the tree root. */

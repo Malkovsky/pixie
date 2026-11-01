@@ -11,6 +11,7 @@
 
 #include "../benchmarks/shifted_query_pool.h"
 #include "../benchmarks/tree_input.h"
+#include "tree_encoding_test_utils.h"
 
 TEST(TreeBenchmarkInputTest, RandomTreesMatchExistingEncodersExactly) {
   for (size_t n :
@@ -21,11 +22,16 @@ TEST(TreeBenchmarkInputTest, RandomTreesMatchExistingEncodersExactly) {
       const auto adjacency = generate_random_tree(n, rng);
       const auto ordered = dfs_order(n, adjacency);
       const auto bp = pixie::benchmarks::GenerateRandomBp(n, seed);
-      EXPECT_EQ(bp, pixie::adj_to_bp(n, ordered));
-      EXPECT_EQ(pixie::benchmarks::DfudsFromBp(bp, n),
-                pixie::adj_to_dfuds(n, ordered));
-      EXPECT_EQ(pixie::benchmarks::LoudsFromBp(bp, n),
-                adj_to_louds(n, bfs_order(n, adjacency)));
+      EXPECT_EQ(bp, EncodeReference<pixie::detail::TreeEncodingKind::kBP>(
+                        n, ordered));
+      EXPECT_EQ(
+          pixie::benchmarks::ConvertBpEncoding<
+              pixie::detail::TreeEncodingKind::kDFUDS>(bp, n),
+          EncodeReference<pixie::detail::TreeEncodingKind::kDFUDS>(n, ordered));
+      EXPECT_EQ(pixie::benchmarks::ConvertBpEncoding<
+                    pixie::detail::TreeEncodingKind::kLOUDS>(bp, n),
+                EncodeReference<pixie::detail::TreeEncodingKind::kLOUDS>(
+                    n, bfs_order(n, adjacency)));
     }
   }
 }
@@ -43,19 +49,28 @@ TEST(TreeBenchmarkInputTest, ConversionsHandleDepthWidthAndWordBoundaries) {
         adjacency[node].push_back(parent);
         adjacency[parent].push_back(node);
       }
-      const auto bp = pixie::adj_to_bp(n, adjacency);
-      EXPECT_EQ(pixie::benchmarks::DfudsFromBp(bp, n),
-                pixie::adj_to_dfuds(n, adjacency));
-      EXPECT_EQ(pixie::benchmarks::LoudsFromBp(bp, n),
-                adj_to_louds(n, bfs_order(n, adjacency)));
+      const auto bp =
+          EncodeReference<pixie::detail::TreeEncodingKind::kBP>(n, adjacency);
+      EXPECT_EQ(pixie::benchmarks::ConvertBpEncoding<
+                    pixie::detail::TreeEncodingKind::kDFUDS>(bp, n),
+                EncodeReference<pixie::detail::TreeEncodingKind::kDFUDS>(
+                    n, adjacency));
+      EXPECT_EQ(pixie::benchmarks::ConvertBpEncoding<
+                    pixie::detail::TreeEncodingKind::kLOUDS>(bp, n),
+                EncodeReference<pixie::detail::TreeEncodingKind::kLOUDS>(
+                    n, bfs_order(n, adjacency)));
     }
   }
 }
 
 TEST(TreeBenchmarkInputTest, EmptyInputsAndGeneratorLimit) {
   EXPECT_TRUE(pixie::benchmarks::GenerateRandomBp(0).empty());
-  EXPECT_TRUE(pixie::benchmarks::DfudsFromBp({}, 0).empty());
-  EXPECT_TRUE(pixie::benchmarks::LoudsFromBp({}, 0).empty());
+  EXPECT_TRUE(pixie::benchmarks::ConvertBpEncoding<
+                  pixie::detail::TreeEncodingKind::kDFUDS>({}, 0)
+                  .empty());
+  EXPECT_TRUE(pixie::benchmarks::ConvertBpEncoding<
+                  pixie::detail::TreeEncodingKind::kLOUDS>({}, 0)
+                  .empty());
   EXPECT_THROW(
       pixie::benchmarks::GenerateRandomBp(std::numeric_limits<uint32_t>::max()),
       std::length_error);

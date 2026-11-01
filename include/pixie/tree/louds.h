@@ -3,8 +3,10 @@
 #include <pixie/memory_usage.h>
 #include <pixie/rank_select/support.h>
 #include <pixie/tree.h>
+#include <pixie/tree/detail/construction.h>
 #include <pixie/tree/detail/encoding_storage.h>
 #include <pixie/tree/detail/louds_children.h>
+#include <pixie/tree/detail/louds_inspection_iterative.h>
 #include <pixie/tree/detail/louds_node_view.h>
 #include <pixie/tree/detail/serialization.h>
 
@@ -38,6 +40,27 @@ using LoudsNode = TreeNode;
 template <class RankSelect = RankSelectSupport<>,
           detail::TreeEncodingStorage EncodingStorage = AlignedStorage>
 class LoudsTree;
+
+template <class B, detail::TreeEncodingStorage S>
+struct detail::ConstructionTraversal<LoudsTree<B, S>> {
+  using Tree = LoudsTree<B, S>;
+  template <class Enter, class Leave>
+  static void walk(const Tree& tree, Enter& enter, Leave& leave) {
+    inspected_construction_dfs(
+        tree, enter, leave, [&](auto& visit, auto& child) {
+          tree_unpack::LoudsIterativeTraversal<
+              Tree, std::remove_reference_t<decltype(visit)>,
+              std::remove_reference_t<decltype(child)>, true, 128, 32>
+              traversal(tree, tree.encoding_words(), visit, child);
+          traversal.walk(tree.root(), 0);
+        });
+  }
+  static constexpr size_t scratch_bytes() {
+    using Callback = void (*)(TreeNode);
+    return tree_unpack::LoudsIterativeTraversal<Tree, Callback, Callback, true,
+                                                128, 32>::scratch_bytes();
+  }
+};
 
 template <class B, detail::TreeEncodingStorage S>
 struct TreeTraits<LoudsTree<B, S>> {
@@ -80,21 +103,35 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
   }
 
  public:
+  /**
+   * @brief Construct an owning copy of another ordered tree's topology.
+   * @details Preserves child order, but assigns destination node numbers and
+   * bit positions. Source must satisfy detail::OrderedTreeSource and describe
+   * a valid tree of size() nodes. Its handles must remain valid during this
+   * call; no source storage is retained. Navigation metadata is rebuilt.
+   * Succinct sources use decoded DFS; other sources use O(height) navigation
+   * scratch. LOUDS output additionally stages O(size()) packed bits and
+   * O(height) level records; vector capacity adds allocation overhead.
+   * Construction scratch is independent of the query traversal-cache budget.
+   * Allocation and unrepresentable-size exceptions propagate.
+   */
+  template <detail::OrderedTreeSource Source>
+    requires(std::same_as<EncodingStorage, AlignedStorage> &&
+             !std::same_as<std::remove_cvref_t<Source>, LoudsTree>)
+  explicit LoudsTree(const Source& source)
+      : LoudsTree(
+            detail::construct_tree_encoding<detail::TreeEncodingKind::kLOUDS>(
+                source),
+            source.size()) {}
+
   /** @brief Write one tree artifact: encoding, node count and nested backend.
    * @details External root indexes and active traversal state are not included.
    */
   void serialize_impl(BinaryWriter& writer) const
     requires Serializable<RankSelect>
   {
-    const auto begin = detail::begin_frame(
-        writer,
-        detail::tree_serialization_tag(detail::TreeEncodingKind::kLOUDS));
-    writer.write_size(this->size());
-    detail::write_tree_encoding(
-        writer, encoding_words_impl(),
-        detail::tree_encoding_bits(this->size(), false));
-    bv.serialize(writer);
-    detail::end_frame(writer, begin);
+    detail::serialize_tree<detail::TreeEncodingKind::kLOUDS>(
+        writer, this->size(), encoding_words_impl(), bv);
   }
 
   /** @brief Restore a complete tree without rebuilding its navigation index.
@@ -115,39 +152,12 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
                             std::span<const uint64_t>,
                             DeserializationValidation>
   {
-    auto candidate = reader;
-    auto payload = detail::read_frame(
-        candidate,
-        detail::tree_serialization_tag(detail::TreeEncodingKind::kLOUDS));
-    const auto nodes = payload.read_size();
-    const auto bits = detail::tree_encoding_bits(nodes, false);
-    auto encoding = detail::read_tree_encoding<EncodingStorage>(payload, bits);
-    const auto words = detail::tree_encoding_words(encoding, bits);
-    auto backend = RankSelect::deserialize(payload, words, validation);
-    if (backend.size() != bits) {
-      throw std::invalid_argument("Tree backend size mismatch");
-    }
-    if constexpr (requires {
-                    backend.supports_select1();
-                    backend.supports_select0();
-                  }) {
-      if (!backend.supports_select1() || !backend.supports_select0()) {
-        throw std::invalid_argument(
-            "Tree backend requires both select directions");
-      }
-    }
-    const auto ones = backend.rank(bits);
-    if (ones != nodes) {
-      throw std::invalid_argument("Tree backend population mismatch");
-    }
-    if (validation == DeserializationValidation::kFull) {
-      detail::validate_tree_topology(words, nodes,
-                                     detail::TreeEncodingKind::kLOUDS);
-    }
-    payload.require_zero_padding(7);
-    LoudsTree result(std::move(encoding), bits, std::move(backend));
-    reader = candidate;
-    return result;
+    return detail::deserialize_tree<detail::TreeEncodingKind::kLOUDS,
+                                    EncodingStorage, RankSelect>(
+        reader, validation,
+        [](EncodingStorage&& encoding, size_t bits, RankSelect&& backend) {
+          return LoudsTree(std::move(encoding), bits, std::move(backend));
+        });
   }
 
   using typename TreeBase<LoudsTree>::NodeView;

@@ -1,6 +1,7 @@
 #include <pixie/rmm/btree.h>
 #include <pixie/tree/implementations.h>
 
+#include "tree_conversion_benchmarks.h"
 #include "tree_family_benchmarks.h"
 
 using pixie::benchmarks::RunBestTreeBenchmark;

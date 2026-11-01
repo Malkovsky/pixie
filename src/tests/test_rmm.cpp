@@ -1067,6 +1067,21 @@ TYPED_TEST(RmMBTreeBackendTest, SpanConstructorRejectsShortInputStorage) {
       std::invalid_argument);
 }
 
+TYPED_TEST(RmMBTreeBackendTest, SpanConstructorRejectsOverflowingSizeClaims) {
+  const auto maximum = std::numeric_limits<size_t>::max();
+  const std::vector<uint64_t> words(1, 0);
+  for (size_t tail : {size_t{0}, size_t{1}, size_t{62}, size_t{63}, size_t{64},
+                      size_t{510}, size_t{511}}) {
+    SCOPED_TRACE(tail);
+    const auto bits = maximum - tail;
+    EXPECT_THROW((TypeParam(std::span<const uint64_t>{}, bits)),
+                 std::invalid_argument);
+    EXPECT_THROW((TypeParam(std::span<const uint64_t>(words), bits,
+                            TypeParam::SelectSupport::kNone)),
+                 std::invalid_argument);
+  }
+}
+
 TYPED_TEST(RmMBTreeBackendTest, RankSelectIgnoresDirtyTrailingStorage) {
   std::vector<std::uint64_t> words = {
       0b101ull, std::numeric_limits<std::uint64_t>::max()};
