@@ -14,11 +14,11 @@
 
 - **Rank/select support**: fundamental primitive to efficiently map bits and their positions in a bit vector.
 - **Range min-max tree**: fundamental primitive for efficient computation of excess queries mainly for navigation in balanced parenthesis sequences.
-- **Succinct trees**: static variants of $2$-bit per entry trees, i.e. LOUDS, DFUDS, BP (Based on Euler tour and Ferrada-Navarro style).
-- **Wavelet tree**, i.e. static structure that supposts rank/select on arbitrary finite alphabets, supports building a Huffman archieve with fast extraction of arbitrary segment.
+- **Succinct trees**: static variants of $2$-bit per entry trees, i.e. LOUDS ($2.072$ bits per node), DFUDS, BP (both $2.358$ per node), a cache budget of 512 KiB allows to outperform pointer-based impelmentations.
+[Tree benchmarks](https://malkovsky.github.io/pixie/benchmarks_trees.html) 
+- **Wavelet tree**, i.e. static structure that supposts rank/select on arbitrary finite alphabets, supports building a Huffman archieve with $\mathcal{O}(\ell\log \sigma)$ extraction of arbitrary segment with length $\ell$ over an alphabet of size $\sigma$.
 - Succinct **cartesian tree** and a state of the art solution to static **RMQ** (array is immutable, queries are not known in advance).
-- **Permutations**: identity construction, checked reads, rotations, and consuming rebased merge. Contract: `pixie/permutation.h`; concrete: `pixie/permutations/permutation.h`.
-- **Permutable sequences**: consuming range construction, checked immutable reads, rotations, and unchanged-value merge. Contract: `pixie/permutable_sequence.h`; concrete: `pixie/permutations/sequence.h`.
+- Several classes to work with **permutations** and **permutable sequences** supporting fast cyclic shift operations, as an example `pixie::SortedPermutableSequence` provides the same functionality as `std::multiset` with almost the same performance while having much less overhead due to flat structure and supporting $\mathcal{O}(\log n)$ cyclic shifts. 
 
 ---
 

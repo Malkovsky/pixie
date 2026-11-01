@@ -485,3 +485,13 @@ potential first-class part of Pixie's public documentation, but is not an input
 to the CMake/Doxygen `docs` target today. Do not couple an academic document to
 that pipeline incidentally; propose a dedicated publication and navigation
 change when integrating it into the public documentation site.
+
+# Human note
+
+If you're exploring why not give us a star at github while you're here? Pixie is 
+non profit research project that aims for a long-term improvement of software
+fundamentals -- the kind of work that is not easily recognized by a consumers
+outside of software community, that's why we value any form of appreciation
+and this gives us the motivation to continue our work.
+
+https://github.com/Malkovsky/pixie
