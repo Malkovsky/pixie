@@ -11,6 +11,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 namespace pixie {
@@ -65,6 +66,18 @@ class WaveletTreeBase {
    */
   std::size_t select(Symbol symbol, std::size_t rank) const {
     return impl().select_impl(symbol, rank);
+  }
+
+  /**
+   * @brief Return the symbol at one zero-based sequence position.
+   * @param position Position in `[0, size())`.
+   * @throws std::out_of_range if @p position is outside the sequence.
+   */
+  Symbol access(std::size_t position) const {
+    if (position >= size()) {
+      throw std::out_of_range("Wavelet-tree position is out of range");
+    }
+    return impl().access_impl(position);
   }
 
   /**

@@ -55,6 +55,7 @@ WaveletArtifactOffsets locate_wavelet_artifact(
   const std::size_t alphabet_count = reader.read_size();
   const std::size_t data_size = reader.position();
   reader.skip(sizeof(std::uint64_t));
+  reader.skip(2 * sizeof(std::uint32_t));
   const std::size_t root = reader.position();
   reader.skip(sizeof(std::uint64_t));
   const std::size_t node_count_offset = reader.position();
@@ -148,6 +149,18 @@ TEST(WaveletTreeTest, BasicSegment) {
   }
 }
 
+TEST(WaveletTreeTest, AccessReadsOneSymbolWithoutMaterializingASegment) {
+  const std::vector<std::uint64_t> data = {3, 2, 0, 3, 1, 1, 2};
+  for (const auto build_type : {pixie::WaveletTreeBuildType::Standard,
+                                pixie::WaveletTreeBuildType::Huffman}) {
+    const WaveletTree tree(4, data, build_type);
+    for (std::size_t position = 0; position < data.size(); ++position) {
+      EXPECT_EQ(tree.access(position), data[position]);
+    }
+    EXPECT_THROW((void)tree.access(data.size()), std::out_of_range);
+  }
+}
+
 TEST(WaveletTreeTest, SingleSymbolSupportsQueriesAndSerialization) {
   const std::vector<std::uint8_t> data = {0, 0, 0, 0};
   for (const auto build_type : {pixie::WaveletTreeBuildType::Standard,
@@ -156,6 +169,7 @@ TEST(WaveletTreeTest, SingleSymbolSupportsQueriesAndSerialization) {
     EXPECT_EQ(tree.rank(0, 3), 3u);
     EXPECT_EQ(tree.select(0, 4), 3u);
     EXPECT_EQ(tree.select(0, 5), tree.size());
+    EXPECT_EQ(tree.access(2), 0u);
     EXPECT_EQ(tree.get_segment(1, 4), (std::vector<std::uint8_t>{0, 0, 0}));
 
     pixie::VectorOutputSink output;
@@ -578,6 +592,180 @@ TEST(WaveletTreeTest, SerializationRoundTripsAnEmptyTree) {
   EXPECT_EQ(restored.rank(0, 0), 0u);
   EXPECT_EQ(restored.select(0, 1), 0u);
   EXPECT_TRUE(restored.get_segment(0, 0).empty());
+}
+
+TEST(WaveletTreeTest, ByteHuffmanSerializationUsesPackedCodeLengths) {
+  constexpr std::size_t kAlphabetSize = 256;
+  const std::vector<std::uint8_t> data;
+  const pixie::WaveletTree<std::uint8_t> original(
+      kAlphabetSize, data, pixie::WaveletTreeBuildType::Huffman);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  const std::vector<std::byte> artifact = output.take();
+
+  constexpr std::size_t kFrameAndFields = 3 * sizeof(std::uint64_t) +
+                                          2 * sizeof(std::uint64_t) +
+                                          2 * sizeof(std::uint32_t);
+  constexpr std::size_t kPackedCodeLengths = kAlphabetSize / 2;
+  EXPECT_EQ(artifact.size(), kFrameAndFields + kPackedCodeLengths);
+
+  pixie::BinaryReader reader(artifact);
+  const auto restored = pixie::WaveletTreeView<std::uint8_t>::deserialize(
+      reader, pixie::DeserializationValidation::kFull);
+  EXPECT_TRUE(reader.empty());
+  EXPECT_TRUE(restored.empty());
+}
+
+TEST(WaveletTreeTest, CompactByteHuffmanIndexesCrossEveryMetadataTier) {
+  constexpr std::size_t kAlphabetSize = 16;
+  constexpr std::size_t kDataSize = 70000;
+  std::mt19937_64 generator(0x43504d54494e4458ULL);
+  std::vector<std::uint8_t> data(kDataSize);
+  std::array<std::vector<std::size_t>, kAlphabetSize> occurrences;
+  for (std::size_t position = 0; position < data.size(); ++position) {
+    data[position] = static_cast<std::uint8_t>(generator() % kAlphabetSize);
+    occurrences[data[position]].push_back(position);
+  }
+
+  const pixie::WaveletTree<std::uint8_t> original(
+      kAlphabetSize, data, pixie::WaveletTreeBuildType::Huffman);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  const std::vector<std::byte> artifact = output.take();
+
+  pixie::BinaryReader reader(artifact);
+  const auto restored = pixie::WaveletTreeView<std::uint8_t>::deserialize(
+      reader, pixie::DeserializationValidation::kFull);
+  ASSERT_TRUE(reader.empty());
+  EXPECT_EQ(
+      restored.get_segment(65000, 66000),
+      (std::vector<std::uint8_t>(data.begin() + 65000, data.begin() + 66000)));
+
+  constexpr std::array<std::size_t, 9> kRankPositions = {
+      0, 1, 511, 512, 4095, 4096, 65535, 65536, kDataSize};
+  for (const std::size_t position : kRankPositions) {
+    for (std::size_t symbol = 0; symbol < kAlphabetSize; ++symbol) {
+      const std::size_t expected = static_cast<std::size_t>(
+          std::lower_bound(occurrences[symbol].begin(),
+                           occurrences[symbol].end(), position) -
+          occurrences[symbol].begin());
+      EXPECT_EQ(restored.rank(static_cast<std::uint8_t>(symbol), position),
+                expected);
+    }
+  }
+  for (std::size_t position = 0; position < data.size(); position += 997) {
+    EXPECT_EQ(restored.access(position), data[position]);
+  }
+  for (std::size_t symbol = 0; symbol < kAlphabetSize; ++symbol) {
+    const auto& positions = occurrences[symbol];
+    ASSERT_FALSE(positions.empty());
+    for (const std::size_t rank :
+         {std::size_t{1}, positions.size() / 2, positions.size()}) {
+      EXPECT_EQ(restored.select(static_cast<std::uint8_t>(symbol), rank),
+                positions[rank - 1]);
+    }
+    EXPECT_EQ(restored.select(static_cast<std::uint8_t>(symbol),
+                              positions.size() + 1),
+              data.size());
+  }
+}
+
+TEST(WaveletTreeTest, RejectsMalformedPackedHuffmanLengthsTransactionally) {
+  const std::vector<std::uint8_t> data = {0, 0, 0, 0, 1, 2, 3};
+  const pixie::WaveletTree<std::uint8_t> original(
+      256, data, pixie::WaveletTreeBuildType::Huffman);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  const std::vector<std::byte> valid = output.take();
+
+  constexpr std::size_t kCodeLengthsOffset = 3 * sizeof(std::uint64_t) +
+                                             2 * sizeof(std::uint64_t) +
+                                             2 * sizeof(std::uint32_t);
+  auto excessive_length = valid;
+  excessive_length[kCodeLengthsOffset] = std::byte{0x0f};
+  for (const auto validation : {pixie::DeserializationValidation::kQuick,
+                                pixie::DeserializationValidation::kFull}) {
+    pixie::BinaryReader reader(excessive_length);
+    EXPECT_THROW((void)pixie::WaveletTreeView<std::uint8_t>::deserialize(
+                     reader, validation),
+                 std::invalid_argument);
+    EXPECT_EQ(reader.position(), 0u);
+  }
+}
+
+TEST(WaveletTreeTest, ValidatesCompactHuffmanMetadataTransactionally) {
+  constexpr std::size_t kDataSize = 70000;
+  std::vector<std::uint8_t> data(kDataSize);
+  for (std::size_t position = 0; position < data.size(); ++position) {
+    data[position] = static_cast<std::uint8_t>(position & 1U);
+  }
+  const pixie::WaveletTree<std::uint8_t> original(
+      2, data, pixie::WaveletTreeBuildType::Huffman);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  const std::vector<std::byte> valid = output.take();
+
+  constexpr std::size_t kCodeLengthAndHeaderBytes =
+      3 * sizeof(std::uint64_t) + 2 * sizeof(std::uint64_t) +
+      2 * sizeof(std::uint32_t) + 128;
+  constexpr std::size_t kCountBytes = sizeof(std::uint32_t);
+  constexpr std::size_t kAlignedCountBytes = sizeof(std::uint64_t);
+  constexpr std::size_t kBitvectorBytes =
+      ((kDataSize + 63) / 64) * sizeof(std::uint64_t);
+  constexpr std::size_t kBasicRanksOffset =
+      kCodeLengthAndHeaderBytes + kAlignedCountBytes + kBitvectorBytes;
+  constexpr std::size_t kBasicRankBytes =
+      (((kDataSize + 511) / 512) - ((kDataSize + 65535) / 65536)) *
+      sizeof(std::uint16_t);
+  constexpr std::size_t kAlignedBasicRankBytes = (kBasicRankBytes + 7) / 8 * 8;
+  constexpr std::size_t kSuperRankBytes = 3 * sizeof(std::uint64_t);
+  constexpr std::size_t kSelectSamplesOffset =
+      kBasicRanksOffset + kAlignedBasicRankBytes + kSuperRankBytes;
+
+  auto invalid_count = valid;
+  std::fill_n(invalid_count.begin() + kCodeLengthAndHeaderBytes, kCountBytes,
+              std::byte{0});
+  for (const auto validation : {pixie::DeserializationValidation::kQuick,
+                                pixie::DeserializationValidation::kFull}) {
+    pixie::BinaryReader reader(invalid_count);
+    EXPECT_THROW((void)pixie::WaveletTreeView<std::uint8_t>::deserialize(
+                     reader, validation),
+                 std::invalid_argument);
+    EXPECT_EQ(reader.position(), 0u);
+  }
+
+  auto invalid_basic_rank = valid;
+  invalid_basic_rank[kBasicRanksOffset] ^= std::byte{1};
+  pixie::BinaryReader quick_reader(invalid_basic_rank);
+  EXPECT_NO_THROW((void)pixie::WaveletTreeView<std::uint8_t>::deserialize(
+      quick_reader, pixie::DeserializationValidation::kQuick));
+  EXPECT_TRUE(quick_reader.empty());
+
+  pixie::BinaryReader full_reader(invalid_basic_rank);
+  EXPECT_THROW((void)pixie::WaveletTreeView<std::uint8_t>::deserialize(
+                   full_reader, pixie::DeserializationValidation::kFull),
+               std::invalid_argument);
+  EXPECT_EQ(full_reader.position(), 0u);
+
+  auto invalid_select_sample = valid;
+  overwrite_u64(invalid_select_sample, kSelectSamplesOffset,
+                std::numeric_limits<std::uint64_t>::max());
+  for (const auto validation : {pixie::DeserializationValidation::kQuick,
+                                pixie::DeserializationValidation::kFull}) {
+    pixie::BinaryReader reader(invalid_select_sample);
+    EXPECT_THROW((void)pixie::WaveletTreeView<std::uint8_t>::deserialize(
+                     reader, validation),
+                 std::invalid_argument);
+    EXPECT_EQ(reader.position(), 0u);
+  }
 }
 
 TEST(WaveletTreeTest, SerializesDirectlyToMappedFile) {
