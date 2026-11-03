@@ -3,9 +3,12 @@
 #include <pixie/memory_usage.h>
 #include <pixie/rank_select/support.h>
 #include <pixie/tree.h>
+#include <pixie/tree/detail/construction.h>
 #include <pixie/tree/detail/encoding_storage.h>
 #include <pixie/tree/detail/louds_children.h>
+#include <pixie/tree/detail/louds_inspection_iterative.h>
 #include <pixie/tree/detail/louds_node_view.h>
+#include <pixie/tree/detail/serialization.h>
 
 #include <bit>
 #include <cstdint>
@@ -39,6 +42,27 @@ template <class RankSelect = RankSelectSupport<>,
 class LoudsTree;
 
 template <class B, detail::TreeEncodingStorage S>
+struct detail::ConstructionTraversal<LoudsTree<B, S>> {
+  using Tree = LoudsTree<B, S>;
+  template <class Enter, class Leave>
+  static void walk(const Tree& tree, Enter& enter, Leave& leave) {
+    inspected_construction_dfs(
+        tree, enter, leave, [&](auto& visit, auto& child) {
+          tree_unpack::LoudsIterativeTraversal<
+              Tree, std::remove_reference_t<decltype(visit)>,
+              std::remove_reference_t<decltype(child)>, true, 128, 32>
+              traversal(tree, tree.encoding_words(), visit, child);
+          traversal.walk(tree.root(), 0);
+        });
+  }
+  static constexpr size_t scratch_bytes() {
+    using Callback = void (*)(TreeNode);
+    return tree_unpack::LoudsIterativeTraversal<Tree, Callback, Callback, true,
+                                                128, 32>::scratch_bytes();
+  }
+};
+
+template <class B, detail::TreeEncodingStorage S>
 struct TreeTraits<LoudsTree<B, S>> {
   using TreeView = LoudsTree<B, ReadOnlyStorageView>;
   using NodeView = detail::LoudsNodeView<LoudsTree<B, S>>;
@@ -47,6 +71,11 @@ struct TreeTraits<LoudsTree<B, S>> {
 template <class RankSelect, detail::TreeEncodingStorage EncodingStorage>
 class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
  private:
+  LoudsTree(EncodingStorage storage, size_t bits, RankSelect backend)
+      : encoding_(std::move(storage)),
+        bv(std::move(backend)),
+        words_(detail::tree_encoding_words(encoding_, bits).data()) {}
+
   EncodingStorage encoding_;
   RankSelect bv;
   const std::uint64_t* words_;
@@ -74,6 +103,63 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
   }
 
  public:
+  /**
+   * @brief Construct an owning copy of another ordered tree's topology.
+   * @details Preserves child order, but assigns destination node numbers and
+   * bit positions. Source must satisfy detail::OrderedTreeSource and describe
+   * a valid tree of size() nodes. Its handles must remain valid during this
+   * call; no source storage is retained. Navigation metadata is rebuilt.
+   * Succinct sources use decoded DFS; other sources use O(height) navigation
+   * scratch. LOUDS output additionally stages O(size()) packed bits and
+   * O(height) level records; vector capacity adds allocation overhead.
+   * Construction scratch is independent of the query traversal-cache budget.
+   * Allocation and unrepresentable-size exceptions propagate.
+   */
+  template <detail::OrderedTreeSource Source>
+    requires(std::same_as<EncodingStorage, AlignedStorage> &&
+             !std::same_as<std::remove_cvref_t<Source>, LoudsTree>)
+  explicit LoudsTree(const Source& source)
+      : LoudsTree(
+            detail::construct_tree_encoding<detail::TreeEncodingKind::kLOUDS>(
+                source),
+            source.size()) {}
+
+  /** @brief Write one tree artifact: encoding, node count and nested backend.
+   * @details External root indexes and active traversal state are not included.
+   */
+  void serialize_impl(BinaryWriter& writer) const
+    requires Serializable<RankSelect>
+  {
+    detail::serialize_tree<detail::TreeEncodingKind::kLOUDS>(
+        writer, this->size(), encoding_words_impl(), bv);
+  }
+
+  /** @brief Restore a complete tree without rebuilding its navigation index.
+   * @param reader Cursor advanced only after successful restoration.
+   * @param validation Quick checks framing, sizes and backend metadata; it
+   * assumes the saved topology and metadata correspond. Full also scans and
+   * validates topology and source-derived backend data.
+   * @details Owning trees copy the encoding. TreeView borrows word-aligned
+   * backing bytes, which must remain alive and immutable. Backend ownership
+   * follows its deserializer. No hashes or traversal caches are restored.
+   * @throws std::invalid_argument for malformed or incompatible artifacts;
+   * allocation and size exceptions propagate. Failure leaves reader unchanged.
+   */
+  static LoudsTree deserialize_impl(
+      BinaryReader& reader,
+      DeserializationValidation validation = DeserializationValidation::kQuick)
+    requires Deserializable<RankSelect,
+                            std::span<const uint64_t>,
+                            DeserializationValidation>
+  {
+    return detail::deserialize_tree<detail::TreeEncodingKind::kLOUDS,
+                                    EncodingStorage, RankSelect>(
+        reader, validation,
+        [](EncodingStorage&& encoding, size_t bits, RankSelect&& backend) {
+          return LoudsTree(std::move(encoding), bits, std::move(backend));
+        });
+  }
+
   using typename TreeBase<LoudsTree>::NodeView;
 
  private:

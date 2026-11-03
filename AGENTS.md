@@ -12,7 +12,7 @@ Current library families are:
 - positional and monotone packed integer vectors;
 - owning permutations with rebased consuming merge and permutable sequences with
   unchanged-value consuming merge;
-- range min-max (RmM) indexes;
+- range min-max (RmM) indexes via `pixie::RmMBTree<>` in `rmm/btree.h`;
 - static range-minimum-query (RMQ) indexes;
 - rooted-tree encodings (LOUDS, balanced parentheses, and DFUDS);
 - aligned owning storage, read-only storage views, and mapped-file resources;
@@ -360,7 +360,10 @@ Use the repository script for local coverage:
 
 The script configures and builds the `coverage` preset, deletes stale
 `.gcda`/`.gcov` files, runs `ctest --preset coverage`, and writes
-`build/coverage/coverage.txt`.
+`build/coverage/coverage.txt`. Detailed reports live under
+`build/coverage/gcov/`, with a separate directory per translation unit.
+To regenerate reports from existing profiles without rerunning tests, use
+`bash scripts/collect_gcov.sh build/coverage`.
 
 CI also runs the script with `PIXIE_COVERAGE_VARIANT=rank-select-scalar`.
 This builds only rank/select for baseline `x86-64` in `build/coverage-scalar`
@@ -376,9 +379,12 @@ require AVX-512 hardware.
 - After recompiling instrumented code, stale `.gcda` files can cause an
   `overwriting an existing profile data with a different checksum` warning.
   Run the script before trusting the report.
-- Header-only templates can appear in multiple gcov translation units. For a
-  header such as `rmm/btree.h`, inspect its `.gcov` output or the Codecov
-  aggregate instead of trusting the first block in `coverage.txt`.
+- Header-only templates can appear in multiple gcov translation units. Keep
+  every translation unit's report: running gcov repeatedly in one directory
+  overwrites earlier header reports. Codecov searches only the generated
+  `gcov/` directory and merges reports by source path. For a header such as
+  `rmm/btree.h`, inspect all its `.gcov` reports or the Codecov aggregate
+  instead of trusting one report or the first block in `coverage.txt`.
 - Prioritize public behavior paths over unreachable defensive or allocator
   failure paths.
 

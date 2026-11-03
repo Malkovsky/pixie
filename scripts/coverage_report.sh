@@ -33,15 +33,4 @@ rm -f "${BUILD_DIR}/coverage.txt" "${BUILD_DIR}/gcov_files.txt"
 
 ctest "${TEST_ARGS[@]}" --parallel "${JOBS}"
 
-cd "${BUILD_DIR}"
-find . -name "*.gcda" > gcov_files.txt
-while read -r f; do
-  case "${f}" in
-    *"/third_party/"*|*"/src/benchmarks/"*)
-      ;;
-    *)
-      gcov -pb "${f}" >> coverage.txt
-      ;;
-  esac
-done < gcov_files.txt
-echo "gcov report written to ${BUILD_DIR}/coverage.txt"
+bash "${ROOT_DIR}/scripts/collect_gcov.sh" "${BUILD_DIR}"

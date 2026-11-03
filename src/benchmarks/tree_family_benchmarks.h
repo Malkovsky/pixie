@@ -39,9 +39,11 @@ const auto& GetTreeFixture(std::size_t size) {
       } else {
         auto words = GenerateRandomBp(n);
         if constexpr (Layout == TreeLayout::kDfuds) {
-          words = DfudsFromBp(words, n);
+          words = ConvertBpEncoding<pixie::detail::TreeEncodingKind::kDFUDS>(
+              words, n);
         } else if constexpr (Layout == TreeLayout::kLouds) {
-          words = LoudsFromBp(words, n);
+          words = ConvertBpEncoding<pixie::detail::TreeEncodingKind::kLOUDS>(
+              words, n);
         }
         tree = std::make_unique<Tree>(words, n);
       }

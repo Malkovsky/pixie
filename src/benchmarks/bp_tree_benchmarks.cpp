@@ -1,6 +1,7 @@
 #include <pixie/rmm/btree.h>
 #include <pixie/tree/implementations.h>
 
+#include "tree_conversion_benchmarks.h"
 #include "tree_family_benchmarks.h"
 
 using pixie::benchmarks::RunBestTreeBenchmark;
@@ -8,7 +9,7 @@ using pixie::benchmarks::RunDirectTreeBenchmark;
 using pixie::benchmarks::TreeLayout;
 using pixie::benchmarks::TreeSizes;
 using pixie::benchmarks::TreeWorkload;
-using Tree = pixie::BPTree<pixie::experimental::RmMBTree<>>;
+using Tree = pixie::BPTree<pixie::RmMBTree<>>;
 using PointerTree = pixie::references::PointerTree;
 
 BENCHMARK_TEMPLATE(RunBestTreeBenchmark,

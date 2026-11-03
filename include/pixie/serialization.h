@@ -27,14 +27,25 @@ namespace pixie {
  */
 enum class DeserializationValidation : std::uint8_t {
   /**
-   * @brief Check framing, dimensions, references, and other conditions needed
-   * for memory-safe terminating queries without scanning large sources.
+   * @brief Perform structural validation for trusted artifacts.
+   * @details Checks framing, dimensions, references, and internal metadata
+   * consistency as documented by each deserializer, without fully validating
+   * the source or comparing all source-derived metadata with it. The caller
+   * must provide valid source contents and their corresponding metadata.
+   * Success does not guarantee safe queries on arbitrary malformed input.
+   * Validation may scan metadata; quick loading is not necessarily constant
+   * time and owning loaders may still copy the source.
    */
   kQuick,
 
   /**
-   * @brief Additionally authenticate all source-derived metadata against the
-   * supplied source contents.
+   * @brief Additionally validate source-derived metadata against the supplied
+   * source contents and check the structure's source validity requirements.
+   * @details For trees this includes validating the encoding's topology.
+   * Validation may scan the source and allocate temporary metadata. For a
+   * partial index, consistency checks cover its indexed contents, not the
+   * identity of the entire source. Neither mode computes a hash or establishes
+   * artifact identity or authenticity.
    */
   kFull,
 };

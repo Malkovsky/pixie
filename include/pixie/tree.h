@@ -8,6 +8,8 @@
  * encodings.
  */
 
+#include <pixie/serialization.h>
+
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -79,7 +81,7 @@ concept TreeNavigationView =
  * @see `<pixie/tree/implementations.h>` for the available succinct encodings.
  */
 template <class Impl>
-class TreeBase {
+class TreeBase : public SerializationBase<Impl> {
  public:
   using Node = TreeNode;
   /** @brief Tree representation borrowing encoding, owning backend metadata. */
@@ -128,10 +130,13 @@ class TreeBase {
    * the matching TreeBase semantics. Only reset changes the current node and
    * invalidates memoized results; copies have independent memoization.
    */
-  auto navigate(Node node) const {
+  auto navigate(Node node) const& {
     static_assert(TreeNavigationView<typename Impl::NodeView>);
     return impl().navigate_impl(node);
   }
+
+  /** @brief Reject a navigation view borrowing a temporary tree. */
+  auto navigate(Node) const&& = delete;
 
   /**
    * @brief Object bytes plus owned index allocations.

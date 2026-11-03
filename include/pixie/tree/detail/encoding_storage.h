@@ -6,6 +6,8 @@
 #include <limits>
 
 namespace pixie::detail {
+enum class TreeEncodingKind : uint64_t { kBP = 1, kDFUDS = 2, kLOUDS = 3 };
+
 template <class Storage>
 concept TreeEncodingStorage = std::same_as<Storage, AlignedStorage> ||
                               std::same_as<Storage, ReadOnlyStorageView>;

@@ -5,6 +5,7 @@
  * prefetch.
  */
 
+#include <pixie/detail/serialization_frame.h>
 #include <pixie/rank_select.h>
 #include <pixie/rank_select/detail/compressed/packed_prefix_search.h>
 #include <pixie/rank_select/detail/compressed/position_samples.h>
@@ -33,7 +34,8 @@ namespace pixie {
  * @details Source words must remain alive and immutable. Copies own independent
  * metadata and borrow the same source; moves leave an empty, disabled index.
  * Half-open rank, one-based select and sentinels follow RankSelectBase; rank
- * boundaries beyond size() clamp to the total. Serialization is not provided.
+ * boundaries beyond size() clamp to the total. Serialization retains metadata
+ * only; the source encoding is supplied independently when loading.
  *
  * @code{.text}
  * Rank: one 64-byte record per 16,384 source bits (3.125% overhead)
@@ -74,7 +76,10 @@ template <StorageImplementation MetadataStorage = AlignedStorage,
 class RankSelectSupportCompressed
     : public RankSelectBase<RankSelectSupportCompressed<MetadataStorage,
                                                         SampleFrequency,
-                                                        SearchThreshold>> {
+                                                        SearchThreshold>>,
+      public SerializationBase<RankSelectSupportCompressed<MetadataStorage,
+                                                           SampleFrequency,
+                                                           SearchThreshold>> {
   static_assert(std::has_single_bit(SampleFrequency));
   static_assert(SearchThreshold > 0);
   static_assert(std::is_nothrow_move_constructible_v<MetadataStorage> &&
@@ -94,6 +99,75 @@ class RankSelectSupportCompressed
 
   /** @brief Construct an empty index with no select directions enabled. */
   RankSelectSupportCompressed() = default;
+
+  /** @brief Write versioned, little-endian compressed metadata, excluding bits.
+   * @details Template sampling parameters are recorded and must match on load.
+   */
+  void serialize_impl(BinaryWriter& writer) const {
+    const auto begin = detail::begin_frame(writer, kSerializationTag);
+    writer.write_size(SampleFrequency);
+    writer.write_size(SearchThreshold);
+    writer.write_size(num_bits_);
+    writer.write_u64(one_count_);
+    writer.write_u64(static_cast<uint8_t>(select_support_));
+    ranks_.serialize(writer);
+    select1_.serialize(writer);
+    select0_.serialize(writer);
+    detail::end_frame(writer, begin);
+  }
+
+  /** @brief Restore owning metadata over an independently supplied encoding.
+   * @param reader Cursor advanced by one artifact only on success.
+   * @param words Immutable source words, which must outlive the index.
+   * @param validation Quick checks metadata without scanning the source; full
+   * validation rebuilds and compares metadata against the supplied source.
+   * @details The caller must pair quick-loaded metadata with its original
+   * encoding. No hash is computed. Metadata is copied, not mapped.
+   * @throws std::invalid_argument for incompatible, truncated or inconsistent
+   * metadata or a short source. Allocation and size exceptions propagate.
+   */
+  static RankSelectSupportCompressed deserialize_impl(
+      BinaryReader& reader,
+      std::span<const uint64_t> words,
+      DeserializationValidation validation = DeserializationValidation::kQuick)
+    requires detail::compressed::MutableMetadataStorage<MetadataStorage>
+  {
+    auto candidate = reader;
+    auto payload = detail::read_frame(candidate, kSerializationTag);
+    if (payload.read_size() != SampleFrequency ||
+        payload.read_size() != SearchThreshold) {
+      throw std::invalid_argument(
+          "Incompatible compressed rank/select configuration");
+    }
+    RankSelectSupportCompressed result;
+    result.bits_ = words;
+    result.num_bits_ = payload.read_size();
+    result.one_count_ = payload.read_u64();
+    const auto support = payload.read_u64();
+    if (support > 3 || result.one_count_ > result.num_bits_ ||
+        result.num_bits_ / 64 + (result.num_bits_ % 64 != 0) > words.size()) {
+      throw std::invalid_argument("Invalid compressed rank/select dimensions");
+    }
+    result.select_support_ = static_cast<SelectSupport>(support);
+    result.ranks_ = decltype(ranks_)::deserialize(payload);
+    result.select1_ = SelectIndex::deserialize(payload);
+    result.select0_ = SelectIndex::deserialize(payload);
+    payload.require_zero_padding(7);
+    result.validate_metadata();
+    if (validation == DeserializationValidation::kFull) {
+      RankSelectSupportCompressed expected(words, result.num_bits_,
+                                           result.select_support_);
+      if (result.one_count_ != expected.one_count_ ||
+          result.ranks_ != expected.ranks_ ||
+          result.select1_ != expected.select1_ ||
+          result.select0_ != expected.select0_) {
+        throw std::invalid_argument(
+            "Compressed rank/select metadata does not match source");
+      }
+    }
+    reader = candidate;
+    return result;
+  }
 
   /** @brief Duplicate metadata while borrowing the same immutable source. */
   RankSelectSupportCompressed(const RankSelectSupportCompressed&) = default;
@@ -251,6 +325,7 @@ class RankSelectSupportCompressed
   }
 
  private:
+  static constexpr uint64_t kSerializationTag = 0x3153435258495050ULL;
   static constexpr std::size_t kSuperBits = 16384;
   static constexpr std::size_t kBasicBits = 512;
   static constexpr std::size_t kRecordBytes = 64;
@@ -262,6 +337,7 @@ class RankSelectSupportCompressed
   struct WideEntry {
     std::size_t begin;
     std::size_t count;
+    bool operator==(const WideEntry&) const = default;
   };
   using PrimarySamples = detail::compressed::BitmapMonotoneSamples<
       detail::compressed::BlockedMonotoneSamples<MetadataStorage>>;
@@ -292,6 +368,41 @@ class RankSelectSupportCompressed
     MetadataArray<Endpoint> endpoints;
     Shape shape{};
 
+    bool operator==(const SelectIndex&) const = default;
+
+    void serialize(BinaryWriter& writer) const {
+      writer.write_u64(predicted);
+      writer.write_u64(static_cast<uint8_t>(shape));
+      samples.serialize(writer);
+      positions.serialize(writer);
+      occupied.serialize(writer);
+      wide.serialize(writer, [](BinaryWriter& out, WideEntry entry) {
+        out.write_size(entry.begin);
+        out.write_size(entry.count);
+      });
+      endpoints.serialize(writer);
+    }
+
+    static SelectIndex deserialize(BinaryReader& reader) {
+      SelectIndex result;
+      const auto predicted = reader.read_u64();
+      const auto shape = reader.read_u64();
+      if (predicted > 1 || shape > 3) {
+        throw std::invalid_argument("Invalid compressed select shape");
+      }
+      result.predicted = predicted;
+      result.shape = static_cast<Shape>(shape);
+      result.samples = PrimarySamples::deserialize(reader);
+      result.positions = PositionSamples::deserialize(reader);
+      result.occupied = decltype(occupied)::deserialize(reader);
+      result.wide =
+          decltype(wide)::deserialize(reader, 16, [](BinaryReader& in) {
+            return WideEntry{in.read_size(), in.read_size()};
+          });
+      result.endpoints = decltype(endpoints)::deserialize(reader);
+      return result;
+    }
+
     std::size_t allocated_bytes() const {
       return samples.allocated_bytes() + positions.allocated_bytes() +
              occupied.allocated_bytes() + wide.allocated_bytes() +
@@ -316,6 +427,140 @@ class RankSelectSupportCompressed
     swap(select1_, other.select1_);
     swap(select0_, other.select0_);
     swap(select_support_, other.select_support_);
+  }
+
+  void validate_metadata() const {
+    const auto supers = num_bits_ / kSuperBits + (num_bits_ % kSuperBits != 0);
+    if (ranks_.size() != supers * 8) {
+      throw std::invalid_argument("Invalid rank record count");
+    }
+    uint64_t global = 0;
+    for (size_t s = 0; s < supers; ++s) {
+      const auto* record = rank_record(s);
+      if (record[0] != global) {
+        throw std::invalid_argument("Invalid global rank prefix");
+      }
+      uint64_t previous = 0;
+      size_t previous_bits = 0;
+      for (size_t b = 1; b <= 32; ++b) {
+        const auto end = std::min(b * kBasicBits, super_size(s));
+        const auto rank = local_rank(record, b);
+        if (rank < previous || rank - previous > end - previous_bits) {
+          throw std::invalid_argument("Invalid local rank prefix");
+        }
+        previous = rank;
+        previous_bits = end;
+      }
+      global += previous;
+    }
+    if (global != one_count_) {
+      throw std::invalid_argument("Invalid total rank");
+    }
+    validate_select<false>(select1_, supports_select1_impl());
+    validate_select<true>(select0_, supports_select0_impl());
+  }
+
+  template <bool Zero>
+  void validate_select(const SelectIndex& index, bool enabled) const {
+    const uint64_t total = Zero ? num_bits_ - one_count_ : one_count_;
+    if (!enabled || !total || num_bits_ <= 1024) {
+      if (index != SelectIndex{}) {
+        throw std::invalid_argument("Unexpected select metadata");
+      }
+      return;
+    }
+    const size_t count = 1 + (total - 1) / SampleFrequency;
+    if (count == SIZE_MAX) {
+      throw std::length_error("Too many select samples");
+    }
+    const bool mixed = index.shape == SelectIndex::Shape::kMixed;
+    const auto mapped = mixed ? index.wide.size() : 0;
+    index.samples.validate(index.predicted ? 0 : count + 1, super_count(),
+                           index.predicted ? 0 : mapped);
+    index.positions.validate(index.predicted ? count + 1 : 0, num_bits_,
+                             index.predicted ? mapped : 0);
+    if (index.wide.size() > count ||
+        ((index.shape == SelectIndex::Shape::kNarrow ||
+          index.shape == SelectIndex::Shape::kHomogeneous) &&
+         !index.wide.empty())) {
+      throw std::invalid_argument("Invalid wide select directory");
+    }
+    size_t endpoint_count = 0;
+    bool needs_occupied = false;
+    for (size_t i = 0; i < index.wide.size(); ++i) {
+      const auto entry = index.wide[i];
+      const auto n = entry.count & ~kContiguous;
+      if (!n || entry.begin != endpoint_count ||
+          n > index.endpoints.size() - endpoint_count) {
+        throw std::invalid_argument("Invalid wide select interval");
+      }
+      endpoint_count += n;
+      needs_occupied |= !(entry.count & kContiguous);
+    }
+    if (endpoint_count != index.endpoints.size()) {
+      throw std::invalid_argument("Invalid select endpoint count");
+    }
+    index.occupied.validate(needs_occupied ? endpoint_count : 0,
+                            super_count() - 1);
+    for (size_t i = 0; i < count; ++i) {
+      const uint64_t begin_rank = i * SampleFrequency;
+      const uint64_t end_rank =
+          begin_rank + std::min<uint64_t>(SampleFrequency, total - begin_rank);
+      const auto first =
+          index.predicted ? index.positions[i] / kSuperBits : index.samples[i];
+      if (first >= super_count() || prefix_before<Zero>(first) > begin_rank ||
+          prefix_after<Zero>(first) <= begin_rank) {
+        throw std::invalid_argument("Invalid select sample localization");
+      }
+      if (index.shape == SelectIndex::Shape::kHomogeneous) {
+        if (index.predicted || SampleFrequency > kSuperBits ||
+            prefix_after<Zero>(first) - prefix_before<Zero>(first) !=
+                super_size(first)) {
+          throw std::invalid_argument("Invalid homogeneous select interval");
+        }
+      }
+      std::optional<size_t> w;
+      if (mixed) {
+        w = index.predicted ? index.positions.wide_entry(i)
+                            : index.samples.wide_entry(i);
+      } else if (index.shape == SelectIndex::Shape::kWidePrefix &&
+                 i < index.wide.size()) {
+        w = i;
+      }
+      if (!w) {
+        continue;
+      }
+      if (*w >= index.wide.size()) {
+        throw std::invalid_argument("Invalid wide select reference");
+      }
+      const auto entry = index.wide[*w];
+      const auto n = entry.count & ~kContiguous;
+      uint64_t previous_rank = begin_rank;
+      size_t previous_super = first;
+      for (size_t j = 0; j < n; ++j) {
+        const auto s = (entry.count & kContiguous)
+                           ? first + j
+                           : index.occupied[entry.begin + j];
+        if (s >= super_count() || (j && s <= previous_super) ||
+            prefix_before<Zero>(s) != previous_rank ||
+            prefix_after<Zero>(s) <= previous_rank) {
+          // The first superblock may begin before this sampled interval.
+          if (j || s != first || prefix_before<Zero>(s) > begin_rank ||
+              prefix_after<Zero>(s) <= begin_rank) {
+            throw std::invalid_argument("Invalid occupied select interval");
+          }
+        }
+        previous_rank = std::min(end_rank, prefix_after<Zero>(s));
+        if (index.endpoints[entry.begin + j] !=
+            previous_rank - begin_rank - 1) {
+          throw std::invalid_argument("Invalid select endpoint");
+        }
+        previous_super = s;
+      }
+      if (previous_rank != end_rank) {
+        throw std::invalid_argument("Incomplete select interval");
+      }
+    }
   }
 
   std::size_t super_count() const { return ranks_.size() / (kRecordBytes / 8); }

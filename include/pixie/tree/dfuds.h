@@ -1,10 +1,13 @@
 #pragma once
 
 #include <pixie/memory_usage.h>
-#include <pixie/rmm/tree.h>
+#include <pixie/rmm/btree.h>
 #include <pixie/tree.h>
+#include <pixie/tree/detail/construction.h>
+#include <pixie/tree/detail/dfuds_micro.h>
 #include <pixie/tree/detail/dfuds_node_view.h>
 #include <pixie/tree/detail/encoding_storage.h>
+#include <pixie/tree/detail/serialization.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -22,6 +25,27 @@ template <class RMMTree,
 class DFUDSTree;
 
 template <class B, detail::TreeEncodingStorage S>
+struct detail::ConstructionTraversal<DFUDSTree<B, S>> {
+  using Tree = DFUDSTree<B, S>;
+  template <class Enter, class Leave>
+  static void walk(const Tree& tree, Enter& enter, Leave& leave) {
+    inspected_construction_dfs(
+        tree, enter, leave, [&](auto& visit, auto& child) {
+          dfuds_micro::DfudsMicroTraversal<
+              8192, Tree, std::remove_reference_t<decltype(visit)>,
+              std::remove_reference_t<decltype(child)>>
+              traversal(tree, tree.encoding_words(), visit, child, 128);
+          traversal.walk(tree.root());
+        });
+  }
+  static constexpr size_t scratch_bytes() {
+    using Callback = void (*)(TreeNode);
+    return dfuds_micro::DfudsMicroTraversal<8192, Tree, Callback,
+                                            Callback>::scratch_bytes(128);
+  }
+};
+
+template <class B, detail::TreeEncodingStorage S>
 struct TreeTraits<DFUDSTree<B, S>> {
   using TreeView = DFUDSTree<B, ReadOnlyStorageView>;
   using NodeView = detail::DfudsNodeView<DFUDSTree<B, S>>;
@@ -30,6 +54,11 @@ struct TreeTraits<DFUDSTree<B, S>> {
 template <class RMMTree, detail::TreeEncodingStorage EncodingStorage>
 class DFUDSTree : public TreeBase<DFUDSTree<RMMTree, EncodingStorage>> {
  private:
+  DFUDSTree(EncodingStorage storage, size_t bits, RMMTree backend)
+      : encoding_(std::move(storage)),
+        num_bits_(bits),
+        rmm_(std::move(backend)) {}
+
   EncodingStorage encoding_;
   size_t num_bits_;
   RMMTree rmm_;
@@ -59,6 +88,63 @@ class DFUDSTree : public TreeBase<DFUDSTree<RMMTree, EncodingStorage>> {
   }
 
  public:
+  /**
+   * @brief Construct an owning copy of another ordered tree's topology.
+   * @details Preserves child order, but assigns destination node numbers and
+   * bit positions. Source must satisfy detail::OrderedTreeSource and describe
+   * a valid tree of size() nodes. Its handles must remain valid during this
+   * call; no source storage is retained. Navigation metadata is rebuilt.
+   * Succinct sources use decoded DFS; other sources use O(height) navigation
+   * scratch. LOUDS output additionally stages O(size()) packed bits and
+   * O(height) level records; vector capacity adds allocation overhead.
+   * Construction scratch is independent of the query traversal-cache budget.
+   * Allocation and unrepresentable-size exceptions propagate.
+   */
+  template <detail::OrderedTreeSource Source>
+    requires(std::same_as<EncodingStorage, AlignedStorage> &&
+             !std::same_as<std::remove_cvref_t<Source>, DFUDSTree>)
+  explicit DFUDSTree(const Source& source)
+      : DFUDSTree(
+            detail::construct_tree_encoding<detail::TreeEncodingKind::kDFUDS>(
+                source),
+            source.size()) {}
+
+  /** @brief Write one tree artifact: encoding, node count and nested backend.
+   * @details External root indexes and active traversal state are not included.
+   */
+  void serialize_impl(BinaryWriter& writer) const
+    requires Serializable<RMMTree>
+  {
+    detail::serialize_tree<detail::TreeEncodingKind::kDFUDS>(
+        writer, this->size(), encoding_words_impl(), rmm_);
+  }
+
+  /** @brief Restore a complete tree without rebuilding its navigation index.
+   * @param reader Cursor advanced only after successful restoration.
+   * @param validation Quick checks framing, sizes and backend metadata; it
+   * assumes the saved topology and metadata correspond. Full also scans and
+   * validates topology and source-derived backend data.
+   * @details Owning trees copy the encoding. TreeView borrows word-aligned
+   * backing bytes, which must remain alive and immutable. Backend ownership
+   * follows its deserializer. No hashes or traversal caches are restored.
+   * @throws std::invalid_argument for malformed or incompatible artifacts;
+   * allocation and size exceptions propagate. Failure leaves reader unchanged.
+   */
+  static DFUDSTree deserialize_impl(
+      BinaryReader& reader,
+      DeserializationValidation validation = DeserializationValidation::kQuick)
+    requires Deserializable<RMMTree,
+                            std::span<const uint64_t>,
+                            DeserializationValidation>
+  {
+    return detail::deserialize_tree<detail::TreeEncodingKind::kDFUDS,
+                                    EncodingStorage, RMMTree>(
+        reader, validation,
+        [](EncodingStorage&& encoding, size_t bits, RMMTree&& backend) {
+          return DFUDSTree(std::move(encoding), bits, std::move(backend));
+        });
+  }
+
   using Node = TreeNode;
 
   using typename TreeBase<DFUDSTree>::NodeView;
@@ -247,27 +333,5 @@ class DFUDSTree : public TreeBase<DFUDSTree<RMMTree, EncodingStorage>> {
     return starts_degree_run(incoming_open(node));
   }
 };
-
-std::vector<uint64_t> adj_to_dfuds(
-    size_t tree_size,
-    const std::vector<std::vector<size_t>>& adj) {
-  size_t dfuds_size = tree_size * 2 - 1;
-  std::vector<uint64_t> dfuds((dfuds_size + 63) / 64, 0);
-  std::vector<size_t> stack;
-  stack.push_back(0);
-  size_t pos = 0;
-  while (!stack.empty()) {
-    auto v = stack.back();
-    stack.pop_back();
-    size_t edge_count = adj[v].size();
-    for (size_t i = 0; i < edge_count - 1; ++i) {  // edge 0 goes to parent
-      dfuds[pos >> 6] = dfuds[pos >> 6] | (1ULL << (pos & 63));
-      pos++;
-      stack.push_back(adj[v][edge_count - 1 - i]);
-    }
-    pos++;
-  }
-  return dfuds;
-}
 
 }  // namespace pixie

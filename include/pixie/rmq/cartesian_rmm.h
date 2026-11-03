@@ -96,7 +96,7 @@ namespace detail {
  * positions, so the bit sequence has `depth_count - 1` bits. Queries return the
  * first position of the minimum depth in a half-open depth-position range.
  *
- * `pixie::experimental::RmMBTree::range_min_query_pos()` works on inclusive
+ * `pixie::RmMBTree::range_min_query_pos()` works on inclusive
  * bit ranges and reports extrema after consuming each bit. This adapter adds
  * the missing left prefix boundary comparison, preserving first-minimum ties.
  */
@@ -111,7 +111,7 @@ class RmMPlusMinusOne {
   static constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
   static constexpr Index invalid_index = std::numeric_limits<Index>::max();
   static constexpr std::size_t kBlockSize =
-      pixie::experimental::RmMBTree<HighCacheLines, LowFanout>::kBlockBits;
+      pixie::RmMBTree<HighCacheLines, LowFanout>::kBlockBits;
 
   RmMPlusMinusOne() = default;
 
@@ -227,8 +227,8 @@ class RmMPlusMinusOne {
 
  private:
   // Preserve RMQ's measured backend independently of RmMBTree's default.
-  using RmM = pixie::experimental::
-      RmMBTree<HighCacheLines, LowFanout, pixie::RankSelectSupport<>>;
+  using RmM =
+      pixie::RmMBTree<HighCacheLines, LowFanout, pixie::RankSelectSupport<>>;
 
   std::span<const std::uint64_t> words_;
   std::size_t depth_count_ = 0;

@@ -72,19 +72,6 @@ std::vector<std::vector<size_t>> dfs_order(
   return dfs_adj;
 }
 
-std::vector<uint64_t> adj_to_louds(
-    size_t tree_size,
-    const std::vector<std::vector<size_t>>& adj) {
-  size_t louds_size = tree_size * 2 - 1;
-  std::vector<uint64_t> louds((louds_size + 63) / 64, 0);
-  size_t pos = 0;
-  for (size_t i = 0; i < tree_size; i++) {
-    louds[pos >> 6] = louds[pos >> 6] | (1ULL << (pos & 63));
-    pos += adj[i].size();
-  }
-  return louds;
-}
-
 std::vector<uint64_t> generate_random_data(size_t data_size,
                                            size_t alphabet_size,
                                            std::mt19937_64& rng) {
@@ -118,6 +105,9 @@ class AdjListTree {
    */
   explicit AdjListTree(const std::vector<std::vector<size_t>>& adjacency_list)
       : adj(adjacency_list) {}
+
+  /** @brief Number of nodes in the ordered tree. */
+  size_t size() const { return adj.size(); }
 
   /** @brief Object and reserved adjacency storage; excludes allocator metadata.
    */

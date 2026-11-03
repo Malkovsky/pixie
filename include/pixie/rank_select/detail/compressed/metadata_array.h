@@ -1,5 +1,6 @@
 #pragma once
 
+#include <pixie/detail/serialization.h>
 #include <pixie/storage.h>
 
 #include <algorithm>
@@ -66,6 +67,52 @@ class MetadataArray {
   std::size_t size() const { return storage_.size_bytes() / sizeof(T); }
 
   bool empty() const { return size() == 0; }
+
+  bool operator==(const MetadataArray& other) const {
+    return size() == other.size() &&
+           (empty() || std::equal(data(), data() + size(), other.data()));
+  }
+
+  template <class Write>
+  void serialize(BinaryWriter& writer, Write write) const {
+    writer.write_size(size());
+    for (size_t i = 0; i < size(); ++i) {
+      write(writer, (*this)[i]);
+    }
+  }
+
+  void serialize(BinaryWriter& writer) const
+    requires std::integral<T>
+  {
+    serialize(writer, [](BinaryWriter& out, T value) {
+      detail::write_integral(out, value);
+    });
+  }
+
+  template <class Read>
+  static MetadataArray deserialize(BinaryReader& reader,
+                                   size_t wire_bytes,
+                                   Read read)
+    requires MutableMetadataStorage<Storage>
+  {
+    const auto count = reader.read_size();
+    if (count > reader.remaining() / wire_bytes) {
+      throw std::invalid_argument("Truncated compressed metadata array");
+    }
+    MetadataArray result(count);
+    for (size_t i = 0; i < count; ++i) {
+      result[i] = read(reader);
+    }
+    return result;
+  }
+
+  static MetadataArray deserialize(BinaryReader& reader)
+    requires(std::integral<T> && MutableMetadataStorage<Storage>)
+  {
+    return deserialize(
+        reader, detail::kSerializedIntegralBytes<T>,
+        [](BinaryReader& in) { return detail::read_integral<T>(in); });
+  }
 
   std::size_t allocated_bytes() const
     requires requires(const Storage& storage) { storage.allocated_bytes(); }

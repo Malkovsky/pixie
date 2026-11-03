@@ -38,6 +38,26 @@ class RmMBase {
    */
   std::size_t size() const { return impl().size_impl(); }
 
+  /** @brief Whether one-select metadata is enabled in the backing index.
+   * @details Optional capability: Impl::supports_select1_impl() reports the
+   * construction mode, independently of whether the source contains ones.
+   */
+  bool supports_select1() const
+    requires requires(const Impl& value) { value.supports_select1_impl(); }
+  {
+    return impl().supports_select1_impl();
+  }
+
+  /** @brief Whether zero-select metadata is enabled in the backing index.
+   * @details Optional capability: Impl::supports_select0_impl() reports the
+   * construction mode, independently of whether the source contains zeros.
+   */
+  bool supports_select0() const
+    requires requires(const Impl& value) { value.supports_select0_impl(); }
+  {
+    return impl().supports_select0_impl();
+  }
+
   /**
    * @brief Count 1 bits in the prefix [0, end_position).
    */
