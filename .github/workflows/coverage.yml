@@ -34,7 +34,10 @@ jobs:
       uses: codecov/codecov-action@v4
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-        files: build/${{ matrix.build_directory }}/coverage.txt
+        directory: build/${{ matrix.build_directory }}/gcov
+        # Reports are already generated per translation unit; do not regenerate
+        # them through the uploader's automatic gcov plugin.
+        plugins: noop
         flags: gcov
         fail_ci_if_error: false
 
@@ -44,4 +47,4 @@ jobs:
         name: coverage-gcov-${{ matrix.variant }}
         path: |
           build/${{ matrix.build_directory }}/coverage.txt
-          build/${{ matrix.build_directory }}/*.gcov
+          build/${{ matrix.build_directory }}/gcov/**/*.gcov
