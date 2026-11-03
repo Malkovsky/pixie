@@ -9,6 +9,8 @@
 #include <pixie/tree/traversal_context.h>
 #include <pixie/utils.h>
 
+#include <algorithm>
+#include <array>
 #include <random>
 
 #include "tree_encoding_test_utils.h"
@@ -134,6 +136,7 @@ template <class Tree>
 struct TreeFormat;
 template <class B, class S>
 struct TreeFormat<pixie::BPTree<B, S>> {
+  using Backend = B;
   static constexpr uint64_t invalid_two_node_encoding = 0b0101;
   static auto encode(size_t n, const std::vector<std::vector<size_t>>& adj) {
     return EncodeReference<pixie::detail::TreeEncodingKind::kBP>(n, adj);
@@ -141,6 +144,7 @@ struct TreeFormat<pixie::BPTree<B, S>> {
 };
 template <class B, class S>
 struct TreeFormat<pixie::DFUDSTree<B, S>> {
+  using Backend = B;
   static constexpr uint64_t invalid_two_node_encoding = 0b010;
   static auto encode(size_t n, const std::vector<std::vector<size_t>>& adj) {
     return EncodeReference<pixie::detail::TreeEncodingKind::kDFUDS>(n, adj);
@@ -148,6 +152,7 @@ struct TreeFormat<pixie::DFUDSTree<B, S>> {
 };
 template <class B, class S>
 struct TreeFormat<pixie::LoudsTree<B, S>> {
+  using Backend = B;
   static constexpr uint64_t invalid_two_node_encoding = 0b011;
   static auto encode(size_t n, const std::vector<std::vector<size_t>>& adj) {
     return EncodeReference<pixie::detail::TreeEncodingKind::kLOUDS>(
@@ -482,6 +487,134 @@ TEST(RmMBTreeSerialization, RejectsDamagedSummaryAndTruncatedLevel) {
   EXPECT_THROW(Rmm::deserialize(empty_reader, std::span<const uint64_t>{}),
                std::invalid_argument);
   EXPECT_EQ(empty_reader.position(), 0u);
+}
+
+TYPED_TEST(TreeSerializationTest, RejectsBackendSizeAndPopulationMismatch) {
+  using Backend = typename TreeFormat<TypeParam>::Backend;
+  const std::vector<std::vector<size_t>> adj{{0, 1}, {0}};
+  const auto words = TreeFormat<TypeParam>::encode(2, adj);
+  const TypeParam tree(words, 2);
+  const auto bytes = save(tree);
+  const size_t bits = std::same_as<TypeParam, pixie::BPTree<Backend>> ? 4 : 3;
+  const std::vector<uint64_t> zeros(1, 0);
+  // Replace a complete nested artifact: it is independently valid, but does
+  // not belong to the enclosing tree. Keep the outer framing valid as well.
+  for (const auto& backend :
+       {save(Backend(words, bits + 1)), save(Backend(zeros, bits))}) {
+    auto damaged = bytes;
+    damaged.resize(48);  // Frame, node count, encoding length and one word.
+    damaged.insert(damaged.end(), backend.begin(), backend.end());
+    set_u64(damaged, 16, damaged.size());
+    pixie::BinaryReader reader(damaged);
+    EXPECT_THROW(TypeParam::deserialize(reader), std::invalid_argument);
+    EXPECT_EQ(reader.position(), 0u);
+  }
+}
+
+TEST(TreeSerialization, RejectsLoudsBackendWithoutBothSelectDirections) {
+  const std::vector<uint64_t> words{0b101};
+  const auto bytes = save(pixie::LoudsTree<Compressed>(words, 2));
+  for (auto mode :
+       {Compressed::SelectSupport::kNone, Compressed::SelectSupport::kSelect1,
+        Compressed::SelectSupport::kSelect0}) {
+    auto damaged = bytes;
+    damaged.resize(48);
+    const auto backend = save(Compressed(words, 3, mode));
+    damaged.insert(damaged.end(), backend.begin(), backend.end());
+    set_u64(damaged, 16, damaged.size());
+    pixie::BinaryReader reader(damaged);
+    EXPECT_THROW(pixie::LoudsTree<Compressed>::deserialize(reader),
+                 std::invalid_argument);
+    EXPECT_EQ(reader.position(), 0u);
+  }
+}
+
+TEST(RmMBTreeSerialization, ValidatesEachLeafSummaryFieldAndPadding) {
+  const std::vector<uint64_t> words{0b0101};
+  const auto bytes = save(Rmm(words, 4));
+  const size_t leaf = 56 + get_u64(bytes, 72) + 48;
+  // Each low node stores four arrays of 32 little-endian 16-bit fields.
+  // The source's summary is (excess=0, min=0, max=1, min_count=2).
+  auto set_field = [](auto& data, size_t offset, int value) {
+    const auto encoded = static_cast<uint16_t>(value);
+    data.at(offset) = std::byte(encoded);
+    data.at(offset + 1) = std::byte(encoded >> 8);
+  };
+  const std::vector<std::array<int, 4>> invalid{
+      {-6, 0, 1, 2}, {6, 0, 1, 2},  {1, 0, 1, 2}, {0, -5, 1, 2}, {0, 0, 5, 2},
+      {0, 2, 1, 2},  {-2, 0, 1, 2}, {2, 0, 1, 2}, {0, 0, 1, 0},  {0, 0, 1, 5}};
+  const std::vector<std::array<int, 4>> inconsistent{
+      {2, 0, 2, 2}, {0, -1, 1, 2}, {0, 0, 2, 2}, {0, 0, 1, 1}};
+  for (auto validation :
+       {DeserializationValidation::kQuick, DeserializationValidation::kFull}) {
+    const auto& cases = validation == DeserializationValidation::kQuick
+                            ? invalid
+                            : inconsistent;
+    for (const auto& values : cases) {
+      SCOPED_TRACE(testing::PrintToString(values));
+      auto damaged = bytes;
+      for (size_t field = 0; field < 4; ++field) {
+        set_field(damaged, leaf + field * 64, values[field]);
+      }
+      pixie::BinaryReader reader(damaged);
+      EXPECT_THROW(Rmm::deserialize(reader, words, validation),
+                   std::invalid_argument);
+      EXPECT_EQ(reader.position(), 0u);
+    }
+  }
+  for (size_t field = 0; field < 4; ++field) {
+    auto damaged = bytes;
+    set_field(damaged, leaf + field * 64 + 2, 1);
+    pixie::BinaryReader reader(damaged);
+    EXPECT_THROW(Rmm::deserialize(reader, words), std::invalid_argument);
+    EXPECT_EQ(reader.position(), 0u);
+  }
+}
+
+TEST(CompressedSerialization, DenseMixedPositionMapsRejectDamage) {
+  constexpr size_t super = 16384;
+  constexpr size_t bits = 80 * super + 37;
+  std::vector<uint64_t> words((bits + 63) / 64);
+  for (size_t s : {0u, 1u, 2u, 3u, 4u, 5u, 40u, 79u}) {
+    std::fill_n(words.begin() + s * super / 64, super / 64, UINT64_MAX);
+  }
+  words[3] &= ~(uint64_t{1} << 17);
+  const auto bytes = save(Compressed(words, bits));
+  size_t offset = 64;
+  auto array = [&](size_t element_bytes) {
+    const size_t begin = offset;
+    offset += 8 + get_u64(bytes, offset) * element_bytes;
+    return begin;
+  };
+  array(8);                                   // Rank records.
+  ASSERT_EQ(get_u64(bytes, offset), 1u);      // Predicted positions.
+  ASSERT_EQ(get_u64(bytes, offset + 8), 0u);  // Mixed shape.
+  offset += 16;
+  array(8);   // Empty coarse records.
+  array(8);   // Empty coarse directory.
+  array(16);  // Empty coarse bitmap.
+  const size_t header = offset;
+  ASSERT_EQ(get_u64(bytes, header + 8), 4u);  // Inline wide bitmap.
+  offset += 24;
+  const size_t records = array(8) + 8;
+  const std::vector<std::pair<size_t, uint64_t>> mutations{
+      {header, 0},
+      {header, get_u64(bytes, header) + 1},
+      {header + 8, 3},
+      {header + 16, 60},
+      {records, UINT64_MAX},
+      {records + 8, 0},
+      {records + 16, 1},                   // Incorrect wide prefix.
+      {records + 24, 0},                   // Incorrect wide population.
+      {records + 24, uint64_t{1} << 63}};  // Out-of-range bitmap bit.
+  for (const auto& [field, value] : mutations) {
+    SCOPED_TRACE(testing::Message() << field << "/" << value);
+    auto damaged = bytes;
+    set_u64(damaged, field, value);
+    pixie::BinaryReader reader(damaged);
+    EXPECT_THROW(Compressed::deserialize(reader, words), std::invalid_argument);
+    EXPECT_EQ(reader.position(), 0u);
+  }
 }
 
 TEST(CompressedSerialization, NondefaultParametersAndSourceMismatch) {
