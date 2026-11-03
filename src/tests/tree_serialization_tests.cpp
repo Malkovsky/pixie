@@ -36,6 +36,100 @@ void set_u64(std::vector<std::byte>& bytes, size_t offset, uint64_t value) {
   }
 }
 
+uint64_t get_u64(const std::vector<std::byte>& bytes, size_t offset) {
+  pixie::BinaryReader reader(std::span<const std::byte>(bytes).subspan(offset));
+  return reader.read_u64();
+}
+
+TEST(CompressedSerialization, MixedCoarseDirectoriesRoundTripAndRejectDamage) {
+  constexpr size_t super = 16384;
+  constexpr size_t bits = 80 * super + 37;
+  std::vector<uint64_t> words((bits + 63) / 64);
+  for (size_t s : {0u, 40u, 79u}) {
+    std::fill_n(words.begin() + s * super / 64, super / 64, UINT64_MAX);
+  }
+  words[3] &= ~(uint64_t{1} << 17);
+  for (bool complement : {false, true}) {
+    if (complement) {
+      for (auto& word : words) {
+        word = ~word;
+      }
+    }
+    const Compressed original(words, bits);
+    const Baseline reference(words, bits);
+    const auto bytes = save(original);
+    for (auto validation : {DeserializationValidation::kQuick,
+                            DeserializationValidation::kFull}) {
+      pixie::BinaryReader reader(bytes);
+      const auto restored = Compressed::deserialize(reader, words, validation);
+      EXPECT_TRUE(reader.empty());
+      EXPECT_EQ(save(restored), bytes);
+      for (size_t rank = 1; rank <= bits + 1; rank += 4095) {
+        EXPECT_EQ(restored.select(rank), reference.select(rank));
+        EXPECT_EQ(restored.select0(rank), reference.select0(rank));
+      }
+    }
+
+    // Walk the version-1 wire arrays, retaining their count-field offsets.
+    // Mutate fields inside the selected directory without breaking framing,
+    // so validation reaches the sample records rather than rejecting a header.
+    size_t offset = 64;
+    auto array = [&](size_t element_bytes) {
+      const size_t begin = offset;
+      offset += 8 + get_u64(bytes, offset) * element_bytes;
+      return begin;
+    };
+    const auto ranks = array(8);
+    std::vector<std::pair<size_t, uint64_t>> mutations{
+        {ranks + 8, 1}, {48, original.rank(bits) - 1}};
+    bool found_mixed = false;
+    for (unsigned direction = 0; direction < 2; ++direction) {
+      const auto shape = get_u64(bytes, offset + 8);
+      EXPECT_EQ(get_u64(bytes, offset), 0u);  // Coarse, not predicted.
+      offset += 16;
+      const auto samples = array(8);
+      const auto directory = array(8);
+      const auto map = array(16);
+      const auto position_header = offset;
+      offset += 24;
+      array(8);  // Empty position samples.
+      array(8);  // Occupied-superblock sample records.
+      array(8);  // Occupied-superblock directory.
+      const auto wide = array(16);
+      array(2);  // Rank endpoints for the default sampling frequency.
+      mutations.emplace_back(position_header, 1);  // Noncanonical empty layout.
+      if (shape != 0) {
+        continue;
+      }
+      found_mixed = true;
+      ASSERT_GT(get_u64(bytes, samples), 1u);
+      ASSERT_GT(get_u64(bytes, directory), 0u);
+      ASSERT_GT(get_u64(bytes, map), 0u);
+      ASSERT_GT(get_u64(bytes, wide), 0u);
+      mutations.insert(
+          mutations.end(),
+          {{samples + 8, UINT64_MAX},  // Base outside the source domain.
+           {samples + 16, 0},          // Missing unary highs.
+           {directory + 8, UINT64_MAX},
+           {map + 8, 1},            // Incorrect bitmap prefix.
+           {map + 16, UINT64_MAX},  // Bits beyond the final sample.
+           {map + 16, 0},           // Bitmap population mismatch.
+           {wide + 8, 1},           // Noncontiguous endpoint directory.
+           {wide + 16, 0}});        // Empty wide interval.
+    }
+    ASSERT_TRUE(found_mixed);
+    for (const auto& [field, value] : mutations) {
+      SCOPED_TRACE(testing::Message() << complement << "/" << field);
+      auto damaged = bytes;
+      set_u64(damaged, field, value);
+      pixie::BinaryReader reader(damaged);
+      EXPECT_THROW(Compressed::deserialize(reader, words),
+                   std::invalid_argument);
+      EXPECT_EQ(reader.position(), 0u);
+    }
+  }
+}
+
 template <class Tree>
 struct TreeFormat;
 template <class B, class S>
@@ -323,6 +417,71 @@ TYPED_TEST(TreeSerializationTest,
     EXPECT_THROW(Index::deserialize(reader, tree), std::invalid_argument);
     EXPECT_EQ(reader.position(), 0u);
   }
+}
+
+TYPED_TEST(TreeSerializationTest, RootIndexRejectsBrokenGraphAndContextBudget) {
+  constexpr size_t n = 7;
+  const std::vector<std::vector<size_t>> adj{
+      {0, 1, 2}, {0, 3, 4}, {0, 5, 6}, {1}, {1}, {2}, {2}};
+  const auto words = TreeFormat<TypeParam>::encode(n, adj);
+  const TypeParam tree(words, n);
+  using Index = pixie::RootNavigationIndex<TypeParam>;
+  const auto bytes = save(Index(tree));
+  // Version 1: 24-byte frame, tree size, entry count, then 32-byte entries.
+  constexpr size_t entries = 40;
+  ASSERT_EQ(get_u64(bytes, 32), n);
+  const std::vector<std::pair<size_t, uint64_t>> mutations{
+      {entries + 16, 0},           // Children attached to a zero-degree node.
+      {entries + 24, 0},           // Backward/self child reference.
+      {entries + 16, 1},           // An unreferenced cached child.
+      {entries, 1},                // Wrong root identity.
+      {entries + 2 * 32 + 24, 3},  // Overlap the first child's child list.
+      {entries + 32, get_u64(bytes, entries + 2 * 32)},
+      {entries + 3 * 32 + 16, 1}};  // Wrong leaf degree.
+  for (const auto& [field, value] : mutations) {
+    SCOPED_TRACE(field);
+    auto damaged = bytes;
+    set_u64(damaged, field, value);
+    pixie::BinaryReader reader(damaged);
+    EXPECT_THROW(Index::deserialize(reader, tree, 524288,
+                                    DeserializationValidation::kFull),
+                 std::invalid_argument);
+    EXPECT_EQ(reader.position(), 0u);
+  }
+  pixie::BinaryReader reader(bytes);
+  auto index = Index::deserialize(reader, tree);
+  EXPECT_THROW((pixie::TreeTraversalContext<TypeParam>(std::move(index), 0)),
+               std::invalid_argument);
+}
+
+TEST(RmMBTreeSerialization, RejectsDamagedSummaryAndTruncatedLevel) {
+  const std::vector<uint64_t> words(9, 0x5555555555555555ULL);
+  const Rmm original(words, 513);
+  const auto bytes = save(original);
+  // Header plus four scalar fields precede the nested rank/select frame.
+  const size_t summary = 56 + get_u64(bytes, 56 + 16);
+  for (const auto& [field, value] : std::vector<std::pair<size_t, uint64_t>>{
+           {40, 512},  // Nested rank index still describes 513 bits.
+           {summary + 8, original.rank1(513) + 1}}) {
+    auto damaged = bytes;
+    set_u64(damaged, field, value);
+    pixie::BinaryReader reader(damaged);
+    EXPECT_THROW(Rmm::deserialize(reader, words), std::invalid_argument);
+    EXPECT_EQ(reader.position(), 0u);
+  }
+  auto truncated = bytes;
+  truncated.resize(summary + 48);
+  set_u64(truncated, 16, truncated.size());
+  pixie::BinaryReader short_level(truncated);
+  EXPECT_THROW(Rmm::deserialize(short_level, words), std::invalid_argument);
+  EXPECT_EQ(short_level.position(), 0u);
+
+  auto empty = save(Rmm{});
+  set_u64(empty, 56 + 24, 1);  // Nonzero minimum in an empty summary.
+  pixie::BinaryReader empty_reader(empty);
+  EXPECT_THROW(Rmm::deserialize(empty_reader, std::span<const uint64_t>{}),
+               std::invalid_argument);
+  EXPECT_EQ(empty_reader.position(), 0u);
 }
 
 TEST(CompressedSerialization, NondefaultParametersAndSourceMismatch) {
