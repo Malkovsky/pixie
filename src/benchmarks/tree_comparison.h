@@ -33,8 +33,13 @@ inline size_t TreeCacheBudget() {
 // every workload. No per-size or per-workload selection of policy winners.
 template <TreeWorkload Workload, class Tree>
 void RunTreeComparison(benchmark::State& state, const Tree& tree) {
-  TreeTraversalContext<Tree> cache(tree, TreeCacheBudget());
-  if (cache.budget_usage_bytes() > TreeCacheBudget()) {
+  const size_t budget = TreeCacheBudget();
+  const size_t context_charge =
+      TreeTraversalContext<Tree>(tree, budget).budget_usage_bytes();
+  RootNavigationIndex<Tree> index(tree, budget - context_charge);
+  TreeTraversalContext<Tree> cache(tree, budget, &index);
+  if (cache.budget_usage_bytes() + index.budget_usage_bytes() >
+      TreeCacheBudget()) {
     state.SkipWithError("Combined cache and scratch budget exceeded");
     return;
   }
@@ -69,7 +74,8 @@ void RunTreeComparison(benchmark::State& state, const Tree& tree) {
   }
   state.counters["nodes"] = tree.size();
   state.counters["cache_limit_bytes"] = TreeCacheBudget();
-  state.counters["cache_and_scratch_bytes"] = cache.budget_usage_bytes();
+  state.counters["cache_and_scratch_bytes"] =
+      cache.budget_usage_bytes() + index.budget_usage_bytes();
   state.counters["scratch_reserved_bytes"] = cache.scratch_bytes();
   state.counters["streaming_dfs"] = cache.streaming_enabled();
   state.counters["decoded_inspection"] = cache.optimized_inspection_enabled();

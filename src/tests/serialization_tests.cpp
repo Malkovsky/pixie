@@ -553,7 +553,7 @@ TEST(PackedBitBuilderTest, PreservesBitsAcrossCacheLineGrowth) {
   }
 }
 
-TEST(PackedBitBuilderTest, TransfersAlignedStorageWithoutChangingBits) {
+TEST(PackedBitBuilderTest, FinalizesAlignedStorageWithoutChangingBits) {
   pixie::PackedBitBuilder builder;
   builder.reserve_bits(129);
   builder.write_bits(0xfedcba9876543210, 64);

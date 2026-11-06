@@ -1,12 +1,13 @@
 #pragma once
 
 #include <pixie/detail/serialization_frame.h>
-#include <pixie/tree.h>
+#include <pixie/incomplete_tree.h>
 #include <pixie/tree/traversal_budget.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <queue>
 #include <stdexcept>
 #include <vector>
@@ -41,6 +42,44 @@ class RootNavigationIndex
  public:
   /** @brief Borrow the indexed tree; the caller retains its lifetime. */
   const Tree& tree() const { return tree_; }
+
+  /** @brief Complete source tree; source must outlive this index. */
+  const Tree& tree_base() const { return tree_; }
+  /** @brief O(n) cache membership; never performs source navigation. */
+  bool contains(TreeNode node) const { return find_entry(node) != kMissing; }
+  /** @brief Whether the complete child list is represented; leaves are
+   * complete. Throws std::out_of_range for an absent node. */
+  bool children_complete(TreeNode node) const {
+    const auto& e = entries_[require_entry(node)];
+    return e.degree == 0 || e.first != kMissing;
+  }
+  /** @brief Cached child handles only, in original order; may be incomplete.
+   * Throws for an absent node; never falls back to the source tree. */
+  std::vector<TreeNode> represented_children(TreeNode node) const {
+    const auto& e = entries_[require_entry(node)];
+    std::vector<TreeNode> result;
+    if (e.first != kMissing) {
+      result.reserve(e.degree);
+      for (size_t i = 0; i < e.degree; ++i) {
+        result.push_back(entries_[e.first + i].node);
+      }
+    }
+    return result;
+  }
+  /** @brief Represented parent; root is its own parent. Throws if absent.
+   * The root-connected index always represents a cached node's parent. O(n). */
+  std::optional<TreeNode> represented_parent(TreeNode node) const {
+    const auto id = require_entry(node);
+    if (id == 0) {
+      return node;
+    }
+    for (const auto& e : entries_) {
+      if (e.first != kMissing && id >= e.first && id - e.first < e.degree) {
+        return e.node;
+      }
+    }
+    return std::nullopt;
+  }
 
   /** @brief Write the immutable entries as a separate versioned artifact.
    * @details Stores node handles, degrees and child offsets, not the tree,
@@ -243,6 +282,13 @@ class RootNavigationIndex
    */
   class Cursor {
    public:
+    /** @brief Uncached cursor borrowing a nonempty tree. */
+    explicit Cursor(const Tree& tree)
+        : tree_(&tree), index_(kMissing), fallback_(tree.root()) {
+      if (tree.empty()) {
+        throw std::invalid_argument("empty tree");
+      }
+    }
     /** @brief Return the current valid node handle. */
     TreeNode node() const {
       return index_ == kMissing ? fallback_ : owner_->entries_[index_].node;
@@ -252,8 +298,7 @@ class RootNavigationIndex
       if (index_ != kMissing) {
         return owner_->entries_[index_].degree;
       }
-      return owner_->tree_.is_leaf(fallback_) ? 0
-                                              : owner_->tree_.degree(fallback_);
+      return tree_->is_leaf(fallback_) ? 0 : tree_->degree(fallback_);
     }
     /** @brief Descend to child i, requiring i in [0, degree()). */
     void move_to_child(size_t i) {
@@ -340,7 +385,8 @@ class RootNavigationIndex
 
    private:
     friend class RootNavigationIndex;
-    explicit Cursor(const RootNavigationIndex& owner) : owner_(&owner) {
+    explicit Cursor(const RootNavigationIndex& owner)
+        : owner_(&owner), tree_(&owner.tree_) {
       if (owner.entries_.empty()) {
         index_ = kMissing;
         fallback_ = owner.tree_.root();
@@ -348,13 +394,14 @@ class RootNavigationIndex
     }
     // Keep uncommon succinct navigation out of the indexed hot path.
     [[gnu::noinline]] TreeNode uncached_child(size_t i) const {
-      return owner_->tree_.child(node(), i);
+      return tree_->child(node(), i);
     }
     template <class Visitor>
     [[gnu::noinline]] void uncached_for_each_child(Visitor& visitor) const {
-      owner_->tree_.for_each_child(node(), visitor);
+      tree_->for_each_child(node(), visitor);
     }
-    const RootNavigationIndex* owner_;
+    const RootNavigationIndex* owner_ = nullptr;
+    const Tree* tree_;
     uint32_t index_ = 0;
     TreeNode fallback_{0, 0};
   };
@@ -365,6 +412,22 @@ class RootNavigationIndex
   Cursor cursor() const&& = delete;
 
  private:
+  uint32_t find_entry(TreeNode node) const {
+    for (size_t i = 0; i < entries_.size(); ++i) {
+      if (entries_[i].node.number == node.number &&
+          entries_[i].node.pos == node.pos) {
+        return static_cast<uint32_t>(i);
+      }
+    }
+    return kMissing;
+  }
+  uint32_t require_entry(TreeNode node) const {
+    auto i = find_entry(node);
+    if (i == kMissing) {
+      throw std::out_of_range("node is outside root index");
+    }
+    return i;
+  }
   static constexpr uint64_t kSerializationTag = 0x314e525458495050ULL;
 
   static size_t entry_capacity(size_t byte_limit) {

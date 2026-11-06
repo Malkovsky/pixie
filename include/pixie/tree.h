@@ -13,8 +13,12 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <optional>
 #include <span>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace pixie {
 
@@ -150,6 +154,71 @@ class TreeBase : public SerializationBase<Impl> {
     requires requires(const Impl& tree) { tree.memory_usage_bytes_impl(); }
   {
     return impl().memory_usage_bytes_impl();
+  }
+
+  /** @brief Complete-tree source for the incomplete-tree inspection contract.
+   */
+  const Impl& tree_base() const { return impl(); }
+  /** @brief Membership for a valid handle of this representation. Does not
+   * authenticate arbitrary forged handles or provenance. */
+  bool contains(Node node) const { return node.number < size(); }
+  /** @brief All children of a valid node are represented in a complete tree. */
+  bool children_complete(Node) const { return true; }
+  /** @brief Parent of a valid node; complete root returns itself. */
+  std::optional<Node> represented_parent(Node node) const {
+    return parent(node);
+  }
+  /** @brief All immediate children of a valid node in original order. */
+  std::vector<Node> represented_children(Node node) const {
+    std::vector<Node> result;
+    for_each_child(node, [&](auto child) { result.push_back(child); });
+    return result;
+  }
+
+  /** @brief Canonical balanced-parentheses topology slice, independent of
+   * encoding. start/count are zero-based character offset and maximum length;
+   * out-of-range start returns empty. Defaults produce the full string.
+   * Streams navigation with O(1) state; may visit the prefix before start.
+   * No intermediate full string or recursive stack is allocated. */
+  std::string parentheses(
+      std::size_t start = 0,
+      std::size_t count = std::numeric_limits<std::size_t>::max()) const {
+    std::string output;
+    if (empty() || !count) {
+      return output;
+    }
+    std::size_t offset = 0;
+    auto emit = [&](char c) {
+      if (offset++ >= start) {
+        output.push_back(c);
+      }
+    };
+    auto node = root();
+    bool entering = true;
+    while (true) {
+      emit(entering ? '(' : ')');
+      if (output.size() == count) {
+        break;
+      }
+      if (entering && !is_leaf(node)) {
+        node = first_child(node);
+        continue;
+      }
+      if (entering) {
+        entering = false;
+        continue;
+      }
+      if (is_root(node)) {
+        break;
+      }
+      if (!is_last_child(node)) {
+        node = next_sibling(node);
+        entering = true;
+      } else {
+        node = parent(node);
+      }
+    }
+    return output;
   }
 
   /**

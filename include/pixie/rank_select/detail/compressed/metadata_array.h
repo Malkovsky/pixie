@@ -2,6 +2,7 @@
 
 #include <pixie/detail/serialization.h>
 #include <pixie/storage.h>
+#include <pixie/storage/aligned.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -17,8 +18,9 @@ namespace pixie::detail::compressed {
 template <class Storage>
 concept MutableMetadataStorage =
     StorageImplementation<Storage> && std::default_initializable<Storage> &&
-    requires(Storage& storage, const Storage& readonly) {
+    (std::same_as<Storage, AlignedStorage> || requires(Storage& storage) {
       storage.resize(std::size_t{});
+    }) && requires(Storage& storage, const Storage& readonly) {
       { storage.writable_bytes() } -> std::same_as<std::span<std::byte>>;
       { readonly.as_bytes() } -> std::same_as<std::span<const std::byte>>;
     };
@@ -133,7 +135,11 @@ class MetadataArray {
       return {};
     }
     const auto byte_count = count * sizeof(T);
-    storage_.resize(byte_count * 8);
+    if constexpr (std::same_as<Storage, AlignedStorage>) {
+      storage_ = AlignedStorage(byte_count * 8);
+    } else {
+      storage_.resize(byte_count * 8);
+    }
     auto bytes = storage_.writable_bytes();
     const auto readonly = storage_.as_bytes();
     if (bytes.size() != byte_count || readonly.size() != byte_count ||

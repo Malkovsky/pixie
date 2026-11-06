@@ -5,6 +5,7 @@
 #include <pixie/rank_select/detail/compressed/select_metadata_search.h>
 #include <pixie/rank_select/experimental/packed_prefix_multishift.h>
 #include <pixie/rank_select/support.h>
+#include <pixie/storage/aligned_builder.h>
 #ifdef PIXIE_PASTA_SUPPORT
 #include <pixie/rank_select/pasta.h>
 #endif
@@ -108,8 +109,8 @@ class TestMetadataStorage
   }
 
  private:
-  static pixie::AlignedStorage copy_storage(
-      const pixie::AlignedStorage& source) {
+  static pixie::AlignedStorageBuilder copy_storage(
+      const pixie::AlignedStorageBuilder& source) {
     if (copies_before_failure == 0) {
       throw std::bad_alloc();
     }
@@ -123,7 +124,7 @@ class TestMetadataStorage
     return Offset - (fault == MetadataFault::kMisaligned);
   }
 
-  pixie::AlignedStorage backing_;
+  pixie::AlignedStorageBuilder backing_;
   std::size_t size_ = 0;
 };
 
@@ -1513,8 +1514,8 @@ TEST(RankSelectSupportTest, AcceptsStorageSourceWithoutCopying) {
 }
 
 TEST(RankSelectSupportTest, AcceptsPartialWordAlignedStorageSource) {
-  pixie::AlignedStorage storage(1);
-  storage.writable_bytes()[0] = std::byte{1};
+  const std::array bytes{std::byte{1}};
+  pixie::AlignedStorage storage{std::span<const std::byte>(bytes)};
 
   const pixie::RankSelectSupport support(storage, 1);
 

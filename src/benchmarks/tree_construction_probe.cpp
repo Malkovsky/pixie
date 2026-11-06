@@ -51,13 +51,18 @@ Result succinct(size_t n, size_t budget, bool copy_input) {
   Tree tree = copy_input ? Tree(words, n) : Tree(std::move(encoding), n);
   r.construct = seconds(start);
   start = Clock::now();
-  pixie::TreeTraversalContext cache(tree, budget);
+  const size_t context_charge =
+      pixie::TreeTraversalContext(tree, budget).budget_usage_bytes();
+  pixie::RootNavigationIndex index(tree, budget - context_charge);
+  pixie::TreeTraversalContext cache(tree, budget, &index);
   r.cache = seconds(start);
   r.encoding = tree.encoding_owned_bytes();
   r.structure = tree.memory_usage_bytes();
   r.scratch = cache.scratch_bytes();
-  r.persistent = cache.memory_usage_bytes() - r.scratch;
-  if (tree.size() != n || cache.budget_usage_bytes() > budget ||
+  r.persistent =
+      cache.memory_usage_bytes() - r.scratch + index.memory_usage_bytes();
+  if (tree.size() != n ||
+      cache.budget_usage_bytes() + index.budget_usage_bytes() > budget ||
       !cache.optimized_inspection_enabled()) {
     throw std::runtime_error("construction validation failed");
   }
