@@ -387,14 +387,13 @@ TYPED_TEST(TreeSpecificationTest, EncodingOwnershipCopyAndMove) {
       pixie::AlignedStorage source{std::span<const uint64_t>(expected_words)};
       Tree result(source, n);
       EXPECT_NE(result.encoding_words().data(), source.as_words64().data());
-      std::ranges::fill(source.writable_bytes(), std::byte{0});
+      source = pixie::AlignedStorage(source.size_bits());
       return result;
     }();
     check(from_lvalue);
     pixie::AlignedStorage storage(TypeParam::bit_size(n));
-    auto padded = storage.as_lines();
-    std::memcpy(std::as_writable_bytes(padded).data(), expected_words.data(),
-                expected_words.size() * 8);
+    std::ranges::copy(std::as_bytes(std::span(expected_words)),
+                      std::as_writable_bytes(storage.as_lines()).begin());
     const auto data = storage.padded_view().as_words64().data();
     Tree consumed(std::move(storage), n);
     EXPECT_EQ(consumed.encoding_words().data(), data);
@@ -445,10 +444,8 @@ TYPED_TEST(TreeSpecificationTest, EncodingStorageWordBoundaries) {
     }
     const size_t bits = n ? TypeParam::bit_size(n) : 0;
     pixie::AlignedStorage storage(bits);
-    if (!words.empty()) {
-      std::ranges::copy(std::as_bytes(std::span(words)),
-                        std::as_writable_bytes(storage.as_lines()).begin());
-    }
+    std::ranges::copy(std::as_bytes(std::span(words)),
+                      std::as_writable_bytes(storage.as_lines()).begin());
     const auto address = storage.padded_view().as_words64().data();
     const Tree tree = [&] {
       if constexpr (owns) {
@@ -543,6 +540,83 @@ TYPED_TEST(BoundedTraversalTest, ContextOwnershipAndAccounting) {
   EXPECT_EQ(copied.node().number, root.number);
   EXPECT_EQ(copied.node().pos, root.pos);
   EXPECT_NE(first.node().number, root.number);
+}
+
+TYPED_TEST(BoundedTraversalTest, PartialScansAndRetainedResults) {
+  using Tree = typename TypeParam::Tree;
+  static_assert(pixie::IncompleteTree<pixie::DecodedTree<Tree>>);
+  static_assert(pixie::IncompleteTree<pixie::RootNavigationIndex<Tree>>);
+  std::mt19937_64 rng(614);
+  for (size_t n : {1u, 2u, 33u, 257u}) {
+    auto adjacency = TypeParam::order(n, generate_random_tree(n, rng));
+    Tree tree(TypeParam::encode(n, adjacency), n);
+    pixie::RootNavigationIndex index(tree, 32768);
+    pixie::TreeTraversalContext context(tree, 524288, &index);
+    Tree other(TypeParam::encode(n, adjacency), n);
+    EXPECT_THROW((pixie::TreeTraversalContext(other, 524288, &index)),
+                 std::invalid_argument);
+    auto full = context.fetch(tree.root(), 10 * n);
+    ASSERT_EQ(full->size(), n);
+    EXPECT_EQ(context.memory_usage_bytes(),
+              sizeof(context) + context.scratch_bytes() +
+                  context.scan_scratch_bytes() + context.retained_bytes());
+    EXPECT_LE(context.budget_usage_bytes(), 524288u);
+    EXPECT_EQ(&full->tree_base(), &tree);
+    for (size_t bits : {0u, 1u, 2u, 3u, 8u, 63u, 64u, 65u, 500u}) {
+      auto result = context.scan(tree.root(), bits);
+      EXPECT_LE(result->scanned_bits(), bits);
+      result->for_each_node([&](auto node) {
+        EXPECT_TRUE(result->contains(node));
+        auto represented = result->represented_children(node);
+        std::vector<pixie::TreeNode> expected;
+        tree.for_each_child(node, [&](auto c) {
+          if (result->contains(c)) {
+            expected.push_back(c);
+          }
+        });
+        ASSERT_EQ(represented.size(), expected.size());
+        for (size_t i = 0; i < expected.size(); ++i) {
+          EXPECT_EQ(represented[i].number, expected[i].number);
+        }
+        if (result->children_complete(node)) {
+          EXPECT_EQ(represented.size(), tree.degree(node));
+        }
+        EXPECT_TRUE(full->children_complete(node));
+        EXPECT_EQ(full->represented_children(node).size(), tree.degree(node));
+        EXPECT_TRUE(index.contains(node));
+        EXPECT_TRUE(index.children_complete(node));
+        EXPECT_EQ(index.represented_children(node).size(), tree.degree(node));
+      });
+      size_t enters = 0, exits = 0;
+      result->events(
+          [&](auto, bool entering) { entering ? ++enters : ++exits; });
+      EXPECT_EQ(enters, result->size());
+      EXPECT_EQ(exits, enters);
+    }
+    EXPECT_GT(context.retained_bytes(), 0u);
+    context.clear();
+    EXPECT_EQ(context.retained_bytes(), 0u);
+    EXPECT_EQ(full->size(), n);
+    if (n > 1) {
+      auto child = tree.first_child(tree.root());
+      auto part = context.scan(child, 10 * n);
+      EXPECT_FALSE(part->represented_parent(child).has_value());
+      EXPECT_FALSE(part->contains(tree.root()));
+      EXPECT_THROW(part->children_complete(tree.root()), std::out_of_range);
+    }
+    auto text = tree.parentheses();
+    EXPECT_EQ(text.size(), 2 * n);
+    int balance = 0;
+    for (char c : text) {
+      balance += c == '(' ? 1 : -1;
+      EXPECT_GE(balance, 0);
+    }
+    EXPECT_EQ(balance, 0);
+    for (size_t start = 0; start <= text.size() + 1; ++start) {
+      EXPECT_EQ(tree.parentheses(start, 7),
+                start < text.size() ? text.substr(start, 7) : "");
+    }
+  }
 }
 
 TYPED_TEST(BoundedTraversalTest, IndexRejectsEmptyTrees) {

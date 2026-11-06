@@ -63,8 +63,9 @@ namespace pixie {
  * uint64_t alignment. All retained arrays use MetadataStorage.
  *
  * @tparam MetadataStorage Default-empty, owning contiguous storage with deep
- * copies and nonthrowing move construction/assignment. Construction requires
- * resize(bit_count), writable_bytes() and as_bytes(), exposing exactly the
+ * copies and nonthrowing move construction/assignment. Construction supports
+ * fixed-size AlignedStorage or custom storage with resize(bit_count). Both
+ * provide writable_bytes() and as_bytes(), exposing exactly the
  * requested bytes with uint64_t alignment. Memory reporting requires
  * allocated_bytes(). The borrowed source needs no cache-line alignment.
  * @tparam SampleFrequency Positive power-of-two occurrence sampling interval.

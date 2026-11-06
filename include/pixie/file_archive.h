@@ -537,9 +537,7 @@ class FileArchiveIndex : public FileArchiveBase<FileArchiveIndex<Storage>>,
       if (bytes.size() > std::numeric_limits<std::size_t>::max() / 8) {
         throw std::length_error("File-archive path storage is too large");
       }
-      AlignedStorage result(bytes.size() * 8);
-      std::ranges::copy(bytes, result.writable_bytes().begin());
-      return result;
+      return pixie::AlignedStorage(bytes);
     }
   }
 

@@ -297,24 +297,25 @@ TYPED_TEST(TreeSerializationTest,
 }
 
 TYPED_TEST(TreeSerializationTest,
-           RestoredRootIndexCanBeAdoptedByTraversalContext) {
+           RestoredRootIndexCanBeBorrowedByTraversalContext) {
   std::mt19937_64 rng(98);
   const auto words =
       TreeFormat<TypeParam>::encode(1025, generate_random_tree(1025, rng));
   const TypeParam tree(words, 1025);
   for (size_t budget : std::initializer_list<size_t>{0, 32768, 524288}) {
-    const pixie::TreeTraversalContext<TypeParam> context(tree, budget);
-    const auto bytes = save(context.root_index());
+    const pixie::RootNavigationIndex<TypeParam> index(tree, budget);
+    const pixie::TreeTraversalContext<TypeParam> context(tree, budget, &index);
+    const auto bytes = save(*context.root_index());
     pixie::BinaryReader reader(bytes);
     auto restored = pixie::RootNavigationIndex<TypeParam>::deserialize(
         reader, tree, budget);
-    const pixie::TreeTraversalContext<TypeParam> loaded(std::move(restored),
-                                                        budget);
+    const pixie::TreeTraversalContext<TypeParam> loaded(tree, budget,
+                                                        &restored);
     EXPECT_EQ(loaded.cached_depth(), context.cached_depth());
     EXPECT_EQ(loaded.decoded_chunk_bits(), context.decoded_chunk_bits());
     EXPECT_EQ(loaded.scratch_bytes(), context.scratch_bytes());
     EXPECT_LE(loaded.budget_usage_bytes(), budget);
-    EXPECT_EQ(save(loaded.root_index()), bytes);
+    EXPECT_EQ(save(*loaded.root_index()), bytes);
   }
 }
 
@@ -455,8 +456,9 @@ TYPED_TEST(TreeSerializationTest, RootIndexRejectsBrokenGraphAndContextBudget) {
   }
   pixie::BinaryReader reader(bytes);
   auto index = Index::deserialize(reader, tree);
-  EXPECT_THROW((pixie::TreeTraversalContext<TypeParam>(std::move(index), 0)),
-               std::invalid_argument);
+  const pixie::TreeTraversalContext<TypeParam> context(tree, 0, &index);
+  EXPECT_EQ(context.budget_usage_bytes(), 0u);
+  EXPECT_EQ(context.root_index(), &index);
 }
 
 TEST(RmMBTreeSerialization, RejectsDamagedSummaryAndTruncatedLevel) {

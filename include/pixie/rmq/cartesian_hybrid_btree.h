@@ -2148,9 +2148,7 @@ class CartesianHybridBTree
     if (size > std::numeric_limits<std::size_t>::max() / 8) {
       throw std::length_error("Serialized RMQ storage is too large");
     }
-    pixie::AlignedStorage result(size * 8);
-    std::ranges::copy(bytes, result.writable_bytes().begin());
-    return result;
+    return pixie::AlignedStorage(bytes);
   }
 
   template <class State>
@@ -2388,7 +2386,7 @@ class CartesianHybridBTree
    * @brief Rebuild the BP Cartesian-tree representation and support indexes.
    */
   void build() {
-    bp_bits_.resize(0);
+    bp_bits_ = {};
     bp_bit_count_ = 0;
     top_sparse_candidates_.clear();
     top_block_size_ = kMinTopSparseBlockSize;
@@ -2405,9 +2403,8 @@ class CartesianHybridBTree
     }
 
     bp_bit_count_ = 2 * values_.size();
-    bp_bits_.resize(padded_bp_bit_capacity());
-    std::ranges::fill(bp_storage_words(), std::uint64_t{0});
-    build_bp_bits();
+    bp_bits_ = AlignedStorage(padded_bp_bit_capacity());
+    build_bp_bits(bp_bits_.writable_words64());
     if constexpr (UseTopSparseOverlay) {
       build_top_sparse_table();
     }
@@ -2416,11 +2413,11 @@ class CartesianHybridBTree
 
   /**
    * @brief Build the Ferrada-Navarro BP bits with a monotone stack.
+   * @param words Zero-filled destination with padded BP capacity.
    */
-  void build_bp_bits() {
+  void build_bp_bits(std::span<std::uint64_t> words) {
     utils::SuccinctIncreasingStack stack(values_.size());
     std::size_t write_position = bp_bit_count_;
-    std::span<std::uint64_t> words = bp_storage_words();
     const auto prepend_open = [&]() {
       --write_position;
       words[write_position >> 6] |= std::uint64_t{1} << (write_position & 63);
@@ -2489,13 +2486,6 @@ class CartesianHybridBTree
     }
     const std::size_t depth_count = bp_bit_count_ + 1;
     return ceil_div(depth_count, LeafSize) * LeafSize;
-  }
-
-  /**
-   * @brief Return mutable padded BP storage as 64-bit words.
-   */
-  std::span<std::uint64_t> bp_storage_words() {
-    return bp_bits_.writable_words64();
   }
 
   /**

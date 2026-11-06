@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <pixie/io/mapped_file.h>
 #include <pixie/storage/aligned.h>
+#include <pixie/storage/aligned_builder.h>
 #include <pixie/storage/read_only_view.h>
 #include <pixie/storage/sliding_window.h>
 
@@ -22,19 +23,14 @@ namespace {
 template <class Storage>
 class StorageSpecificationTest : public testing::Test {};
 
-using StorageTypes =
-    testing::Types<pixie::AlignedStorage, pixie::ReadOnlyStorageView>;
+using StorageTypes = testing::Types<pixie::AlignedStorage,
+                                    pixie::AlignedStorageBuilder,
+                                    pixie::ReadOnlyStorageView>;
 TYPED_TEST_SUITE(StorageSpecificationTest, StorageTypes);
 
 template <class Storage>
 Storage make_storage(std::span<const std::byte> bytes) {
-  if constexpr (std::same_as<Storage, pixie::AlignedStorage>) {
-    Storage result(bytes.size() * 8);
-    std::copy(bytes.begin(), bytes.end(), result.writable_bytes().begin());
-    return result;
-  } else {
-    return Storage(bytes);
-  }
+  return Storage(bytes);
 }
 
 template <class Storage>
@@ -142,8 +138,8 @@ TYPED_TEST(StorageSpecificationTest, ProvidesAlignedWordViewsWhenValid) {
 }
 
 TEST(StorageSerializationTest, OwningStorageAndViewSerializeIdentically) {
-  pixie::AlignedStorage storage(1);
-  storage.writable_bytes()[0] = std::byte{42};
+  const std::array bytes{std::byte{42}};
+  pixie::AlignedStorage storage{std::span<const std::byte>(bytes)};
   pixie::VectorOutputSink owning_output;
   pixie::VectorOutputSink view_output;
   pixie::BinaryWriter owning_writer(owning_output);
@@ -158,8 +154,8 @@ TEST(StorageSerializationTest, OwningStorageAndViewSerializeIdentically) {
 }
 
 TEST(StorageSerializationTest, ReadOnlyViewRoundTripsAndAdvancesInput) {
-  pixie::AlignedStorage storage(1);
-  storage.writable_bytes()[0] = std::byte{42};
+  const std::array bytes{std::byte{42}};
+  pixie::AlignedStorage storage{std::span<const std::byte>(bytes)};
   pixie::VectorOutputSink output;
   pixie::BinaryWriter writer(output);
   storage.serialize(writer);
@@ -181,10 +177,8 @@ TEST(StorageSerializationTest, OwningRestoreCopiesInputAndReturnsExactType) {
 
   pixie::AlignedStorage restored;
   {
-    pixie::AlignedStorage original(24);
-    original.writable_bytes()[0] = std::byte{1};
-    original.writable_bytes()[1] = std::byte{2};
-    original.writable_bytes()[2] = std::byte{3};
+    const std::array bytes{std::byte{1}, std::byte{2}, std::byte{3}};
+    pixie::AlignedStorage original{std::span<const std::byte>(bytes)};
     pixie::VectorOutputSink output;
     pixie::BinaryWriter writer(output);
     original.serialize(writer);
@@ -218,8 +212,8 @@ TEST(StorageSerializationTest, BothRestorationsRollbackOnTruncation) {
   }
 }
 
-TEST(AlignedStorageTest, PadsResizesAndProvidesWritableStorage) {
-  pixie::AlignedStorage storage(1);
+TEST(AlignedStorageBuilderTest, PadsResizesAndProvidesWritableStorage) {
+  pixie::AlignedStorageBuilder storage(1);
   EXPECT_EQ(storage.size_bytes(), 1u);
   EXPECT_EQ(storage.logical_size_bytes(), 1u);
   EXPECT_EQ(storage.size_bits(), 8u);
@@ -241,14 +235,14 @@ TEST(AlignedStorageTest, PadsResizesAndProvidesWritableStorage) {
   storage.shrink_to_fit();
 }
 
-TEST(AlignedStorageTest, MutableSegmentsModifyTheBackingStorage) {
-  static_assert(HasMutableSegments<pixie::AlignedStorage>);
+TEST(AlignedStorageBuilderTest, MutableSegmentsModifyTheBackingStorage) {
+  static_assert(HasMutableSegments<pixie::AlignedStorageBuilder>);
   static_assert(
-      std::same_as<
-          decltype(std::declval<const pixie::AlignedStorage&>().segments()),
-          pixie::SplitSpan<const std::byte>>);
+      std::same_as<decltype(std::declval<const pixie::AlignedStorageBuilder&>()
+                                .segments()),
+                   pixie::SplitSpan<const std::byte>>);
 
-  pixie::AlignedStorage storage(4 * 8);
+  pixie::AlignedStorageBuilder storage(4 * 8);
   auto segments = storage.segments(1, 2);
   ASSERT_EQ(segments.segment_count(), 1u);
   (*segments.begin())[0] = std::byte{42};
@@ -527,6 +521,122 @@ TEST(MappedFileTest, RejectsMissingFile) {
   EXPECT_THROW(pixie::io::MappedFile(std::filesystem::temp_directory_path() /
                                      "pixie_missing_mapped_file.bin"),
                std::runtime_error);
+}
+
+TEST(AlignedStorageTest, FixedSizeCompactOwner) {
+  static_assert(sizeof(pixie::AlignedStorage) == 2 * sizeof(void*));
+  static_assert(HasWritableBytes<pixie::AlignedStorage>);
+  static_assert(!HasResize<pixie::AlignedStorage>);
+  static_assert(HasMutableSegments<pixie::AlignedStorage>);
+  static_assert(
+      std::same_as<
+          decltype(std::declval<const pixie::AlignedStorage&>().as_lines()),
+          std::span<const pixie::CacheLine>>);
+}
+
+TEST(AlignedStorageTest, WritableAccessPreservesSizeAndViews) {
+  pixie::AlignedStorage storage(9 * 8);
+  const auto view = storage.view();
+  const auto* address = view.as_bytes().data();
+  storage.writable_words64()[0] = 42;
+  EXPECT_EQ(view.as_bytes().size(), 9u);
+  EXPECT_EQ(storage.view(0, 8).as_words64()[0], 42u);
+  storage.writable_words16()[0] = 17;
+  EXPECT_EQ(storage.view(0, 2).as_words16()[0], 17u);
+  storage.writable_bytes()[8] = std::byte{3};
+  auto segments = storage.segments(8, 1);
+  (*segments.begin())[0] = std::byte{7};
+  EXPECT_EQ(view.as_bytes()[8], std::byte{7});
+  storage.as_lines()[0].data[8] = std::byte{9};
+  EXPECT_EQ(view.as_bytes()[8], std::byte{9});
+  EXPECT_EQ(storage.size_bytes(), 9u);
+  EXPECT_EQ(storage.allocated_bytes(), 64u);
+  EXPECT_EQ(storage.as_bytes().data(), address);
+  EXPECT_EQ(storage.writable_words64().size(), 1u);
+  EXPECT_EQ(storage.writable_words16().size(), 4u);
+  EXPECT_THROW(storage.segments(9, 1), std::out_of_range);
+  auto copy = storage;
+  copy.writable_bytes()[8] = std::byte{0};
+  EXPECT_EQ(storage.as_bytes()[8], std::byte{9});
+  pixie::AlignedStorage empty;
+  EXPECT_TRUE(empty.writable_bytes().empty());
+  EXPECT_TRUE(empty.writable_words16().empty());
+  EXPECT_TRUE(empty.writable_words64().empty());
+  EXPECT_TRUE(empty.as_lines().empty());
+}
+
+TEST(AlignedStorageBuilderTest, FinishPreservesLogicalBytesAndClearsPadding) {
+  for (std::size_t bits : {0, 1, 63, 64, 511, 512, 513, 1025}) {
+    pixie::AlignedStorageBuilder builder(4096);
+    std::ranges::fill(builder.writable_bytes(), std::byte{0xa5});
+    builder.resize(bits);
+    const auto bytes = builder.size_bytes();
+    const auto owner = std::move(builder).finish();
+    EXPECT_EQ(owner.size_bytes(), bytes);
+    EXPECT_EQ(owner.allocated_bytes(), ((bytes + 63) / 64) * 64);
+    EXPECT_TRUE(std::ranges::all_of(
+        owner.as_bytes(), [](auto byte) { return byte == std::byte{0xa5}; }));
+    EXPECT_TRUE(
+        std::ranges::all_of(owner.padded_view().as_bytes().subspan(bytes),
+                            [](auto byte) { return byte == std::byte{0}; }));
+    EXPECT_TRUE(builder.empty());
+    EXPECT_EQ(builder.allocated_bytes(), 0u);
+    builder.resize(64);
+    EXPECT_EQ(builder.as_words64()[0], 0u);
+  }
+}
+
+TEST(AlignedStorageTest, CopiesAreIndependentAndMovesLeaveEmptySources) {
+  const std::array<std::uint64_t, 2> words{7, 42};
+  pixie::AlignedStorage original{std::span<const std::uint64_t>(words)};
+  auto copy = original;
+  EXPECT_NE(copy.as_bytes().data(), original.as_bytes().data());
+  EXPECT_TRUE(std::ranges::equal(copy.as_bytes(), original.as_bytes()));
+  const auto* allocation = original.as_bytes().data();
+  auto moved = std::move(original);
+  EXPECT_EQ(moved.as_bytes().data(), allocation);
+  EXPECT_TRUE(original.empty());
+  EXPECT_EQ(original.allocated_bytes(), 0u);
+  copy = moved;
+  EXPECT_NE(copy.as_bytes().data(), moved.as_bytes().data());
+  original = std::move(moved);
+  EXPECT_EQ(original.as_bytes().data(), allocation);
+  EXPECT_TRUE(moved.empty());
+  auto* alias = &original;
+  original = *alias;
+  original = std::move(*alias);
+  EXPECT_EQ(original.as_words64()[1], 42u);
+}
+
+TEST(AlignedStorageBuilderTest, MovesAndCopiesPreserveLogicalSize) {
+  pixie::AlignedStorageBuilder source(65);
+  source.writable_bytes()[8] = std::byte{17};
+  auto copy = source;
+  auto moved = std::move(source);
+  EXPECT_TRUE(source.empty());
+  EXPECT_TRUE(source.as_bytes().empty());
+  EXPECT_EQ(moved.as_bytes()[8], std::byte{17});
+  source = std::move(moved);
+  EXPECT_TRUE(moved.empty());
+  copy.writable_bytes()[8] = std::byte{4};
+  EXPECT_EQ(source.as_bytes()[8], std::byte{17});
+  copy = source;
+  EXPECT_EQ(copy.as_bytes()[8], std::byte{17});
+}
+
+TEST(StorageSerializationTest, BuilderAndFinalizedOwnerHaveIdenticalWireBytes) {
+  pixie::AlignedStorageBuilder builder(513);
+  std::ranges::fill(builder.writable_bytes(), std::byte{0x81});
+  pixie::VectorOutputSink builder_output;
+  pixie::BinaryWriter builder_writer(builder_output);
+  builder.serialize(builder_writer);
+  builder_writer.finish();
+  const auto owner = std::move(builder).finish();
+  pixie::VectorOutputSink owner_output;
+  pixie::BinaryWriter owner_writer(owner_output);
+  owner.serialize(owner_writer);
+  owner_writer.finish();
+  EXPECT_EQ(builder_output.take(), owner_output.take());
 }
 
 }  // namespace

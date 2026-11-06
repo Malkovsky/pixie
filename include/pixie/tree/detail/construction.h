@@ -1,5 +1,6 @@
 #pragma once
 
+#include <pixie/storage/aligned.h>
 #include <pixie/tree/detail/encoding_storage.h>
 
 #include <concepts>
