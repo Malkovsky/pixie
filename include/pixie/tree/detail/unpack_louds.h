@@ -23,24 +23,24 @@ inline size_t louds_next(std::span<const uint64_t> words,
                          size_t nbits,
                          LoudsLevel& cursor,
                          size_t position) {
-  const size_t start = position + 1;
+  const size_t start = position;
   if (start == nbits) {
     return nbits;
   }
   const size_t base = start / 64;
   if (cursor.base != base || !cursor.mask) {
     cursor.base = base;
-    cursor.mask = words[base] & (~uint64_t{0} << (start % 64));
+    cursor.mask = ~words[base] & (~uint64_t{0} << (start % 64));
   }
   while (!cursor.mask) {
     if (++cursor.base >= words.size()) {
       return nbits;
     }
-    cursor.mask = words[cursor.base];
+    cursor.mask = ~words[cursor.base];
   }
   const size_t result = cursor.base * 64 + std::countr_zero(cursor.mask);
   cursor.mask &= cursor.mask - 1;
-  return std::min(result, nbits);
+  return std::min(result + 1, nbits);
 }
 // Keep invariant arguments in one traversal object rather than passing the
 // source span, tree, visitor and level array through every recursive call.

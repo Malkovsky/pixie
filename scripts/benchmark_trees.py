@@ -28,31 +28,24 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def groups(scope):
+def implementations(scope, mode):
     result = [] if scope == "succinct" else [
         ("bp", "adjlist_preorder", False),
         ("bp", "pointer_preorder", False),
-        ("louds", "adjlist", False),
+        ("louds", "adjlist_bfs", False),
         ("louds", "pointer_bfs", False),
     ]
     if scope in ("all", "succinct"):
-        result += [
-            ("bp", "bp_direct", True),
-            ("dfuds", "dfuds_direct", True),
-            ("louds", "louds_direct", True),
-        ]
+        modes = ("best", "direct") if mode == "both" else (mode,)
+        result += [(tree, f"{tree}_{variant}", True)
+                   for tree in ("bp", "dfuds", "louds") for variant in modes]
     return result
 
 
-def operations(prefix, succinct, mode="direct"):
-    if succinct and mode == "best":
-        return [prefix.split("_")[0] + "_best_" + op for op in
-                ("dfs", "dfs_children", "random_path", "random_path_children")]
-    return [
-        prefix + "_" + op
-        for op in ("dfs", "dfs_children", "random_path",
-                   "random_path_children")
-    ]
+def operations(workload, implementation):
+    names = ("dfs", "dfs_children") if workload == "dfs" else (
+        "random_path", "random_path_children")
+    return [f"{name}/{implementation}" for name in names]
 
 
 def validate(path, cases, repetitions, cache_bytes=512 * 1024):
@@ -72,7 +65,7 @@ def validate(path, cases, repetitions, cache_bytes=512 * 1024):
         for sample in samples:
             if sample["iterations"] < 1:
                 raise RuntimeError(f"Empty measurement for {case}")
-            if "_best_" in case:
+            if case.split("/")[1].endswith("_best"):
                 if (sample.get("cache_limit_bytes") != cache_bytes or
                         sample.get("cache_and_scratch_bytes", float("inf")) >
                         sample["cache_limit_bytes"]):
@@ -86,6 +79,7 @@ def export(output, manifest, completed, active=None, error=None):
         group = next(g for g in manifest["groups"] if g["key"] == key)
         for row in json.loads((output / f"{key}.json").read_text())["benchmarks"]:
             rows.append(dict(row, family=group["family"],
+                             workload=group["workload"],
                              representation=group["representation"],
                              size_exponent=group["exponent"],
                              size_nodes=group["nodes"],
@@ -125,8 +119,9 @@ def main():
                         help="Explicit node counts, replacing --exponents")
     parser.add_argument("--first-size", type=int,
                         help="Measure this selected size before the remaining grid")
-    parser.add_argument("--succinct-mode", choices=("best", "direct"),
+    parser.add_argument("--succinct-mode", choices=("best", "direct", "both"),
                         default="best")
+    parser.add_argument("--workload", choices=("all", "dfs", "path"), default="all")
     parser.add_argument("--random-interleaving", action="store_true")
     parser.add_argument("--cpu", type=int, default=0)
     parser.add_argument("--cache-bytes", type=int, default=512 * 1024)
@@ -160,39 +155,42 @@ def main():
         "tree_seed": 42, "query_seed": 43, "query_pool_bytes": 65536,
         "scope": args.scope, "exponents": sorted(args.exponents),
         "sizes": sizes, "succinct_mode": args.succinct_mode,
+        "workload": args.workload,
         "random_interleaving": args.random_interleaving,
     }
     binaries = {}
     registrations = {}
-    for family, _, _ in groups(args.scope):
-        if family in binaries:
-            continue
-        binary = build / f"{family}_tree_benchmarks"
-        binaries[family] = {
+    workloads = ("dfs", "path") if args.workload == "all" else (args.workload,)
+    for workload in workloads:
+        target = f"tree_{workload}_benchmarks"
+        binary = build / target
+        binaries[workload] = {
             "sha256": digest(binary),
-            "flags": (build / "CMakeFiles" / f"{family}_tree_benchmarks.dir"
+            "flags": (build / "CMakeFiles" / f"{target}.dir"
                       / "flags.make").read_text(),
         }
-        registrations[family] = subprocess.check_output(
+        registrations[workload] = subprocess.check_output(
             [str(binary), "--benchmark_list_tests=true"], text=True).splitlines()
     selected = []
     for nodes in sizes:
         exponent = nodes.bit_length() - 1 if nodes & (nodes - 1) == 0 else None
-        for family, prefix, succinct in groups(args.scope):
-            names = operations(prefix, succinct, args.succinct_mode)
-            pattern = "^(" + "|".join(names) + f")/tree_size:{nodes}(/|$)"
-            cases = [c for c in registrations[family] if re.search(pattern, c)]
-            if len(cases) != len(names):
-                raise RuntimeError(f"Missing cases for {prefix}, {nodes} nodes")
-            # Registered MinTime would silently override --benchmark_min_time.
-            if any("/min_time:" in c for c in cases):
-                raise RuntimeError("Rebuild: registered MinTime overrides run settings")
-            selected.append({
-                "key": (f"n{exponent:02d}" if exponent is not None else
-                        f"nodes{nodes}") + f"-{prefix}", "family": family,
-                "representation": prefix, "exponent": exponent,
-                "nodes": nodes, "cases": cases, "filter": pattern,
-            })
+        for family, implementation, _ in implementations(args.scope, args.succinct_mode):
+            for workload in workloads:
+                names = operations(workload, implementation)
+                pattern = "^(" + "|".join(map(re.escape, names)) + f")/tree_size:{nodes}(/|$)"
+                cases = [c for c in registrations[workload] if re.search(pattern, c)]
+                if len(cases) != len(names):
+                    raise RuntimeError(f"Missing cases for {implementation}, {workload}, {nodes} nodes")
+                # Registered MinTime would silently override --benchmark_min_time.
+                if any("/min_time:" in c for c in cases):
+                    raise RuntimeError("Rebuild: registered MinTime overrides run settings")
+                selected.append({
+                    "key": (f"n{exponent:02d}" if exponent is not None else
+                            f"nodes{nodes}") + f"-{workload}-{implementation}",
+                    "family": family, "workload": workload,
+                    "representation": implementation, "exponent": exponent,
+                    "nodes": nodes, "cases": cases, "filter": pattern,
+                })
     identity = {"config": config, "binaries": binaries, "groups": selected}
     print(f"{len(selected)} groups, {sum(len(g['cases']) for g in selected)} "
           f"cases, {args.repetitions} repetitions", flush=True)
@@ -224,9 +222,9 @@ def main():
                 if p.suffix in (".h", ".cpp")
             }
             (output / "bin").mkdir(exist_ok=True)
-            for family in binaries:
-                shutil.copy2(build / f"{family}_tree_benchmarks",
-                             output / "bin" / f"{family}_tree_benchmarks")
+            for workload in binaries:
+                shutil.copy2(build / f"tree_{workload}_benchmarks",
+                             output / "bin" / f"tree_{workload}_benchmarks")
             shutil.copy2(__file__, output / "collector.py")
             with zipfile.ZipFile(output / "sources.zip", "w",
                                  zipfile.ZIP_DEFLATED) as archive:
@@ -237,7 +235,7 @@ def main():
                 "See `status.json` for completion and the active group. "
                 "`manifest.json` records case selection, settings, source hashes, "
                 "compiler flags, CPU, and executable hashes.\n\n"
-                "Each implementation/size group has raw Google Benchmark JSON "
+                "Each workload/implementation/size group has raw Google Benchmark JSON "
                 "(individual repetitions and aggregates), a console log, exact "
                 "command, process resource measurements, and a completion marker. "
                 "`combined.json` and `results.csv` contain only completed, "
@@ -257,28 +255,16 @@ def main():
                 "Succinct variants use compressed rank/select and RmMBTree for "
                 "BP/DFUDS. Best mode combines decoding and the bounded root "
                 "index; direct mode measures navigation without either. "
-                "References include preorder and BFS layouts. No binary RmM "
+                "References include preorder and BFS layouts. Both modes can be collected with `--succinct-mode both`. No binary RmM "
                 "or baseline LOUDS backend comparisons are included.\n\n"
                 "Run the collector again with identical arguments plus "
                 "`--resume` to reuse completed groups. It rejects changed "
                 "executables/settings and validates result hashes. `bin/`, "
                 "`sources.zip`, and `collector.py` preserve this run's inputs. "
                 "Keep this user-requested dataset out of commits.\n")
-            if args.succinct_mode == "best":
-                (output / "README.md").write_text(
-                    "# Fixed tree configurations: four workloads\n\n"
-                    "One BP, DFUDS and LOUDS configuration at every size, with "
-                    f"a {args.cache_bytes}-byte combined cache and traversal-buffer cap. "
-                    "Constexpr tables are excluded. References, when selected, include vectors "
-                    "and three pointers in BFS and preorder layouts.\n\n"
-                    "See ../README.md for configuration and budget details. "
-                    "status.json records progress; manifest.json records "
-                    "settings, source and binary hashes. Individual repetitions "
-                    "are preserved in combined.json and results.csv; setup is "
-                    "excluded from query timing.\n")
             atomic_json(manifest_path, manifest)
-        for family, details in binaries.items():
-            if digest(output / "bin" / f"{family}_tree_benchmarks") != details["sha256"]:
+        for workload, details in binaries.items():
+            if digest(output / "bin" / f"tree_{workload}_benchmarks") != details["sha256"]:
                 raise RuntimeError("Preserved executable hash mismatch")
         completed = []
         active = None
@@ -298,7 +284,7 @@ def main():
                 command = [
                     "/usr/bin/time", "-v", "-o", str(output / f"{key}.resources.txt"),
                     "taskset", "-c", str(args.cpu),
-                    str(output / "bin" / f"{group['family']}_tree_benchmarks"),
+                    str(output / "bin" / f"tree_{group['workload']}_benchmarks"),
                     "--benchmark_filter=" + group["filter"],
                     f"--benchmark_repetitions={args.repetitions}",
                     f"--benchmark_min_time={args.min_time}s",

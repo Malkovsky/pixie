@@ -136,9 +136,7 @@ class RankSelectSupport
       if (size > std::numeric_limits<std::size_t>::max() / 8) {
         throw std::length_error("Serialized rank/select storage is too large");
       }
-      AlignedStorage result(size * 8);
-      std::ranges::copy(bytes, result.writable_bytes().begin());
-      return result;
+      return AlignedStorage(bytes);
     }
   }
 
@@ -454,6 +452,16 @@ class RankSelectSupport
     }
   };
 
+  static MetadataStorage allocate_metadata(size_t bits) {
+    if constexpr (std::same_as<MetadataStorage, AlignedStorage>) {
+      return AlignedStorage(bits);
+    } else {
+      MetadataStorage result;
+      result.resize(bits);
+      return result;
+    }
+  }
+
   struct SelectSampleWriters {
     SelectSampleWriter ones;
     SelectSampleWriter zeros;
@@ -469,7 +477,7 @@ class RankSelectSupport
     select0_sample_begin_ = 0;
     select0_sample_count_ = 0;
     select0_samples_reversed_ = false;
-    select_samples_.resize(0);
+    select_samples_ = {};
 
     SelectSampleWriters writers;
     if (!need_select1 && !need_select0) {
@@ -489,7 +497,7 @@ class RankSelectSupport
       const size_t total_samples =
           one_count ? one_sample_capacity + zero_sample_capacity
                     : 2 + num_bits_ / kSelectSampleFrequency;
-      select_samples_.resize(total_samples * kWordSize);
+      select_samples_ = allocate_metadata(total_samples * kWordSize);
       auto samples = select_samples_.writable_words64();
       select1_sample_begin_ = 0;
       select0_samples_reversed_ = true;
@@ -507,7 +515,7 @@ class RankSelectSupport
                                   : select_sample_upper_bound(num_bits_))
                      : (zero_count ? select_sample_count_for_rank(*zero_count)
                                    : select_sample_upper_bound(num_bits_));
-    select_samples_.resize(sample_capacity * kWordSize);
+    select_samples_ = allocate_metadata(sample_capacity * kWordSize);
     auto samples = select_samples_.writable_words64();
     writers.shrink_after_build = !one_count;
     if (need_select1) {
@@ -538,8 +546,16 @@ class RankSelectSupport
       const size_t sample_count = select1_sample_count_ != 0
                                       ? select1_sample_count_
                                       : select0_sample_count_;
-      select_samples_.resize(sample_count * kWordSize);
-      select_samples_.shrink_to_fit();
+      if constexpr (std::same_as<MetadataStorage, AlignedStorage>) {
+        const size_t bytes = sample_count * sizeof(uint64_t);
+        if (bytes != select_samples_.size_bytes()) {
+          select_samples_ =
+              AlignedStorage(select_samples_.as_bytes().first(bytes));
+        }
+      } else {
+        select_samples_.resize(sample_count * kWordSize);
+        select_samples_.shrink_to_fit();
+      }
     }
   }
 
@@ -569,8 +585,8 @@ class RankSelectSupport
     // extra super entry is the cumulative-rank sentinel used by interpolation
     // search.
     const size_t num_basicblocks = stored_basicblock_count();
-    super_block_rank_.resize((data_superblocks + 1) * 64);
-    basic_block_rank_.resize(num_basicblocks * 16);
+    super_block_rank_ = allocate_metadata((data_superblocks + 1) * 64);
+    basic_block_rank_ = allocate_metadata(num_basicblocks * 16);
 
     auto super_block_rank = super_block_rank_.writable_words64();
     auto basic_block_rank = basic_block_rank_.writable_words16();

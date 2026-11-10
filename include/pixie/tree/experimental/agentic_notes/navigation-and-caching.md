@@ -18,7 +18,7 @@ Useful retained quantities:
 - BP: matching close, degree, parent, sibling and last-child result.
 - DFUDS: unary-record delimiter, subtree end, incoming opening, parent,
   sibling and last-child result.
-- LOUDS: next node delimiter, incoming zero-edge position, first child and parent.
+- LOUDS: next record start, incoming one-edge position, first child and parent.
 
 Formulas reduce work before caching is considered. With preorder number `v`
 and start bit `p`, a BP subtree ending at close `q` contains `(q-p+1)/2`
@@ -28,12 +28,12 @@ DFUDS degree and first child share the select0 delimiter `d`: degree `d-p`,
 first child `(v+1,d+1)`. These statements use Pixie's encoding conventions,
 not interchangeable formulas for arbitrary BP/DFUDS definitions.
 
-LOUDS stores one delimiter followed by degree zeros. Degree uses the next
-delimiter distance; sibling numbers are consecutive. The adapter searches the
+LOUDS stores degree ones followed by a zero terminator. Degree is the
+terminator position minus the record start; sibling numbers are consecutive. The adapter searches the
 remainder of a machine word for a nearby delimiter and falls back to indexed
 select when absent. This is bounded local scanning, not an unbounded linear
 search replacing select. Parent and last-child operations can reuse the same
-incoming zero-edge position. BP/DFUDS node numbers and bit distances similarly
+incoming one-edge position. BP/DFUDS node numbers and bit distances similarly
 remove explicit rank calls from the navigation adapters; their RmM operations
 can still depend on the backend rank/select support.
 

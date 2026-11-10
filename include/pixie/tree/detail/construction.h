@@ -1,5 +1,6 @@
 #pragma once
 
+#include <pixie/storage/aligned.h>
 #include <pixie/tree/detail/encoding_storage.h>
 
 #include <concepts>
@@ -135,7 +136,9 @@ struct ConstructionLevel {
     const auto position = bits;
     bits += degree + 1;
     words.resize(bits / 64 + (bits % 64 != 0), 0);
-    words[position / 64] |= uint64_t{1} << (position % 64);
+    for (size_t i = 0; i < degree; ++i) {
+      words[(position + i) / 64] |= uint64_t{1} << ((position + i) % 64);
+    }
   }
 };
 

@@ -18,19 +18,19 @@ inline size_t LoudsDecodedNext(std::span<const uint64_t> words,
                                LoudsDecodedLevel& cursor,
                                size_t position) {
   if (cursor.index < cursor.count) {
-    return cursor.base + cursor.offsets[cursor.index++];
+    return cursor.base + cursor.offsets[cursor.index++] + 1;
   }
-  size_t start = position + 1;
+  size_t start = position;
   while (start < nbits) {
     const size_t base = start & ~size_t{63};
-    const auto mask = words[base / 64] & (~uint64_t{0} << (start % 64));
+    const auto mask = ~words[base / 64] & (~uint64_t{0} << (start % 64));
     const unsigned valid = std::min<size_t>(64, nbits - base);
     cursor.count =
         pixie::detail::tree_unpack::zero_offsets(~mask, valid, cursor.offsets);
     if (cursor.count) {
       cursor.base = base;
       cursor.index = 1;
-      return base + cursor.offsets[0];
+      return base + cursor.offsets[0] + 1;
     }
     start = base + 64;
   }

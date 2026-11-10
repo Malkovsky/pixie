@@ -30,12 +30,11 @@ using LoudsNode = TreeNode;
  * provide size(), operator[], select() and select0() with RankSelectBase
  * semantics. EncodingStorage owns the source by default; the TreeView
  * specialization borrows immutable source words.
- * @details Each BFS-ordered node is encoded as one followed by one zero per
- * child. A handle stores its zero-based BFS number and the position of its one.
- * Siblings therefore occupy consecutive one delimiters. The parent delimiter
- * is the nearest preceding one before the node's incoming zero edge. Degree,
- * sibling and parent navigation use a single-word search for those delimiters,
- * falling back to indexed select when the delimiter lies outside that word.
+ * @details Each BFS-ordered node is encoded as one per child followed by zero.
+ * A handle stores its zero-based BFS number and the start of its unary record.
+ * Siblings occupy consecutive records. Degree, sibling and parent navigation
+ * use a single-word search for zero terminators, falling back to indexed select
+ * when the terminator lies outside that word. No leading sentinel is stored.
  */
 template <class RankSelect = RankSelectSupport<>,
           detail::TreeEncodingStorage EncodingStorage = AlignedStorage>
@@ -80,26 +79,27 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
   RankSelect bv;
   const std::uint64_t* words_;
 
-  // Node delimiters are ones. Search only the remainder of this word so a
-  // high-degree node cannot turn navigation into an unbounded linear scan.
+  // Return the next record start (one past the zero terminator). Search only
+  // this word so a high degree cannot cause an unbounded navigation scan.
   size_t next_delimiter(size_t position, size_t rank) const {
-    const size_t start = position + 1;
-    const auto word = words_[start / 64] >> (start % 64);
-    return word ? start + std::countr_zero(word) : bv.select(rank);
+    const auto word = ~words_[position / 64] >> (position % 64);
+    return word ? position + std::countr_zero(word) + 1 : bv.select0(rank) + 1;
   }
 
-  size_t parent_delimiter(size_t zero_position, size_t rank) const {
-    // zero_position itself is zero, so retaining it avoids a shift by 64.
-    const auto word = words_[zero_position / 64] &
-                      (~std::uint64_t{0} >> (63 - zero_position % 64));
-    return word ? (zero_position / 64) * 64 + 63 - std::countl_zero(word)
-                : bv.select(rank);
+  size_t parent_delimiter(size_t edge_position, size_t parent_number) const {
+    if (!parent_number) {
+      return 0;
+    }
+    // The incoming edge is one, so including it avoids a shift by 64.
+    const auto word = ~words_[edge_position / 64] &
+                      (~std::uint64_t{0} >> (63 - edge_position % 64));
+    return word ? (edge_position / 64) * 64 + 64 - std::countl_zero(word)
+                : bv.select0(parent_number) + 1;
   }
 
-  LoudsNode parent_from_edge(const LoudsNode& node, size_t zero_pos) const {
-    const size_t parent_number = zero_pos - node.number;
-    return LoudsNode(parent_number,
-                     parent_delimiter(zero_pos, parent_number + 1));
+  LoudsNode parent_from_edge(const LoudsNode& node, size_t edge_pos) const {
+    const size_t parent_number = edge_pos - node.number + 1;
+    return LoudsNode(parent_number, parent_delimiter(edge_pos, parent_number));
   }
 
  public:
@@ -272,9 +272,7 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
   /**
    * @brief Indicates if @p node is a leaf
    */
-  bool is_leaf_impl(const LoudsNode& node) const {
-    return (node.pos + 1 == bv.size()) or bv[node.pos + 1];
-  }
+  bool is_leaf_impl(const LoudsNode& node) const { return !bv[node.pos]; }
 
   /**
    * @brief Indicates if @p node is a root
@@ -288,7 +286,7 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
     if (is_leaf_impl(node)) {
       return 0;
     }
-    return next_delimiter(node.pos, node.number + 2) - node.pos - 1;
+    return next_delimiter(node.pos, node.number + 1) - node.pos - 1;
   }
 
   /** @brief Implement TreeBase::for_each_child with local traversal state. */
@@ -306,16 +304,16 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
    * Indexing starts at 0
    */
   LoudsNode child_impl(const LoudsNode& node, size_t i) const {
-    size_t zeros = node.pos + i + 1 - node.number;
-    return LoudsNode(zeros, bv.select(zeros + 1));
+    size_t number = node.pos + i + 1 - node.number;
+    return LoudsNode(number, bv.select0(number) + 1);
   }
 
   /**
    * @brief Returns first child of a @p node
    */
   LoudsNode first_child_impl(const LoudsNode& node) const {
-    size_t zeros = node.pos + 1 - node.number;
-    return LoudsNode(zeros, bv.select(zeros + 1));
+    size_t number = node.pos + 1 - node.number;
+    return LoudsNode(number, bv.select0(number) + 1);
   }
 
   /**
@@ -326,15 +324,15 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
     if (node.number == 0) {
       return root_impl();
     }
-    return parent_from_edge(node, bv.select0(node.number));
+    return parent_from_edge(node, bv.select(node.number));
   }
 
   /**
    * @brief Indicates if @p node is last child
    */
   bool is_last_child_impl(const LoudsNode& node) const {
-    size_t zero_pos = bv.select0(node.number);
-    return bv[zero_pos + 1];
+    size_t edge_pos = bv.select(node.number);
+    return !bv[edge_pos + 1];
   }
 
   /**
@@ -342,8 +340,7 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
    */
   LoudsNode next_sibling_impl(const LoudsNode& node) const {
     size_t sibling_number = node.number + 1;
-    return LoudsNode(sibling_number,
-                     next_delimiter(node.pos, sibling_number + 1));
+    return LoudsNode(sibling_number, next_delimiter(node.pos, sibling_number));
   }
 };
 

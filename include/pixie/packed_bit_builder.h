@@ -1,6 +1,6 @@
 #pragma once
 
-#include <pixie/storage/aligned.h>
+#include <pixie/storage/aligned_builder.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -16,14 +16,14 @@ namespace pixie {
  * @brief Builder for a packed LSB-first bit sequence.
  *
  * @details This type is intended for constructing succinct bit vectors, not
- * for persistent serialization. `take_storage()` transfers the aligned
- * backing without copying, while `take_words()` materializes a standard
- * vector. Both reset the builder to an empty, reusable state.
+ * for persistent serialization. `take_storage()` finalizes an exact-sized
+ * fixed-size copy of the aligned backing, while `take_words()` materializes a
+ * standard vector. Both reset the builder to an empty, reusable state.
  */
 class PackedBitBuilder {
  private:
   std::size_t size_ = 0;
-  AlignedStorage data_;
+  AlignedStorageBuilder data_;
 
   static std::size_t bits_for_words(std::size_t words) {
     if (words > std::numeric_limits<std::size_t>::max() / 64) {
@@ -39,7 +39,7 @@ class PackedBitBuilder {
       return;
     }
     if (current_words == 0) {
-      data_ = AlignedStorage(
+      data_ = AlignedStorageBuilder(
           bits_for_words(std::max(required_words, kAlignedStorageLineWords64)));
       return;
     }
@@ -130,14 +130,16 @@ class PackedBitBuilder {
   }
 
   /**
-   * @brief Transfer the packed words in aligned storage and reset this builder.
+   * @brief Copy packed words into exact-sized fixed-size storage and reset this
+   * builder.
    */
   AlignedStorage take_storage() {
     const std::size_t words =
         size_ / 64 + static_cast<std::size_t>(size_ % 64 != 0);
     data_.resize(bits_for_words(words));
+    auto result = std::move(data_).finish();
     size_ = 0;
-    return std::exchange(data_, {});
+    return result;
   }
 };
 
