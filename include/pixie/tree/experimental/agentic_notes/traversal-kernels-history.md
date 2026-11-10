@@ -54,8 +54,8 @@ All callbacks still receive complete handles, in the prescribed order.
 
 ## LOUDS: advancing cursors for each level
 
-Pixie encodes a BFS-ordered node as a one followed by one zero per child. Its
-handle stores a zero-based BFS number and the position of that one.
+Pixie encodes a BFS-ordered node as one per child followed by a zero terminator.
+Its handle stores a zero-based BFS number and the start of that record.
 
 Although DFS jumps between depths, nodes encountered at any one depth appear in
 LOUDS order. Each depth can therefore retain an independently advancing cursor,
@@ -64,15 +64,15 @@ containing its position, word index, and remaining delimiter mask.
 Finding another delimiter within a word uses:
 
 ```cpp
-position = word_base + countr_zero(mask);
+next_record = word_base + countr_zero(mask) + 1;
 mask &= mask - 1;
 ```
 
-The kernel loads another word when the mask becomes empty. A known next
-delimiter yields:
+The mask contains zero-bit positions. The kernel loads another complemented
+word when the mask becomes empty. A known next record start yields:
 
 ```text
-degree = next_delimiter - current_position - 1
+degree = next_record - current_position - 1
 first_child_number = current_position + 1 - current_node_number
 ```
 
@@ -242,15 +242,17 @@ Sources: [unpack_cache.h](../../detail/unpack_cache.h),
 
 The low-level primitives own feature dispatch:
 
-- BP byte programs use AVX-512 permutations to assemble event handles.
-- Delimiter extraction uses AVX-512 VBMI2 byte compression when available,
-  otherwise scalar trailing-zero extraction.
-- Pending-parent filling uses AVX-512BW stores when available, otherwise a
-  scalar loop.
+- BP byte programs use AVX-512 permutations or AVX2 permutations and blends
+  to assemble full-width event handles from local nodes and saved ancestors.
+- Delimiter extraction uses AVX-512 VBMI2 byte compression or AVX2 lookups
+  into a 2 KiB table of byte offsets.
+- Pending-parent filling uses AVX-512BW masked stores or AVX2 stores with
+  bounded head/tail stores for short ranges.
+- Relative-event expansion has both AVX-512 and AVX2 implementations.
 
-These primitives do not currently have dedicated AVX2 implementations. A
-platform lacking the required AVX-512 feature uses the corresponding scalar
-fallback. SIMD accelerates decoding; it does not batch or omit callbacks.
+Each primitive retains a scalar fallback. Selection is at compile time;
+`DISABLE_AVX512=ON` retains AVX2 when the compiler target supports it. SIMD
+accelerates decoding; it does not batch or omit callbacks.
 
 ## Bounded path index
 

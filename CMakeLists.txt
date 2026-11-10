@@ -533,15 +533,6 @@ if (PIXIE_BENCHMARKS)
                 ${PIXIE_DIAGNOSTICS_LIBS})
     endif ()
 
-    add_executable(louds_tree_benchmarks
-            src/benchmarks/louds_tree_benchmarks.cpp)
-    target_include_directories(louds_tree_benchmarks
-            PUBLIC include)
-    target_link_libraries(louds_tree_benchmarks
-            benchmark
-            benchmark_main
-            ${PIXIE_DIAGNOSTICS_LIBS})
-
     add_executable(wavelet_tree_benchmarks
             src/benchmarks/wavelet_tree_benchmarks.cpp)
     target_include_directories(wavelet_tree_benchmarks
@@ -592,31 +583,13 @@ if (PIXIE_BENCHMARKS)
     target_link_libraries(tree_experimental_benchmarks
             benchmark benchmark_main ${PIXIE_DIAGNOSTICS_LIBS})
 
-    add_executable(bp_tree_benchmarks
-            src/benchmarks/bp_tree_benchmarks.cpp)
-    target_include_directories(bp_tree_benchmarks
-            PUBLIC include)
-    target_link_libraries(bp_tree_benchmarks
-            benchmark
-            benchmark_main
-            ${PIXIE_DIAGNOSTICS_LIBS})
-    if (PIXIE_THIRD_PARTY_BACKENDS)
-        target_include_directories(bp_tree_benchmarks
-                PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
-    endif ()
-
-    add_executable(dfuds_tree_benchmarks
-            src/benchmarks/dfuds_tree_benchmarks.cpp)
-    target_include_directories(dfuds_tree_benchmarks
-            PUBLIC include)
-    target_link_libraries(dfuds_tree_benchmarks
-            benchmark
-            benchmark_main
-            ${PIXIE_DIAGNOSTICS_LIBS})
-    if (PIXIE_THIRD_PARTY_BACKENDS)
-        target_include_directories(dfuds_tree_benchmarks
-                PRIVATE ${sdsl_lite_SOURCE_DIR}/include)
-    endif ()
+    foreach (workload IN ITEMS dfs path)
+        add_executable(tree_${workload}_benchmarks
+                src/benchmarks/tree_${workload}_benchmarks.cpp)
+        target_include_directories(tree_${workload}_benchmarks PRIVATE include)
+        target_link_libraries(tree_${workload}_benchmarks
+                benchmark benchmark_main ${PIXIE_DIAGNOSTICS_LIBS})
+    endforeach ()
 
     add_executable(alignment_comparison_benchmarks
             src/benchmarks/alignment_comparison_benchmarks.cpp)
@@ -670,13 +643,13 @@ if (PIXIE_BENCHMARKS)
             rank_select_benchmarks
             rmm_benchmarks
             rmq_benchmarks
-            louds_tree_benchmarks
             wavelet_tree_benchmarks
             file_archive_benchmarks
             integer_vector_benchmarks
             serialization_benchmarks
-            bp_tree_benchmarks
-            dfuds_tree_benchmarks
+            tree_dfs_benchmarks
+            tree_path_benchmarks
+            tree_experimental_benchmarks
             alignment_comparison_benchmarks
             excess_positions_benchmarks
             select512_benchmarks)

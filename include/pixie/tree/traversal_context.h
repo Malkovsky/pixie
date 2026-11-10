@@ -236,16 +236,14 @@ class TreeTraversalContext {
         }
         ++out->regions_;
         const size_t id = out->add(node, parent);
-        bit(node.pos);  // Known one delimiter, included in the scan charge.
-        size_t pos = node.pos + 1, degree = 0;
-        bool known = pos == nbits;
+        size_t pos = node.pos, degree = 0;
+        bool known = false;
         while (pos < nbits && out->bits_ < max_bits) {
-          if (bit(pos)) {
+          if (!bit(pos++)) {
             known = true;
             break;
           }
           ++degree;
-          ++pos;
         }
         scratch_.push_back({pos, known ? degree : Result::missing});
         if (known && degree == 0) {

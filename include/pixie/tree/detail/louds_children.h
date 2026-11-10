@@ -24,13 +24,15 @@ void louds_children(const Tree& tree,
     const auto start = tree.child(node, first + done);
     const size_t length = std::min<size_t>(256, nbits - start.pos);
     const size_t number = start.number;
-    size_t decoded = 0;
+    size_t decoded = 1;
+    visit(start);
+    ++done;
     for (size_t offset = 0; offset < length && done < count; offset += 64) {
       const unsigned valid = std::min<size_t>(64, length - offset);
       const unsigned n =
-          zero_offsets(~word_at(words, start.pos + offset), valid, offsets);
+          zero_offsets(word_at(words, start.pos + offset), valid, offsets);
       for (unsigned i = 0; i < n && done < count; ++i, ++done, ++decoded) {
-        visit(TreeNode(number + decoded, start.pos + offset + offsets[i]));
+        visit(TreeNode(number + decoded, start.pos + offset + offsets[i] + 1));
       }
     }
   }

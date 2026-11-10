@@ -50,7 +50,7 @@ void RunTreeComparison(benchmark::State& state, const Tree& tree) {
     queries.emplace(0, std::numeric_limits<size_t>::max(), 43);
   }
   auto observe = [](auto node) { benchmark::DoNotOptimize(node); };
-  size_t nodes = 0, children = 0;
+  size_t nodes = 0;
   for (auto _ : state) {
     if constexpr (Workload == TreeWorkload::kDfs) {
       workload.traverse(observe);
@@ -62,13 +62,11 @@ void RunTreeComparison(benchmark::State& state, const Tree& tree) {
         break;
       }
       nodes += n;
-      children += c;
     } else {
       auto work = IndexedRandomRootToLeaf<Workload ==
                                           TreeWorkload::kRandomPathChildren>(
           cache, *queries, observe, observe);
       nodes += work.nodes;
-      children += work.children;
       benchmark::DoNotOptimize(work);
     }
   }
@@ -83,7 +81,5 @@ void RunTreeComparison(benchmark::State& state, const Tree& tree) {
   state.counters["decode_depth"] = cache.cached_depth();
   state.counters["visited_nodes_per_iteration"] =
       double(nodes) / state.iterations();
-  state.counters["inspected_children_per_iteration"] =
-      double(children) / state.iterations();
 }
 }  // namespace pixie::benchmarks

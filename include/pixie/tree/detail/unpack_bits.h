@@ -41,6 +41,29 @@ inline void fill_parent_slots(uint16_t* destination,
   }
   const __mmask32 mask = (uint32_t{1} << count) - 1;
   _mm512_mask_storeu_epi16(destination, mask, values);
+#elif defined(PIXIE_AVX2_SUPPORT)
+  const auto values = _mm256_set1_epi16(parent);
+  while (count >= 16) {
+    _mm256_storeu_si256(reinterpret_cast<__m256i*>(destination), values);
+    destination += 16;
+    count -= 16;
+  }
+  // AVX2 has no masked 16-bit store. Overlapping head/tail stores stay
+  // within the requested range, including for unaligned destinations.
+  const auto half = _mm256_castsi256_si128(values);
+  if (count >= 8) {
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination), half);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + count - 8), half);
+  } else if (count >= 4) {
+    _mm_storel_epi64(reinterpret_cast<__m128i*>(destination), half);
+    _mm_storel_epi64(reinterpret_cast<__m128i*>(destination + count - 4), half);
+  } else if (count >= 2) {
+    const uint32_t pair = uint32_t(parent) * 0x00010001u;
+    std::memcpy(destination, &pair, sizeof(pair));
+    std::memcpy(destination + count - 2, &pair, sizeof(pair));
+  } else if (count) {
+    *destination = parent;
+  }
 #else
   for (unsigned i = 0; i < count; ++i) {
     destination[i] = parent;
@@ -126,6 +149,75 @@ inline void decode_byte(const ByteProgram& p,
                            _mm512_permutexvar_epi64(keep, local_num));
   _mm512_mask_storeu_epi64(positions.data() + 8 + depth - p.kept, mask,
                            _mm512_permutexvar_epi64(keep, local_pos));
+#elif defined(PIXIE_AVX2_SUPPORT)
+  // AVX2 permutes 32-bit lanes. Duplicate each event index to move both
+  // halves of a 64-bit coordinate together, then select local or saved nodes.
+  const auto ranks = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(p.rank));
+  const auto nbase = _mm256_set1_epi64x(number);
+  const auto pbase = _mm256_set1_epi64x(base);
+  const auto events =
+      _mm_loadl_epi64(reinterpret_cast<const __m128i*>(p.event));
+  const auto num_low = _mm256_loadu_si256(
+      reinterpret_cast<const __m256i*>(numbers.data() + depth));
+  const auto num_high = _mm256_loadu_si256(
+      reinterpret_cast<const __m256i*>(numbers.data() + depth + 4));
+  const auto pos_low = _mm256_loadu_si256(
+      reinterpret_cast<const __m256i*>(positions.data() + depth));
+  const auto pos_high = _mm256_loadu_si256(
+      reinterpret_cast<const __m256i*>(positions.data() + depth + 4));
+  auto emit = [&](const __m128i codes, unsigned offset) {
+    const auto local = _mm_and_si128(codes, _mm_set1_epi8(7));
+    const auto indices = _mm_cvtepu8_epi32(codes);
+    const auto duplicated =
+        _mm256_set_m128i(_mm_unpackhi_epi32(indices, indices),
+                         _mm_unpacklo_epi32(indices, indices));
+    const auto lanes =
+        _mm256_or_si256(_mm256_slli_epi32(duplicated, 1),
+                        _mm256_setr_epi32(0, 1, 0, 1, 0, 1, 0, 1));
+    const auto upper = _mm256_srai_epi32(_mm256_slli_epi32(duplicated, 29), 31);
+    const auto ancestor = _mm256_cmpgt_epi32(_mm256_set1_epi32(8), duplicated);
+    const auto local_num = _mm256_add_epi64(
+        nbase, _mm256_cvtepu8_epi64(_mm_shuffle_epi8(ranks, local)));
+    const auto local_pos = _mm256_add_epi64(pbase, _mm256_cvtepu8_epi64(local));
+    const auto previous_num =
+        _mm256_blendv_epi8(_mm256_permutevar8x32_epi32(num_low, lanes),
+                           _mm256_permutevar8x32_epi32(num_high, lanes), upper);
+    const auto previous_pos =
+        _mm256_blendv_epi8(_mm256_permutevar8x32_epi32(pos_low, lanes),
+                           _mm256_permutevar8x32_epi32(pos_high, lanes), upper);
+    const auto num = _mm256_blendv_epi8(local_num, previous_num, ancestor);
+    const auto pos = _mm256_blendv_epi8(local_pos, previous_pos, ancestor);
+    _mm256_storeu_si256(reinterpret_cast<__m256i*>(event_numbers + offset),
+                        num);
+    _mm256_storeu_si256(reinterpret_cast<__m256i*>(event_positions + offset),
+                        pos);
+  };
+  emit(events, 0);
+  emit(_mm_srli_si128(events, 4), 4);
+  depth += p.delta;
+  const auto updates =
+      _mm_loadl_epi64(reinterpret_cast<const __m128i*>(p.update));
+  auto keep = [&](const __m128i codes, unsigned offset) {
+    const auto mask =
+        _mm256_cmpgt_epi64(_mm256_set1_epi64x(p.kept),
+                           _mm256_add_epi64(_mm256_set1_epi64x(offset),
+                                            _mm256_setr_epi64x(0, 1, 2, 3)));
+    const auto num = _mm256_add_epi64(
+        nbase, _mm256_cvtepu8_epi64(_mm_shuffle_epi8(ranks, codes)));
+    const auto pos = _mm256_add_epi64(pbase, _mm256_cvtepu8_epi64(codes));
+    const auto start = 8 + depth - p.kept + offset;
+    _mm256_maskstore_epi64(reinterpret_cast<long long*>(numbers.data() + start),
+                           mask, num);
+    _mm256_maskstore_epi64(
+        reinterpret_cast<long long*>(positions.data() + start), mask, pos);
+  };
+  if (p.kept) {
+    keep(updates, 0);
+    if (p.kept > 4) {
+      keep(_mm_srli_si128(updates, 4), 4);
+    }
+  }
+  number += p.opens;
 #else
   for (unsigned i = 0; i < p.count; ++i) {
     unsigned s = p.event[i];
@@ -195,6 +287,54 @@ inline void decode_relative_events(const uint8_t* codes,
 #endif
 }
 
+#if defined(PIXIE_AVX2_SUPPORT) && \
+    !(defined(PIXIE_AVX512_SUPPORT) && defined(__AVX512VBMI2__))
+// Keep the packing loop out of recursive traversal instantiations to limit
+// code growth and preserve the compiler's recursive DFS unrolling budget.
+[[gnu::noinline]] inline unsigned zero_offsets_avx2(uint64_t mask,
+                                                    unsigned valid,
+                                                    uint8_t* out) {
+  // Each table word contains the selected bit offsets of one byte. Four
+  // independent byte lookups share one gather and one offset addition.
+  static constexpr auto offsets = [] {
+    std::array<uint64_t, 256> result{};
+    for (unsigned bits = 0; bits < result.size(); ++bits) {
+      unsigned count = 0;
+      for (unsigned bit = 0; bit < 8; ++bit) {
+        if ((bits >> bit) & 1) {
+          result[bits] |= uint64_t(bit) << (8 * count++);
+        }
+      }
+    }
+    return result;
+  }();
+  unsigned count = 0;
+  for (unsigned base = 0; base < valid; base += 32) {
+    const uint32_t bits = uint32_t(mask >> base);
+    const auto indices = _mm_cvtepu8_epi32(_mm_cvtsi32_si128(bits));
+    const auto local = _mm256_i32gather_epi64(
+        reinterpret_cast<const long long*>(offsets.data()), indices, 8);
+    const auto packed = _mm256_add_epi8(
+        local, _mm256_add_epi8(_mm256_set1_epi8(base),
+                               _mm256_setr_epi64x(0, 0x0808080808080808LL,
+                                                  0x1010101010101010LL,
+                                                  0x1818181818181818LL)));
+    auto append = [&]<unsigned I>() {
+      const uint64_t positions = _mm256_extract_epi64(packed, I);
+      std::memcpy(out + count, &positions, sizeof(positions));
+      count += std::popcount((bits >> (8 * I)) & 255u);
+    };
+    append.template operator()<0>();
+    append.template operator()<1>();
+    append.template operator()<2>();
+    append.template operator()<3>();
+  }
+  return count;
+}
+#endif
+
+// Extract zero positions below valid (0..64). The output has 64 writable
+// bytes; only the returned number of entries is meaningful.
 inline unsigned zero_offsets(uint64_t word, unsigned valid, uint8_t* out) {
   uint64_t mask = ~word;
   if (valid < 64) {
@@ -213,6 +353,8 @@ inline unsigned zero_offsets(uint64_t word, unsigned valid, uint8_t* out) {
   _mm512_storeu_si512(out, packed);
   const unsigned count = std::popcount(mask);
   return count;
+#elif defined(PIXIE_AVX2_SUPPORT)
+  return zero_offsets_avx2(mask, valid, out);
 #else
   unsigned count = 0;
   while (mask) {

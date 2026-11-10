@@ -140,12 +140,11 @@ void RunExpandedTreeBenchmark(benchmark::State& state,
       queries.emplace(0, std::numeric_limits<std::size_t>::max(), 43);
     }
   }
-  std::size_t nodes = 0, children = 0;
+  std::size_t nodes = 0;
   perf.start();
   for (auto _ : state) {
     auto work = traverse();
     nodes += work.nodes;
-    children += work.children;
     benchmark::DoNotOptimize(work);
     if constexpr (Workload == TreeWorkload::kDfsChildren) {
       if (work.nodes != tree_size || work.children != tree_size - 1) {
@@ -159,8 +158,6 @@ void RunExpandedTreeBenchmark(benchmark::State& state,
   state.counters["nodes"] = tree_size;
   state.counters["visited_nodes_per_iteration"] =
       benchmark::Counter(nodes, benchmark::Counter::kAvgIterations);
-  state.counters["inspected_children_per_iteration"] =
-      benchmark::Counter(children, benchmark::Counter::kAvgIterations);
   if constexpr (Workload != TreeWorkload::kDfsChildren) {
     state.counters["paths_per_second"] =
         benchmark::Counter(state.iterations(), benchmark::Counter::kIsRate);

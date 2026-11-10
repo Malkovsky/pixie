@@ -16,7 +16,7 @@ import plot_style as style
 
 SERIES = [
     ("adjlist_preorder", "vectors_preorder", "Vectors · preorder", "#777777", "o", "-"),
-    ("adjlist", "vectors_bfs", "Vectors · BFS", "#777777", "o", "--"),
+    ("adjlist_bfs", "vectors_bfs", "Vectors · BFS", "#777777", "o", "--"),
     ("pointer_preorder", "pointers_preorder", "Pointers · preorder", "#222222", "s", "-"),
     ("pointer_bfs", "pointers_bfs", "Pointers · BFS", "#222222", "s", "--"),
     ("bp_best", "bp", "BP", "#0072B2", "^", "-"),
@@ -48,8 +48,9 @@ def main():
                     raise ValueError(f'Benchmark error in {path}')
                 if row.get('run_type') != 'iteration':
                     continue
-                name = row.get('run_name',row['name']).split('/')[0]
-                if ('_best_' in name) != bool(budget):
+                parts = row.get('run_name', row['name']).split('/')
+                name = '/'.join(parts[:2])
+                if parts[1].endswith('_best') != bool(budget):
                     continue
                 n = int(row['size_nodes'])
                 if budget and (row['cache_limit_bytes'] != budget or row['cache_and_scratch_bytes'] > budget):
@@ -84,7 +85,7 @@ def main():
             for (prefix, name, label, color, marker, dash), effective in series:
                 ys = []
                 available = sorted(n for b,key,n in (construction if build or memory else query)
-                                   if b == effective and key == (name if build or memory else prefix+'_'+operation))
+                                   if b == effective and key == (name if build or memory else operation+'/'+prefix))
                 if available != sizes:
                     raise ValueError(f'Expected all even powers 10 through 26 for {label}')
                 for n in available:
@@ -99,7 +100,7 @@ def main():
                         else:
                             values = [r['total_s']*1000 for r in samples]
                     else:
-                        values = query[effective,prefix+'_'+operation,n]
+                        values = query[effective,operation+'/'+prefix,n]
                         if len(values) != 5:
                             raise ValueError('Expected five traversal repetitions')
                         if operation.startswith('dfs'):

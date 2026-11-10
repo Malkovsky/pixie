@@ -153,7 +153,7 @@ struct TreeFormat<pixie::DFUDSTree<B, S>> {
 template <class B, class S>
 struct TreeFormat<pixie::LoudsTree<B, S>> {
   using Backend = B;
-  static constexpr uint64_t invalid_two_node_encoding = 0b011;
+  static constexpr uint64_t invalid_two_node_encoding = 0b010;
   static auto encode(size_t n, const std::vector<std::vector<size_t>>& adj) {
     return EncodeReference<pixie::detail::TreeEncodingKind::kLOUDS>(
         n, bfs_order(n, adj));
@@ -513,8 +513,23 @@ TYPED_TEST(TreeSerializationTest, RejectsBackendSizeAndPopulationMismatch) {
   }
 }
 
+TEST(TreeSerialization, RejectsPreviousLoudsEncodingTag) {
+  const std::vector<uint64_t> words{1};  // Two nodes: 10 0.
+  auto bytes = save(pixie::LoudsTree<Compressed>(words, 2));
+  constexpr uint64_t old_tag = 0x3152540058495050ULL + (uint64_t{3} << 32);
+  EXPECT_NE(get_u64(bytes, 0), old_tag);
+  set_u64(bytes, 0, old_tag);
+  for (auto validation :
+       {DeserializationValidation::kQuick, DeserializationValidation::kFull}) {
+    pixie::BinaryReader reader(bytes);
+    EXPECT_THROW(pixie::LoudsTree<Compressed>::deserialize(reader, validation),
+                 std::invalid_argument);
+    EXPECT_EQ(reader.position(), 0u);
+  }
+}
+
 TEST(TreeSerialization, RejectsLoudsBackendWithoutBothSelectDirections) {
-  const std::vector<uint64_t> words{0b101};
+  const std::vector<uint64_t> words{0b001};
   const auto bytes = save(pixie::LoudsTree<Compressed>(words, 2));
   for (auto mode :
        {Compressed::SelectSupport::kNone, Compressed::SelectSupport::kSelect1,

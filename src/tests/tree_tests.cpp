@@ -105,9 +105,9 @@ TEST(TreeConversion, KnownOrderedEncodings) {
   const Bp star_tree(std::span(&star, 1), 3),
       chain_tree(std::span(&chain, 1), 3);
   EXPECT_EQ(Dfuds(star_tree).encoding_words()[0], 0b00011);
-  EXPECT_EQ(Louds(star_tree).encoding_words()[0], 0b11001);
+  EXPECT_EQ(Louds(star_tree).encoding_words()[0], 0b00011);
   EXPECT_EQ(Dfuds(chain_tree).encoding_words()[0], 0b00101);
-  EXPECT_EQ(Louds(chain_tree).encoding_words()[0], 0b10101);
+  EXPECT_EQ(Louds(chain_tree).encoding_words()[0], 0b00101);
 }
 
 TEST(TreeConversion, OrderedTopologyAcrossSourcesAndDestinations) {
@@ -617,6 +617,26 @@ TYPED_TEST(BoundedTraversalTest, PartialScansAndRetainedResults) {
                 start < text.size() ? text.substr(start, 7) : "");
     }
   }
+}
+
+TEST(TreeLoudsScanTest, TerminatorsAndExactBitBudget) {
+  // BFS records: root 110, internal 10, leaf 0, leaf 0.
+  const std::vector<uint64_t> words{0b0001011};
+  const pixie::LoudsTree<> tree(words, 4);
+  pixie::TreeTraversalContext context(tree);
+  auto partial = context.scan(tree.root(), 2);
+  EXPECT_EQ(partial->scanned_bits(), 2u);
+  EXPECT_FALSE(partial->children_complete(tree.root()));
+  auto full = context.scan(tree.root(), 7);
+  EXPECT_EQ(full->scanned_bits(), 7u);
+  EXPECT_EQ(full->size(), 4u);
+  full->for_each_node(
+      [&](auto node) { EXPECT_TRUE(full->children_complete(node)); });
+  const auto leaf = tree.child(tree.root(), 1);
+  auto singleton = context.scan(leaf, 1);
+  EXPECT_EQ(singleton->scanned_bits(), 1u);
+  EXPECT_EQ(singleton->size(), 1u);
+  EXPECT_TRUE(singleton->children_complete(leaf));
 }
 
 TYPED_TEST(BoundedTraversalTest, IndexRejectsEmptyTrees) {
@@ -1154,9 +1174,9 @@ TYPED_TEST(LoudsNavigationViewTest, TraversalReusesSelectAndInvalidatesOnMove) {
       const AdjListTree reference(adjacency);
       auto view = tree.navigate(tree.root());
       auto expected = reference.root();
-      Backend::zero_selects = 0;
+      Backend::one_selects = 0;
       EXPECT_EQ(view.parent().number, 0u);
-      EXPECT_EQ(Backend::zero_selects, 0u);
+      EXPECT_EQ(Backend::one_selects, 0u);
       bool descending = true;
       std::size_t visited = 1, checks = 0, steps = 0;
       while (true) {
@@ -1177,12 +1197,12 @@ TYPED_TEST(LoudsNavigationViewTest, TraversalReusesSelectAndInvalidatesOnMove) {
         }
         const auto last = view.is_last_child();
         ++checks;
-        ASSERT_EQ(Backend::zero_selects, checks);
+        ASSERT_EQ(Backend::one_selects, checks);
         EXPECT_EQ(view.is_last_child(), last);
         EXPECT_EQ(last, reference.is_last_child(expected));
         // Parent queries reuse the cached edge even on non-last siblings.
         EXPECT_EQ(view.parent().number, reference.parent(expected).number);
-        ASSERT_EQ(Backend::zero_selects, checks);
+        ASSERT_EQ(Backend::one_selects, checks);
         if (last) {
           view.reset(view.parent());
           expected = reference.parent(expected);
@@ -1208,24 +1228,24 @@ TYPED_TEST(LoudsNavigationViewTest, ViewsAndCopiesHaveIndependentCaches) {
   const auto first = tree.first_child(tree.root());
   auto a = tree.navigate(first);
   auto b = tree.navigate(first);
-  Backend::zero_selects = 0;
+  Backend::one_selects = 0;
   EXPECT_FALSE(a.is_last_child());
   auto copy = a;
   EXPECT_EQ(copy.parent().number, 0u);
-  EXPECT_EQ(Backend::zero_selects, 1u);
+  EXPECT_EQ(Backend::one_selects, 1u);
   EXPECT_FALSE(b.is_last_child());
-  EXPECT_EQ(Backend::zero_selects, 2u);
+  EXPECT_EQ(Backend::one_selects, 2u);
   a.reset(a.next_sibling());
   EXPECT_TRUE(a.is_last_child());
-  EXPECT_EQ(Backend::zero_selects, 3u);
+  EXPECT_EQ(Backend::one_selects, 3u);
   EXPECT_FALSE(copy.is_last_child());
   EXPECT_FALSE(b.is_last_child());
-  EXPECT_EQ(Backend::zero_selects, 3u);
+  EXPECT_EQ(Backend::one_selects, 3u);
   copy.reset(first);
   EXPECT_EQ(copy.parent().number,
             0u);  // Also supports parent before predicate.
   EXPECT_FALSE(copy.is_last_child());
-  EXPECT_EQ(Backend::zero_selects, 4u);
+  EXPECT_EQ(Backend::one_selects, 4u);
 }
 
 TYPED_TEST(TreeSpecificationTest, NavigationViewsMatchDirectQueries) {
@@ -1466,18 +1486,18 @@ TYPED_TEST(LoudsNavigationViewTest, DegreeSiblingAndFirstChildShareSelects) {
   auto view = tree.navigate(tree.first_child(tree.root()));
   Backend::one_selects = Backend::zero_selects = 0;
   EXPECT_EQ(view.degree(), size - 3);
-  EXPECT_EQ(Backend::one_selects, 1u);
+  EXPECT_EQ(Backend::zero_selects, 1u);
   EXPECT_EQ(view.next_sibling().number, 2u);
   EXPECT_EQ(view.degree(), size - 3);
-  EXPECT_EQ(Backend::one_selects, 1u);
+  EXPECT_EQ(Backend::zero_selects, 1u);
   EXPECT_EQ(view.first_child().number, 3u);
   EXPECT_EQ(view.child(0).number, 3u);
   EXPECT_EQ(view.first_child().number, 3u);
-  EXPECT_EQ(Backend::one_selects, 2u);
+  EXPECT_EQ(Backend::zero_selects, 2u);
   view.reset(view.node());
   EXPECT_EQ(view.next_sibling().number, 2u);
   EXPECT_EQ(view.degree(), size - 3);
-  EXPECT_EQ(Backend::one_selects, 3u);
+  EXPECT_EQ(Backend::zero_selects, 3u);
 }
 
 TYPED_TEST(TreeSpecificationTest, ExhaustiveSmallOrderedTreeNavigation) {
@@ -2167,6 +2187,109 @@ TEST(TreeUnpackingTest, ParentSlotFillPreservesAdjacentElements) {
         EXPECT_EQ(values[i],
                   i >= offset && i < offset + count ? 0x1234 : 0xaaaa);
       }
+    }
+  }
+}
+
+TEST(TreeUnpackingTest, ByteDecoderMatchesBitwiseTraversal) {
+  using namespace pixie::detail::tree_unpack;
+  for (size_t initial_depth : {8u, 120u}) {
+    for (uint64_t initial_number :
+         {uint64_t{0}, (uint64_t{1} << 32) - 3, uint64_t{1} << 48}) {
+      for (unsigned pattern = 1; pattern < 512; ++pattern) {
+        if (!(pattern & 255)) {
+          continue;  // All-closing bytes use the traversal's scalar path.
+        }
+        SCOPED_TRACE(::testing::Message()
+                     << pattern << ", depth=" << initial_depth
+                     << ", number=" << initial_number);
+        const uint64_t base = (uint64_t{1} << 40) + 123;
+        std::array<uint64_t, 136> numbers, positions;
+        for (size_t i = 0; i < numbers.size(); ++i) {
+          numbers[i] = (uint64_t{1} << 45) + i * 13;
+          positions[i] = (uint64_t{1} << 46) + i * 19;
+        }
+        auto expected_numbers = numbers, expected_positions = positions;
+        size_t depth = initial_depth, number = initial_number;
+        std::vector<std::pair<uint64_t, uint64_t>> expected;
+        for (unsigned bit = 0; bit < 8; ++bit) {
+          if ((pattern >> bit) & 1) {
+            expected_numbers[depth + 8] = number;
+            expected_positions[depth + 8] = base + bit;
+            expected.emplace_back(number++, base + bit);
+            ++depth;
+          } else {
+            --depth;
+            if (!((pattern >> (bit + 1)) & 1)) {
+              expected.emplace_back(expected_numbers[depth + 7],
+                                    expected_positions[depth + 7]);
+            }
+          }
+        }
+        const auto expected_depth = depth, expected_number = number;
+        depth = initial_depth;
+        number = initial_number;
+        alignas(64) std::array<uint64_t, 16> events_n, events_p;
+        events_n.fill(UINT64_MAX);
+        events_p.fill(UINT64_MAX);
+        const auto& program = byte_programs[pattern];
+        decode_byte(program, base, number, depth, numbers, positions,
+                    events_n.data(), events_p.data());
+        ASSERT_EQ(program.count, expected.size());
+        ASSERT_EQ(depth, expected_depth);
+        ASSERT_EQ(number, expected_number);
+        for (size_t i = 0; i < expected.size(); ++i) {
+          EXPECT_EQ(events_n[i], expected[i].first);
+          EXPECT_EQ(events_p[i], expected[i].second);
+        }
+        for (size_t i = 0; i < depth + 8; ++i) {
+          EXPECT_EQ(numbers[i], expected_numbers[i]);
+          EXPECT_EQ(positions[i], expected_positions[i]);
+        }
+        for (size_t i = 8; i < events_n.size(); ++i) {
+          EXPECT_EQ(events_n[i], UINT64_MAX);
+          EXPECT_EQ(events_p[i], UINT64_MAX);
+        }
+      }
+    }
+  }
+}
+
+TEST(TreeUnpackingTest, ZeroOffsetsMatchBoundedBitScan) {
+  auto check = [](uint64_t word, unsigned valid, unsigned offset) {
+    SCOPED_TRACE(::testing::Message()
+                 << word << ", valid=" << valid << ", offset=" << offset);
+    std::array<uint8_t, 96> output;
+    output.fill(0xaa);
+    std::vector<uint8_t> expected;
+    for (unsigned bit = 0; bit < valid; ++bit) {
+      if (!((word >> bit) & 1)) {
+        expected.push_back(bit);
+      }
+    }
+    const auto count = pixie::detail::tree_unpack::zero_offsets(
+        word, valid, output.data() + offset);
+    ASSERT_EQ(count, expected.size());
+    EXPECT_EQ(std::vector<uint8_t>(output.begin() + offset,
+                                   output.begin() + offset + count),
+              expected);
+    for (unsigned i = 0; i < output.size(); ++i) {
+      if (i < offset || i >= offset + 64) {
+        ASSERT_EQ(output[i], 0xaa);
+      }
+    }
+  };
+  for (unsigned bits = 0; bits < 65536; ++bits) {
+    for (unsigned shift : {0u, 16u, 32u, 48u}) {
+      check(~(uint64_t(bits) << shift), 64, bits % 32);
+    }
+  }
+  std::mt19937_64 rng(42);
+  for (unsigned valid = 0; valid <= 64; ++valid) {
+    check(0, valid, valid % 32);
+    check(UINT64_MAX, valid, valid % 32);
+    for (unsigned i = 0; i < 64; ++i) {
+      check(rng(), valid, i % 32);
     }
   }
 }

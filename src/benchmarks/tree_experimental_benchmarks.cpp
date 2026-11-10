@@ -4,8 +4,10 @@
 #include <pixie/tree/experimental/tree_prepared_root.h>
 #include <pixie/tree/traversal_context.h>
 
+#include "tree_conversion_benchmarks.h"
 #include "tree_dfs/optimized.h"
 #include "tree_input.h"
+#include "tree_region_benchmarks.h"
 
 namespace {
 template <bool Dfuds, bool Events>

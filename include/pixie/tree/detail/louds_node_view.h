@@ -3,6 +3,7 @@
 #include <pixie/tree.h>
 
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <utility>
 
@@ -26,7 +27,7 @@ class LoudsNodeView {
    */
   void reset(TreeNode node) {
     node_ = node;
-    incoming_ = 0;
+    incoming_ = std::numeric_limits<size_t>::max();
     next_.reset();
     first_.reset();
     parent_.reset();
@@ -57,7 +58,7 @@ class LoudsNodeView {
   }
 
   /** @brief Test for the last sibling; requires a non-root current node. */
-  bool is_last_child() const { return tree_->bv[incoming_edge() + 1]; }
+  bool is_last_child() const { return !tree_->bv[incoming_edge() + 1]; }
 
   /** @brief Return the parent, or root itself; keep the current node. */
   TreeNode parent() const {
@@ -82,16 +83,16 @@ class LoudsNodeView {
 
  private:
   size_t incoming_edge() const {
-    // Bit zero is the root delimiter, so no valid incoming edge is zero.
-    if (incoming_ == 0) {
-      incoming_ = tree_->bv.select0(node_.number);
+    // Bit zero can be a valid incoming edge.
+    if (incoming_ == std::numeric_limits<size_t>::max()) {
+      incoming_ = tree_->bv.select(node_.number);
     }
     return incoming_;
   }
 
   size_t next_delimiter() const {
     if (!next_) {
-      next_ = tree_->next_delimiter(node_.pos, node_.number + 2);
+      next_ = tree_->next_delimiter(node_.pos, node_.number + 1);
     }
     return *next_;
   }
@@ -100,7 +101,7 @@ class LoudsNodeView {
   mutable std::optional<TreeNode> first_, parent_;
   const Tree* tree_;
   TreeNode node_;
-  mutable size_t incoming_ = 0;
+  mutable size_t incoming_ = std::numeric_limits<size_t>::max();
 };
 
 }  // namespace pixie::detail

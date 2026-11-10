@@ -2,6 +2,30 @@
 
 This page summarizes benchmarks for tree implementation: BP, DFUDS, LOUDS and reference implementations.
 
+`tree_dfs_benchmarks` contains the `dfs` and `dfs_children` families.
+`tree_path_benchmarks` contains `random_path` and `random_path_children`.
+Each family includes BP, DFUDS, and LOUDS in optimized (`*_best`) and direct
+(`*_direct`) modes, plus adjacency-list and pointer references in BFS and
+preorder layouts. Names start with the workload, for example
+`dfs/bp_best/tree_size:1024`.
+
+To run one family at one size after building:
+
+```bash
+taskset -c 0 build/benchmarks/tree_dfs_benchmarks \
+  --benchmark_filter='^dfs/[^/]+/tree_size:1024$'
+taskset -c 0 build/benchmarks/tree_path_benchmarks \
+  --benchmark_filter='^random_path_children/[^/]+/tree_size:1024$'
+```
+
+The collector accepts `--workload dfs`, `--workload path`, or `--workload all`
+(the default). `--succinct-mode both` collects optimized and direct modes in
+one dataset. It runs each implementation and size in a separate process for
+each binary, so large reference fixtures are released between groups.
+
+Scan/replay, conversion, and prepared-tree diagnostics are available through
+the optional `tree_experimental_benchmarks` target.
+
 ## Machine
 
 AMD Ryzen 7 8845HS (8 cores, 16 threads, 16 MiB L3), 15 GiB RAM,
@@ -60,7 +84,7 @@ Run from the repository root with CMake and Python with Matplotlib:
 
 ```bash
 cmake --preset benchmarks
-cmake --build --preset benchmarks --target bp_tree_benchmarks dfuds_tree_benchmarks louds_tree_benchmarks -j 2
+cmake --build --preset benchmarks --target tree_dfs_benchmarks tree_path_benchmarks -j 2
 out=build/tree-reproduction
 mkdir -p "$out"
 

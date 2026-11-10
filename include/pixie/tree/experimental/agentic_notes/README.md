@@ -91,8 +91,11 @@ Repository tools retained for reproduction: `scripts/benchmark_trees.py`,
 `src/benchmarks/tree_construction_probe.cpp`. Input generation is in
 `src/benchmarks/tree_input.h`; exact-event and navigation tests are in
 `src/tests/tree_tests.cpp`. The retained prepared-root and prepared-event experiments target small trees.
-Their optional `tree_experimental_benchmarks` target measures exact replay and
-fallback at the admission boundary; neither is selected by the default context.
+The optional `tree_experimental_benchmarks` target measures their replay and
+fallback at the admission boundary, tree conversions, and LOUDS region scans
+and event replay. Prepared trees are not selected by the default context.
+Full-tree comparisons use `tree_dfs_benchmarks` and `tree_path_benchmarks`,
+each with ordinary traversal and child-inspection families.
 
 ## Next iteration: hypotheses, not established wins
 

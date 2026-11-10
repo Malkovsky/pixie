@@ -6,7 +6,10 @@
 namespace pixie::detail {
 
 inline uint64_t tree_serialization_tag(TreeEncodingKind kind) {
-  return 0x3152540058495050ULL + (static_cast<uint64_t>(kind) << 32);
+  // LOUDS version 2 uses degree ones followed by a zero terminator.
+  const auto tag = kind == TreeEncodingKind::kLOUDS ? 0x3252540058495050ULL
+                                                    : 0x3152540058495050ULL;
+  return tag + (static_cast<uint64_t>(kind) << 32);
 }
 
 inline void write_tree_encoding(BinaryWriter& writer,
@@ -58,20 +61,13 @@ inline void validate_tree_topology(std::span<const uint64_t> words,
   for (size_t i = 0; i < bits; ++i) {
     const bool bit = (words[i / 64] >> (i % 64)) & 1;
     ones += bit;
-    if (kind == TreeEncodingKind::kLOUDS) {
-      if ((!i && !bit) || (bit && pending == 0)) {
-        throw std::invalid_argument("Invalid LOUDS topology");
-      }
-      pending += bit ? -1 : 1;
-    } else {
-      pending += bit ? 1 : -1;
-      if (pending < 0 || (!pending && i + 1 < bits)) {
-        throw std::invalid_argument("Invalid parenthesis topology");
-      }
+    pending += bit ? 1 : -1;
+    if (pending < 0 || (!pending && i + 1 < bits)) {
+      throw std::invalid_argument("Invalid parenthesis topology");
     }
   }
   const auto expected_ones =
-      kind == TreeEncodingKind::kDFUDS && nodes ? nodes - 1 : nodes;
+      kind != TreeEncodingKind::kBP && nodes ? nodes - 1 : nodes;
   if ((nodes && pending != 0) || ones != expected_ones) {
     throw std::invalid_argument("Invalid tree topology counts");
   }
@@ -127,7 +123,7 @@ auto deserialize_tree(BinaryReader& reader,
     }
   }();
   const auto expected_ones =
-      Kind == TreeEncodingKind::kDFUDS && nodes ? nodes - 1 : nodes;
+      Kind != TreeEncodingKind::kBP && nodes ? nodes - 1 : nodes;
   if (ones != expected_ones) {
     throw std::invalid_argument("Tree backend population mismatch");
   }
