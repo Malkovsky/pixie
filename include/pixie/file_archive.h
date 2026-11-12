@@ -62,7 +62,7 @@ namespace file_archive_detail {
 
 inline constexpr std::array<std::uint8_t, 8> kMagic = {'P', 'I', 'X', 'A',
                                                        'R', 'C', 'H', '1'};
-inline constexpr std::uint32_t kVersion = 5;
+inline constexpr std::uint32_t kVersion = 6;
 inline constexpr std::size_t kHeaderBytes = 3 * sizeof(std::uint64_t);
 inline constexpr std::size_t kMetadataHeaderBytes =
     kHeaderBytes + 2 * sizeof(std::uint32_t) + 5 * sizeof(std::uint64_t);
