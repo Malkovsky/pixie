@@ -4,8 +4,9 @@
 
 #include <array>
 #include <cstddef>
+#include <utility>
 
-namespace pixie {
+namespace pixie::tree {
 
 /**
  * @brief Navigation cursor caching the first Capacity ancestors from the root.
@@ -22,14 +23,20 @@ namespace pixie {
 template <class Tree, std::size_t Capacity>
 class TreePathView {
  public:
+  /** @brief Handle returned by this tree's navigation interface. */
+  using Node = decltype(std::declval<const Tree&>().root());
+
   /** @brief Start at the root of a valid nonempty tree. */
-  explicit TreePathView(const Tree& tree) : view_(tree.navigate(tree.root())) {}
+  explicit TreePathView(const Tree& tree)
+      : view_(tree.navigate(tree.root())),
+        ancestors_(filled(view_.node(), std::make_index_sequence<Capacity>{})) {
+  }
 
   /** @brief Reject a path cursor borrowing a temporary tree. */
   TreePathView(const Tree&&) = delete;
 
   /** @brief Return the current node handle by value. */
-  TreeNode node() const { return view_.node(); }
+  Node node() const { return view_.node(); }
   /** @brief Return the edge distance from the tree root. */
   std::size_t depth() const { return depth_; }
   /** @brief Test whether the current node is root. */
@@ -54,23 +61,23 @@ class TreePathView {
     }
     --depth_;
     if (depth_ < Capacity) {
-      const auto& parent = ancestors_[depth_];
-      view_.reset(TreeNode(parent.number, parent.pos));
+      view_.reset(ancestors_[depth_]);
     } else {
       view_.reset(view_.parent());
     }
   }
 
  private:
-  struct Ancestor {
-    std::size_t number = 0;
-    std::size_t pos = 0;
-  };
+  // Handles need only be copyable, not default constructible.
+  template <std::size_t... I>
+  static std::array<Node, Capacity> filled(const Node& node,
+                                           std::index_sequence<I...>) {
+    return {((void)I, node)...};
+  }
 
-  void descend(TreeNode child) {
+  void descend(Node child) {
     if (depth_ < Capacity) {
-      const auto node = view_.node();
-      ancestors_[depth_] = {node.number, node.pos};
+      ancestors_[depth_] = view_.node();
     }
     ++depth_;
     view_.reset(child);
@@ -78,7 +85,7 @@ class TreePathView {
 
   typename Tree::NodeView view_;
   std::size_t depth_ = 0;
-  std::array<Ancestor, Capacity> ancestors_{};
+  std::array<Node, Capacity> ancestors_;
 };
 
-}  // namespace pixie
+}  // namespace pixie::tree

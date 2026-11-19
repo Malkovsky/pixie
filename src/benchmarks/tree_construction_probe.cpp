@@ -14,9 +14,9 @@
 
 using Clock = std::chrono::steady_clock;
 using Rmm = pixie::RmMBTree<>;
-using Bp = pixie::BPTree<Rmm>;
-using Dfuds = pixie::DFUDSTree<Rmm>;
-using Louds = pixie::LoudsTree<pixie::RankSelectSupportCompressed<>>;
+using Bp = pixie::tree::BPTree<Rmm>;
+using Dfuds = pixie::tree::DFUDSTree<Rmm>;
+using Louds = pixie::tree::LoudsTree<pixie::RankSelectSupportCompressed<>>;
 using Pointer = pixie::references::PointerTree;
 
 struct Result {
@@ -36,10 +36,10 @@ Result succinct(size_t n, size_t budget, bool copy_input) {
   start = Clock::now();
   if constexpr (std::is_same_v<Tree, Dfuds>) {
     words = pixie::benchmarks::ConvertBpEncoding<
-        pixie::detail::TreeEncodingKind::kDFUDS>(words, n);
+        pixie::tree::detail::TreeEncodingKind::kDFUDS>(words, n);
   } else if constexpr (std::is_same_v<Tree, Louds>) {
     words = pixie::benchmarks::ConvertBpEncoding<
-        pixie::detail::TreeEncodingKind::kLOUDS>(words, n);
+        pixie::tree::detail::TreeEncodingKind::kLOUDS>(words, n);
   }
   pixie::AlignedStorage encoding;
   if (!copy_input) {
@@ -52,9 +52,9 @@ Result succinct(size_t n, size_t budget, bool copy_input) {
   r.construct = seconds(start);
   start = Clock::now();
   const size_t context_charge =
-      pixie::TreeTraversalContext(tree, budget).budget_usage_bytes();
-  pixie::RootNavigationIndex index(tree, budget - context_charge);
-  pixie::TreeTraversalContext cache(tree, budget, &index);
+      pixie::tree::TreeTraversalContext(tree, budget).budget_usage_bytes();
+  pixie::tree::RootNavigationIndex index(tree, budget - context_charge);
+  pixie::tree::TreeTraversalContext cache(tree, budget, &index);
   r.cache = seconds(start);
   r.encoding = tree.encoding_owned_bytes();
   r.structure = tree.memory_usage_bytes();

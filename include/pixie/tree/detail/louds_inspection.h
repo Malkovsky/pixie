@@ -1,11 +1,11 @@
 #pragma once
 #include <pixie/tree/detail/unpack_louds.h>
 
-namespace pixie::detail::tree_unpack {
-using pixie::detail::tree_unpack::emit;
-using pixie::detail::tree_unpack::louds_next;
-using pixie::detail::tree_unpack::LoudsLevel;
-using pixie::detail::tree_unpack::subtree;
+namespace pixie::tree::detail::tree_unpack {
+using pixie::tree::detail::tree_unpack::emit;
+using pixie::tree::detail::tree_unpack::louds_next;
+using pixie::tree::detail::tree_unpack::LoudsLevel;
+using pixie::tree::detail::tree_unpack::subtree;
 // Cache decoded marker positions for a monotone level cursor. The scalar/SIMD
 // dispatch remains inside zero_offsets; callers use the same primitive API.
 struct LoudsDecodedLevel {
@@ -25,8 +25,8 @@ inline size_t LoudsDecodedNext(std::span<const uint64_t> words,
     const size_t base = start & ~size_t{63};
     const auto mask = ~words[base / 64] & (~uint64_t{0} << (start % 64));
     const unsigned valid = std::min<size_t>(64, nbits - base);
-    cursor.count =
-        pixie::detail::tree_unpack::zero_offsets(~mask, valid, cursor.offsets);
+    cursor.count = pixie::tree::detail::tree_unpack::zero_offsets(
+        ~mask, valid, cursor.offsets);
     if (cursor.count) {
       cursor.base = base;
       cursor.index = 1;
@@ -171,4 +171,4 @@ struct LoudsPrefetchTraversal {
     emit(visit, node, false);
   }
 };
-}  // namespace pixie::detail::tree_unpack
+}  // namespace pixie::tree::detail::tree_unpack

@@ -7,7 +7,7 @@
 #include <optional>
 #include <utility>
 
-namespace pixie::detail {
+namespace pixie::tree::detail {
 
 /**
  * @brief Non-owning navigation view with lazy per-node navigation caches.
@@ -20,6 +20,8 @@ class LoudsNodeView {
  public:
   /** @brief Return the current valid node handle by value. */
   TreeNode node() const { return node_; }
+  /** @brief Return the current node's zero-based level-order number. */
+  size_t number() const { return node_.number; }
 
   /**
    * @brief Move to a valid node of the same tree, invalidating the cache.
@@ -104,4 +106,4 @@ class LoudsNodeView {
   mutable size_t incoming_ = std::numeric_limits<size_t>::max();
 };
 
-}  // namespace pixie::detail
+}  // namespace pixie::tree::detail

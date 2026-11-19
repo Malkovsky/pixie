@@ -6,7 +6,7 @@
 #include <array>
 #include <span>
 
-namespace pixie::detail::tree_unpack {
+namespace pixie::tree::detail::tree_unpack {
 // Decoder supplies bit_size(nodes), load_scratch_bytes(), load(), walk(), and
 // size(). Keep encoding-specific decoding separate from the shared traversal.
 template <class Decoder, class Tree, class Visit, class Inspect>
@@ -115,4 +115,4 @@ class MicroTraversal {
     }
   }
 };
-}  // namespace pixie::detail::tree_unpack
+}  // namespace pixie::tree::detail::tree_unpack

@@ -1,5 +1,8 @@
 #pragma once
 
+#include <pixie/tree/detail/tree_path.h>
+#include <references/detail/path_order.h>
+
 #include <cstddef>
 #include <vector>
 
@@ -30,10 +33,12 @@ class PointerTree {
    * @details adjacency[v][0] is v's parent; subsequent entries are its children
    * in order. The root's parent is zero. Empty input creates an empty tree.
    * Malformed topology or out-of-range node numbers violate the precondition.
-   * The source may be destroyed immediately after construction.
+   * Input IDs need not precede their children. Only nonmonotone IDs require
+   * a separate preorder index. The source may be destroyed after construction.
    */
   explicit PointerTree(const std::vector<std::vector<std::size_t>>& adjacency)
-      : nodes_(adjacency.size()) {
+      : nodes_(adjacency.size()),
+        preorder_(detail::optional_preorder(adjacency)) {
     for (std::size_t i = 0; i < adjacency.size(); ++i) {
       const auto& edges = adjacency[i];
       nodes_[i].parent = &nodes_[edges[0]];
@@ -67,6 +72,26 @@ class PointerTree {
   bool is_root(Node node) const { return node == root(); }
   /** @brief Parent handle; the root is its own parent. */
   Node parent(Node node) const { return node->parent; }
+  /// Return the inclusive path between valid handles from this tree.
+  std::vector<Node> tree_path(Node u, Node v) const {
+    std::vector<Node> out, scratch;
+    tree_path(u, v, out, scratch);
+    return out;
+  }
+  /// Replace out with the same path and clear scratch, retaining capacities.
+  /// Aliasing the vectors throws std::invalid_argument.
+  void tree_path(Node u,
+                 Node v,
+                 std::vector<Node>& out,
+                 std::vector<Node>& scratch) const {
+    pixie::tree::detail::collect_tree_path(
+        u, v, out, scratch,
+        [this](Node n) {
+          const auto id = node_number(n);
+          return preorder_.empty() ? id : preorder_[id];
+        },
+        [this](Node n) { return parent(n); });
+  }
   /** @brief First child, or the node itself for a leaf. */
   Node first_child(Node node) const { return node->first ? node->first : node; }
   /** @brief Whether no next sibling exists; true for the root. */
@@ -105,13 +130,16 @@ class PointerTree {
       visitor(child);
     }
   }
-  /** @brief Object plus reserved node bytes, excluding allocator overhead. */
+  /** @brief Object plus reserved node and index bytes, excluding allocator
+   * overhead. */
   std::size_t memory_usage_bytes() const {
-    return sizeof(*this) + nodes_.capacity() * sizeof(Record);
+    return sizeof(*this) + nodes_.capacity() * sizeof(Record) +
+           preorder_.capacity() * sizeof(std::size_t);
   }
 
  private:
   std::vector<Record> nodes_;
+  std::vector<std::size_t> preorder_;
 };
 
 }  // namespace pixie::references

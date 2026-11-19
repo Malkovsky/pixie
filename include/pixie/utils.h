@@ -1,15 +1,16 @@
 #pragma once
 
+#include <pixie/tree/detail/tree_path.h>
 #include <pixie/tree/louds.h>
+#include <references/detail/path_order.h>
 
 #include <queue>
 #include <random>
 #include <vector>
 
-using pixie::LoudsNode;
-
-std::vector<std::vector<size_t>> generate_random_tree(size_t tree_size,
-                                                      std::mt19937_64& rng) {
+inline std::vector<std::vector<size_t>> generate_random_tree(
+    size_t tree_size,
+    std::mt19937_64& rng) {
   if (tree_size == 0) {
     return {};
   }
@@ -23,7 +24,7 @@ std::vector<std::vector<size_t>> generate_random_tree(size_t tree_size,
   return adj;
 }
 
-std::vector<std::vector<size_t>> bfs_order(
+inline std::vector<std::vector<size_t>> bfs_order(
     size_t tree_size,
     const std::vector<std::vector<size_t>>& adj) {
   std::vector<std::vector<size_t>> bfs_adj(tree_size);
@@ -46,7 +47,7 @@ std::vector<std::vector<size_t>> bfs_order(
   return bfs_adj;
 }
 
-std::vector<std::vector<size_t>> dfs_order(
+inline std::vector<std::vector<size_t>> dfs_order(
     size_t tree_size,
     const std::vector<std::vector<size_t>>& adj) {
   std::vector<std::vector<size_t>> dfs_adj(tree_size);
@@ -72,9 +73,9 @@ std::vector<std::vector<size_t>> dfs_order(
   return dfs_adj;
 }
 
-std::vector<uint64_t> generate_random_data(size_t data_size,
-                                           size_t alphabet_size,
-                                           std::mt19937_64& rng) {
+inline std::vector<uint64_t> generate_random_data(size_t data_size,
+                                                  size_t alphabet_size,
+                                                  std::mt19937_64& rng) {
   std::vector<uint64_t> data(data_size);
   std::uniform_int_distribution<uint64_t> alphabet(0, alphabet_size - 1);
   for (size_t i = 0; i < data_size; i++) {
@@ -87,24 +88,27 @@ struct AdjListNode {
   size_t number;
 };
 
-bool operator==(const AdjListNode& a, const LoudsNode& b) {
+inline bool operator==(const AdjListNode& a, const pixie::tree::LoudsNode& b) {
   return a.number == b.number;
 }
 
-bool operator==(const LoudsNode& b, const AdjListNode& a) {
+inline bool operator==(const pixie::tree::LoudsNode& b, const AdjListNode& a) {
   return a.number == b.number;
 }
 
 class AdjListTree {
  private:
   std::vector<std::vector<size_t>> adj;
+  std::vector<size_t> preorder_;
 
  public:
   /**
-   * @brief Constructor from adjacency list (root is 0)
+   * @brief Copy a well-formed adjacency list rooted at 0 (parent first in
+   * each row). Only nonmonotone input numbering needs a preorder path index.
    */
   explicit AdjListTree(const std::vector<std::vector<size_t>>& adjacency_list)
-      : adj(adjacency_list) {}
+      : adj(adjacency_list),
+        preorder_(pixie::references::detail::optional_preorder(adj)) {}
 
   /** @brief Number of nodes in the ordered tree. */
   size_t size() const { return adj.size(); }
@@ -116,7 +120,7 @@ class AdjListTree {
     for (const auto& row : adj) {
       bytes += row.capacity() * sizeof(size_t);
     }
-    return bytes;
+    return bytes + preorder_.capacity() * sizeof(size_t);
   }
 
   /**
@@ -181,6 +185,27 @@ class AdjListTree {
    */
   AdjListNode parent(const AdjListNode& node) const {
     return AdjListNode(adj[node.number][0]);
+  }
+
+  /// Return the inclusive path between valid handles from this tree.
+  std::vector<AdjListNode> tree_path(AdjListNode u, AdjListNode v) const {
+    std::vector<AdjListNode> out, scratch;
+    tree_path(u, v, out, scratch);
+    return out;
+  }
+
+  /// Replace out with the same path and clear scratch, retaining capacities.
+  /// Aliasing the vectors throws std::invalid_argument.
+  void tree_path(AdjListNode u,
+                 AdjListNode v,
+                 std::vector<AdjListNode>& out,
+                 std::vector<AdjListNode>& scratch) const {
+    pixie::tree::detail::collect_tree_path(
+        u, v, out, scratch,
+        [this](AdjListNode n) {
+          return preorder_.empty() ? n.number : preorder_[n.number];
+        },
+        [this](AdjListNode n) { return parent(n); });
   }
 
   /**

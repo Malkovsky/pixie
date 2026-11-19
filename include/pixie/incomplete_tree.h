@@ -4,7 +4,7 @@
 
 #include <concepts>
 
-namespace pixie {
+namespace pixie::tree {
 /**
  * @brief Inspection of represented topology bound to an immutable complete
  * tree.
@@ -19,11 +19,12 @@ namespace pixie {
  * preconditions are checked.
  */
 template <class T>
-concept IncompleteTree = requires(const T& tree, TreeNode node) {
-  tree.tree_base();
-  { tree.contains(node) } -> std::same_as<bool>;
-  { tree.children_complete(node) } -> std::same_as<bool>;
-  tree.represented_parent(node);
-  tree.represented_children(node);
-};
-}  // namespace pixie
+concept IncompleteTree =
+    requires(const T& tree, decltype(tree.tree_base().root()) node) {
+      tree.tree_base();
+      { tree.contains(node) } -> std::same_as<bool>;
+      { tree.children_complete(node) } -> std::same_as<bool>;
+      tree.represented_parent(node);
+      tree.represented_children(node);
+    };
+}  // namespace pixie::tree

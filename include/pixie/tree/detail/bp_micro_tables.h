@@ -10,7 +10,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace pixie::detail::bp_micro {
+namespace pixie::tree::detail::bp_micro {
 // Cache decoding by topology, not by node address. Trailing bits beyond the
 // first complete subtree are irrelevant. The table holds only relative handles.
 struct BpMicroProgram {
@@ -108,4 +108,4 @@ inline constexpr auto bp_micro_tables = [] {
 }();
 static_assert(bp_micro_tables.count == 197);
 
-}  // namespace pixie::detail::bp_micro
+}  // namespace pixie::tree::detail::bp_micro

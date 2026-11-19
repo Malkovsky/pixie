@@ -14,7 +14,7 @@
 #include <span>
 #include <vector>
 
-namespace pixie {
+namespace pixie::tree {
 
 /**
  * @brief A tree class based on the depth-first unary degree sequence (DFUDS)
@@ -47,12 +47,14 @@ struct detail::ConstructionTraversal<DFUDSTree<B, S>> {
 
 template <class B, detail::TreeEncodingStorage S>
 struct TreeTraits<DFUDSTree<B, S>> {
-  using TreeView = DFUDSTree<B, ReadOnlyStorageView>;
+  using Node = TreeNode;
   using NodeView = detail::DfudsNodeView<DFUDSTree<B, S>>;
 };
 
 template <class RMMTree, detail::TreeEncodingStorage EncodingStorage>
-class DFUDSTree : public TreeBase<DFUDSTree<RMMTree, EncodingStorage>> {
+class DFUDSTree
+    : public TreeBase<DFUDSTree<RMMTree, EncodingStorage>>,
+      public SerializationBase<DFUDSTree<RMMTree, EncodingStorage>> {
  private:
   DFUDSTree(EncodingStorage storage, size_t bits, RMMTree backend)
       : encoding_(std::move(storage)),
@@ -88,6 +90,9 @@ class DFUDSTree : public TreeBase<DFUDSTree<RMMTree, EncodingStorage>> {
   }
 
  public:
+  /** @brief Tree borrowing the encoding words and owning its backend metadata.
+   */
+  using TreeView = DFUDSTree<RMMTree, ReadOnlyStorageView>;
   /**
    * @brief Construct an owning copy of another ordered tree's topology.
    * @details Preserves child order, but assigns destination node numbers and
@@ -116,7 +121,7 @@ class DFUDSTree : public TreeBase<DFUDSTree<RMMTree, EncodingStorage>> {
     requires Serializable<RMMTree>
   {
     detail::serialize_tree<detail::TreeEncodingKind::kDFUDS>(
-        writer, this->size(), encoding_words_impl(), rmm_);
+        writer, this->size(), encoding_words(), rmm_);
   }
 
   /** @brief Restore a complete tree without rebuilding its navigation index.
@@ -161,7 +166,7 @@ class DFUDSTree : public TreeBase<DFUDSTree<RMMTree, EncodingStorage>> {
   size_t memory_usage_bytes_impl() const
     requires HasMemoryUsageBytes<RMMTree>
   {
-    return sizeof(*this) + encoding_owned_bytes_impl() +
+    return sizeof(*this) + encoding_owned_bytes() +
            nested_owned_memory_bytes(rmm_);
   }
 
@@ -189,7 +194,7 @@ class DFUDSTree : public TreeBase<DFUDSTree<RMMTree, EncodingStorage>> {
   explicit DFUDSTree(EncodingStorage storage, size_t tree_size)
       : encoding_(std::move(storage)),
         num_bits_(detail::tree_encoding_bits(tree_size, false)),
-        rmm_(encoding_words_impl(), num_bits_) {}
+        rmm_(encoding_words(), num_bits_) {}
 
   /** @brief Deep-copy owning encodings and rebuild their backend references.
    * @details TreeView copies backend metadata and borrows the same encoding.
@@ -197,7 +202,7 @@ class DFUDSTree : public TreeBase<DFUDSTree<RMMTree, EncodingStorage>> {
   DFUDSTree(const DFUDSTree& other)
       : encoding_(other.encoding_), num_bits_(other.num_bits_), rmm_([&] {
           if constexpr (std::same_as<EncodingStorage, AlignedStorage>) {
-            return RMMTree(encoding_words_impl(), num_bits_);
+            return RMMTree(encoding_words(), num_bits_);
           } else {
             return other.rmm_;
           }
@@ -226,12 +231,13 @@ class DFUDSTree : public TreeBase<DFUDSTree<RMMTree, EncodingStorage>> {
     requires std::same_as<EncodingStorage, ReadOnlyStorageView>
   = delete;
 
-  /** @brief Implement TreeBase::encoding_words. */
-  std::span<const uint64_t> encoding_words_impl() const {
+  /** @brief Borrow complete words, including final padding, while storage is
+   * stable. */
+  std::span<const uint64_t> encoding_words() const {
     return detail::tree_encoding_words(encoding_, num_bits_);
   }
-  /** @brief Implement TreeBase::encoding_owned_bytes. */
-  size_t encoding_owned_bytes_impl() const {
+  /** @brief Owned encoding allocation in bytes; zero for a borrowing view. */
+  size_t encoding_owned_bytes() const {
     return detail::tree_encoding_owned_bytes(encoding_);
   }
 
@@ -239,6 +245,13 @@ class DFUDSTree : public TreeBase<DFUDSTree<RMMTree, EncodingStorage>> {
    * @brief Returns the root node
    */
   Node root_impl() const { return Node(0, 0); }
+
+  /** @brief DFUDS numbers degree runs in preorder. */
+  size_t number_impl(const Node& node) const { return node.number; }
+  size_t path_key_impl(Node node) const { return node.number; }  // Preorder.
+  Node find_by_number_impl(size_t i) const {
+    return i == 0 ? root_impl() : Node(i, rmm_.select0(i) + 1);
+  }
 
   /**
    * @brief Returns the size of the tree
@@ -334,4 +347,4 @@ class DFUDSTree : public TreeBase<DFUDSTree<RMMTree, EncodingStorage>> {
   }
 };
 
-}  // namespace pixie
+}  // namespace pixie::tree

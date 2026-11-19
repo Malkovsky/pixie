@@ -16,11 +16,11 @@ namespace pixie::benchmarks {
 // then use the library's common conversion producer and destination writer.
 // This setup includes source-index construction and an output vector copy;
 // encoding-only conversion benchmarks call construct_tree_encoding directly.
-template <detail::TreeEncodingKind Kind>
+template <tree::detail::TreeEncodingKind Kind>
 std::vector<uint64_t> ConvertBpEncoding(std::span<const uint64_t> bp,
                                         size_t n) {
-  const typename BPTree<RmMBTree<>>::TreeView source(bp, n);
-  const auto storage = detail::construct_tree_encoding<Kind>(source);
+  const typename tree::BPTree<RmMBTree<>>::TreeView source(bp, n);
+  const auto storage = tree::detail::construct_tree_encoding<Kind>(source);
   const auto words = storage.as_words64();
   return {words.begin(), words.end()};
 }

@@ -169,10 +169,14 @@ void RunExpandedTreeBenchmark(benchmark::State& state,
   }
 }
 
+constexpr int64_t kMinTreeNodes = 1LL << 10;
+constexpr int64_t kMaxTreeNodes = 1LL << 26;
+constexpr int64_t kTreeSizeMultiplier = 4;
+
 inline void TreeSizes(benchmark::internal::Benchmark* benchmark) {
   benchmark->ArgNames({"tree_size"})
-      ->RangeMultiplier(4)
-      ->Range(1ull << 10, 1ull << 26)
+      ->RangeMultiplier(kTreeSizeMultiplier)
+      ->Range(kMinTreeNodes, kMaxTreeNodes)
       ->Unit(benchmark::kMillisecond);
 }
 

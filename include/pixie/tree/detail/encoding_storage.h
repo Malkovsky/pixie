@@ -5,7 +5,7 @@
 
 #include <limits>
 
-namespace pixie::detail {
+namespace pixie::tree::detail {
 enum class TreeEncodingKind : uint64_t { kBP = 1, kDFUDS = 2, kLOUDS = 3 };
 
 template <class Storage>
@@ -57,4 +57,4 @@ size_t tree_encoding_owned_bytes(const Storage& storage) {
     return 0;
   }
 }
-}  // namespace pixie::detail
+}  // namespace pixie::tree::detail

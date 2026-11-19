@@ -11,7 +11,7 @@
 #include <cstring>
 #include <span>
 
-namespace pixie::detail::tree_unpack {
+namespace pixie::tree::detail::tree_unpack {
 // Read at most 64 bits, treating bits beyond the source as zero. No padding
 // words are required. Callers separately bound consumption by the logical size.
 inline uint64_t word_at(std::span<const uint64_t> words, size_t p) {
@@ -365,4 +365,4 @@ inline unsigned zero_offsets(uint64_t word, unsigned valid, uint8_t* out) {
 #endif
 }
 
-}  // namespace pixie::detail::tree_unpack
+}  // namespace pixie::tree::detail::tree_unpack

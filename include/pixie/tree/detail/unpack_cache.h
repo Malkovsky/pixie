@@ -6,7 +6,7 @@
 
 #include <algorithm>
 
-namespace pixie::detail::tree_unpack {
+namespace pixie::tree::detail::tree_unpack {
 // A bounded, per-traversal decoded subtree. A failed BitCapacity-bit probe
 // leaves the cache empty. Only complete subtrees are accepted. Source words
 // are borrowed during load; cached handles refer to the original tree.
@@ -165,4 +165,4 @@ class BoundedSubtreeCache {
 };
 using SubtreeCache = BoundedSubtreeCache<>;
 
-}  // namespace pixie::detail::tree_unpack
+}  // namespace pixie::tree::detail::tree_unpack

@@ -12,7 +12,7 @@
 
 #include <memory>
 
-namespace pixie {
+namespace pixie::tree {
 namespace detail::tree_traversal {
 template <class Tree>
 struct Encoding;
@@ -347,4 +347,4 @@ class TreeTraversalContext {
   /** @brief Borrow the immutable root index; cursors must not outlive it. */
   const RootNavigationIndex<Tree>* root_index() const { return index_; }
 };
-}  // namespace pixie
+}  // namespace pixie::tree

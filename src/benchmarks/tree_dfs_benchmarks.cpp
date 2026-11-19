@@ -6,6 +6,7 @@ const bool registered = [] {
   using pixie::benchmarks::TreeWorkload;
   RegisterTreeWorkload<TreeWorkload::kDfs>("dfs");
   RegisterTreeWorkload<TreeWorkload::kDfsChildren>("dfs_children");
+  pixie::benchmarks::RegisterShapeDfs();
   return true;
 }();
 }  // namespace

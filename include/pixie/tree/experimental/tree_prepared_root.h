@@ -7,7 +7,7 @@
 #include <memory>
 #include <span>
 
-namespace pixie::experimental {
+namespace pixie::tree::experimental {
 /**
  * @brief Retain a complete decoded root subtree when its bits fit a fixed cap.
  * @details Decoder supplies load(words, nbits, root), size(), and const
@@ -56,4 +56,4 @@ class PreparedRootSubtree {
  private:
   std::unique_ptr<Decoder> decoded_;
 };
-}  // namespace pixie::experimental
+}  // namespace pixie::tree::experimental

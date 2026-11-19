@@ -5,14 +5,14 @@
 
 // LOUDS fixtures use an independent BFS encoder. Other formats use reference
 // navigation to exercise the generic construction path.
-template <pixie::detail::TreeEncodingKind Kind>
+template <pixie::tree::detail::TreeEncodingKind Kind>
 std::vector<uint64_t> EncodeReference(
     size_t nodes,
     const std::vector<std::vector<size_t>>& adjacency) {
   if (nodes != adjacency.size()) {
     throw std::invalid_argument("Reference size mismatch");
   }
-  if constexpr (Kind == pixie::detail::TreeEncodingKind::kLOUDS) {
+  if constexpr (Kind == pixie::tree::detail::TreeEncodingKind::kLOUDS) {
     if (!nodes) {
       return {};
     }
@@ -30,8 +30,8 @@ std::vector<uint64_t> EncodeReference(
     }
     return words;
   }
-  const auto storage =
-      pixie::detail::construct_tree_encoding<Kind>(AdjListTree(adjacency));
+  const auto storage = pixie::tree::detail::construct_tree_encoding<Kind>(
+      AdjListTree(adjacency));
   const auto words = storage.as_words64();
   return {words.begin(), words.end()};
 }

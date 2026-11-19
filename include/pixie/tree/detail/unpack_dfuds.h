@@ -8,7 +8,7 @@
 #include <limits>
 #include <span>
 
-namespace pixie::detail::tree_unpack {
+namespace pixie::tree::detail::tree_unpack {
 // An internal node finishes when the global DFUDS excess reaches its
 // start excess minus one. Targets on the ancestor stack are nondecreasing.
 template <class Tree, class Visitor>
@@ -71,4 +71,4 @@ void dfuds_excess_stream(const Tree& tree,
   }
 }
 
-}  // namespace pixie::detail::tree_unpack
+}  // namespace pixie::tree::detail::tree_unpack

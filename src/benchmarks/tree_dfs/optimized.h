@@ -7,24 +7,26 @@ namespace pixie::benchmarks {
 // child of every nonleaf. Child inspection occurs before descent.
 template <class Tree>
 class TreeTraversalWorkloads {
-  static constexpr int encoding = detail::tree_traversal::Encoding<Tree>::value;
+  static constexpr int encoding =
+      tree::detail::tree_traversal::Encoding<Tree>::value;
   using Profiles =
       std::conditional_t<encoding == 2,
-                         detail::tree_traversal::LoudsProfiles,
-                         detail::tree_traversal::ParenthesisProfiles>;
+                         tree::detail::tree_traversal::LoudsProfiles,
+                         tree::detail::tree_traversal::ParenthesisProfiles>;
   template <size_t Index>
   using Profile = typename Profiles::template At<Index>;
   template <size_t Bits, class V, class I>
   using ParenthesisWalk = std::conditional_t<
       encoding == 0,
-      detail::bp_micro::BpMicroTraversal<Bits, Tree, V, I>,
-      detail::dfuds_micro::DfudsMicroTraversal<Bits, Tree, V, I>>;
-  const TreeTraversalContext<Tree>& context_;
+      tree::detail::bp_micro::BpMicroTraversal<Bits, Tree, V, I>,
+      tree::detail::dfuds_micro::DfudsMicroTraversal<Bits, Tree, V, I>>;
+  const tree::TreeTraversalContext<Tree>& context_;
   const Tree& tree_;
   std::span<const uint64_t> words_;
 
  public:
-  explicit TreeTraversalWorkloads(const TreeTraversalContext<Tree>& context)
+  explicit TreeTraversalWorkloads(
+      const tree::TreeTraversalContext<Tree>& context)
       : context_(context),
         tree_(context.tree()),
         words_(context.source_words()) {}
@@ -35,7 +37,7 @@ class TreeTraversalWorkloads {
     if (context_.streaming_enabled()) {
       traverse_decoded(visit);
     } else {
-      pixie::detail::tree_unpack::subtree(tree_, tree_.root(), visit);
+      pixie::tree::detail::tree_unpack::subtree(tree_, tree_.root(), visit);
     }
   }
   /** @brief DFS events plus immediate children in order before descent.
@@ -79,17 +81,17 @@ class TreeTraversalWorkloads {
       }
     }
     size_t nodes = 0, children = 0;
-    auto events = [&](TreeNode n, bool entering) {
-      pixie::detail::tree_unpack::emit(visit, n, entering);
+    auto events = [&](tree::TreeNode n, bool entering) {
+      pixie::tree::detail::tree_unpack::emit(visit, n, entering);
       if (entering) {
         ++nodes;
-        tree_.for_each_child(n, [&](TreeNode c) {
+        tree_.for_each_child(n, [&](tree::TreeNode c) {
           ++children;
           child(c);
         });
       }
     };
-    pixie::detail::tree_unpack::subtree(tree_, tree_.root(), events);
+    pixie::tree::detail::tree_unpack::subtree(tree_, tree_.root(), events);
     return {nodes, children};
   }
 
@@ -98,14 +100,14 @@ class TreeTraversalWorkloads {
   template <class Visitor>
   [[gnu::noinline]] void traverse_decoded(Visitor& visit) const {
     if constexpr (encoding == 0) {
-      pixie::detail::tree_unpack::bp_byte(tree_, words_, 2 * tree_.size(),
-                                          visit);
+      pixie::tree::detail::tree_unpack::bp_byte(tree_, words_, 2 * tree_.size(),
+                                                visit);
     } else if constexpr (encoding == 1) {
-      pixie::detail::tree_unpack::dfuds_excess_stream(
+      pixie::tree::detail::tree_unpack::dfuds_excess_stream(
           tree_, words_, 2 * tree_.size() - 1, visit);
     } else {
-      pixie::detail::tree_unpack::louds(tree_, words_, 2 * tree_.size() - 1,
-                                        visit);
+      pixie::tree::detail::tree_unpack::louds(tree_, words_,
+                                              2 * tree_.size() - 1, visit);
     }
   }
   template <size_t Bits, class Visitor, class Inspector>
@@ -121,8 +123,8 @@ class TreeTraversalWorkloads {
   [[gnu::noinline]] std::pair<size_t, size_t> inspect_louds(
       Visitor& visit,
       Inspector& child) const {
-    detail::tree_unpack::LoudsIterativeTraversal<Tree, Visitor, Inspector, true,
-                                                 Depth, Children>
+    tree::detail::tree_unpack::LoudsIterativeTraversal<Tree, Visitor, Inspector,
+                                                       true, Depth, Children>
         walk(tree_, words_, visit, child);
     walk.walk(tree_.root(), 0);
     return {walk.node_count, walk.child_count};

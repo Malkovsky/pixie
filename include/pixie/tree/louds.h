@@ -15,7 +15,7 @@
 #include <span>
 #include <vector>
 
-namespace pixie {
+namespace pixie::tree {
 
 /**
  * @brief A node class of LOUDS tree
@@ -63,12 +63,14 @@ struct detail::ConstructionTraversal<LoudsTree<B, S>> {
 
 template <class B, detail::TreeEncodingStorage S>
 struct TreeTraits<LoudsTree<B, S>> {
-  using TreeView = LoudsTree<B, ReadOnlyStorageView>;
+  using Node = LoudsNode;
   using NodeView = detail::LoudsNodeView<LoudsTree<B, S>>;
 };
 
 template <class RankSelect, detail::TreeEncodingStorage EncodingStorage>
-class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
+class LoudsTree
+    : public TreeBase<LoudsTree<RankSelect, EncodingStorage>>,
+      public SerializationBase<LoudsTree<RankSelect, EncodingStorage>> {
  private:
   LoudsTree(EncodingStorage storage, size_t bits, RankSelect backend)
       : encoding_(std::move(storage)),
@@ -103,6 +105,9 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
   }
 
  public:
+  /** @brief Tree borrowing the encoding words and owning its backend metadata.
+   */
+  using TreeView = LoudsTree<RankSelect, ReadOnlyStorageView>;
   /**
    * @brief Construct an owning copy of another ordered tree's topology.
    * @details Preserves child order, but assigns destination node numbers and
@@ -131,7 +136,7 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
     requires Serializable<RankSelect>
   {
     detail::serialize_tree<detail::TreeEncodingKind::kLOUDS>(
-        writer, this->size(), encoding_words_impl(), bv);
+        writer, this->size(), encoding_words(), bv);
   }
 
   /** @brief Restore a complete tree without rebuilding its navigation index.
@@ -174,7 +179,7 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
   size_t memory_usage_bytes_impl() const
     requires HasMemoryUsageBytes<RankSelect>
   {
-    return sizeof(*this) + encoding_owned_bytes_impl() +
+    return sizeof(*this) + encoding_owned_bytes() +
            nested_owned_memory_bytes(bv);
   }
 
@@ -243,12 +248,13 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
     requires std::same_as<EncodingStorage, ReadOnlyStorageView>
   = delete;
 
-  /** @brief Implement TreeBase::encoding_words. */
-  std::span<const uint64_t> encoding_words_impl() const {
+  /** @brief Borrow complete words, including final padding, while storage is
+   * stable. */
+  std::span<const uint64_t> encoding_words() const {
     return detail::tree_encoding_words(encoding_, bv.size());
   }
-  /** @brief Implement TreeBase::encoding_owned_bytes. */
-  size_t encoding_owned_bytes_impl() const {
+  /** @brief Owned encoding allocation in bytes; zero for a borrowing view. */
+  size_t encoding_owned_bytes() const {
     return detail::tree_encoding_owned_bytes(encoding_);
   }
 
@@ -263,6 +269,13 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
    * @brief Returns the root node
    */
   LoudsNode root_impl() const { return LoudsNode(0, 0); }
+
+  /** @brief LOUDS numbers node delimiters in level order. */
+  size_t number_impl(const LoudsNode& node) const { return node.number; }
+  size_t path_key_impl(LoudsNode node) const { return node.number; }  // BFS.
+  LoudsNode find_by_number_impl(size_t i) const {
+    return i == 0 ? root_impl() : LoudsNode(i, bv.select0(i) + 1);
+  }
 
   /**
    * @brief Returns the size of the tree
@@ -344,4 +357,4 @@ class LoudsTree : public TreeBase<LoudsTree<RankSelect, EncodingStorage>> {
   }
 };
 
-}  // namespace pixie
+}  // namespace pixie::tree

@@ -14,7 +14,7 @@ Current library families are:
   unchanged-value consuming merge;
 - range min-max (RmM) indexes via `pixie::RmMBTree<>` in `rmm/btree.h`;
 - static range-minimum-query (RMQ) indexes;
-- rooted-tree encodings (LOUDS, balanced parentheses, and DFUDS);
+- rooted-tree encodings (LOUDS, balanced parentheses, DFUDS, and ForestCover);
 - aligned owning storage, read-only storage views, and mapped-file resources;
 - storage-backed wavelet-tree indexes.
 
@@ -97,7 +97,7 @@ behavior is not automatically a long-term compatibility commitment.
 
 Public data-structure families use CRTP contracts. The current contracts are
 `IntegerVectorBase`, `MonotoneIntegerVectorBase`, `RankSelectBase`, `RmMBase`,
-`pixie::rmq::RmqBase`, `TreeBase`, `StorageBase`, `WaveletTreeBase`,
+`pixie::rmq::RmqBase`, `pixie::tree::TreeBase`, `StorageBase`, `WaveletTreeBase`,
 `PermutationBase`, and `PermutableSequenceBase`. The latter two keep separate
 contracts in `permutation.h` and `permutable_sequence.h`, with concrete
 `Permutation` and `PermutableSequence` types in `permutations/permutation.h` and
@@ -393,8 +393,8 @@ require AVX-512 hardware.
 1. Run `clang-format` 21.1.8 before committing; use the repository's Chromium
    style. CI pins this exact version. Install locally with
    `uv tool install 'clang-format==21.1.8'`.
-2. Put library code in the `pixie` namespace; RMQ contracts and implementations
-   use `pixie::rmq`.
+2. Put library code in the `pixie` namespace. RMQ uses `pixie::rmq`; rooted
+   trees use `pixie::tree`, with experiments under `pixie::tree::experimental`.
 3. Use Doxygen comments for every public API. Base/contract headers must fully
    document each public facade operation and its implementation requirement.
 4. Use `constexpr` for compile-time values.
