@@ -2,7 +2,7 @@
 
 #include <pixie/tree/detail/louds_inspection.h>
 
-namespace pixie::detail::tree_unpack {
+namespace pixie::tree::detail::tree_unpack {
 // Explicit traversal stack with the same per-level child buffers. Large child
 // lists and depths retain the validated fallback, outside the hot loop.
 template <class Tree,
@@ -96,4 +96,4 @@ struct LoudsIterativeTraversal : LoudsPrefetchTraversal<Tree,
     goto children;
   }
 };
-}  // namespace pixie::detail::tree_unpack
+}  // namespace pixie::tree::detail::tree_unpack

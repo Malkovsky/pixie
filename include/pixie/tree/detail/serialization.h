@@ -3,7 +3,7 @@
 #include <pixie/detail/serialization_frame.h>
 #include <pixie/tree/detail/encoding_storage.h>
 
-namespace pixie::detail {
+namespace pixie::tree::detail {
 
 inline uint64_t tree_serialization_tag(TreeEncodingKind kind) {
   // LOUDS version 2 uses degree ones followed by a zero terminator.
@@ -78,12 +78,13 @@ void serialize_tree(BinaryWriter& writer,
                     size_t nodes,
                     std::span<const uint64_t> words,
                     const Backend& backend) {
-  const auto begin = begin_frame(writer, tree_serialization_tag(Kind));
+  const auto begin =
+      pixie::detail::begin_frame(writer, tree_serialization_tag(Kind));
   writer.write_size(nodes);
   write_tree_encoding(writer, words,
                       tree_encoding_bits(nodes, Kind == TreeEncodingKind::kBP));
   backend.serialize(writer);
-  end_frame(writer, begin);
+  pixie::detail::end_frame(writer, begin);
 }
 
 // Construct the final tree before committing the reader. The factory transfers
@@ -97,7 +98,8 @@ auto deserialize_tree(BinaryReader& reader,
                       DeserializationValidation validation,
                       Construct construct) {
   auto candidate = reader;
-  auto payload = read_frame(candidate, tree_serialization_tag(Kind));
+  auto payload =
+      pixie::detail::read_frame(candidate, tree_serialization_tag(Kind));
   const auto nodes = payload.read_size();
   const auto bits = tree_encoding_bits(nodes, Kind == TreeEncodingKind::kBP);
   auto encoding = read_tree_encoding<Storage>(payload, bits);
@@ -136,4 +138,4 @@ auto deserialize_tree(BinaryReader& reader,
   return result;
 }
 
-}  // namespace pixie::detail
+}  // namespace pixie::tree::detail

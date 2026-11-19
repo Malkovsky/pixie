@@ -8,7 +8,7 @@
  * encodings.
  */
 
-#include <pixie/serialization.h>
+#include <pixie/tree/detail/tree_path.h>
 
 #include <concepts>
 #include <cstddef>
@@ -16,13 +16,14 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
-namespace pixie {
+namespace pixie::tree {
 
-/** @brief Encoding-specific types used by TreeBase; specialize before the tree.
+/** @brief Specialize before deriving from TreeBase, with Node and NodeView.
  */
 template <class Impl>
 struct TreeTraits;
@@ -47,6 +48,9 @@ struct TreeNode {
    */
   TreeNode(std::size_t node_number, std::size_t representation_position)
       : number(node_number), pos(representation_position) {}
+
+  /** @brief Compare handles from the same tree. */
+  bool operator==(const TreeNode&) const = default;
 };
 
 /**
@@ -54,22 +58,23 @@ struct TreeNode {
  * @details Behavioral and lifetime requirements are specified by
  * TreeBase::navigate.
  */
-template <class View>
+template <class View, class Node = decltype(std::declval<const View&>().node())>
 concept TreeNavigationView =
     std::copyable<View> &&
-    requires(View view, const View current, TreeNode node, std::size_t i) {
-      { current.node() } -> std::same_as<TreeNode>;
+    requires(View view, const View current, Node node, std::size_t i) {
+      { current.node() } -> std::same_as<Node>;
+      { current.number() } -> std::same_as<std::size_t>;
       { view.reset(node) } -> std::same_as<void>;
       { current.is_root() } -> std::same_as<bool>;
       { current.is_leaf() } -> std::same_as<bool>;
       { current.degree() } -> std::same_as<std::size_t>;
-      { current.child(i) } -> std::same_as<TreeNode>;
-      { current.first_child() } -> std::same_as<TreeNode>;
-      { current.parent() } -> std::same_as<TreeNode>;
-      { current.next_sibling() } -> std::same_as<TreeNode>;
+      { current.child(i) } -> std::same_as<Node>;
+      { current.first_child() } -> std::same_as<Node>;
+      { current.parent() } -> std::same_as<Node>;
+      { current.next_sibling() } -> std::same_as<Node>;
       { current.is_last_child() } -> std::same_as<bool>;
       {
-        current.for_each_child([](TreeNode) {})
+        current.for_each_child([](Node) {})
       } -> std::same_as<void>;
     };
 
@@ -85,11 +90,10 @@ concept TreeNavigationView =
  * @see `<pixie/tree/implementations.h>` for the available succinct encodings.
  */
 template <class Impl>
-class TreeBase : public SerializationBase<Impl> {
+class TreeBase {
  public:
-  using Node = TreeNode;
-  /** @brief Tree representation borrowing encoding, owning backend metadata. */
-  using TreeView = typename TreeTraits<Impl>::TreeView;
+  /** @brief Copyable implementation-specific handle; no required fields. */
+  using Node = typename TreeTraits<Impl>::Node;
   /** @brief Independent per-node memoizing view borrowing this tree. */
   using NodeView = typename TreeTraits<Impl>::NodeView;
   /** @brief Path cursor with the default inline ancestor capacity. */
@@ -97,25 +101,6 @@ class TreeBase : public SerializationBase<Impl> {
   /** @brief Path cursor with Capacity inline ancestor handles. */
   template <std::size_t Capacity>
   using BoundedPathView = TreePathView<Impl, Capacity>;
-
-  /** @brief Read-only complete encoding words, including final-word padding.
-   * @details Borrows this tree's storage; invalidated by assignment, move or
-   * destruction of the tree (or the backing owner for TreeView). The tree's
-   * node count defines the logical bit length. No ownership is transferred.
-   * @par Implementation requirement
-   * encoding_words_impl() returns the immutable representation as a word span.
-   */
-  std::span<const std::uint64_t> encoding_words() const {
-    return impl().encoding_words_impl();
-  }
-
-  /** @brief Allocated encoding bytes; zero for a non-owning TreeView.
-   * @par Implementation requirement
-   * encoding_owned_bytes_impl() excludes object bytes and backend metadata.
-   */
-  std::size_t encoding_owned_bytes() const {
-    return impl().encoding_owned_bytes_impl();
-  }
 
   /**
    * @brief Create an independent memoizing navigation view.
@@ -128,14 +113,15 @@ class TreeBase : public SerializationBase<Impl> {
    * const tree concurrently. Concurrent access to one view requires external
    * synchronization.
    * @par Implementation requirement
-   * navigate_impl(node) returns a copyable NodeView with node(), reset(node),
-   * is_root(), is_leaf(), degree(), child(i), first_child(), parent(),
-   * next_sibling(), is_last_child() and for_each_child(visitor). Queries follow
-   * the matching TreeBase semantics. Only reset changes the current node and
-   * invalidates memoized results; copies have independent memoization.
+   * navigate_impl(node) returns a copyable NodeView with node(), number(),
+   * reset(node), is_root(), is_leaf(), degree(), child(i), first_child(),
+   * parent(), next_sibling(), is_last_child() and for_each_child(visitor).
+   * Queries follow the matching TreeBase semantics. Only reset changes the
+   * current node and invalidates memoized results; copies have independent
+   * memoization.
    */
-  auto navigate(Node node) const& {
-    static_assert(TreeNavigationView<typename Impl::NodeView>);
+  NodeView navigate(Node node) const& {
+    static_assert(TreeNavigationView<NodeView, Node>);
     return impl().navigate_impl(node);
   }
 
@@ -160,8 +146,15 @@ class TreeBase : public SerializationBase<Impl> {
    */
   const Impl& tree_base() const { return impl(); }
   /** @brief Membership for a valid handle of this representation. Does not
-   * authenticate arbitrary forged handles or provenance. */
-  bool contains(Node node) const { return node.number < size(); }
+   * authenticate arbitrary forged handles or provenance. Implementations with
+   * a custom handle provide contains_impl(node) to check its coordinates. */
+  bool contains(Node node) const {
+    if constexpr (std::same_as<Node, TreeNode>) {
+      return node.number < size();
+    } else {
+      return impl().contains_impl(node);
+    }
+  }
   /** @brief All children of a valid node are represented in a complete tree. */
   bool children_complete(Node) const { return true; }
   /** @brief Parent of a valid node; complete root returns itself. */
@@ -239,6 +232,26 @@ class TreeBase : public SerializationBase<Impl> {
    */
   bool empty() const { return size() == 0; }
 
+  /** @brief Return the stable zero-based number of a valid handle from this
+   * tree. number_impl(node) is a bijection onto [0, size()). The order is
+   * specific to the implementation; numbers need not agree across
+   * representations. The equivalent view query is navigate(node).number().
+   */
+  std::size_t number(const Node& node) const {
+    return impl().number_impl(node);
+  }
+
+  /** @brief Look up a node by its implementation-specific stable number.
+   * @throws std::out_of_range if i is outside [0, size()).
+   * find_by_number_impl(i) receives an in-range number and inverts number().
+   */
+  Node find_by_number(std::size_t i) const {
+    if (i >= size()) {
+      throw std::out_of_range("tree node number out of range");
+    }
+    return impl().find_by_number_impl(i);
+  }
+
   /**
    * @brief Check whether @p node has no children.
    * @param node Valid node handle from this tree.
@@ -309,6 +322,34 @@ class TreeBase : public SerializationBase<Impl> {
    */
   Node parent(const Node& node) const { return impl().parent_impl(node); }
 
+  /** @brief Return the unique path from u to v, including both endpoints.
+   * Equal endpoints produce a singleton. Both must be valid handles from
+   * this tree. The vector owns its handles, not the tree or its backing data.
+   */
+  std::vector<Node> tree_path(Node u, Node v) const {
+    std::vector<Node> out, scratch;
+    tree_path(u, v, out, scratch);
+    return out;
+  }
+
+  /** @brief Replace out with the inclusive u-to-v path, reusing both vectors.
+   * Requires valid handles from this tree. Scratch is empty on return; both
+   * vectors retain capacity. Throws std::invalid_argument if they alias.
+   * Takes one parent step per path edge, never climbing above the lowest
+   * common ancestor. Scratch holds only the v side, excluding that ancestor.
+   * @par Implementation requirement
+   * path_key_impl(node) returns a unique ordered key that strictly decreases
+   * on every non-root parent step. Public number() need not have this order.
+   */
+  void tree_path(Node u,
+                 Node v,
+                 std::vector<Node>& out,
+                 std::vector<Node>& scratch) const {
+    detail::collect_tree_path(
+        u, v, out, scratch, [this](Node n) { return impl().path_key_impl(n); },
+        [this](Node n) { return parent(n); });
+  }
+
   /**
    * @brief Check whether @p node is its parent's last child.
    * @param node Valid non-root node handle from this tree.
@@ -332,7 +373,7 @@ class TreeBase : public SerializationBase<Impl> {
   const Impl& impl() const { return static_cast<const Impl&>(*this); }
 };
 
-}  // namespace pixie
+}  // namespace pixie::tree
 
 // Complete the public nested PathView aliases after defining their contract.
 #include <pixie/tree/path_view.h>

@@ -11,7 +11,7 @@
 #include <span>
 #include <type_traits>
 
-namespace pixie::detail::tree_unpack {
+namespace pixie::tree::detail::tree_unpack {
 // DFS visits each level in LOUDS order. One monotone word cursor per level
 // replaces all but the first select at that level. No per-tree directory.
 struct LoudsLevel {
@@ -133,4 +133,4 @@ void louds(const Tree& tree,
            Visitor& visit) {
   LoudsTraversal<Tree, Visitor>{tree, words, nbits, visit}.walk(tree.root(), 0);
 }
-}  // namespace pixie::detail::tree_unpack
+}  // namespace pixie::tree::detail::tree_unpack

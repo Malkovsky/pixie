@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <span>
 
-namespace pixie::detail::tree_unpack {
+namespace pixie::tree::detail::tree_unpack {
 template <size_t Size, class Tree, class Visitor>
 void bp_deep_word(const Tree& tree,
                   std::span<const uint64_t> words,
@@ -106,4 +106,4 @@ void bp_byte(const Tree& tree,
   }
 }
 
-}  // namespace pixie::detail::tree_unpack
+}  // namespace pixie::tree::detail::tree_unpack

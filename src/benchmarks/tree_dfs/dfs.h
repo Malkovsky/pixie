@@ -6,7 +6,7 @@ namespace pixie::benchmarks::tree_dfs {
 // All traversal state is local; visitors are borrowed and never copied.
 template <class Tree, class Visitor>
 void cached(const Tree& tree, Visitor& visit) {
-  TreePathView<Tree> view(tree);
+  tree::TreePathView<Tree> view(tree);
   bool descending = true;
   while (true) {
     visit(view.node());

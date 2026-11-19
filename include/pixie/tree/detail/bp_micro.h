@@ -5,7 +5,7 @@
 #include <pixie/tree/detail/bp_micro_tables.h>
 #include <pixie/tree/detail/bp_micro_vector.h>
 #include <pixie/tree/detail/micro_traversal.h>
-namespace pixie::detail::bp_micro {
+namespace pixie::tree::detail::bp_micro {
 template <size_t Bits>
 class BpMicroSubtree {
   static_assert(Bits >= 128 && Bits % 128 == 0 && Bits <= 32768);
@@ -28,7 +28,7 @@ class BpMicroSubtree {
            2 * (Bits / 2) * sizeof(uint16_t);
   }
   bool load(std::span<const uint64_t> words, size_t nbits, TreeNode root) {
-    using namespace pixie::detail::tree_unpack;
+    using namespace pixie::tree::detail::tree_unpack;
     std::array<uint64_t, Bits / 64 + 1> local{};
     const size_t available = std::min<size_t>(Bits, nbits - root.pos);
     for (size_t offset = 0; offset < available; offset += 64) {
@@ -126,7 +126,7 @@ class BpMicroSubtree {
   size_t size() const { return nodes_; }
   template <class Visit, class Inspect>
   void walk(Visit& visit, Inspect& inspect) const {
-    using pixie::detail::tree_unpack::emit;
+    using pixie::tree::detail::tree_unpack::emit;
     for (size_t i = 0; i < count_; ++i) {
       const auto& record = records_[i];
       if (record.program & 256) {
@@ -152,4 +152,4 @@ class BpMicroSubtree {
 template <size_t Bits, class Tree, class Visit, class Inspect>
 using BpMicroTraversal =
     tree_unpack::MicroTraversal<BpMicroSubtree<Bits>, Tree, Visit, Inspect>;
-}  // namespace pixie::detail::bp_micro
+}  // namespace pixie::tree::detail::bp_micro

@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace pixie {
+namespace pixie::tree {
 template <class Tree>
 class TreeTraversalContext;
 
@@ -151,4 +151,4 @@ class DecodedTree {
     }
   }
 };
-}  // namespace pixie
+}  // namespace pixie::tree

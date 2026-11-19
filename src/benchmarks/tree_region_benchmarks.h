@@ -7,7 +7,7 @@
 #include <vector>
 
 namespace pixie::benchmarks {
-using LoudsRegionTree = LoudsTree<RankSelectSupportCompressed<>>;
+using LoudsRegionTree = tree::LoudsTree<RankSelectSupportCompressed<>>;
 
 // Bounded region materialization versus replay of an already retained result.
 static void LoudsScan(benchmark::State& state) {
@@ -22,7 +22,7 @@ static void LoudsScan(benchmark::State& state) {
     ++pos;
   }
   LoudsRegionTree tree(words, n);
-  pixie::TreeTraversalContext context(tree);
+  pixie::tree::TreeTraversalContext context(tree);
   for (auto _ : state) {
     auto result = context.scan(tree.root(), state.range(0));
     benchmark::DoNotOptimize(result);
@@ -42,7 +42,7 @@ static void LoudsDecodedReplay(benchmark::State& state) {
     ++pos;
   }
   LoudsRegionTree tree(words, n);
-  pixie::TreeTraversalContext context(tree);
+  pixie::tree::TreeTraversalContext context(tree);
   auto result = context.fetch(tree.root(), 1024);
   for (auto _ : state) {
     result->events([](auto node, bool entering) {

@@ -336,6 +336,9 @@ if (PIXIE_TESTS)
     endif ()
 
     add_executable(tree_tests
+            src/tests/forest256_tests.cpp
+            src/tests/ordinal_forest256_tests.cpp
+            src/tests/tree_part_tests.cpp
             src/tests/tree_tests.cpp)
     target_include_directories(tree_tests
             PUBLIC include)
@@ -583,12 +586,16 @@ if (PIXIE_BENCHMARKS)
     target_link_libraries(tree_experimental_benchmarks
             benchmark benchmark_main ${PIXIE_DIAGNOSTICS_LIBS})
 
+    add_library(tree_shape_workloads STATIC src/benchmarks/tree_shape_benchmarks.cpp)
+    pixie_enable_project_warnings(tree_shape_workloads)
+    target_include_directories(tree_shape_workloads PRIVATE include)
+    target_link_libraries(tree_shape_workloads PRIVATE benchmark ${PIXIE_DIAGNOSTICS_LIBS})
     foreach (workload IN ITEMS dfs path)
         add_executable(tree_${workload}_benchmarks
                 src/benchmarks/tree_${workload}_benchmarks.cpp)
         target_include_directories(tree_${workload}_benchmarks PRIVATE include)
         target_link_libraries(tree_${workload}_benchmarks
-                benchmark benchmark_main ${PIXIE_DIAGNOSTICS_LIBS})
+                tree_shape_workloads benchmark benchmark_main ${PIXIE_DIAGNOSTICS_LIBS})
     endforeach ()
 
     add_executable(alignment_comparison_benchmarks

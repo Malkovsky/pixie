@@ -1,0 +1,17 @@
+body {font:16px system-ui;color:#203146;max-width:1050px;margin:3vh auto;padding:0 1rem}
+#picker {position:relative;width:fit-content}
+.chart-toolbar {display:flex;align-items:center;gap:.5rem}
+summary,.chart-toolbar > button {cursor:pointer;border:1px solid #a8b5c4;border-radius:2em;padding:.45em 1em;font:inherit;font-weight:600;background:white;color:inherit;margin:0}
+.chart-toolbar > button:disabled {opacity:.55;cursor:default}
+#chart svg {cursor:crosshair;touch-action:none;user-select:none}
+#chart.dragging svg {cursor:grabbing}
+#panel {position:absolute;z-index:2;background:white;border:1px solid #c8d2df;border-radius:.75rem;padding:1rem;box-shadow:0 8px 28px #24344824;width:min(28rem,78vw);max-height:58vh;overflow:auto}
+#search {padding:.5em;width:100%;box-sizing:border-box}
+#controls {border:0;display:grid;gap:1rem;grid-template-columns:repeat(2,1fr);padding:.6rem 0}
+#controls legend {position:absolute;clip-path:inset(100%)}
+[hidden] {display:none!important}
+label {display:block;cursor:pointer}
+h2 {font-size:1rem;margin:.2rem 0}
+button {margin:.4rem .3rem .4rem 0}
+#chart svg {max-width:100%;height:auto}
+.point-tooltip {position:fixed;z-index:3;pointer-events:none;white-space:pre-line;background:#203146;color:white;padding:.45rem .65rem;border-radius:.35rem;font: .875rem/1.4 system-ui}

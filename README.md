@@ -14,8 +14,7 @@
 
 - **Rank/select support**: fundamental primitive to efficiently map bits and their positions in a bit vector with $\approx 3.5\%$ overhead for rank and select for both $0$ and $1$. [Rank-select benchmarks](https://malkovsky.github.io/pixie/benchmarks_rank_select.html)
 - **Range min-max tree**: fundamental primitive for excess queries, i.e. $E[k]=2\sum_{i=0}^kB[i]-k$, the main query is to find the first position after $j$ where $E[i]=t$ for some target value $t$, it is in general on par with [SDSL](https://github.com/simongog/sdsl-lite/blob/master/include/sdsl/bp_support_sada.hpp)'s implementation 
-- **Succinct trees**: static variants of $2$-bit per entry trees, i.e. LOUDS ($2.07$ bits per node), DFUDS, BP (both $2.36$ per node), a cache budget of 512 KiB allows to outperform pointer-based impelmentations.
-[Tree benchmarks](https://malkovsky.github.io/pixie/benchmarks_trees.html) 
+- **Rooted ordered trees**: `pixie::tree` provides BP, DFUDS, LOUDS and ForestCover with a common navigation and endpoint-path API. See the [tree guide](include/pixie/tree/README.md) and [traversal benchmarks](https://malkovsky.github.io/pixie/benchmarks_trees.html).
 - **Wavelet tree**, i.e. static structure that supposts rank/select on arbitrary finite alphabets, supports building a Huffman archieve with $\mathcal{O}(\ell\log \sigma)$ extraction of arbitrary segment with length $\ell$ over an alphabet of size $\sigma$.
 - Succinct **cartesian tree** and a state of the art solution to static **RMQ** (array is immutable, queries are not known in advance).
 - Several classes to work with **permutations** and **permutable sequences** supporting fast cyclic shift operations, as an example `pixie::SortedPermutableSequence` provides the same functionality as `std::multiset` with almost the same performance while having much less overhead due to flat structure and supporting $\mathcal{O}(\log n)$ cyclic shifts. 

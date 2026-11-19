@@ -6,7 +6,7 @@
 #include <optional>
 #include <utility>
 
-namespace pixie::detail {
+namespace pixie::tree::detail {
 
 /**
  * @brief Non-owning navigation view with lazy per-node query caches.
@@ -19,6 +19,8 @@ class BpNodeView {
  public:
   /** @brief Return the current valid node handle. */
   TreeNode node() const { return node_; }
+  /** @brief Return the current node's zero-based preorder number. */
+  size_t number() const { return node_.number; }
   /** @brief Move to a valid node of the same tree and invalidate all caches.
    */
   void reset(TreeNode node) { *this = BpNodeView(*tree_, node); }
@@ -101,4 +103,4 @@ class BpNodeView {
   mutable std::optional<bool> last_;
 };
 
-}  // namespace pixie::detail
+}  // namespace pixie::tree::detail

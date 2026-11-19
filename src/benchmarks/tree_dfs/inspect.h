@@ -3,9 +3,9 @@
 #include <pixie/tree/detail/unpack_cache.h>
 
 namespace pixie::benchmarks {
-using pixie::detail::tree_unpack::BoundedSubtreeCache;
-using pixie::detail::tree_unpack::emit;
-using pixie::detail::tree_unpack::subtree;
+using pixie::tree::detail::tree_unpack::BoundedSubtreeCache;
+using pixie::tree::detail::tree_unpack::emit;
+using pixie::tree::detail::tree_unpack::subtree;
 
 // Decode a fitting subtree once, then share its child links between inspection
 // and descent. One scratch cache belongs to the entire traversal, not each
@@ -28,7 +28,7 @@ class InspectTraversal {
   // chunks rather than adding a counter operation to every visitor callback.
   size_t node_count = 0, child_count = 0;
 
-  void walk(TreeNode node, size_t depth = 0) {
+  void walk(tree::TreeNode node, size_t depth = 0) {
     if (tree_.is_leaf(node)) {
       ++node_count;
       emit(visit_, node, true);
@@ -42,11 +42,11 @@ class InspectTraversal {
       return;
     }
     if (depth == 128) {
-      auto events = [&](TreeNode current, bool entering) {
+      auto events = [&](tree::TreeNode current, bool entering) {
         emit(visit_, current, entering);
         if (entering) {
           ++node_count;
-          tree_.for_each_child(current, [&](TreeNode child) {
+          tree_.for_each_child(current, [&](tree::TreeNode child) {
             inspect_(child);
             ++child_count;
           });
@@ -61,7 +61,7 @@ class InspectTraversal {
     // nodes fall back to a second enumeration without unbounded stack storage.
     std::array<size_t, 32> numbers, positions;
     size_t count = 0;
-    tree_.for_each_child(node, [&](TreeNode child) {
+    tree_.for_each_child(node, [&](tree::TreeNode child) {
       inspect_(child);
       if (count < numbers.size()) {
         numbers[count] = child.number;
@@ -72,11 +72,11 @@ class InspectTraversal {
     child_count += count;
     if (count <= numbers.size()) {
       for (size_t i = 0; i < count; ++i) {
-        walk(TreeNode(numbers[i], positions[i]), depth + 1);
+        walk(tree::TreeNode(numbers[i], positions[i]), depth + 1);
       }
     } else {
-      tree_.for_each_child(node,
-                           [&](TreeNode child) { walk(child, depth + 1); });
+      tree_.for_each_child(
+          node, [&](tree::TreeNode child) { walk(child, depth + 1); });
     }
     emit(visit_, node, false);
   }

@@ -16,7 +16,7 @@ inline size_t TreeCacheBudget() {
   static const size_t budget = [] {
     const char* raw = std::getenv("PIXIE_TREE_CACHE_BYTES");
     if (!raw) {
-      return kDefaultTraversalBytes;
+      return tree::kDefaultTraversalBytes;
     }
     const std::string_view text(raw);
     size_t bytes = 0;
@@ -35,9 +35,9 @@ template <TreeWorkload Workload, class Tree>
 void RunTreeComparison(benchmark::State& state, const Tree& tree) {
   const size_t budget = TreeCacheBudget();
   const size_t context_charge =
-      TreeTraversalContext<Tree>(tree, budget).budget_usage_bytes();
-  RootNavigationIndex<Tree> index(tree, budget - context_charge);
-  TreeTraversalContext<Tree> cache(tree, budget, &index);
+      tree::TreeTraversalContext<Tree>(tree, budget).budget_usage_bytes();
+  tree::RootNavigationIndex<Tree> index(tree, budget - context_charge);
+  tree::TreeTraversalContext<Tree> cache(tree, budget, &index);
   if (cache.budget_usage_bytes() + index.budget_usage_bytes() >
       TreeCacheBudget()) {
     state.SkipWithError("Combined cache and scratch budget exceeded");
