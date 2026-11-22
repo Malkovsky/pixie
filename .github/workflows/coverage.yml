@@ -16,7 +16,7 @@ jobs:
         include:
           - variant: native
             build_directory: coverage
-          - variant: rank-select-scalar
+          - variant: scalar
             build_directory: coverage-scalar
 
     steps:

@@ -191,6 +191,19 @@ TEST(Forest256Padded, AllRawKernelsPreserveBfsRowsAndExactExtent) {
   }
 }
 
+TEST(Forest256Padded, RejectsInvalidBfsDegrees) {
+  auto reject = [](size_t roots, const std::vector<uint16_t>& degrees) {
+    EXPECT_THROW(encode_louds_forest256(roots, degrees), std::invalid_argument);
+    EXPECT_THROW(encode_twin_forest256(roots, degrees), std::invalid_argument);
+  };
+  reject(0, {});
+  reject(1, std::vector<uint16_t>(257));
+  reject(0, {0});
+  reject(2, {0});
+  reject(1, {0, 1});  // Correct total, but no reachable second node.
+  reject(1, {2, 0});  // More children than remaining nodes.
+}
+
 TEST(Forest256CacheTest, BudgetEvictionLifetimeAndRebinding) {
   constexpr auto c = Codec::louds;
   auto a = pack(c, 0, 1, {3, 0, 0, 0});

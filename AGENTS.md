@@ -365,10 +365,9 @@ The script configures and builds the `coverage` preset, deletes stale
 To regenerate reports from existing profiles without rerunning tests, use
 `bash scripts/collect_gcov.sh build/coverage`.
 
-CI also runs the script with `PIXIE_COVERAGE_VARIANT=rank-select-scalar`.
-This builds only rank/select for baseline `x86-64` in `build/coverage-scalar`
-and uploads its report under the same Codecov flag. This covers scalar paths
-even on AVX2 runners without rerunning the entire suite in that configuration.
+CI also runs the script with `PIXIE_COVERAGE_VARIANT=scalar`. This runs
+rank/select tests and the Forest256 and SIMD microtree suites for baseline
+`x86-64` in `build/coverage-scalar`. Both jobs upload under the same Codecov flag.
 The native job uses only the runner's available instructions; CI does not
 require AVX-512 hardware.
 

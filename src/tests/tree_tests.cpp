@@ -3111,12 +3111,14 @@ namespace {
 using SimdTestEvent = std::tuple<size_t, size_t, int>;
 
 template <class Tree>
-std::vector<SimdTestEvent> CollectExpectedSimdEvents(const Tree& tree) {
+std::vector<SimdTestEvent> CollectExpectedSimdEvents(
+    const Tree& tree,
+    pixie::tree::TreeNode root = {0, 0}) {
   std::vector<SimdTestEvent> expected;
   if (tree.empty()) {
     return expected;
   }
-  auto current = tree.root();
+  auto current = root;
   bool entering = true;
   while (true) {
     expected.emplace_back(current.number, current.pos, entering ? 1 : 0);
@@ -3130,7 +3132,7 @@ std::vector<SimdTestEvent> CollectExpectedSimdEvents(const Tree& tree) {
       }
     }
     entering = false;
-    if (tree.is_root(current)) {
+    if (current.number == root.number) {
       break;
     }
     if (tree.is_last_child(current)) {
@@ -3322,6 +3324,23 @@ TEST(TreeSimdMicroPrimitivesTest, LowLevelKernelsMatchScalarReference) {
   }
 }
 
+TEST(TreeSimdMicroPrimitivesTest, LoadsZeroExtendAcrossSpanEnd) {
+  using namespace pixie::tree::experimental::microtree_simd;
+  const uint64_t words[]{~uint64_t{}, 3};
+  for (size_t pos : {63, 64, 127, 128, 129}) {
+    uint64_t want[2]{};
+    for (size_t i = 0; pos + i < 128; ++i) {
+      want[i / 64] |= ((words[(pos + i) / 64] >> ((pos + i) % 64)) & 1)
+                      << (i % 64);
+    }
+    uint64_t got[]{~uint64_t{}, ~uint64_t{}};
+    load_bits_128(words, pos, got);
+    EXPECT_EQ(load_bits_64(words, pos), want[0]);
+    EXPECT_EQ(got[0], want[0]);
+    EXPECT_EQ(got[1], want[1]);
+  }
+}
+
 TEST(TreeSimdMicroTraversalTest, ExhaustiveAndBoundaryEquivalence) {
   CheckBpSimdEquivalence<512>({}, 0);
   CheckDfudsSimdEquivalence<512>({}, 0);
@@ -3389,6 +3408,45 @@ TEST(TreeSimdMicroTraversalTest, ExhaustiveAndBoundaryEquivalence) {
       }
     }
   }
+}
+
+TEST(TreeSimdMicroTraversalTest, NonrootMixedFanoutAcrossChildBuffer) {
+  // An 80-child internal node with non-leaf children forces the overflow walk
+  // rather than the all-leaf star shortcut. Its sibling bounds the subtree.
+  std::vector<std::vector<size_t>> adj{{0, 1, 2}, {0}, {0}};
+  for (size_t j = 0; j < 80; ++j) {
+    const size_t child = adj.size();
+    adj[1].push_back(child);
+    adj.push_back({1, child + 1});
+    adj.push_back({child});
+  }
+  adj = dfs_order(adj.size(), adj);
+  auto check = [&]<template <size_t, class, class, class> class Walk>(
+                   const auto& tree, const auto& words) {
+    for (auto root :
+         {tree.first_child(tree.root()), tree.child(tree.root(), 1)}) {
+      const auto expected = CollectExpectedSimdEvents(tree, root);
+      std::vector<SimdTestEvent> events;
+      auto visit = [&](auto n, bool entering) {
+        events.emplace_back(n.number, n.pos, entering);
+      };
+      auto inspect = [&](auto n) { events.emplace_back(n.number, n.pos, 2); };
+      Walk<128, std::decay_t<decltype(tree)>, decltype(visit),
+           decltype(inspect)>
+          walk(tree, words, visit, inspect, 128);
+      walk.walk(root);
+      EXPECT_EQ(events, expected);
+      EXPECT_EQ(walk.nodes, tree.is_leaf(root) ? 1u : 161u);
+      EXPECT_EQ(walk.children + 1, walk.nodes);
+    }
+  };
+  using namespace pixie::tree;
+  auto bp = EncodeReference<detail::TreeEncodingKind::kBP>(adj.size(), adj);
+  check.template operator()<experimental::BpSimdMicroTraversal>(
+      BPTree<pixie::RmMBTree<>>(bp, adj.size()), bp);
+  auto df = EncodeReference<detail::TreeEncodingKind::kDFUDS>(adj.size(), adj);
+  check.template operator()<experimental::DfudsSimdMicroTraversal>(
+      DFUDSTree<pixie::RmMBTree<>>(df, adj.size()), df);
 }
 
 namespace {
@@ -3803,6 +3861,30 @@ TEST(DecomposedTreePrimitiveTest, FullBottomGroupsAndWideRoutingBases) {
                std::length_error);
 }
 
+TYPED_TEST(DecomposedTreeTest, RejectsInconsistentSourceSize) {
+  struct Source : DecompositionSource {
+    using DecompositionSource::DecompositionSource;
+    size_t reported = 1;
+    size_t size() const { return reported; }
+  } source({0, 0});
+  EXPECT_THROW((TypeParam{source}), std::invalid_argument);
+  source.reported = 3;
+  EXPECT_THROW((TypeParam{source}), std::invalid_argument);
+}
+
+TYPED_TEST(DecomposedTreeTest, MissingSiblingLeavesViewUsable) {
+  const TypeParam tree(DecompositionSource({0, 0}));
+  auto view = tree.navigate(tree.root());
+  EXPECT_THROW(view.next_sibling(), std::out_of_range);
+  view.reset(view.first_child());
+  EXPECT_THROW(view.next_sibling(), std::out_of_range);
+  EXPECT_EQ(view.parent(), tree.root());
+  const auto leaf = view.node();
+  EXPECT_THROW(view.reset({tree.component_count(), 0}), std::out_of_range);
+  EXPECT_THROW(view.reset({leaf.component, 255}), std::out_of_range);
+  EXPECT_EQ(view.node(), leaf);
+}
+
 TYPED_TEST(DecomposedTreeTest, RejectsUnrepresentableTopologyBeforeTraversal) {
   struct OversizedSource {
     size_t size() const { return std::numeric_limits<size_t>::max(); }
@@ -3812,6 +3894,15 @@ TYPED_TEST(DecomposedTreeTest, RejectsUnrepresentableTopologyBeforeTraversal) {
     size_t next_sibling(size_t) const { return 0; }
   };
   EXPECT_THROW((TypeParam{OversizedSource{}}), std::length_error);
+}
+
+TEST(BfsCsrTreeTest, RejectsOverflowBeforeTraversal) {
+  struct Source : DecompositionSource {
+    using DecompositionSource::DecompositionSource;
+    size_t size() const { return std::numeric_limits<size_t>::max(); }
+    size_t root() const { throw std::runtime_error("unexpected traversal"); }
+  } source(std::vector<size_t>{});
+  EXPECT_THROW((pixie::references::BfsCsrTree{source}), std::length_error);
 }
 
 }  // namespace
