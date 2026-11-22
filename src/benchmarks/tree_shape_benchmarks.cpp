@@ -1,6 +1,7 @@
 #include <pixie/rmm/btree.h>
 #include <pixie/tree/implementations.h>
 #include <pixie/utils.h>
+#include <references/bfs_csr_tree.h>
 #include <references/pointer_tree.h>
 
 #include <any>
@@ -31,6 +32,67 @@ struct ForestWalk {
     context.inspect_path(visit, child, choose);
   }
 };
+
+template <class Tree>
+struct ReferenceWalk {
+  using Node = decltype(std::declval<const Tree&>().root());
+  const Tree& tree;
+  struct Cursor {
+    const Tree& tree;
+    Node current;
+    Node node() const { return current; }
+    void reset(Node n) { current = n; }
+    bool is_leaf() const { return tree.is_leaf(current); }
+    bool is_root() const { return tree.is_root(current); }
+    bool is_last_child() const { return tree.is_last_child(current); }
+    Node parent() const { return tree.parent(current); }
+    Node first_child() const { return tree.first_child(current); }
+    Node next_sibling() const { return tree.next_sibling(current); }
+    size_t degree() const { return tree.degree(current); }
+    void for_each_child(auto& visit) const {
+      tree.for_each_child(current, visit);
+    }
+  };
+  Node root() const { return tree.root(); }
+  Cursor navigate(Node n) const { return {tree, n}; }
+  size_t size() const { return tree.size(); }
+};
+
+template <class Tree>
+Tree BuildMatchedTree(const CoverSource& source);
+
+// Reuse only the last immutable reference across calibration and repetitions.
+// In particular, never retain two large reference layouts simultaneously.
+std::any last_reference;
+
+template <class Tree>
+void MatchedReference(benchmark::State& state, CoverShape shape, bool dfs) {
+  struct Fixture {
+    CoverShape shape;
+    uint64_t seed;
+    Tree tree;
+  };
+  const size_t n = state.range(0);
+  const uint64_t seed = state.range(1);
+  auto* stored = std::any_cast<std::shared_ptr<Fixture>>(&last_reference);
+  if (!stored || (*stored)->tree.size() != n || (*stored)->shape != shape ||
+      (*stored)->seed != seed) {
+    last_reference.reset();
+    stored = &last_reference.emplace<std::shared_ptr<Fixture>>(
+        std::make_shared<Fixture>(Fixture{
+            shape, seed, BuildMatchedTree<Tree>(CoverSource(n, shape, seed))}));
+  }
+  const auto& tree = (*stored)->tree;
+  state.counters["tree_bytes"] = tree.memory_usage_bytes();
+  state.counters["nodes"] = n;
+  state.counters["budget_limit_bytes"] = 0;
+  state.counters["budget_usage_bytes"] = 0;
+  ReferenceWalk<Tree> walk{tree};
+  if (dfs) {
+    return CoverDfs<true, false, false>(state, walk);
+  }
+  CoverInspectedRootPath<false, true>(state, walk, 4096);
+}
 
 template <class Tree>
 void Matched(benchmark::State& state, CoverShape shape, bool dfs) {
@@ -100,11 +162,22 @@ void RegisterMatched(const char* family, bool dfs) {
   for (auto [shape, label] : kShapes) {
     const auto name = std::string("tree_shape/") + family + "/" +
                       (dfs ? "inspected_dfs/" : "inspected_root_path/") + label;
+    constexpr bool reference = !requires(const Tree& t) {
+      t.navigate(t.root());
+    } && !std::is_same_v<Tree, Forest>;
     auto* row = benchmark::RegisterBenchmark(
-        name.c_str(),
-        [=](benchmark::State& state) { Matched<Tree>(state, shape, dfs); });
+        name.c_str(), [=](benchmark::State& state) {
+          if constexpr (reference) {
+            MatchedReference<Tree>(state, shape, dfs);
+          } else {
+            Matched<Tree>(state, shape, dfs);
+          }
+        });
     row->ArgNames({"N", "seed", "budget"});
     for (int budget : {0, 32768, 524288}) {
+      if (reference && budget) {
+        continue;
+      }
       for (auto n = kMinTreeNodes; n <= kMaxTreeNodes;
            n *= kTreeSizeMultiplier) {
         row->Args({n, 42, budget});
@@ -146,6 +219,27 @@ class PrefixParents {
 };
 
 template <class Tree>
+Tree BuildMatchedTree(const CoverSource& source) {
+  if constexpr (std::is_constructible_v<Tree, const CoverSource&>) {
+    return Tree(source);
+  } else {
+    std::vector<std::vector<size_t>> adjacency(source.size());
+    for (uint32_t p = 0; p < source.size(); ++p) {
+      adjacency[p].resize(1 + source.degree(p));
+    }
+    for (uint32_t p = 0; p < source.size(); ++p) {
+      auto c = source.first_child(p);
+      for (size_t i = 0; i < source.degree(p); ++i) {
+        adjacency[p][1 + i] = c;
+        adjacency[c][0] = p;
+        c = source.next_sibling(c);
+      }
+    }
+    return Tree(adjacency);
+  }
+}
+
+template <class Tree>
 struct PathFixture {
   using Node = decltype(std::declval<const Tree&>().root());
   CoverShape shape;
@@ -156,26 +250,6 @@ struct PathFixture {
   std::vector<std::vector<Node>> expected;
   size_t max_depth = 0;
 
-  static Tree Build(const CoverSource& source) {
-    if constexpr (std::is_constructible_v<Tree, const CoverSource&>) {
-      return Tree(source);
-    } else {
-      std::vector<std::vector<size_t>> adjacency(source.size());
-      for (uint32_t p = 0; p < source.size(); ++p) {
-        adjacency[p].resize(1 + source.degree(p));
-      }
-      for (uint32_t p = 0; p < source.size(); ++p) {
-        auto c = source.first_child(p);
-        for (size_t i = 0; i < source.degree(p); ++i) {
-          adjacency[p][1 + i] = c;
-          adjacency[c][0] = p;
-          c = source.next_sibling(c);
-        }
-      }
-      return Tree(adjacency);
-    }
-  }
-
   PathFixture(const CoverSource& source,
               CoverShape shape,
               uint64_t seed,
@@ -183,7 +257,7 @@ struct PathFixture {
       : shape(shape),
         seed(seed),
         siblings(siblings),
-        tree(Build(source)),
+        tree(BuildMatchedTree<Tree>(source)),
         expected(256) {
     const auto n = source.size();
     std::vector<uint32_t> depth(n), parent(n), sibling_starts;
@@ -366,8 +440,9 @@ void RegisterPaths(const char* family) {
           row->Args({1 << power, 42});
         }
       }
-      if constexpr (!std::is_same_v<Tree, AdjListTree> &&
-                    !std::is_same_v<Tree, references::PointerTree>) {
+      if constexpr (std::is_same_v<Tree, Forest> ||
+                    std::is_same_v<typename PathFixture<Tree>::Node,
+                                   tree::TreeNode>) {
         if (!siblings) {
           auto* indexed =
               benchmark::RegisterBenchmark(name.c_str(), [=](auto& state) {
@@ -386,6 +461,9 @@ void RegisterPaths(const char* family) {
 }
 
 void RegisterMatchedFamilies(bool dfs) {
+  RegisterMatched<AdjListTree>("adj_list", dfs);
+  RegisterMatched<references::PointerTree>("pointer", dfs);
+  RegisterMatched<references::BfsCsrTree>("bfs_csr", dfs);
   RegisterMatched<tree::BPTree<RmMBTree<>>>("bp", dfs);
   RegisterMatched<tree::DFUDSTree<RmMBTree<>>>("dfuds", dfs);
   RegisterMatched<tree::LoudsTree<>>("louds", dfs);
@@ -405,5 +483,6 @@ void RegisterShapePaths() {
   RegisterPaths<Forest>("forest_cover");
   RegisterPaths<AdjListTree>("adj_list");
   RegisterPaths<references::PointerTree>("pointer");
+  RegisterPaths<references::BfsCsrTree>("bfs_csr");
 }
 }  // namespace pixie::benchmarks

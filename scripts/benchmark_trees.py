@@ -29,11 +29,15 @@ def digest(path):
 
 
 def implementations(scope, mode):
+    packed = ("louds", "bfs_csr", False)
+    if scope == "bfs_csr":
+        return [packed]
     result = [] if scope == "succinct" else [
         ("bp", "adjlist_preorder", False),
         ("bp", "pointer_preorder", False),
         ("louds", "adjlist_bfs", False),
         ("louds", "pointer_bfs", False),
+        packed,
     ]
     if scope in ("all", "succinct"):
         modes = ("best", "direct") if mode == "both" else (mode,)
@@ -112,7 +116,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", type=Path, default=Path("build/benchmarks"))
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--scope", choices=("all", "references", "succinct"), default="all")
+    parser.add_argument("--scope", choices=("all", "references", "succinct", "bfs_csr"), default="all")
     parser.add_argument("--exponents", type=int, nargs="+",
                         default=list(range(10, 27, 2)))
     parser.add_argument("--nodes", type=int, nargs="+",
@@ -255,7 +259,8 @@ def main():
                 "Succinct variants use compressed rank/select and RmMBTree for "
                 "BP/DFUDS. Best mode combines decoding and the bounded root "
                 "index; direct mode measures navigation without either. "
-                "References include preorder and BFS layouts. Both modes can be collected with `--succinct-mode both`. No binary RmM "
+                "Vector and pointer references include preorder and BFS layouts; packed CSR uses native BFS order. "
+                "Both succinct modes can be collected with `--succinct-mode both`. No binary RmM "
                 "or baseline LOUDS backend comparisons are included.\n\n"
                 "Run the collector again with identical arguments plus "
                 "`--resume` to reuse completed groups. It rejects changed "

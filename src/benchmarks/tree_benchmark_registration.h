@@ -39,5 +39,7 @@ void RegisterTreeWorkload(const char* family) {
       &RunDirectTreeBenchmark<Pointer, TreeLayout::kBp, Workload>);
   add("pointer_bfs",
       &RunDirectTreeBenchmark<Pointer, TreeLayout::kLouds, Workload>);
+  add("bfs_csr", &RunDirectTreeBenchmark<references::BfsCsrTree,
+                                         TreeLayout::kLouds, Workload>);
 }
 }  // namespace pixie::benchmarks

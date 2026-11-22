@@ -17,6 +17,7 @@
 #include <pixie/tree/path_view.h>
 #include <pixie/tree/traversal_context.h>
 #include <pixie/utils.h>
+#include <references/bfs_csr_tree.h>
 #include <references/pointer_tree.h>
 
 #include <algorithm>
@@ -50,6 +51,7 @@ class TreePathTest : public testing::Test {};
 using PathTrees =
     testing::Types<AdjListTree,
                    pixie::references::PointerTree,
+                   pixie::references::BfsCsrTree,
                    pixie::tree::BPTree<pixie::RmMBTree<>>,
                    pixie::tree::DFUDSTree<pixie::RmMBTree<>>,
                    pixie::tree::LoudsTree<pixie::RankSelectSupportCompressed<>>,
@@ -238,6 +240,7 @@ TEST(TreeConversion, OrderedTopologyAcrossSourcesAndDestinations) {
       pixie::references::PointerTree pointers(adjacency);
       check(reference);
       check(pointers);
+      check(pixie::references::BfsCsrTree(pointers));
       Bp bp(reference);
       Dfuds dfuds(reference);
       Louds louds(reference);
@@ -2437,11 +2440,12 @@ TEST(TreeUnpackingTest, DfudsCacheAcceptsOnlyCompleteBoundedSubtrees) {
 }
 
 // References have representation-specific handles, but share navigation and
-// workload semantics. Run the same specification against both layouts.
+// workload semantics. Run the same specification against each layout.
 template <class Tree>
 class ReferenceTreeSpecification : public testing::Test {};
-using ReferenceTrees =
-    testing::Types<AdjListTree, pixie::references::PointerTree>;
+using ReferenceTrees = testing::Types<AdjListTree,
+                                      pixie::references::PointerTree,
+                                      pixie::references::BfsCsrTree>;
 TYPED_TEST_SUITE(ReferenceTreeSpecification, ReferenceTrees);
 
 template <class Tree, class Node>
@@ -2473,8 +2477,13 @@ TYPED_TEST(ReferenceTreeSpecification, NavigationAndTraversalMatchTopology) {
       for (bool preorder : {false, true}) {
         SCOPED_TRACE(testing::Message() << "n=" << n << " shape=" << shape
                                         << " preorder=" << preorder);
-        const auto adj = preorder ? dfs_order(n, source) : bfs_order(n, source);
-        const TypeParam tree(adj);
+        const auto input =
+            preorder ? dfs_order(n, source) : bfs_order(n, source);
+        const TypeParam tree(input);
+        const auto adj =
+            std::is_same_v<TypeParam, pixie::references::BfsCsrTree>
+                ? bfs_order(n, input)
+                : input;
         auto number = [&](auto node) { return ReferenceNumber(tree, node); };
         using Node = decltype(tree.root());
         std::vector<Node> handles(n);
@@ -2598,6 +2607,92 @@ TYPED_TEST(ReferenceTreeSpecification, ChildVisitorIsBorrowedAndReentrant) {
                           [](auto) { throw std::runtime_error("visitor"); }),
       std::runtime_error);
   EXPECT_EQ(tree.degree(tree.root()), 2u);
+}
+
+TEST(BfsCsrTreeTest, NumbersPermutedSourceInOrderedBreadthFirstOrder) {
+  // BFS visits source IDs 0, 5, 2, 6, 1, 3, 4. The unequal subtrees
+  // distinguish sibling order even though the source IDs are not retained.
+  const pixie::references::BfsCsrTree tree(
+      {{0, 5, 2}, {5}, {0, 3}, {2}, {6}, {0, 6, 1}, {5, 4}});
+  const std::vector<std::vector<size_t>> expected = {
+      {0, 1, 2}, {0, 3, 4}, {0, 5}, {1, 6}, {1}, {2}, {3}};
+  std::vector<decltype(tree.root())> pending{tree.root()};
+  for (size_t i = 0; i < expected.size(); ++i) {
+    ASSERT_LT(i, pending.size());
+    const auto node = pending[i];
+    ASSERT_EQ(tree.node_number(node), i);
+    EXPECT_EQ(tree.parent(node), expected[i][0]);
+    ASSERT_EQ(tree.degree(node), expected[i].size() - 1);
+    for (size_t j = 1; j < expected[i].size(); ++j) {
+      const auto child = tree.child(node, j - 1);
+      EXPECT_EQ(child, expected[i][j]);
+      pending.push_back(child);
+    }
+  }
+  EXPECT_EQ(pending.size(), expected.size());
+}
+
+TEST(BfsCsrTreeTest, PackedFieldsCrossWordBoundaries) {
+  // With seven bits per entry, row 45's child offset (90) and row 100's
+  // parent ID (49) each have nonzero bits on both sides of a word boundary.
+  constexpr size_t n = 127;
+  std::vector<std::vector<size_t>> source(n);
+  source[0].push_back(0);
+  for (size_t i = 1; i < n; ++i) {
+    const size_t parent = (i - 1) / 2;
+    source[i].push_back(parent);
+    source[parent].push_back(i);
+  }
+  const pixie::references::BfsCsrTree tree(source);
+  for (size_t i = 0; i < n; ++i) {
+    EXPECT_EQ(tree.parent(i), i ? (i - 1) / 2 : 0);
+    ASSERT_EQ(tree.degree(i), i < n / 2 ? 2u : 0u);
+    for (size_t j = 0; j < tree.degree(i); ++j) {
+      EXPECT_EQ(tree.child(i, j), 2 * i + 1 + j);
+    }
+  }
+}
+
+TEST(BfsCsrTreeTest, EmptyAndSingleton) {
+  using Tree = pixie::references::BfsCsrTree;
+  const Tree empty(std::vector<std::vector<size_t>>{});
+  EXPECT_TRUE(empty.empty());
+  EXPECT_EQ(empty.size(), 0u);
+  EXPECT_EQ(empty.root(), empty.size());
+  EXPECT_EQ(empty.memory_usage_bytes(), sizeof(Tree));
+
+  const Tree singleton(std::vector<std::vector<size_t>>{{0}});
+  EXPECT_FALSE(singleton.empty());
+  EXPECT_EQ(singleton.size(), 1u);
+  const auto root = singleton.root();
+  EXPECT_EQ(root, 0u);
+  EXPECT_EQ(singleton.parent(root), root);
+  EXPECT_EQ(singleton.degree(root), 0u);
+  EXPECT_EQ(singleton.first_child(root), root);
+  EXPECT_TRUE(singleton.is_last_child(root));
+  EXPECT_EQ(singleton.next_sibling(root), root);
+  EXPECT_EQ(singleton.memory_usage_bytes(), sizeof(Tree));
+}
+
+TEST(BfsCsrTreeTest, TwoPackedArraysAtWidthTransitions) {
+  using Tree = pixie::references::BfsCsrTree;
+  constexpr size_t line = pixie::kAlignedStorageLineBytes;
+  for (size_t n : {31, 32, 33, 63, 64, 65, 511, 512, 513, 1023, 1024, 1025}) {
+    SCOPED_TRACE(n);
+    // Stars force the largest child offset but have only zero parent IDs.
+    std::vector<std::vector<size_t>> source(n, {0});
+    for (size_t i = 1; i < n; ++i) {
+      source[0].push_back(i);
+    }
+    const Tree tree(source);
+    ASSERT_EQ(tree.degree(tree.root()), n - 1);
+    EXPECT_EQ(tree.child(tree.root(), n - 2), n - 1);
+    EXPECT_EQ(tree.parent(n - 1), tree.root());
+    EXPECT_TRUE(tree.is_leaf(n - 1));
+    const size_t bits = n * std::bit_width(n - 1);
+    const size_t padded_bytes = ((bits + 8 * line - 1) / (8 * line)) * line;
+    EXPECT_EQ(tree.memory_usage_bytes(), sizeof(Tree) + 2 * padded_bytes);
+  }
 }
 
 TEST(PointerTreeTest, OwnershipMovesAndMissingLinks) {

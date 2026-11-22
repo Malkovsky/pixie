@@ -1,6 +1,7 @@
 #pragma once
 
 #include <pixie/utils.h>
+#include <references/bfs_csr_tree.h>
 #include <references/pointer_tree.h>
 
 #include <cstddef>
@@ -20,6 +21,7 @@ enum class TreeLayout { kBp, kDfuds, kLouds };
 template <class Tree>
 inline constexpr bool kReferenceTree =
     std::is_same_v<Tree, AdjListTree> ||
+    std::is_same_v<Tree, references::BfsCsrTree> ||
     std::is_same_v<Tree, references::PointerTree>;
 
 // One immutable fixture per type/layout and size, shared by all workload rows.
@@ -30,7 +32,11 @@ const auto& GetTreeFixture(std::size_t size) {
     std::size_t size;
     std::unique_ptr<Tree> tree;
     explicit Fixture(std::size_t n) : size(n) {
-      if constexpr (kReferenceTree<Tree>) {
+      if constexpr (std::is_same_v<Tree, references::BfsCsrTree>) {
+        static_assert(Layout == TreeLayout::kLouds);
+        std::mt19937_64 rng(42);
+        tree = std::make_unique<Tree>(generate_random_tree(n, rng));
+      } else if constexpr (kReferenceTree<Tree>) {
         std::mt19937_64 rng(42);
         const auto adjacency = Layout == TreeLayout::kLouds
                                    ? bfs_order(n, generate_random_tree(n, rng))
@@ -63,7 +69,8 @@ template <class Tree, TreeLayout Layout, TreeWorkload Workload>
 void RunDirectTreeBenchmark(benchmark::State& state) {
   const auto& fixture = GetTreeFixture<Tree, Layout>(state.range(0));
   const auto& tree = *fixture.tree;
-  if constexpr (std::is_same_v<Tree, references::PointerTree>) {
+  if constexpr (std::is_same_v<Tree, references::PointerTree> ||
+                std::is_same_v<Tree, references::BfsCsrTree>) {
     state.counters["reference_bytes"] = tree.memory_usage_bytes();
     state.counters["reference_bytes_per_node"] =
         double(tree.memory_usage_bytes()) / fixture.size;

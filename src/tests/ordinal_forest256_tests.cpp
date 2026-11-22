@@ -170,6 +170,62 @@ TEST(OrdinalForest256, ThresholdsDeepChainAndWideRoot) {
   }
 }
 
+TEST(ForestCover, WideRootEndsAtPrefixSample) {
+  // The root plus fifteen full child units ends exactly on a prefix sample.
+  constexpr size_t children = 15 * 256;
+  Tree tree{Source(std::vector<size_t>(1 + children))};
+  Context reader(tree, kSlot);
+  const auto root = tree.root();
+  ASSERT_EQ(tree.unit_count(), 16u);
+  ASSERT_EQ(reader.degree(root), children);
+  for (size_t k : {0u, 255u, 256u, 3583u, 3584u, 3839u}) {
+    const Node leaf = reader.child(root, k);
+    EXPECT_EQ(tree.number(leaf), k + 1);
+    EXPECT_EQ(tree.find_by_number(k + 1), leaf);
+    EXPECT_EQ(reader.parent(leaf), root);
+    if (k + 1 < children) {
+      EXPECT_EQ(reader.next_sibling(leaf), reader.child(root, k + 1));
+    } else {
+      EXPECT_TRUE(reader.is_last_child(leaf));
+      EXPECT_THROW(reader.next_sibling(leaf), std::out_of_range);
+    }
+  }
+  EXPECT_THROW(reader.child(root, children), std::out_of_range);
+}
+
+TEST(ForestCover, RejectedBindPreservesIndexedPathsAndCacheBudget) {
+  // Use the measured cost of a complete three-entry prefix as our budget.
+  Tree small(Source({0, 0, 0})), tree(Source({0, 0, 0, 1}));
+  Index index(tree, Index(small).memory_usage_bytes());
+  ASSERT_EQ(index.size(), 3u);
+  Context original(tree, kSlot, &index);
+  Context reader(std::move(original));
+  auto ignore = [](auto...) {};
+  auto first = [](size_t) { return 0u; };
+  EXPECT_THROW(original.inspect_path(ignore, ignore, first), std::logic_error);
+  EXPECT_THROW(original.traverse_inspected(ignore, ignore), std::logic_error);
+  EXPECT_THROW(reader.bind(small, &index), std::invalid_argument);
+  EXPECT_EQ(reader.allocated_bytes(), kSlot);
+  const auto root = tree.root(), left = tree.child(root, 0),
+             right = tree.child(root, 1), grandchild = tree.first_child(left);
+  for (bool go_right : {false, true}) {
+    std::vector<Node> visits, inspected;
+    const auto hits = reader.inspect_path(
+        [&](Node h) { visits.push_back(h); },
+        [&](Node h) { inspected.push_back(h); },
+        [&](size_t degree) { return go_right ? degree - 1 : 0; });
+    if (go_right) {
+      EXPECT_EQ(hits, 2u);  // Both root and leaf are served by the index.
+      EXPECT_EQ(visits, (std::vector<Node>{root, right}));
+      EXPECT_EQ(inspected, (std::vector<Node>{left, right}));
+    } else {
+      EXPECT_EQ(hits, 1u);  // The represented left child's list is incomplete.
+      EXPECT_EQ(visits, (std::vector<Node>{root, left, grandchild}));
+      EXPECT_EQ(inspected, (std::vector<Node>{left, right, grandchild}));
+    }
+  }
+}
+
 TEST(OrdinalForest256, RandomTopologyAndReaderBudgets) {
   std::mt19937_64 rng(1729);
   std::vector<size_t> p(8192);

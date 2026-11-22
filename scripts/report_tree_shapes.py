@@ -6,22 +6,13 @@ import math
 import re
 import statistics
 import sys
-import tempfile
 from collections import defaultdict
-from itertools import product
 from pathlib import Path
 
 FAMILIES = ('random_recursive', 'binary_catalan', 'ordered_plane_catalan')
 CASE = re.compile(r'tree_shape/(\w+)/(inspected_dfs|inspected_root_path)/(\w+)'
                   r'/N:(\d+)/seed:(\d+)/budget:(\d+)')
 NS = {'ns': 1, 'us': 1000, 'ms': 1000000, 's': 1000000000}
-BEGIN = '<!-- tree_shape results begin -->'
-END = '<!-- tree_shape results end -->'
-SIZES = tuple(2**i for i in range(10, 27, 2))
-BUDGETS = (0, 32768, 524288)
-IMPLEMENTATIONS = {'bp': 'BP', 'dfuds': 'DFUDS', 'louds': 'LOUDS', 'forest_cover': 'Forest cover'}
-WORKLOADS = {'inspected_dfs': ('Whole inspected DFS', 'ms', 1e6),
-             'inspected_root_path': ('Inspected root-to-leaf path', 'ns', 1)}
 
 
 def collect(paths):
@@ -64,13 +55,13 @@ def collect(paths):
     return groups
 
 
-def means(groups, publish=False):
+def means(groups, strict=False):
     values = {}
     for group, medians in sorted(groups.items()):
         missing = set(FAMILIES) - medians.keys()
         if missing:
             message = f'{group}: missing {", ".join(sorted(missing))}'
-            if publish:
+            if strict:
                 raise ValueError(message)
             print(message, file=sys.stderr)
             continue
@@ -88,78 +79,13 @@ def render(values):
     return '\n'.join(lines)
 
 
-def updated_page(page, section):
-    if page.count(BEGIN) != 1 or page.count(END) != 1:
-        raise ValueError('Expected one tree_shape results section')
-    before, rest = page.split(BEGIN)
-    old, after = rest.split(END)
-
-    def keys(text):
-        return {line.rsplit('|', 2)[0] for line in text.splitlines() if line.startswith('| ')}
-
-    if keys(old) - keys(section):
-        raise ValueError('Input would remove published rows; supply the full timed dataset')
-    return before + BEGIN + '\n\n' + section + '\n\n' + END + after
-
-
-def publish(path, values):
-    expected = set(product(BUDGETS, SIZES, [42], IMPLEMENTATIONS, WORKLOADS))
-    if values.keys() != expected:
-        raise ValueError(f'Publication matrix mismatch: {len(expected - values.keys())} missing, '
-                         f'{len(values.keys() - expected)} unexpected groups')
-
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-    import plot_style as style
-
-    files = {work: f'tree_shape_{work}.svg' for work in WORKLOADS}
-    images = [f'\\image html {file} "{WORKLOADS[work][0]} CPU latency by traversal budget"'
-              for work, file in files.items()]
-    page = updated_page(path.read_text(), '\n\n'.join([*images, render(values)]))
-    destination = path.parent.parent / 'images/benchmarks/trees'
-    destination.mkdir(parents=True, exist_ok=True)
-    style.apply_style()
-    matplotlib.rcParams['svg.hashsalt'] = 'pixie-tree-shapes'
-    with tempfile.TemporaryDirectory(dir=destination) as tmp:
-        for work, (label, unit, divisor) in WORKLOADS.items():
-            fig, axes = plt.subplots(1, 3, figsize=(13, 4.4), sharey=True)
-            for ax, budget in zip(axes, BUDGETS):
-                for i, (impl, title) in enumerate(IMPLEMENTATIONS.items()):
-                    ys = [values[budget, n, 42, impl, work] / divisor for n in SIZES]
-                    ax.plot(SIZES, ys, label=title, **style.line_style(impl, i))
-                ax.set_title(f'{budget // 1024} KiB budget')
-                ax.set_xlabel('Tree size (nodes)')
-                ax.set_xscale('log', base=2)
-                ax.set_xticks(SIZES[::2], [rf'$2^{{{n.bit_length()-1}}}$' for n in SIZES[::2]])
-            # DFS covers several orders of magnitude; path times are easier
-            # to compare on a linear axis. All budget panels share one scale.
-            if work == 'inspected_dfs' and all(v > 0 for k, v in values.items() if k[-1] == work):
-                axes[0].set_yscale('log')
-            else:
-                axes[0].set_ylim(bottom=0)
-            axes[0].set_ylabel(f'Mean CPU latency ({unit} per {label.lower()})')
-            fig.suptitle(f'{label}: equal-weight mean of three family medians')
-            fig.legend(*axes[0].get_legend_handles_labels(), loc='lower center', ncol=4)
-            fig.tight_layout(rect=(0, .09, 1, .98))
-            fig.savefig(Path(tmp) / files[work], metadata={'Date': None})
-            plt.close(fig)
-        for file in files.values():
-            (Path(tmp) / file).replace(destination / file)
-    path.write_text(page)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('inputs', type=Path, nargs='+', help='non-overlapping timed JSON shards')
-    parser.add_argument('--page', type=Path, help='replace the marked section in the benchmark page')
+    parser.add_argument('--strict', action='store_true', help='reject incomplete family groups')
     args = parser.parse_args()
     try:
-        values = means(collect(args.inputs), publish=bool(args.page))
-        if args.page:
-            publish(args.page, values)
-        else:
-            print(render(values))
+        print(render(means(collect(args.inputs), strict=args.strict)))
     except (ValueError, KeyError, OSError) as exc:
         parser.exit(1, f'{parser.prog}: {exc}\n')
 

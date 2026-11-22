@@ -171,6 +171,75 @@ TEST(Forest256CacheTest, BudgetEvictionLifetimeAndRebinding) {
     EXPECT_EQ(moved.lookup(0, c, 0, 4, 0).degree, 3);
   }
 }
+
+TEST(Forest256CacheTest, CollisionReplacesOnlyItsSlot) {
+  constexpr auto c = Codec::louds;
+  auto words = pack(c, 0, 1, {2, 0, 0});
+  words.push_back(pack(c, 0, 2, {0, 1, 0}).front());
+  words.push_back(pack(c, 0, 3, {0, 0, 0}).front());
+  Forest256Cache cache(words, 2 * Forest256Cache::slot_bytes());
+  Forest256Cache::Stats stats;
+  auto roots = [&](size_t unit) {
+    return cache.lookup_counted(unit, c, unit * 64, 3, 0, stats).roots;
+  };
+  EXPECT_EQ(roots(0), 1);
+  EXPECT_EQ(roots(1), 2);
+  EXPECT_EQ(roots(2), 3);  // Collides with 0, not 1.
+  EXPECT_EQ(stats.evictions, 1u);
+  EXPECT_EQ(roots(1), 2);
+  EXPECT_EQ(stats.hits, 1u);
+  EXPECT_EQ(roots(0), 1);
+  EXPECT_EQ(stats.misses, 4u);
+  EXPECT_EQ(stats.evictions, 2u);
+}
+
+TEST(Forest256CacheTest, RejectedReplacementLeavesWarmEntryUsable) {
+  constexpr auto c = Codec::louds;
+  auto words = pack(c, 0, 1, {2, 0, 0});
+  words.push_back(0);  // Fits in the stream, but has invalid population.
+  Forest256Cache cache(words, Forest256Cache::slot_bytes());
+  ASSERT_EQ(cache.lookup(0, c, 0, 3, 0).degree, 2);
+  EXPECT_THROW(cache.lookup(1, c, 64, 3, 0), std::invalid_argument);
+  Forest256Cache::Stats probe;
+  EXPECT_EQ(cache.lookup_counted(0, c, 0, 3, 0, probe).degree, 2);
+  EXPECT_EQ(probe.hits, 1u);
+}
+
+TEST(Forest256CacheTest, SnapshotSurvivesEvictionAndRebinding) {
+  for (auto c : {Codec::louds, Codec::twin}) {
+    auto words = pack(c, 0, 1, {2, 0, 0});
+    words.push_back(pack(c, 0, 2, {0, 1, 0}).front());
+    auto rebound = pack(c, 0, 3, {0, 0, 0});
+    for (size_t budget : {size_t{0}, Forest256Cache::slot_bytes()}) {
+      Forest256Cache cache(words, budget);
+      LevelCsr256 saved;
+      cache.snapshot(0, c, 0, 3, saved);
+      ASSERT_EQ(cache.lookup(1, c, 64, 3, 2).parent, 1);
+      cache.bind(rebound);
+      ASSERT_EQ(cache.lookup(0, c, 0, 3, 0).roots, 3);
+      EXPECT_EQ(saved.root_count(), 1u);
+      ASSERT_EQ(saved.degree(0), 2u);
+      EXPECT_EQ(saved.child(0, 1), 2);
+      EXPECT_EQ(saved.parent_of(2), 0);
+      EXPECT_FALSE(saved.is_last_child(1));
+    }
+  }
+}
+
+TEST(Forest256CacheTest, LastOf256RootsHasEmptyChildRangeAtEnd) {
+  for (auto c : {Codec::louds, Codec::twin}) {
+    auto words = pack(c, 0, 256, std::vector<uint16_t>(256));
+    Forest256Cache cache(words, Forest256Cache::slot_bytes());
+    const auto last = cache.lookup(0, c, 0, 256, 255);
+    EXPECT_EQ(last.roots, 256);
+    EXPECT_EQ(last.parent, kNoParent);
+    EXPECT_TRUE(last.last);
+    EXPECT_EQ(last.first, 256);  // [256, 256), not a child to dereference.
+    EXPECT_EQ(last.degree, 0);
+    EXPECT_THROW(cache.lookup(0, c, 0, 256, 256), std::out_of_range);
+  }
+}
+
 TEST(Forest256CacheTest, SameAddressRebindInvalidatesWarmSlot) {
   for (auto c : {Codec::louds, Codec::twin}) {
     auto stream = pack(c, 0, 1, {2, 0, 0});
