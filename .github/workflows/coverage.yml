@@ -16,7 +16,7 @@ jobs:
         include:
           - variant: native
             build_directory: coverage
-          - variant: rank-select-scalar
+          - variant: scalar
             build_directory: coverage-scalar
 
     steps:
@@ -30,11 +30,19 @@ jobs:
       env:
         PIXIE_COVERAGE_VARIANT: ${{ matrix.variant }}
 
+    - name: Prepare gcov reports for Codecov
+      working-directory: build/${{ matrix.build_directory }}
+      run: |
+        cp -R gcov gcov-upload
+        # Codecov skips numeric hits marked with gcov's partial-block '*'.
+        # Normalize only the count field; keep branch records and raw artifacts.
+        find gcov-upload -type f -name '*.gcov' -exec sed -i -E 's/^([[:blank:]]*[0-9]+)\*:([[:blank:]]*[0-9]+:)/\1:\2/' {} +
+
     - name: Upload to Codecov
       uses: codecov/codecov-action@v4
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-        directory: build/${{ matrix.build_directory }}/gcov
+        directory: build/${{ matrix.build_directory }}/gcov-upload
         # Reports are already generated per translation unit; do not regenerate
         # them through the uploader's automatic gcov plugin.
         plugins: noop

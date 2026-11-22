@@ -135,39 +135,40 @@ TEST(CompressedSerialization, MixedCoarseDirectoriesRoundTripAndRejectDamage) {
 template <class Tree>
 struct TreeFormat;
 template <class B, class S>
-struct TreeFormat<pixie::BPTree<B, S>> {
+struct TreeFormat<pixie::tree::BPTree<B, S>> {
   using Backend = B;
   static constexpr uint64_t invalid_two_node_encoding = 0b0101;
   static auto encode(size_t n, const std::vector<std::vector<size_t>>& adj) {
-    return EncodeReference<pixie::detail::TreeEncodingKind::kBP>(n, adj);
+    return EncodeReference<pixie::tree::detail::TreeEncodingKind::kBP>(n, adj);
   }
 };
 template <class B, class S>
-struct TreeFormat<pixie::DFUDSTree<B, S>> {
+struct TreeFormat<pixie::tree::DFUDSTree<B, S>> {
   using Backend = B;
   static constexpr uint64_t invalid_two_node_encoding = 0b010;
   static auto encode(size_t n, const std::vector<std::vector<size_t>>& adj) {
-    return EncodeReference<pixie::detail::TreeEncodingKind::kDFUDS>(n, adj);
+    return EncodeReference<pixie::tree::detail::TreeEncodingKind::kDFUDS>(n,
+                                                                          adj);
   }
 };
 template <class B, class S>
-struct TreeFormat<pixie::LoudsTree<B, S>> {
+struct TreeFormat<pixie::tree::LoudsTree<B, S>> {
   using Backend = B;
   static constexpr uint64_t invalid_two_node_encoding = 0b010;
   static auto encode(size_t n, const std::vector<std::vector<size_t>>& adj) {
-    return EncodeReference<pixie::detail::TreeEncodingKind::kLOUDS>(
+    return EncodeReference<pixie::tree::detail::TreeEncodingKind::kLOUDS>(
         n, bfs_order(n, adj));
   }
 };
 
 template <class Tree>
 class TreeSerializationTest : public testing::Test {};
-using Trees = testing::Types<pixie::BPTree<Rmm>,
-                             pixie::BPTree<BaselineRmm>,
-                             pixie::DFUDSTree<Rmm>,
-                             pixie::DFUDSTree<BaselineRmm>,
-                             pixie::LoudsTree<Compressed>,
-                             pixie::LoudsTree<Baseline>>;
+using Trees = testing::Types<pixie::tree::BPTree<Rmm>,
+                             pixie::tree::BPTree<BaselineRmm>,
+                             pixie::tree::DFUDSTree<Rmm>,
+                             pixie::tree::DFUDSTree<BaselineRmm>,
+                             pixie::tree::LoudsTree<Compressed>,
+                             pixie::tree::LoudsTree<Baseline>>;
 TYPED_TEST_SUITE(TreeSerializationTest, Trees);
 
 template <class A, class B>
@@ -176,7 +177,7 @@ void compare_trees(const A& expected, const B& actual) {
   if (actual.empty()) {
     return;
   }
-  std::vector<std::pair<pixie::TreeNode, pixie::TreeNode>> pending;
+  std::vector<std::pair<pixie::tree::TreeNode, pixie::tree::TreeNode>> pending;
   pending.push_back({expected.root(), actual.root()});
   size_t visited = 0;
   while (!pending.empty()) {
@@ -186,7 +187,7 @@ void compare_trees(const A& expected, const B& actual) {
     ASSERT_EQ(a.pos, b.pos);
     ASSERT_EQ(expected.degree(a), actual.degree(b));
     ASSERT_EQ(expected.parent(a).pos, actual.parent(b).pos);
-    std::vector<pixie::TreeNode> left, right;
+    std::vector<pixie::tree::TreeNode> left, right;
     expected.for_each_child(a, [&](auto child) { left.push_back(child); });
     actual.for_each_child(b, [&](auto child) { right.push_back(child); });
     ASSERT_EQ(left.size(), right.size());
@@ -246,7 +247,7 @@ TYPED_TEST(TreeSerializationTest, RootIndexRestoresUnderRuntimeBudget) {
   const auto words =
       TreeFormat<TypeParam>::encode(n, generate_random_tree(n, rng));
   const TypeParam tree(words, n);
-  using Index = pixie::RootNavigationIndex<TypeParam>;
+  using Index = pixie::tree::RootNavigationIndex<TypeParam>;
   for (size_t budget : std::initializer_list<size_t>{0, 1024, 32768, 524288}) {
     const Index index(tree, budget);
     const auto bytes = save(index);
@@ -303,14 +304,15 @@ TYPED_TEST(TreeSerializationTest,
       TreeFormat<TypeParam>::encode(1025, generate_random_tree(1025, rng));
   const TypeParam tree(words, 1025);
   for (size_t budget : std::initializer_list<size_t>{0, 32768, 524288}) {
-    const pixie::RootNavigationIndex<TypeParam> index(tree, budget);
-    const pixie::TreeTraversalContext<TypeParam> context(tree, budget, &index);
+    const pixie::tree::RootNavigationIndex<TypeParam> index(tree, budget);
+    const pixie::tree::TreeTraversalContext<TypeParam> context(tree, budget,
+                                                               &index);
     const auto bytes = save(*context.root_index());
     pixie::BinaryReader reader(bytes);
-    auto restored = pixie::RootNavigationIndex<TypeParam>::deserialize(
+    auto restored = pixie::tree::RootNavigationIndex<TypeParam>::deserialize(
         reader, tree, budget);
-    const pixie::TreeTraversalContext<TypeParam> loaded(tree, budget,
-                                                        &restored);
+    const pixie::tree::TreeTraversalContext<TypeParam> loaded(tree, budget,
+                                                              &restored);
     EXPECT_EQ(loaded.cached_depth(), context.cached_depth());
     EXPECT_EQ(loaded.decoded_chunk_bits(), context.decoded_chunk_bits());
     EXPECT_EQ(loaded.scratch_bytes(), context.scratch_bytes());
@@ -408,7 +410,7 @@ TYPED_TEST(TreeSerializationTest,
   const auto words = TreeFormat<TypeParam>::encode(n, star);
   const auto other_words = TreeFormat<TypeParam>::encode(n, chain);
   const TypeParam tree(words, n), other(other_words, n);
-  using Index = pixie::RootNavigationIndex<TypeParam>;
+  using Index = pixie::tree::RootNavigationIndex<TypeParam>;
   const auto bytes = save(Index(tree));
   pixie::BinaryReader wrong_tree(bytes);
   EXPECT_THROW(Index::deserialize(wrong_tree, other, 524288,
@@ -431,7 +433,7 @@ TYPED_TEST(TreeSerializationTest, RootIndexRejectsBrokenGraphAndContextBudget) {
       {0, 1, 2}, {0, 3, 4}, {0, 5, 6}, {1}, {1}, {2}, {2}};
   const auto words = TreeFormat<TypeParam>::encode(n, adj);
   const TypeParam tree(words, n);
-  using Index = pixie::RootNavigationIndex<TypeParam>;
+  using Index = pixie::tree::RootNavigationIndex<TypeParam>;
   const auto bytes = save(Index(tree));
   // Version 1: 24-byte frame, tree size, entry count, then 32-byte entries.
   constexpr size_t entries = 40;
@@ -456,7 +458,7 @@ TYPED_TEST(TreeSerializationTest, RootIndexRejectsBrokenGraphAndContextBudget) {
   }
   pixie::BinaryReader reader(bytes);
   auto index = Index::deserialize(reader, tree);
-  const pixie::TreeTraversalContext<TypeParam> context(tree, 0, &index);
+  const pixie::tree::TreeTraversalContext<TypeParam> context(tree, 0, &index);
   EXPECT_EQ(context.budget_usage_bytes(), 0u);
   EXPECT_EQ(context.root_index(), &index);
 }
@@ -497,7 +499,8 @@ TYPED_TEST(TreeSerializationTest, RejectsBackendSizeAndPopulationMismatch) {
   const auto words = TreeFormat<TypeParam>::encode(2, adj);
   const TypeParam tree(words, 2);
   const auto bytes = save(tree);
-  const size_t bits = std::same_as<TypeParam, pixie::BPTree<Backend>> ? 4 : 3;
+  const size_t bits =
+      std::same_as<TypeParam, pixie::tree::BPTree<Backend>> ? 4 : 3;
   const std::vector<uint64_t> zeros(1, 0);
   // Replace a complete nested artifact: it is independently valid, but does
   // not belong to the enclosing tree. Keep the outer framing valid as well.
@@ -515,22 +518,23 @@ TYPED_TEST(TreeSerializationTest, RejectsBackendSizeAndPopulationMismatch) {
 
 TEST(TreeSerialization, RejectsPreviousLoudsEncodingTag) {
   const std::vector<uint64_t> words{1};  // Two nodes: 10 0.
-  auto bytes = save(pixie::LoudsTree<Compressed>(words, 2));
+  auto bytes = save(pixie::tree::LoudsTree<Compressed>(words, 2));
   constexpr uint64_t old_tag = 0x3152540058495050ULL + (uint64_t{3} << 32);
   EXPECT_NE(get_u64(bytes, 0), old_tag);
   set_u64(bytes, 0, old_tag);
   for (auto validation :
        {DeserializationValidation::kQuick, DeserializationValidation::kFull}) {
     pixie::BinaryReader reader(bytes);
-    EXPECT_THROW(pixie::LoudsTree<Compressed>::deserialize(reader, validation),
-                 std::invalid_argument);
+    EXPECT_THROW(
+        pixie::tree::LoudsTree<Compressed>::deserialize(reader, validation),
+        std::invalid_argument);
     EXPECT_EQ(reader.position(), 0u);
   }
 }
 
 TEST(TreeSerialization, RejectsLoudsBackendWithoutBothSelectDirections) {
   const std::vector<uint64_t> words{0b001};
-  const auto bytes = save(pixie::LoudsTree<Compressed>(words, 2));
+  const auto bytes = save(pixie::tree::LoudsTree<Compressed>(words, 2));
   for (auto mode :
        {Compressed::SelectSupport::kNone, Compressed::SelectSupport::kSelect1,
         Compressed::SelectSupport::kSelect0}) {
@@ -540,7 +544,7 @@ TEST(TreeSerialization, RejectsLoudsBackendWithoutBothSelectDirections) {
     damaged.insert(damaged.end(), backend.begin(), backend.end());
     set_u64(damaged, 16, damaged.size());
     pixie::BinaryReader reader(damaged);
-    EXPECT_THROW(pixie::LoudsTree<Compressed>::deserialize(reader),
+    EXPECT_THROW(pixie::tree::LoudsTree<Compressed>::deserialize(reader),
                  std::invalid_argument);
     EXPECT_EQ(reader.position(), 0u);
   }
@@ -742,7 +746,7 @@ struct CountingRmm : Rmm {
 
 TEST(TreeSerialization, QuickLoadDoesNotReconstructBackend) {
   const std::vector<uint64_t> words{0b0011};
-  using Tree = pixie::BPTree<CountingRmm>;
+  using Tree = pixie::tree::BPTree<CountingRmm>;
   CountingRmm::builds = 0;
   const Tree tree(words, 2);
   const auto bytes = save(tree);

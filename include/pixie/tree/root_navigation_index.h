@@ -1,8 +1,9 @@
 #pragma once
 
 #include <pixie/detail/serialization_frame.h>
-#include <pixie/incomplete_tree.h>
+#include <pixie/tree.h>
 #include <pixie/tree/traversal_budget.h>
+#include <pixie/tree/tree_part.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -12,7 +13,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace pixie {
+namespace pixie::tree {
 
 /**
  * @brief Bounded auxiliary navigation index for root-to-leaf walks.
@@ -81,12 +82,34 @@ class RootNavigationIndex
     return std::nullopt;
   }
 
+  /** @brief Copy this index's entries and represented edges for inspection.
+   * A nonleaf at the frontier has an incomplete child list.
+   * The result is independent of both the tree and this index.
+   */
+  TreePart inspect_part() const {
+    std::vector<TreePart::Node> rows(entries_.size());
+    for (size_t i = 0; i < entries_.size(); ++i) {
+      const auto& entry = entries_[i];
+      auto& row = rows[i];
+      row.source_id = entry.node.number;
+      row.bit_position = entry.node.pos;
+      row.children_complete = !entry.degree || entry.first != kMissing;
+      if (entry.first != kMissing) {
+        row.children.reserve(entry.degree);
+        for (size_t j = 0; j < entry.degree; ++j) {
+          row.children.push_back(entry.first + j);
+        }
+      }
+    }
+    return {std::move(rows), entries_.empty() ? 0u : 1u};
+  }
+
   /** @brief Write the immutable entries as a separate versioned artifact.
    * @details Stores node handles, degrees and child offsets, not the tree,
    * cursors, vector spare capacity or construction queue. No hash is stored.
    */
   void serialize_impl(BinaryWriter& writer) const {
-    const auto begin = detail::begin_frame(writer, kSerializationTag);
+    const auto begin = pixie::detail::begin_frame(writer, kSerializationTag);
     writer.write_size(tree_.size());
     writer.write_size(entries_.size());
     for (const auto& entry : entries_) {
@@ -95,7 +118,7 @@ class RootNavigationIndex
       writer.write_size(entry.degree);
       writer.write_u64(entry.first);
     }
-    detail::end_frame(writer, begin);
+    pixie::detail::end_frame(writer, begin);
   }
 
   /** @brief Restore entries without expanding the tree or rebuilding the cache.
@@ -117,7 +140,7 @@ class RootNavigationIndex
       DeserializationValidation validation =
           DeserializationValidation::kQuick) {
     auto candidate = reader;
-    auto payload = detail::read_frame(candidate, kSerializationTag);
+    auto payload = pixie::detail::read_frame(candidate, kSerializationTag);
     if (tree.empty() || payload.read_size() != tree.size()) {
       throw std::invalid_argument("Root index tree size mismatch");
     }
@@ -289,6 +312,27 @@ class RootNavigationIndex
         throw std::invalid_argument("empty tree");
       }
     }
+    /** @brief Reposition without searching the prefix index. An arbitrary
+     * destination uses direct navigation; resetting to root re-enters the
+     * index.
+     */
+    void reset(TreeNode h) {
+      fallback_ = h;
+      index_ = owner_ && !owner_->entries_.empty() && tree_->is_root(h)
+                   ? 0
+                   : kMissing;
+    }
+    bool is_root() const { return tree_->is_root(node()); }
+    bool is_leaf() const { return degree() == 0; }
+    TreeNode parent() const { return tree_->parent(node()); }
+    bool is_last_child() const { return tree_->is_last_child(node()); }
+    TreeNode next_sibling() const { return tree_->next_sibling(node()); }
+    TreeNode child(size_t i) const {
+      auto copy = *this;
+      copy.move_to_child(i);
+      return copy.node();
+    }
+    TreeNode first_child() const { return child(0); }
     /** @brief Return the current valid node handle. */
     TreeNode node() const {
       return index_ == kMissing ? fallback_ : owner_->entries_[index_].node;
@@ -439,4 +483,4 @@ class RootNavigationIndex
   const Tree& tree_;
   std::vector<Entry> entries_;
 };
-}  // namespace pixie
+}  // namespace pixie::tree

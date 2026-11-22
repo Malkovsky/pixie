@@ -1,127 +1,49 @@
 # Trees {#benchmarks_trees}
 
-This page summarizes benchmarks for tree implementation: BP, DFUDS, LOUDS and reference implementations.
+These charts compare four succinct ordered-tree representations and three reference implementations.
 
-`tree_dfs_benchmarks` contains the `dfs` and `dfs_children` families.
-`tree_path_benchmarks` contains `random_path` and `random_path_children`.
-Each family includes BP, DFUDS, and LOUDS in optimized (`*_best`) and direct
-(`*_direct`) modes, plus adjacency-list and pointer references in BFS and
-preorder layouts. Names start with the workload, for example
-`dfs/bp_best/tree_size:1024`.
-
-To run one family at one size after building:
-
-```bash
-taskset -c 0 build/benchmarks/tree_dfs_benchmarks \
-  --benchmark_filter='^dfs/[^/]+/tree_size:1024$'
-taskset -c 0 build/benchmarks/tree_path_benchmarks \
-  --benchmark_filter='^random_path_children/[^/]+/tree_size:1024$'
-```
-
-The collector accepts `--workload dfs`, `--workload path`, or `--workload all`
-(the default). `--succinct-mode both` collects optimized and direct modes in
-one dataset. It runs each implementation and size in a separate process for
-each binary, so large reference fixtures are released between groups.
-
-Scan/replay, conversion, and prepared-tree diagnostics are available through
-the optional `tree_experimental_benchmarks` target.
-
-## Machine
-
-AMD Ryzen 7 8845HS (8 cores, 16 threads, 16 MiB L3), 15 GiB RAM,
-WSL2 (Linux 6.6.87.2-microsoft-standard-WSL2). GCC 13.3, C++20,
-`-O3 -DNDEBUG -march=native`; measurements pinned to CPU 0.
-Results captured October 30, 2026, at commit `8e72c47`, after the ownership
-refactor, before the subsequent owning-encoding change. These graphs retain
-that measured revision. The current API takes a combined cache/scratch budget
-through `TreeTraversalContext(tree, byte_limit)`; trees now own their encodings
-by default.
-
-## Implementations and inputs
-
-Random recursive trees, seed 42. All measurements cover every even power from
-\f$2^{10}\f$ through \f$2^{26}\f$, with **32 KiB and 512 KiB** cache budgets for succinct trees.
-
-| Implementation | Representation and navigation | Space |
+| Implementation | Representation and navigation | Storage |
 | --- | --- | --- |
-| BP | Balanced parentheses, RmMBTree with compressed rank/select | \f$2n\f$ bits + navigation index + cache |
-| DFUDS | Depth-first unary degree sequence, RmMBTree with compressed rank/select | \f$2n-1\f$ bits + navigation index + cache |
-| LOUDS | Level-order unary degree sequence, compressed rank/select | \f$2n-1\f$ bits + navigation index + cache |
-| Vectors | One adjacency vector per node, storing parent followed by children | \f$n\f$ instances of `std::vector<size_t>` with parent + children entries, approximately \f$40n\f$ bytes on this machine |
-| Pointers | One contiguous array of first-child, next-sibling and parent pointers | \f$3n\f$ pointers, approximately \f$24n\f$ bytes on this machine |
+| BP | Balanced parentheses in depth-first order; a range min-max index locates matching and enclosing parentheses. | Two topology bits per node, plus the index. |
+| DFUDS | Unary node degrees in depth-first order; a range min-max index supports navigation. | About two topology bits per node, plus the index. |
+| LOUDS | Unary node degrees in breadth-first order; rank/select locates parent and child records. | About two topology bits per node, plus the index. |
+| ForestCover | Small LOUDS forests of up to 256 nodes are decoded during navigation. | Packed topology plus unit directories and links between units. |
+| Adjacency list (vectors) | Each node's vector stores its parent ID followed by its ordered child IDs. | About 320 bits per node on the benchmark machine, excluding allocator overhead. |
+| Pointers | Each node stores first-child, next-sibling, and parent pointers. | Three pointers per node (192 bits on the benchmark machine). |
+| BFS CSR | Children occupy consecutive BFS IDs. Two packed arrays store child offsets and parent IDs. | Two fields of `ceil(log2(n))` bits per node, plus word padding and the tree object. |
 
-The reference implementations are measured in both BFS and preorder numbering, succinct representation
-use their native numbering and bounded cache.
+Each matched point is an equal-weight mean over three tree families at the same node count:
 
-## Measurement
+- **Random recursive:** each new node attaches to a uniformly chosen earlier node.
+- **Binary Catalan:** sample uniformly from binary tree shapes of this size. Left and right child positions are distinct.
+- **Ordered plane Catalan:** sample uniformly from ordered rooted tree shapes of this size. A node may have any number of children.
 
-- **DFS:** traverse the whole tree, consuming preorder entry events and a return
-  event for each nonleaf after its children.
-- **DFS + child inspection:** also enumerate every immediate child before
-  descending.
-- **Root-to-leaf path:** start from root, choose a random child at each level until reaching a leaf.
-- **Path + child inspection:** also enumerate every immediate child along the path.
-- **Construction:** build from prepared input (including indexes and cache),
-  and full setup including input generation and conversion/reordering.
-- **Memory usage:** bytes/node including the representation, indexes, cache and
-  reserved traversal scratch; excludes allocator metadata and construction scratch.
+The baseline, 32 KiB and 512 KiB curves vary extra navigation state, not the tree itself. Use the curve selector to compare budgets and hover over a point for its value. The matched path charts also report the mean number of nodes per path.
 
-Traversal timings are median CPU times over five repetitions; construction
-timings are median wall times over three fresh-process repetitions.
-Both cache sizes share each graph: dotted, hollow-marker curves denote 32 KiB;
-solid colored curves denote 512 KiB. References are shown once. All succinct
-curves use the current runtime-adaptive configuration.
+\htmlonly
+<link rel="stylesheet" href="tree-curves.css">
+<script src="d3-7.9.0.min.js"></script>
+<script src="plot-0.6.17.min.js"></script>
+<script src="tree-matched.js"></script>
+<script src="tree-history.js"></script>
+<script src="tree-curves.js"></script>
+<h2 id="matched-inspected_dfs">Inspected DFS</h2>
+<p>Walk the whole tree, enumerating each node's children before descending. CPU time is per node.</p>
+<div class="pixie-tree-chart" data-chart="matched-inspected_dfs"></div>
+<h2 id="matched-inspected_root_path">Inspected root-to-leaf paths</h2>
+<p>Inspect the children, then choose one and descend. CPU time is per completed root-to-leaf path.</p>
+<div class="pixie-tree-chart" data-chart="matched-inspected_root_path"></div>
+<h2 id="matched-tree_path">Random endpoint paths</h2>
+<p>Return the ordered path between each of 256 endpoint pairs, including both endpoints. Timing includes writing the path into a reusable buffer.</p>
+<p>All three references use parent-before-child numbering, a property shared by BFS order and DFS preorder. Each query moves the higher-numbered endpoint up one edge until the two meet at their lowest common ancestor. This avoids walking to the root when the path lies entirely below it.</p>
+<div class="pixie-tree-chart" data-chart="matched-tree_path"></div>
 
-Prepared input is a bitvector for succinct trees and an adjacency list for
-references. Full setup generates BP and converts it to DFUDS/LOUDS for succinct
-trees; references use the ordinary adjacency generator and BFS/preorder
-reordering. These timings compare the current fixture pipelines, not a common
-input format. Final-object destruction is excluded from construction timing.
+<h2 id="build-time">Build time</h2>
+<p>Build and storage use seed-42 random recursive trees. BFS CSR, all uncached succinct trees and all ForestCover configurations were measured on November 20. The remaining curves are from October 30 (revision <code>8e72c47</code>).</p>
+<p>Build time includes making the tree ready for queries from prepared input: packed words for BP, DFUDS and LOUDS, or ordered adjacency for ForestCover and the references. Times are median wall milliseconds over three fresh processes, excluding input generation and final destruction.</p>
+<div class="pixie-tree-chart" data-chart="history-build-prepared"></div>
+<h2 id="storage">Storage per node</h2>
+<p>Bits per node include the tree encoding and its intrinsic navigation indexes. Uncached variants have no traversal context or optional root index. Budgeted variants also count retained traversal state and reserved scratch. Allocator overhead and temporary construction memory are excluded.</p>
+<div class="pixie-tree-chart" data-chart="history-memory"></div>
 
-## Reproduction
-
-Run from the repository root with CMake and Python with Matplotlib:
-
-```bash
-cmake --preset benchmarks
-cmake --build --preset benchmarks --target tree_dfs_benchmarks tree_path_benchmarks -j 2
-out=build/tree-reproduction
-mkdir -p "$out"
-
-python3 scripts/benchmark_trees.py --succinct-mode best --scope succinct \
-  --cache-bytes 524288 --exponents 10 12 14 16 18 20 22 24 26 --random-interleaving \
-  --repetitions 5 --min-time 0.2 --warmup 0.1 --output-dir "$out/512"
-python3 scripts/benchmark_trees.py --succinct-mode best --scope succinct \
-  --cache-bytes 32768 --exponents 10 12 14 16 18 20 22 24 26 --random-interleaving \
-  --repetitions 5 --min-time 0.2 --warmup 0.1 --output-dir "$out/32"
-python3 scripts/benchmark_trees.py --scope references \
-  --exponents 10 12 14 16 18 20 22 24 26 --random-interleaving \
-  --repetitions 5 --min-time 0.2 --warmup 0.1 --output-dir "$out/references"
-
-c++ -O3 -DNDEBUG -march=native -std=c++20 -Wall -Wextra -Werror -Iinclude \
-  src/benchmarks/tree_construction_probe.cpp -o "$out/construction-probe"
-python3 scripts/benchmark_tree_construction.py --binary "$out/construction-probe" \
-  --construction-mode consume --output-dir "$out/construction" --exponents 10 12 14 16 18 20 22 24 26
-
-python3 scripts/plot_tree_docs.py --reference "$out/references/combined.json" \
-  --cache32 "$out/32/combined.json" --cache512 "$out/512/combined.json" \
-  --construction "$out/construction/results.json" --output-dir "$out/graphs"
-```
-
-Use `--construction-mode copy` in a separate output directory to include copying
-prepared encoding words in construction timing. The consuming mode prepares aligned
-storage before construction, and includes that preparation in full setup.
-
-## Results
-
-<img src="tree_dfs.svg" alt="DFS at 32 KiB and 512 KiB" />
-
-<img src="tree_dfs_children.svg" alt="DFS with child inspection" />
-
-<img src="tree_random_path.svg" alt="Root-to-leaf paths" />
-
-<img src="tree_random_path_children.svg" alt="Paths with child inspection" />
-
-<img src="tree_build.svg" alt="Construction from prepared input and full setup" />
-
-<img src="tree_memory.svg" alt="Memory usage including reserved traversal scratch" />
+\endhtmlonly

@@ -23,23 +23,23 @@ namespace pixie::benchmarks {
 // Source words belong to the fixture; they
 // must match the tree and need no padding past the final logical word.
 template <class Backend, class Storage, class Visitor>
-void UnpackedDepthFirst(const BPTree<Backend, Storage>& tree,
+void UnpackedDepthFirst(const tree::BPTree<Backend, Storage>& tree,
                         std::span<const uint64_t> words,
                         Visitor& visitor) {
-  detail::tree_unpack::bp_byte(tree, words, 2 * tree.size(), visitor);
+  tree::detail::tree_unpack::bp_byte(tree, words, 2 * tree.size(), visitor);
 }
 template <class Backend, class Storage, class Visitor>
-void UnpackedDepthFirst(const DFUDSTree<Backend, Storage>& tree,
+void UnpackedDepthFirst(const tree::DFUDSTree<Backend, Storage>& tree,
                         std::span<const uint64_t> words,
                         Visitor& visitor) {
-  detail::tree_unpack::dfuds_excess_stream(tree, words, 2 * tree.size() - 1,
-                                           visitor);
+  tree::detail::tree_unpack::dfuds_excess_stream(tree, words,
+                                                 2 * tree.size() - 1, visitor);
 }
 template <class Backend, class Storage, class Visitor>
-void UnpackedDepthFirst(const LoudsTree<Backend, Storage>& tree,
+void UnpackedDepthFirst(const tree::LoudsTree<Backend, Storage>& tree,
                         std::span<const uint64_t> words,
                         Visitor& visitor) {
-  detail::tree_unpack::louds(tree, words, 2 * tree.size() - 1, visitor);
+  tree::detail::tree_unpack::louds(tree, words, 2 * tree.size() - 1, visitor);
 }
 
 // Emit entry events and one return event after each internal node's last child.
@@ -102,7 +102,7 @@ class ReferencePath {
 template <class Tree>
 auto MakePath(const Tree& tree) {
   if constexpr (requires { tree.navigate(tree.root()); }) {
-    return TreePathView<Tree>(tree);
+    return tree::TreePathView<Tree>(tree);
   } else {
     return ReferencePath(tree);
   }
@@ -229,7 +229,7 @@ class ParenthesisUnpackedAccess {
  public:
   ParenthesisUnpackedAccess(const Tree& tree, std::span<const uint64_t> words)
       : tree_(tree), words_(words), view_(tree.navigate(tree.root())) {}
-  void reset(TreeNode node) {
+  void reset(tree::TreeNode node) {
     view_.reset(node);
     leaf_ = view_.is_leaf();
     cached_ =
@@ -240,7 +240,7 @@ class ParenthesisUnpackedAccess {
   size_t degree() const {
     return leaf_ ? 0 : cached_ ? cache_.degree(view_.node()) : view_.degree();
   }
-  TreeNode child(size_t i) const {
+  tree::TreeNode child(size_t i) const {
     return cached_ ? cache_.child(view_.node(), i) : view_.child(i);
   }
   template <class Visitor>
@@ -258,35 +258,36 @@ class ParenthesisUnpackedAccess {
   const Tree& tree_;
   std::span<const uint64_t> words_;
   typename Tree::NodeView view_;
-  detail::tree_unpack::SubtreeCache cache_;
+  tree::detail::tree_unpack::SubtreeCache cache_;
   bool cached_ = false;
   bool leaf_ = false;
 };
 template <class Backend, class Storage>
-auto MakeUnpackedAccess(const BPTree<Backend, Storage>& tree,
+auto MakeUnpackedAccess(const tree::BPTree<Backend, Storage>& tree,
                         std::span<const uint64_t> words) {
-  return ParenthesisUnpackedAccess<true, BPTree<Backend, Storage>>(tree, words);
+  return ParenthesisUnpackedAccess<true, tree::BPTree<Backend, Storage>>(tree,
+                                                                         words);
 }
 template <class Backend, class Storage>
-auto MakeUnpackedAccess(const DFUDSTree<Backend, Storage>& tree,
+auto MakeUnpackedAccess(const tree::DFUDSTree<Backend, Storage>& tree,
                         std::span<const uint64_t> words) {
-  return ParenthesisUnpackedAccess<false, DFUDSTree<Backend, Storage>>(tree,
-                                                                       words);
+  return ParenthesisUnpackedAccess<false, tree::DFUDSTree<Backend, Storage>>(
+      tree, words);
 }
 template <class Tree>
 class LoudsUnpackedAccess {
  public:
   LoudsUnpackedAccess(const Tree& tree, std::span<const uint64_t> words)
       : tree_(tree), words_(words), view_(tree.navigate(tree.root())) {}
-  void reset(TreeNode node) { view_.reset(node); }
+  void reset(tree::TreeNode node) { view_.reset(node); }
   size_t degree() const { return view_.degree(); }
-  TreeNode child(size_t i) const {
+  tree::TreeNode child(size_t i) const {
     // Bound extra child decoding to a group of 64, even for a huge star.
-    TreeNode selected = view_.node();
+    tree::TreeNode selected = view_.node();
     const size_t first = i / 64 * 64;
-    detail::tree_unpack::louds_children(
+    tree::detail::tree_unpack::louds_children(
         tree_, words_, 2 * tree_.size() - 1, view_.node(), first, i - first + 1,
-        [&](TreeNode node) { selected = node; });
+        [&](tree::TreeNode node) { selected = node; });
     return selected;
   }
   template <class Visitor>
@@ -300,20 +301,21 @@ class LoudsUnpackedAccess {
   typename Tree::NodeView view_;
 };
 template <class Backend, class Storage>
-auto MakeUnpackedAccess(const LoudsTree<Backend, Storage>& tree,
+auto MakeUnpackedAccess(const tree::LoudsTree<Backend, Storage>& tree,
                         std::span<const uint64_t> words) {
-  return LoudsUnpackedAccess<LoudsTree<Backend, Storage>>(tree, words);
+  return LoudsUnpackedAccess<tree::LoudsTree<Backend, Storage>>(tree, words);
 }
 
 template <class Backend, class Storage, class Visit, class Inspect>
-TraversalWork UnpackedDepthFirstInspect(const LoudsTree<Backend, Storage>& tree,
-                                        std::span<const uint64_t> words,
-                                        Visit&& visit,
-                                        Inspect&& inspect) {
+TraversalWork UnpackedDepthFirstInspect(
+    const tree::LoudsTree<Backend, Storage>& tree,
+    std::span<const uint64_t> words,
+    Visit&& visit,
+    Inspect&& inspect) {
   using Visitor = std::remove_reference_t<Visit>;
   using Inspector = std::remove_reference_t<Inspect>;
-  detail::tree_unpack::LoudsTraversal<LoudsTree<Backend, Storage>, Visitor,
-                                      Inspector>
+  tree::detail::tree_unpack::LoudsTraversal<tree::LoudsTree<Backend, Storage>,
+                                            Visitor, Inspector>
       traversal{tree, words, 2 * tree.size() - 1, visit, {}, &inspect};
   traversal.walk(tree.root(), 0);
   return {traversal.node_count, traversal.child_count};
@@ -330,17 +332,19 @@ TraversalWork ParenthesisDepthFirstInspect(const Tree& tree,
   return {traversal.node_count, traversal.child_count};
 }
 template <class Backend, class Storage, class Visit, class Inspect>
-TraversalWork UnpackedDepthFirstInspect(const BPTree<Backend, Storage>& tree,
-                                        std::span<const uint64_t> words,
-                                        Visit&& visit,
-                                        Inspect&& inspect) {
+TraversalWork UnpackedDepthFirstInspect(
+    const tree::BPTree<Backend, Storage>& tree,
+    std::span<const uint64_t> words,
+    Visit&& visit,
+    Inspect&& inspect) {
   return ParenthesisDepthFirstInspect<true>(tree, words, visit, inspect);
 }
 template <class Backend, class Storage, class Visit, class Inspect>
-TraversalWork UnpackedDepthFirstInspect(const DFUDSTree<Backend, Storage>& tree,
-                                        std::span<const uint64_t> words,
-                                        Visit&& visit,
-                                        Inspect&& inspect) {
+TraversalWork UnpackedDepthFirstInspect(
+    const tree::DFUDSTree<Backend, Storage>& tree,
+    std::span<const uint64_t> words,
+    Visit&& visit,
+    Inspect&& inspect) {
   return ParenthesisDepthFirstInspect<false>(tree, words, visit, inspect);
 }
 
@@ -364,7 +368,7 @@ TraversalWork UnpackedRandomRootToLeaf(const Tree& tree,
     const size_t index = queries.next() % degree;
     if constexpr (Inspect) {
       size_t i = 0;
-      work.children += access.children([&](TreeNode child) {
+      work.children += access.children([&](tree::TreeNode child) {
         observe(child);
         if (i++ == index) {
           node = child;

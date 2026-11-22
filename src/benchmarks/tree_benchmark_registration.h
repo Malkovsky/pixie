@@ -8,12 +8,15 @@
 #include "tree_family_benchmarks.h"
 
 namespace pixie::benchmarks {
+void RegisterShapeDfs();
+void RegisterShapePaths();
+
 // Both executables register the same implementations for each workload.
 template <TreeWorkload Workload>
 void RegisterTreeWorkload(const char* family) {
-  using Bp = BPTree<RmMBTree<>>;
-  using Dfuds = DFUDSTree<RmMBTree<>>;
-  using Louds = LoudsTree<RankSelectSupportCompressed<>>;
+  using Bp = tree::BPTree<RmMBTree<>>;
+  using Dfuds = tree::DFUDSTree<RmMBTree<>>;
+  using Louds = tree::LoudsTree<RankSelectSupportCompressed<>>;
   using Pointer = references::PointerTree;
   auto add = [&](const char* implementation, auto run) {
     benchmark::RegisterBenchmark(
@@ -36,5 +39,7 @@ void RegisterTreeWorkload(const char* family) {
       &RunDirectTreeBenchmark<Pointer, TreeLayout::kBp, Workload>);
   add("pointer_bfs",
       &RunDirectTreeBenchmark<Pointer, TreeLayout::kLouds, Workload>);
+  add("bfs_csr", &RunDirectTreeBenchmark<references::BfsCsrTree,
+                                         TreeLayout::kLouds, Workload>);
 }
 }  // namespace pixie::benchmarks

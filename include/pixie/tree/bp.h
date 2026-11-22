@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-namespace pixie {
+namespace pixie::tree {
 
 /**
  * @brief A tree class based on the balances parentheses (BP)
@@ -48,12 +48,13 @@ struct detail::ConstructionTraversal<BPTree<B, S>> {
 
 template <class B, detail::TreeEncodingStorage S>
 struct TreeTraits<BPTree<B, S>> {
-  using TreeView = BPTree<B, ReadOnlyStorageView>;
+  using Node = TreeNode;
   using NodeView = detail::BpNodeView<BPTree<B, S>>;
 };
 
 template <class RMMTree, detail::TreeEncodingStorage EncodingStorage>
-class BPTree : public TreeBase<BPTree<RMMTree, EncodingStorage>> {
+class BPTree : public TreeBase<BPTree<RMMTree, EncodingStorage>>,
+               public SerializationBase<BPTree<RMMTree, EncodingStorage>> {
  private:
   BPTree(EncodingStorage storage, size_t bits, RMMTree backend)
       : encoding_(std::move(storage)),
@@ -65,6 +66,9 @@ class BPTree : public TreeBase<BPTree<RMMTree, EncodingStorage>> {
   RMMTree rmm_;
 
  public:
+  /** @brief Tree borrowing the encoding words and owning its backend metadata.
+   */
+  using TreeView = BPTree<RMMTree, ReadOnlyStorageView>;
   /**
    * @brief Construct an owning copy of another ordered tree's topology.
    * @details Preserves child order, but assigns destination node numbers and
@@ -92,7 +96,7 @@ class BPTree : public TreeBase<BPTree<RMMTree, EncodingStorage>> {
     requires Serializable<RMMTree>
   {
     detail::serialize_tree<detail::TreeEncodingKind::kBP>(
-        writer, this->size(), encoding_words_impl(), rmm_);
+        writer, this->size(), encoding_words(), rmm_);
   }
 
   /** @brief Restore a complete tree without rebuilding its navigation index.
@@ -135,7 +139,7 @@ class BPTree : public TreeBase<BPTree<RMMTree, EncodingStorage>> {
   size_t memory_usage_bytes_impl() const
     requires HasMemoryUsageBytes<RMMTree>
   {
-    return sizeof(*this) + encoding_owned_bytes_impl() +
+    return sizeof(*this) + encoding_owned_bytes() +
            nested_owned_memory_bytes(rmm_);
   }
 
@@ -168,7 +172,7 @@ class BPTree : public TreeBase<BPTree<RMMTree, EncodingStorage>> {
   explicit BPTree(EncodingStorage storage, size_t tree_size)
       : encoding_(std::move(storage)),
         num_bits_(detail::tree_encoding_bits(tree_size, true)),
-        rmm_(encoding_words_impl(), num_bits_) {}
+        rmm_(encoding_words(), num_bits_) {}
 
   /** @brief Deep-copy owning encodings and rebuild their backend references.
    * @details TreeView copies backend metadata and borrows the same encoding.
@@ -176,7 +180,7 @@ class BPTree : public TreeBase<BPTree<RMMTree, EncodingStorage>> {
   BPTree(const BPTree& other)
       : encoding_(other.encoding_), num_bits_(other.num_bits_), rmm_([&] {
           if constexpr (std::same_as<EncodingStorage, AlignedStorage>) {
-            return RMMTree(encoding_words_impl(), num_bits_);
+            return RMMTree(encoding_words(), num_bits_);
           } else {
             return other.rmm_;
           }
@@ -205,12 +209,13 @@ class BPTree : public TreeBase<BPTree<RMMTree, EncodingStorage>> {
     requires std::same_as<EncodingStorage, ReadOnlyStorageView>
   = delete;
 
-  /** @brief Implement TreeBase::encoding_words. */
-  std::span<const uint64_t> encoding_words_impl() const {
+  /** @brief Borrow complete words, including final padding, while storage is
+   * stable. */
+  std::span<const uint64_t> encoding_words() const {
     return detail::tree_encoding_words(encoding_, num_bits_);
   }
-  /** @brief Implement TreeBase::encoding_owned_bytes. */
-  size_t encoding_owned_bytes_impl() const {
+  /** @brief Owned encoding allocation in bytes; zero for a borrowing view. */
+  size_t encoding_owned_bytes() const {
     return detail::tree_encoding_owned_bytes(encoding_);
   }
 
@@ -218,6 +223,13 @@ class BPTree : public TreeBase<BPTree<RMMTree, EncodingStorage>> {
    * @brief Returns the root node
    */
   Node root_impl() const { return Node(0, 0); }
+
+  /** @brief BP numbers nodes in preorder, one node per opening bit. */
+  size_t number_impl(const Node& node) const { return node.number; }
+  size_t path_key_impl(Node node) const { return node.number; }  // Preorder.
+  Node find_by_number_impl(size_t i) const {
+    return Node(i, rmm_.select1(i + 1));
+  }
 
   /**
    * @brief Returns the size of the tree
@@ -340,4 +352,4 @@ class BPTree : public TreeBase<BPTree<RMMTree, EncodingStorage>> {
   }
 };
 
-}  // namespace pixie
+}  // namespace pixie::tree

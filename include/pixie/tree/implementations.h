@@ -8,6 +8,7 @@
  * selectable rank/select backend (defaults to `RankSelectSupport<>`).
  * - `BPTree<RMMTree>`: balanced-parentheses encoding.
  * - `DFUDSTree<RMMTree>`: depth-first unary degree sequence.
+ * - `ForestCoverTree`: disjoint bounded LOUDS forests with ordinal navigation.
  *
  * Include the individual concrete header in consumers. Traversal workloads
  * live in the benchmark harness; encoding-specific unpacking kernels remain
@@ -17,4 +18,5 @@
 #include <pixie/tree.h>
 #include <pixie/tree/bp.h>
 #include <pixie/tree/dfuds.h>
+#include <pixie/tree/forest_cover.h>
 #include <pixie/tree/louds.h>

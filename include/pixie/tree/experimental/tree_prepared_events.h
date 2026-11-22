@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-namespace pixie::experimental {
+namespace pixie::tree::experimental {
 /**
  * @brief Bounded immutable DFS event blocks for a complete small tree.
  * @details Construction admits nonempty trees of at most MaxNodes nodes.
@@ -52,7 +52,8 @@ class PreparedTreeEvents {
       if constexpr ((Mask >> J) & 1) {
         inspect(node);
       } else {
-        pixie::detail::tree_unpack::emit(visit, node, !((b.returns >> J) & 1));
+        pixie::tree::detail::tree_unpack::emit(visit, node,
+                                               !((b.returns >> J) & 1));
       }
     };
     (event.template operator()<I>(), ...);
@@ -84,7 +85,7 @@ class PreparedTreeEvents {
             node, [&](TreeNode child) { append(blocks_, child, true, false); });
       }
     };
-    pixie::detail::tree_unpack::subtree(tree, tree.root(), event);
+    pixie::tree::detail::tree_unpack::subtree(tree, tree.root(), event);
   }
   /** @brief Admitted node count, or zero for a miss. */
   size_t size() const { return nodes_; }
@@ -124,12 +125,12 @@ class PreparedTreeEvents {
         if (InspectChildren && ((b.inspections >> i) & 1)) {
           inspect(node);
         } else {
-          pixie::detail::tree_unpack::emit(visit, node,
-                                           !((b.returns >> i) & 1));
+          pixie::tree::detail::tree_unpack::emit(visit, node,
+                                                 !((b.returns >> i) & 1));
         }
       }
     }
     return true;
   }
 };
-}  // namespace pixie::experimental
+}  // namespace pixie::tree::experimental

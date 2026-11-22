@@ -2,7 +2,7 @@
 
 #include <pixie/tree.h>
 
-namespace pixie::detail::tree_unpack {
+namespace pixie::tree::detail::tree_unpack {
 // Existing one-argument visitors keep the DFS event sequence; consumers that
 // inspect children can additionally distinguish entry from return events.
 template <class Visitor>
@@ -36,4 +36,4 @@ void subtree(const Tree& tree, TreeNode root, Visitor& visit) {
     }
   }
 }
-}  // namespace pixie::detail::tree_unpack
+}  // namespace pixie::tree::detail::tree_unpack

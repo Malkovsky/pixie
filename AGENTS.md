@@ -14,7 +14,7 @@ Current library families are:
   unchanged-value consuming merge;
 - range min-max (RmM) indexes via `pixie::RmMBTree<>` in `rmm/btree.h`;
 - static range-minimum-query (RMQ) indexes;
-- rooted-tree encodings (LOUDS, balanced parentheses, and DFUDS);
+- rooted-tree encodings (LOUDS, balanced parentheses, DFUDS, and ForestCover);
 - aligned owning storage, read-only storage views, and mapped-file resources;
 - storage-backed wavelet-tree indexes.
 
@@ -97,7 +97,7 @@ behavior is not automatically a long-term compatibility commitment.
 
 Public data-structure families use CRTP contracts. The current contracts are
 `IntegerVectorBase`, `MonotoneIntegerVectorBase`, `RankSelectBase`, `RmMBase`,
-`pixie::rmq::RmqBase`, `TreeBase`, `StorageBase`, `WaveletTreeBase`,
+`pixie::rmq::RmqBase`, `pixie::tree::TreeBase`, `StorageBase`, `WaveletTreeBase`,
 `PermutationBase`, and `PermutableSequenceBase`. The latter two keep separate
 contracts in `permutation.h` and `permutable_sequence.h`, with concrete
 `Permutation` and `PermutableSequence` types in `permutations/permutation.h` and
@@ -365,10 +365,9 @@ The script configures and builds the `coverage` preset, deletes stale
 To regenerate reports from existing profiles without rerunning tests, use
 `bash scripts/collect_gcov.sh build/coverage`.
 
-CI also runs the script with `PIXIE_COVERAGE_VARIANT=rank-select-scalar`.
-This builds only rank/select for baseline `x86-64` in `build/coverage-scalar`
-and uploads its report under the same Codecov flag. This covers scalar paths
-even on AVX2 runners without rerunning the entire suite in that configuration.
+CI also runs the script with `PIXIE_COVERAGE_VARIANT=scalar`. This runs
+rank/select tests and the Forest256 and SIMD microtree suites for baseline
+`x86-64` in `build/coverage-scalar`. Both jobs upload under the same Codecov flag.
 The native job uses only the runner's available instructions; CI does not
 require AVX-512 hardware.
 
@@ -381,8 +380,10 @@ require AVX-512 hardware.
   Run the script before trusting the report.
 - Header-only templates can appear in multiple gcov translation units. Keep
   every translation unit's report: running gcov repeatedly in one directory
-  overwrites earlier header reports. Codecov searches only the generated
-  `gcov/` directory and merges reports by source path. For a header such as
+  overwrites earlier header reports. Codecov searches only the `gcov-upload/`
+  copy, where numeric `N*` hit counts are written as `N` for its parser.
+  Branch records and the archived `gcov/` reports are unchanged. Codecov
+  merges reports by source path. For a header such as
   `rmm/btree.h`, inspect all its `.gcov` reports or the Codecov aggregate
   instead of trusting one report or the first block in `coverage.txt`.
 - Prioritize public behavior paths over unreachable defensive or allocator
@@ -393,8 +394,8 @@ require AVX-512 hardware.
 1. Run `clang-format` 21.1.8 before committing; use the repository's Chromium
    style. CI pins this exact version. Install locally with
    `uv tool install 'clang-format==21.1.8'`.
-2. Put library code in the `pixie` namespace; RMQ contracts and implementations
-   use `pixie::rmq`.
+2. Put library code in the `pixie` namespace. RMQ uses `pixie::rmq`; rooted
+   trees use `pixie::tree`, with experiments under `pixie::tree::experimental`.
 3. Use Doxygen comments for every public API. Base/contract headers must fully
    document each public facade operation and its implementation requirement.
 4. Use `constexpr` for compile-time values.

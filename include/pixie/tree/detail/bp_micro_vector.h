@@ -6,7 +6,7 @@
 #include <immintrin.h>
 #endif
 
-namespace pixie::detail::bp_micro::vector_micro {
+namespace pixie::tree::detail::bp_micro::vector_micro {
 struct Pair {
 #if defined(PIXIE_AVX2_SUPPORT) || defined(PIXIE_AVX512_SUPPORT)
   __m128i lanes;
@@ -44,7 +44,7 @@ template <size_t Id, class Visit, class Inspect, size_t... I>
     if constexpr (code & 128) {
       inspect(node);
     } else {
-      pixie::detail::tree_unpack::emit(
+      pixie::tree::detail::tree_unpack::emit(
           visit, node,
           !(bp_micro_tables.programs[Id].returns & (uint32_t{1} << J)));
     }
@@ -62,4 +62,4 @@ template <class Visit, class Inspect, size_t... I>
 constexpr auto dispatch(std::index_sequence<I...>) {
   return std::array{&program<I, Visit, Inspect>...};
 }
-}  // namespace pixie::detail::bp_micro::vector_micro
+}  // namespace pixie::tree::detail::bp_micro::vector_micro

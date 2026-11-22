@@ -7,6 +7,7 @@ const bool registered = [] {
   RegisterTreeWorkload<TreeWorkload::kRandomPath>("random_path");
   RegisterTreeWorkload<TreeWorkload::kRandomPathChildren>(
       "random_path_children");
+  pixie::benchmarks::RegisterShapePaths();
   return true;
 }();
 }  // namespace

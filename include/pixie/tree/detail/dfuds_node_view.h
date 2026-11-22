@@ -3,10 +3,11 @@
 #include <pixie/tree.h>
 
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <utility>
 
-namespace pixie::detail {
+namespace pixie::tree::detail {
 
 /**
  * @brief Non-owning navigation view with lazy per-node query caches.
@@ -19,6 +20,8 @@ class DfudsNodeView {
  public:
   /** @brief Return the current valid node handle. */
   TreeNode node() const { return node_; }
+  /** @brief Return the current node's zero-based preorder number. */
+  size_t number() const { return node_.number; }
   /** @brief Move to a valid node of the same tree and invalidate all caches.
    */
   void reset(TreeNode node) { *this = DfudsNodeView(*tree_, node); }
@@ -95,10 +98,10 @@ class DfudsNodeView {
 
  private:
   size_t delimiter() const {
-    if (!delimiter_) {
+    if (delimiter_ == kNoDelimiter) {
       delimiter_ = tree_->rmm_.select0(node_.number + 1);
     }
-    return *delimiter_;
+    return delimiter_;
   }
   size_t end() const {
     if (!end_) {
@@ -112,7 +115,10 @@ class DfudsNodeView {
     }
     return *open_;
   }
-  mutable std::optional<size_t> delimiter_, end_, open_;
+  // A delimiter is a zero-based offset strictly below the encoding length.
+  static constexpr size_t kNoDelimiter = std::numeric_limits<size_t>::max();
+  mutable size_t delimiter_ = kNoDelimiter;
+  mutable std::optional<size_t> end_, open_;
 
   const Tree* tree_;
   TreeNode node_;
@@ -120,4 +126,4 @@ class DfudsNodeView {
   mutable std::optional<bool> last_;
 };
 
-}  // namespace pixie::detail
+}  // namespace pixie::tree::detail

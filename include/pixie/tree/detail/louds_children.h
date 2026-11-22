@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <span>
 
-namespace pixie::detail::tree_unpack {
+namespace pixie::tree::detail::tree_unpack {
 // Decode consecutive child handles in windows of at most 256 source bits.
 // A long unary run falls back to indexed child access at the next window.
 // first/count must describe a valid consecutive child range of node.
@@ -37,4 +37,4 @@ void louds_children(const Tree& tree,
     }
   }
 }
-}  // namespace pixie::detail::tree_unpack
+}  // namespace pixie::tree::detail::tree_unpack

@@ -11,7 +11,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace pixie::detail::dfuds_micro {
+namespace pixie::tree::detail::dfuds_micro {
 // Cache decoding by topology, not by node address. DFUDS degree runs encode
 // complete subtrees. Trailing bits beyond the first complete subtree are
 // irrelevant. The table holds only relative handles.
@@ -131,7 +131,7 @@ template <size_t Id, class Visit, class Inspect, size_t... I>
     if constexpr (code & 128) {
       inspect(node);
     } else {
-      pixie::detail::tree_unpack::emit(
+      pixie::tree::detail::tree_unpack::emit(
           visit, node,
           !(dfuds_micro_tables.programs[Id].returns & (uint32_t{1} << J)));
     }
@@ -175,7 +175,7 @@ class DfudsMicroSubtree {
            3 * (Bits / 2) * sizeof(uint16_t);
   }
   bool load(std::span<const uint64_t> words, size_t nbits, TreeNode root) {
-    using namespace pixie::detail::tree_unpack;
+    using namespace pixie::tree::detail::tree_unpack;
     std::array<uint64_t, Bits / 64 + 1> local{};
     const size_t available = std::min<size_t>(Bits, nbits - root.pos);
     for (size_t offset = 0; offset < available; offset += 64) {
@@ -256,7 +256,7 @@ class DfudsMicroSubtree {
   size_t size() const { return nodes_; }
   template <class Visit, class Inspect>
   void walk(Visit& visit, Inspect& inspect) const {
-    using pixie::detail::tree_unpack::emit;
+    using pixie::tree::detail::tree_unpack::emit;
     for (size_t i = 0; i < count_; ++i) {
       const auto& record = records_[i];
       if (is_macro(record)) {
@@ -282,4 +282,4 @@ class DfudsMicroSubtree {
 template <size_t Bits, class Tree, class Visit, class Inspect>
 using DfudsMicroTraversal =
     tree_unpack::MicroTraversal<DfudsMicroSubtree<Bits>, Tree, Visit, Inspect>;
-}  // namespace pixie::detail::dfuds_micro
+}  // namespace pixie::tree::detail::dfuds_micro

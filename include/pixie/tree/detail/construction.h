@@ -7,7 +7,7 @@
 #include <type_traits>
 #include <vector>
 
-namespace pixie::detail {
+namespace pixie::tree::detail {
 
 // Sources are valid ordered trees. Handles remain valid throughout traversal;
 // first_child and next_sibling are called only when that node exists.
@@ -199,4 +199,4 @@ AlignedStorage construct_tree_encoding(const Tree& tree) {
   return output;
 }
 
-}  // namespace pixie::detail
+}  // namespace pixie::tree::detail

@@ -11,11 +11,12 @@ TEST_ARGS=(--preset coverage)
 
 case "${VARIANT}" in
   native) ;;
-  rank-select-scalar)
+  scalar)
     BUILD_DIR="${ROOT_DIR}/build/coverage-scalar"
     CONFIGURE_ARGS+=(-B "${BUILD_DIR}" -DMARCH=x86-64 -DDISABLE_AVX512=ON)
-    BUILD_ARGS=("${BUILD_DIR}" --target rank_select_tests)
-    TEST_ARGS=(--test-dir "${BUILD_DIR}" -C Debug -L '^rank_select_tests$'
+    BUILD_ARGS=("${BUILD_DIR}" --target rank_select_tests tree_tests)
+    TEST_ARGS=(--test-dir "${BUILD_DIR}" -C Debug
+               -R '^(rank_select_tests\.|tree_tests\.(Forest256|OrdinalForest256|TreeSimdMicro))'
                --no-tests=error --output-on-failure)
     ;;
   *)

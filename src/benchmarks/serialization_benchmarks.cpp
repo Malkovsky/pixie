@@ -486,9 +486,10 @@ void BM_NavigationIndexArtifact(benchmark::State& state) {
       });
 }
 
-using SerializedBP = pixie::BPTree<pixie::RmMBTree<>>;
-using SerializedDFUDS = pixie::DFUDSTree<pixie::RmMBTree<>>;
-using SerializedLOUDS = pixie::LoudsTree<pixie::RankSelectSupportCompressed<>>;
+using SerializedBP = pixie::tree::BPTree<pixie::RmMBTree<>>;
+using SerializedDFUDS = pixie::tree::DFUDSTree<pixie::RmMBTree<>>;
+using SerializedLOUDS =
+    pixie::tree::LoudsTree<pixie::RankSelectSupportCompressed<>>;
 
 template <class Tree,
           bool RootIndex,
@@ -499,18 +500,18 @@ void BM_TreeArtifact(benchmark::State& state) {
   auto words = pixie::benchmarks::GenerateRandomBp(n);
   if constexpr (std::same_as<Tree, SerializedDFUDS>) {
     words = pixie::benchmarks::ConvertBpEncoding<
-        pixie::detail::TreeEncodingKind::kDFUDS>(words, n);
+        pixie::tree::detail::TreeEncodingKind::kDFUDS>(words, n);
   } else if constexpr (std::same_as<Tree, SerializedLOUDS>) {
     words = pixie::benchmarks::ConvertBpEncoding<
-        pixie::detail::TreeEncodingKind::kLOUDS>(words, n);
+        pixie::tree::detail::TreeEncodingKind::kLOUDS>(words, n);
   }
   const Tree tree(words, n);
   if constexpr (RootIndex) {
-    const pixie::RootNavigationIndex<Tree> index(tree);
+    const pixie::tree::RootNavigationIndex<Tree> index(tree);
     component_iterations<Load, Validation>(
         state, index, n, [&](pixie::BinaryReader& reader) {
-          return pixie::RootNavigationIndex<Tree>::deserialize(
-              reader, tree, pixie::kDefaultTraversalBytes, Validation);
+          return pixie::tree::RootNavigationIndex<Tree>::deserialize(
+              reader, tree, pixie::tree::kDefaultTraversalBytes, Validation);
         });
   } else {
     component_iterations<Load, Validation>(

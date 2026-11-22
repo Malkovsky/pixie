@@ -1159,7 +1159,8 @@ EXAMPLE_RECURSIVE      = NO
 # that contain images that are to be included in the documentation (see the
 # \image command).
 
-IMAGE_PATH             = @CMAKE_CURRENT_SOURCE_DIR@/src/docs/images
+IMAGE_PATH             = @CMAKE_CURRENT_SOURCE_DIR@/src/docs/images \
+                         @CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees
 
 # The INPUT_FILTER tag can be used to specify a program that Doxygen should
 # invoke to filter for each input file. Doxygen will invoke the filter program
@@ -1485,13 +1486,16 @@ HTML_EXTRA_FILES       = "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/logo.png" \
                          "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/rank_select/rank_select_select1.svg" \
                          "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/rank_select/rank_select_select0.svg" \
                          "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/rank_select/rank_select_build.svg" \
-                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/rank_select/rank_select_auxiliary.svg" \
-                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees/tree_dfs.svg" \
-                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees/tree_dfs_children.svg" \
-                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees/tree_random_path.svg" \
-                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees/tree_random_path_children.svg" \
-                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees/tree_build.svg" \
-                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees/tree_memory.svg"
+                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/rank_select/rank_select_auxiliary.svg"
+
+# Shared offline assets for the inline tree charts.
+HTML_EXTRA_FILES      += "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/benchmarks/data/tree-matched.js" \
+                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/benchmarks/data/tree-history.js" \
+                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees/preview/d3-7.9.0.min.js" \
+                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees/preview/plot-0.6.17.min.js" \
+                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees/preview/tree-curves.js" \
+                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees/preview/tree-curves.css" \
+                         "@CMAKE_CURRENT_SOURCE_DIR@/src/docs/images/benchmarks/trees/preview/tree-chart-licenses.txt"
 
 # The HTML_COLORSTYLE tag can be used to specify if the generated HTML output
 # should be rendered with a dark or light theme.
