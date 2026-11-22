@@ -380,8 +380,10 @@ require AVX-512 hardware.
   Run the script before trusting the report.
 - Header-only templates can appear in multiple gcov translation units. Keep
   every translation unit's report: running gcov repeatedly in one directory
-  overwrites earlier header reports. Codecov searches only the generated
-  `gcov/` directory and merges reports by source path. For a header such as
+  overwrites earlier header reports. Codecov searches only the `gcov-upload/`
+  copy, where numeric `N*` hit counts are written as `N` for its parser.
+  Branch records and the archived `gcov/` reports are unchanged. Codecov
+  merges reports by source path. For a header such as
   `rmm/btree.h`, inspect all its `.gcov` reports or the Codecov aggregate
   instead of trusting one report or the first block in `coverage.txt`.
 - Prioritize public behavior paths over unreachable defensive or allocator
