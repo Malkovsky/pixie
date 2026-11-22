@@ -46,11 +46,4 @@ The baseline, 32 KiB and 512 KiB curves vary extra navigation state, not the tre
 <p>Bits per node include the tree encoding and its intrinsic navigation indexes. Uncached variants have no traversal context or optional root index. Budgeted variants also count retained traversal state and reserved scratch. Allocator overhead and temporary construction memory are excluded.</p>
 <div class="pixie-tree-chart" data-chart="history-memory"></div>
 
-<details id="tree-history"><summary>Historical traversal measurements: random recursive trees</summary>
-<p>The BFS CSR run uses the same seed-42 random recursive workload as the archived curves from revision <code>8e72c47</code>. Traversals report median CPU time over five repetitions on a Ryzen 7 8845HS, GCC 13.3, CPU 0.</p>
-<h3>DFS</h3><div class="pixie-tree-chart" data-chart="history-dfs"></div>
-<h3>DFS with child inspection</h3><div class="pixie-tree-chart" data-chart="history-dfs-children"></div>
-<h3>Random root-to-leaf paths</h3><div class="pixie-tree-chart" data-chart="history-random-path"></div>
-<h3>Random root-to-leaf paths with child inspection</h3><div class="pixie-tree-chart" data-chart="history-random-path-children"></div>
-</details>
 \endhtmlonly

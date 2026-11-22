@@ -24,17 +24,13 @@ async function check() {
   try {
     const roots = [...document.querySelectorAll('.pixie-tree-chart')];
     const specs = dom.window.pixieTreeCharts;
-    assert.equal(roots.length, 9);
+    assert.equal(roots.length, 5);
     assert.equal(document.querySelector('[data-chart="matched-tree_path_sibling"]'), null);
     if (process.argv[2]) {
-      const history = document.querySelector('details#tree-history');
-      assert.equal(history.open, false);
-      assert.equal(history.querySelectorAll('.pixie-tree-chart').length, 4);
+      assert.equal(document.querySelector('details#tree-history'), null);
       for (const id of ['history-build-prepared','history-memory']) {
         assert.equal(document.querySelector(`[data-chart="${id}"]`).closest('details'), null);
       }
-      history.querySelector('summary').click();
-      assert.equal(history.open, true);
     }
     assert.deepEqual(roots.map(r => r.dataset.chart).sort(), Object.keys(specs).sort());
     for (const [i, root] of roots.entries()) {
