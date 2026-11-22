@@ -271,10 +271,20 @@ class ForestCoverTree : public TreeBase<ForestCoverTree> {
       }
       auto encoded =
           detail::forest256::encode_louds_forest256(roots.back(), degrees);
-      for (size_t b = 0; b < 2 * nodes.size(); ++b) {
-        size_t pos = 2ull * base + b;
-        if ((encoded.words[b / 64] >> (b % 64)) & 1) {
-          stream_[pos / 64] |= 1ull << (pos % 64);
+      const size_t bits = 2 * nodes.size();
+      const size_t start = 2ull * base;
+      const size_t shift = start % 64;
+      for (size_t b = 0; b < bits; b += 64) {
+        uint64_t word = encoded.words[b / 64];
+        const size_t remaining = bits - b;
+        if (remaining < 64) {
+          // A short forest's encoder padding is not part of the stream.
+          word &= (uint64_t{1} << remaining) - 1;
+        }
+        const size_t dst = (start + b) / 64;
+        stream_[dst] |= word << shift;
+        if (shift && remaining > 64 - shift) {
+          stream_[dst + 1] |= word >> (64 - shift);
         }
       }
       sizes.push_back(nodes.size());

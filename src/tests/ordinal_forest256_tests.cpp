@@ -153,7 +153,8 @@ TEST(ForestCover, NodeViewEnumerationSurvivesReset) {
 }
 
 TEST(OrdinalForest256, ThresholdsDeepChainAndWideRoot) {
-  for (size_t n : {127, 128, 129, 255, 256, 257, 65537, 65538}) {
+  for (size_t n : {31, 32, 33, 127, 128, 129, 255, 256, 257, 287, 288, 289,
+                   65537, 65538}) {
     for (bool chain : {false, true}) {
       SCOPED_TRACE(::testing::Message() << n << " chain=" << chain);
       std::vector<size_t> p(n);
