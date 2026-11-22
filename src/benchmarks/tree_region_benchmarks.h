@@ -9,8 +9,7 @@
 namespace pixie::benchmarks {
 using LoudsRegionTree = tree::LoudsTree<RankSelectSupportCompressed<>>;
 
-// Bounded region materialization versus replay of an already retained result.
-static void LoudsScan(benchmark::State& state) {
+static LoudsRegionTree region_tree() {
   const size_t n = 255;
   std::vector<uint64_t> words((2 * n - 1 + 63) / 64, 0);
   size_t pos = 0;
@@ -21,51 +20,37 @@ static void LoudsScan(benchmark::State& state) {
     }
     ++pos;
   }
-  LoudsRegionTree tree(words, n);
+  return LoudsRegionTree(words, n);
+}
+
+static void LoudsFetch(benchmark::State& state) {
+  auto tree = region_tree();
   pixie::tree::TreeTraversalContext context(tree);
   for (auto _ : state) {
-    auto result = context.scan(tree.root(), state.range(0));
+    auto result = context.fetch(tree.root(), state.range(0));
     benchmark::DoNotOptimize(result);
   }
 }
-BENCHMARK(LoudsScan)->Arg(64)->Arg(256)->Arg(1024);
+BENCHMARK(LoudsFetch)->Arg(64)->Arg(256)->Arg(1024);
 
-static void LoudsDecodedReplay(benchmark::State& state) {
-  const size_t n = 255;
-  std::vector<uint64_t> words((2 * n - 1 + 63) / 64, 0);
-  size_t pos = 0;
-  for (size_t i = 0; i < n; ++i) {
-    const size_t degree = i < n / 2 ? 2 : 0;
-    for (size_t j = 0; j < degree; ++j, ++pos) {
-      words[pos / 64] |= uint64_t{1} << (pos % 64);
-    }
-    ++pos;
-  }
-  LoudsRegionTree tree(words, n);
+static void LoudsInspectFetchedPart(benchmark::State& state) {
+  auto tree = region_tree();
   pixie::tree::TreeTraversalContext context(tree);
   auto result = context.fetch(tree.root(), 1024);
   for (auto _ : state) {
-    result->events([](auto node, bool entering) {
-      benchmark::DoNotOptimize(node);
-      benchmark::DoNotOptimize(entering);
-    });
+    for (const auto& node : result.nodes()) {
+      benchmark::DoNotOptimize(node.source_id);
+      for (auto child : node.children) {
+        benchmark::DoNotOptimize(child);
+      }
+    }
   }
 }
-BENCHMARK(LoudsDecodedReplay);
+BENCHMARK(LoudsInspectFetchedPart);
 
-// Same full enter/exit event contract as DecodedTree::events().
+// Whole-source traversal; unlike snapshot inspection this emits DFS events.
 static void LoudsDirectEvents(benchmark::State& state) {
-  const size_t n = 255;
-  std::vector<uint64_t> words((2 * n - 1 + 63) / 64, 0);
-  size_t pos = 0;
-  for (size_t i = 0; i < n; ++i) {
-    const size_t degree = i < n / 2 ? 2 : 0;
-    for (size_t j = 0; j < degree; ++j, ++pos) {
-      words[pos / 64] |= uint64_t{1} << (pos % 64);
-    }
-    ++pos;
-  }
-  LoudsRegionTree tree(words, n);
+  auto tree = region_tree();
   for (auto _ : state) {
     auto node = tree.root();
     bool entering = true;

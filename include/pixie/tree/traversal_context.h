@@ -1,7 +1,6 @@
 #pragma once
 
 #include <pixie/tree/bp.h>
-#include <pixie/tree/decoded_tree.h>
 #include <pixie/tree/detail/bp_micro.h>
 #include <pixie/tree/detail/dfuds_micro.h>
 #include <pixie/tree/detail/louds_inspection_iterative.h>
@@ -9,8 +8,7 @@
 #include <pixie/tree/dfuds.h>
 #include <pixie/tree/louds.h>
 #include <pixie/tree/root_navigation_index.h>
-
-#include <memory>
+#include <pixie/tree/tree_part.h>
 
 namespace pixie::tree {
 namespace detail::tree_traversal {
@@ -36,11 +34,10 @@ struct SizingVisitor {
 /**
  * @brief Single-operation traversal context borrowing a tree and optional
  * index.
- * @details The byte limit covers this context, reusable scan scratch and its
- * latest retained result; the immutable index is independently budgeted.
+ * @details The byte limit covers this context, reusable fetch scratch and one
+ * output under construction; the immutable index is independently budgeted.
  * Legacy whole-walk decoder scratch is a reserved allowance, allocated by the
- * walker. scan/fetch use context-owned scratch. Returned results own their
- * records but borrow the tree; callers must preserve its lifetime and address.
+ * walker. Fetched parts own their records and do not borrow the tree.
  * Multiple results can coexist; operations on one context must not overlap.
  * Sequential thread handoff is allowed. No locks or shared cache lookup exist.
  */
@@ -64,11 +61,12 @@ class TreeTraversalContext {
   Plan plan_;
   const RootNavigationIndex<Tree>* index_ = nullptr;
   size_t byte_limit_;
+  static constexpr size_t missing = std::numeric_limits<size_t>::max();
   struct Frame {
-    size_t node, remaining;
+    TreeNode node;
+    size_t parent, children = 0, degree = missing;
   };
   std::vector<Frame> scratch_;
-  std::shared_ptr<const DecodedTree<Tree>> retained_;
 
   static constexpr size_t overhead() { return sizeof(TreeTraversalContext); }
   template <size_t Bits>
@@ -118,8 +116,7 @@ class TreeTraversalContext {
   /** @brief Configure scan storage and whole-walk scratch allowance.
    * @details Borrows tree and an optional independently budgeted index. They
    * must remain alive and unmoved while this context or its cursors use them.
-   * Mutating operations on one context must not overlap. Returned decoded
-   * results borrow only the tree and may outlive the context.
+   * Mutating operations on one context must not overlap.
    * @throws std::invalid_argument for an empty tree or an index for another
    * tree.
    */
@@ -139,7 +136,7 @@ class TreeTraversalContext {
     }
   }
 
-  /** @brief Decode bounded topology without retaining the result. Mutable
+  /** @brief Fetch an owning TreePart rooted at a valid source node. Mutable
    * scratch is reused; operations on one context must not overlap. Handles
    * must be valid for tree(). max_bits is the sum of logical bits examined,
    * including repeated examinations across regions. Backend navigation used
@@ -149,153 +146,112 @@ class TreeTraversalContext {
    * byte_limit; caller-held output memory is accounted separately from context
    * scratch. No general cache lookup or deduplication is performed.
    */
-  std::shared_ptr<const DecodedTree<Tree>> scan(TreeNode root,
-                                                size_t max_bits) {
-    using Result = DecodedTree<Tree>;
-    auto out = std::make_shared<Result>(tree_);
-    const size_t fixed = sizeof(*this) + sizeof(Result) + plan_.scratch;
+  TreePart fetch(TreeNode root, size_t max_bits) {
+    const size_t fixed = sizeof(*this) + sizeof(TreePart) + plan_.scratch;
     const size_t available = byte_limit_ > fixed ? byte_limit_ - fixed : 0;
-    const size_t capacity = std::min(
-        {max_bits, tree_.size(),
-         available / (sizeof(typename Result::Record) + sizeof(Frame))});
+    const size_t capacity =
+        std::min({max_bits, tree_.size(),
+                  available / (sizeof(TreePart::Node) + sizeof(Frame) +
+                               sizeof(size_t))});
     if (!capacity) {
-      return out;
+      return {{}, 0};
     }
-    out->records_.reserve(capacity);
     scratch_.clear();
     scratch_.reserve(capacity);
     const size_t nbits =
         encoding == 0 ? 2 * tree_.size() : 2 * tree_.size() - 1;
     auto bit = [&](size_t pos) {
-      ++out->bits_;
+      --max_bits;
       return bool((words_[pos / 64] >> (pos % 64)) & 1);
+    };
+    auto add = [&](TreeNode node, size_t parent) {
+      if (parent != missing) {
+        ++scratch_[parent].children;
+      }
+      scratch_.push_back({node, parent});
+      return scratch_.size() - 1;
     };
     if constexpr (encoding == 0) {
       // A contiguous BP prefix. Open nodes at the boundary stay incomplete.
-      size_t number = root.number;
-      ++out->regions_;
-      for (size_t pos = root.pos; pos < nbits && out->bits_ < max_bits; ++pos) {
+      size_t parent = missing;
+      for (size_t pos = root.pos; pos < nbits && max_bits; ++pos) {
         if (bit(pos)) {
-          if (out->records_.size() == capacity) {
+          if (scratch_.size() == capacity) {
             break;
           }
-          auto parent =
-              scratch_.empty() ? Result::missing : scratch_.back().node;
-          auto id = out->add({number++, pos}, parent);
-          scratch_.push_back({id, 0});
+          parent = add({root.number + scratch_.size(), pos}, parent);
         } else {
-          out->records_[scratch_.back().node].complete = true;
-          scratch_.pop_back();
-          if (scratch_.empty()) {
+          auto& row = scratch_[parent];
+          row.degree = row.children;
+          parent = row.parent;
+          if (parent == missing) {
             break;
           }
-        }
-      }
-    } else if constexpr (encoding == 1) {
-      // DFUDS is a contiguous preorder stream of unary degrees.
-      size_t number = root.number, pos = root.pos;
-      ++out->regions_;
-      while (pos < nbits && out->bits_ < max_bits && out->size() < capacity) {
-        auto parent = scratch_.empty() ? Result::missing : scratch_.back().node;
-        auto id = out->add({number++, pos}, parent);
-        if (!scratch_.empty()) {
-          if (--scratch_.back().remaining == 0) {
-            out->records_[parent].complete = true;
-          }
-        }
-        size_t degree = 0;
-        bool known = false;
-        while (pos < nbits && out->bits_ < max_bits) {
-          if (!bit(pos++)) {
-            known = true;
-            break;
-          }
-          ++degree;
-        }
-        if (!known) {
-          break;
-        }
-        if (degree) {
-          scratch_.push_back({id, degree});
-        } else {
-          out->records_[id].complete = true;
-        }
-        while (!scratch_.empty() && scratch_.back().remaining == 0) {
-          scratch_.pop_back();
-        }
-        if (scratch_.empty()) {
-          break;
         }
       }
     } else {
-      // Each child run is a contiguous region; locate runs with native select.
-      // Decode delimiters directly, rather than selecting each child handle.
-      auto decode = [&](TreeNode node, size_t parent) {
-        if (out->bits_ == max_bits || out->size() == capacity) {
-          return Result::missing;
-        }
-        ++out->regions_;
-        const size_t id = out->add(node, parent);
-        size_t pos = node.pos, degree = 0;
-        bool known = false;
-        while (pos < nbits && out->bits_ < max_bits) {
+      // A started unary record represents a node, even if its terminating
+      // zero falls beyond the budget. Only the terminator proves its degree.
+      auto decode = [&](size_t number, size_t& pos, size_t parent) {
+        const size_t id = add({number, pos}, parent);
+        const size_t start = pos;
+        while (pos < nbits && max_bits) {
           if (!bit(pos++)) {
-            known = true;
+            scratch_[id].degree = pos - start - 1;
             break;
           }
-          ++degree;
-        }
-        scratch_.push_back({pos, known ? degree : Result::missing});
-        if (known && degree == 0) {
-          out->records_[id].complete = true;
         }
         return id;
       };
-      decode(root, Result::missing);
-      for (size_t parent = 0; parent < out->size(); ++parent) {
-        size_t degree = scratch_[parent].remaining;
-        if (!degree || degree == Result::missing) {
-          continue;
-        }
-        auto child = tree_.first_child(out->records_[parent].node);
-        size_t count = 0;
-        for (; count < degree; ++count) {
-          size_t id = decode(child, parent);
-          if (id == Result::missing) {
-            break;
+      size_t pos = root.pos;
+      if constexpr (encoding == 1) {
+        size_t parent = missing;
+        while (max_bits && scratch_.size() < capacity) {
+          parent = decode(root.number + scratch_.size(), pos, parent);
+          while (parent != missing &&
+                 scratch_[parent].children == scratch_[parent].degree) {
+            parent = scratch_[parent].parent;
           }
-          child = TreeNode(child.number + 1, scratch_[id].node);
-          if (scratch_[id].remaining == Result::missing) {
-            ++count;
+          if (parent == missing) {
             break;
           }
         }
-        out->records_[parent].complete = count == degree;
-        if (out->bits_ == max_bits || out->size() == capacity) {
-          break;
+      } else {
+        decode(root.number, pos, missing);
+        for (size_t i = 0;
+             i < scratch_.size() && max_bits && scratch_.size() < capacity;
+             ++i) {
+          const auto degree = scratch_[i].degree;
+          if (!degree) {
+            continue;
+          }
+          const auto child = tree_.first_child(scratch_[i].node);
+          pos = child.pos;
+          for (size_t k = 0;
+               k < degree && max_bits && scratch_.size() < capacity; ++k) {
+            decode(child.number + k, pos, i);
+          }
         }
       }
     }
-    return out;
+    std::vector<TreePart::Node> nodes(scratch_.size());
+    for (size_t i = 0; i < nodes.size(); ++i) {
+      const auto& frame = scratch_[i];
+      auto& row = nodes[i];
+      row.source_id = frame.node.number;
+      row.bit_position = frame.node.pos;
+      row.children_complete = frame.degree == frame.children;
+      row.children.reserve(frame.children);
+      if (i) {
+        nodes[frame.parent].children.push_back(i);
+      }
+    }
+    scratch_.clear();
+    return {std::move(nodes), 1};
   }
-  /** @brief Scan and retain the latest result. Older returned results survive.
-   * No lookup is performed. See scan() for bounds and lifetime requirements. */
-  std::shared_ptr<const DecodedTree<Tree>> fetch(TreeNode node,
-                                                 size_t max_bits) {
-    auto result = scan(node, max_bits);
-    retained_ = result->empty() ? nullptr : result;
-    return result;
-  }
-  /** @brief Release the context's result reference, retaining reusable scratch.
-   */
-  void clear() { retained_.reset(); }
   /** @brief Bytes of allocated reusable scan scratch. */
   size_t scan_scratch_bytes() const {
     return scratch_.capacity() * sizeof(Frame);
-  }
-  /** @brief Bytes of the latest fetched result; may also be held by callers. */
-  size_t retained_bytes() const {
-    return retained_ ? retained_->memory_usage_bytes() : 0;
   }
 
   /** @brief Peak explicit traversal-buffer allowance, including decoder loads.
@@ -313,12 +269,11 @@ class TreeTraversalContext {
   size_t cached_depth() const { return plan_.depth; }
   /** @brief Active index/context/scratch budget charge; zero when disabled. */
   size_t budget_usage_bytes() const {
-    const size_t charged =
-        plan_.scratch + scan_scratch_bytes() + retained_bytes();
+    const size_t charged = plan_.scratch + scan_scratch_bytes();
     return charged ? sizeof(*this) + charged : size_t{0};
   }
-  /** @brief Context bytes and reserved/allocated scratch plus retained result;
-   * excludes the borrowed index and results held only by callers. */
+  /** @brief Context and reserved/allocated scratch, excluding index and
+   * outputs. */
   size_t memory_usage_bytes() const {
     return std::max(sizeof(*this), budget_usage_bytes());
   }

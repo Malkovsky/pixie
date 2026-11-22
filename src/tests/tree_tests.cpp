@@ -667,11 +667,8 @@ TYPED_TEST(BoundedTraversalTest, ContextOwnershipAndAccounting) {
   EXPECT_NE(first.node().number, root.number);
 }
 
-TYPED_TEST(BoundedTraversalTest, PartialScansAndRetainedResults) {
+TYPED_TEST(BoundedTraversalTest, FetchMatchesSubtreeBitPrefixes) {
   using Tree = typename TypeParam::Tree;
-  static_assert(pixie::tree::IncompleteTree<pixie::tree::DecodedTree<Tree>>);
-  static_assert(
-      pixie::tree::IncompleteTree<pixie::tree::RootNavigationIndex<Tree>>);
   std::mt19937_64 rng(614);
   for (size_t n : {1u, 2u, 33u, 257u}) {
     auto adjacency = TypeParam::order(n, generate_random_tree(n, rng));
@@ -681,54 +678,64 @@ TYPED_TEST(BoundedTraversalTest, PartialScansAndRetainedResults) {
     Tree other(TypeParam::encode(n, adjacency), n);
     EXPECT_THROW((pixie::tree::TreeTraversalContext(other, 524288, &index)),
                  std::invalid_argument);
-    auto full = context.fetch(tree.root(), 10 * n);
-    ASSERT_EQ(full->size(), n);
-    EXPECT_EQ(context.memory_usage_bytes(),
-              sizeof(context) + context.scratch_bytes() +
-                  context.scan_scratch_bytes() + context.retained_bytes());
-    EXPECT_LE(context.budget_usage_bytes(), 524288u);
-    EXPECT_EQ(&full->tree_base(), &tree);
-    for (size_t bits : {0u, 1u, 2u, 3u, 8u, 63u, 64u, 65u, 500u}) {
-      auto result = context.scan(tree.root(), bits);
-      EXPECT_LE(result->scanned_bits(), bits);
-      result->for_each_node([&](auto node) {
-        EXPECT_TRUE(result->contains(node));
-        auto represented = result->represented_children(node);
-        std::vector<pixie::tree::TreeNode> expected;
-        tree.for_each_child(node, [&](auto c) {
-          if (result->contains(c)) {
-            expected.push_back(c);
+    // Independent oracle: enumerate descendants from the adjacency list. Source
+    // order is preorder for BP/DFUDS and level order for LOUDS.
+    const auto children = [&](size_t id) {
+      return std::span<const size_t>(adjacency[id]).subspan(1);
+    };
+    for (size_t root : {size_t{0}, n / 2, n > 1 ? size_t{1} : size_t{0}}) {
+      std::vector<size_t> ids{root}, subtree(n, 1), local(n), start(n), end(n);
+      for (size_t i = 0; i < ids.size(); ++i) {
+        const auto row = children(ids[i]);
+        ASSERT_LE(row.size(), n - ids.size());
+        ids.insert(ids.end(), row.begin(), row.end());
+      }
+      std::sort(ids.begin(), ids.end());
+      for (auto it = ids.rbegin(); it != ids.rend(); ++it) {
+        for (auto c : children(*it)) {
+          subtree[*it] += subtree[c];
+        }
+      }
+      const auto handle = tree.find_by_number(root);
+      const bool bp = TypeParam::bit_size(1) == 2;
+      size_t unary_offset = 0;
+      for (size_t i = 0; i < ids.size(); ++i) {
+        const auto id = ids[i];
+        local[id] = i;
+        start[id] =
+            bp ? tree.find_by_number(id).pos - handle.pos : unary_offset;
+        unary_offset += children(id).size() + 1;
+        end[id] = bp ? start[id] + 2 * subtree[id] : unary_offset;
+      }
+      for (size_t bits = 0; bits <= TypeParam::bit_size(ids.size()) + 1;
+           ++bits) {
+        auto part = context.fetch(handle, bits);
+        const size_t count = std::count_if(
+            ids.begin(), ids.end(), [&](auto id) { return start[id] < bits; });
+        ASSERT_EQ(part.nodes().size(), count);
+        ASSERT_EQ(part.root_count(), count ? 1u : 0u);
+        for (size_t i = 0; i < count; ++i) {
+          const auto id = ids[i];
+          const auto& row = part.nodes()[i];
+          EXPECT_EQ(row.source_id, id);
+          EXPECT_EQ(row.bit_position, tree.find_by_number(id).pos);
+          std::vector<size_t> expected;
+          for (auto c : children(id)) {
+            if (start[c] < bits) {
+              expected.push_back(local[c]);
+            }
           }
-        });
-        ASSERT_EQ(represented.size(), expected.size());
-        for (size_t i = 0; i < expected.size(); ++i) {
-          EXPECT_EQ(represented[i].number, expected[i].number);
+          EXPECT_EQ(row.children, expected);
+          EXPECT_EQ(row.children_complete,
+                    end[id] <= bits && expected.size() == children(id).size());
         }
-        if (result->children_complete(node)) {
-          EXPECT_EQ(represented.size(), tree.degree(node));
-        }
-        EXPECT_TRUE(full->children_complete(node));
-        EXPECT_EQ(full->represented_children(node).size(), tree.degree(node));
-        EXPECT_TRUE(index.contains(node));
-        EXPECT_TRUE(index.children_complete(node));
-        EXPECT_EQ(index.represented_children(node).size(), tree.degree(node));
-      });
-      size_t enters = 0, exits = 0;
-      result->events(
-          [&](auto, bool entering) { entering ? ++enters : ++exits; });
-      EXPECT_EQ(enters, result->size());
-      EXPECT_EQ(exits, enters);
+      }
     }
-    EXPECT_GT(context.retained_bytes(), 0u);
-    context.clear();
-    EXPECT_EQ(context.retained_bytes(), 0u);
-    EXPECT_EQ(full->size(), n);
-    if (n > 1) {
-      auto child = tree.first_child(tree.root());
-      auto part = context.scan(child, 10 * n);
-      EXPECT_FALSE(part->represented_parent(child).has_value());
-      EXPECT_FALSE(part->contains(tree.root()));
-      EXPECT_THROW(part->children_complete(tree.root()), std::out_of_range);
+    for (size_t id = 0; id < n; ++id) {
+      auto node = tree.find_by_number(id);
+      EXPECT_TRUE(index.contains(node));
+      EXPECT_TRUE(index.children_complete(node));
+      EXPECT_EQ(index.represented_children(node).size(), tree.degree(node));
     }
     auto text = tree.parentheses();
     EXPECT_EQ(text.size(), 2 * n);
@@ -745,24 +752,37 @@ TYPED_TEST(BoundedTraversalTest, PartialScansAndRetainedResults) {
   }
 }
 
-TEST(TreeLoudsScanTest, TerminatorsAndExactBitBudget) {
-  // BFS records: root 110, internal 10, leaf 0, leaf 0.
-  const std::vector<uint64_t> words{0b0001011};
-  const pixie::tree::LoudsTree<> tree(words, 4);
-  pixie::tree::TreeTraversalContext context(tree);
-  auto partial = context.scan(tree.root(), 2);
-  EXPECT_EQ(partial->scanned_bits(), 2u);
-  EXPECT_FALSE(partial->children_complete(tree.root()));
-  auto full = context.scan(tree.root(), 7);
-  EXPECT_EQ(full->scanned_bits(), 7u);
-  EXPECT_EQ(full->size(), 4u);
-  full->for_each_node(
-      [&](auto node) { EXPECT_TRUE(full->children_complete(node)); });
-  const auto leaf = tree.child(tree.root(), 1);
-  auto singleton = context.scan(leaf, 1);
-  EXPECT_EQ(singleton->scanned_bits(), 1u);
-  EXPECT_EQ(singleton->size(), 1u);
-  EXPECT_TRUE(singleton->children_complete(leaf));
+TYPED_TEST(BoundedTraversalTest, FetchOwnsOutputAndBoundsMemory) {
+  using Tree = typename TypeParam::Tree;
+  using Part = pixie::tree::TreePart;
+  const Part detached = [] {
+    std::mt19937_64 rng(91);
+    const auto adjacency =
+        TypeParam::order(128, generate_random_tree(128, rng));
+    Tree tree(TypeParam::encode(128, adjacency), 128);
+    pixie::tree::TreeTraversalContext disabled(tree, 0);
+    EXPECT_TRUE(disabled.fetch(tree.root(), 256).empty());
+    constexpr size_t limit = 1024;
+    pixie::tree::TreeTraversalContext context(tree, limit);
+    auto part = context.fetch(tree.root(), 256);
+    static_assert(std::same_as<decltype(part), Part>);
+    EXPECT_FALSE(part.empty());
+    EXPECT_LT(part.nodes().size(), 128u);
+    size_t bytes = sizeof(Part) + part.nodes().capacity() * sizeof(Part::Node);
+    for (const auto& row : part.nodes()) {
+      bytes += row.children.capacity() * sizeof(size_t);
+    }
+    EXPECT_EQ(context.memory_usage_bytes(), sizeof(context) +
+                                                context.scratch_bytes() +
+                                                context.scan_scratch_bytes());
+    EXPECT_LE(bytes + context.memory_usage_bytes(), limit);
+    (void)context.fetch(tree.child(tree.root(), 0), 1);
+    return part;
+  }();
+  ASSERT_FALSE(detached.empty());
+  EXPECT_EQ(detached.nodes().front().source_id, 0u);
+  ASSERT_FALSE(detached.nodes().front().children.empty());
+  EXPECT_EQ(detached.nodes().front().children.front(), 1u);
 }
 
 TYPED_TEST(BoundedTraversalTest, IndexRejectsEmptyTrees) {

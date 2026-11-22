@@ -14,7 +14,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -140,32 +139,6 @@ class TreeBase {
     requires requires(const Impl& tree) { tree.memory_usage_bytes_impl(); }
   {
     return impl().memory_usage_bytes_impl();
-  }
-
-  /** @brief Complete-tree source for the incomplete-tree inspection contract.
-   */
-  const Impl& tree_base() const { return impl(); }
-  /** @brief Membership for a valid handle of this representation. Does not
-   * authenticate arbitrary forged handles or provenance. Implementations with
-   * a custom handle provide contains_impl(node) to check its coordinates. */
-  bool contains(Node node) const {
-    if constexpr (std::same_as<Node, TreeNode>) {
-      return node.number < size();
-    } else {
-      return impl().contains_impl(node);
-    }
-  }
-  /** @brief All children of a valid node are represented in a complete tree. */
-  bool children_complete(Node) const { return true; }
-  /** @brief Parent of a valid node; complete root returns itself. */
-  std::optional<Node> represented_parent(Node node) const {
-    return parent(node);
-  }
-  /** @brief All immediate children of a valid node in original order. */
-  std::vector<Node> represented_children(Node node) const {
-    std::vector<Node> result;
-    for_each_child(node, [&](auto child) { result.push_back(child); });
-    return result;
   }
 
   /** @brief Canonical balanced-parentheses topology slice, independent of

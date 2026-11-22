@@ -44,8 +44,10 @@ walk-local decoded forest so a nested callback cannot invalidate it.
 
 Use `index.inspect_part()` or `forest.inspect_unit(unit)` to inspect an owning
 snapshot without keeping a cache slot live. Node and edge indices inside the
-snapshot are local. A complete empty child list denotes a leaf; an incomplete
-list denotes children outside the part. `<pixie/tree/event_part.h>` also
+snapshot are local. The first `root_count()` nodes are all the local roots in
+source order. Each node's `children` lists only its children in the part.
+`children_complete` states whether the producer verified the full child list. An
+empty list denotes a leaf only when it is complete. `<pixie/tree/event_part.h>` also
 provides `inspect_event_part<Bits>(tree, root)` for BP and DFUDS.
 
 BP, DFUDS and LOUDS own their encoded words in `AlignedStorage` by default. Construction
@@ -179,7 +181,7 @@ use the internal decoding kernels; the context has no whole-tree DFS event API.
 
 pixie::tree::RootNavigationIndex index(tree, 32768);
 pixie::tree::TreeTraversalContext context(tree, 512 * 1024, &index);
-auto decoded = context.fetch(tree.root(), 1024);
+auto part = context.fetch(tree.root(), 1024);
 ```
 
 The index is independently owned and budgeted. `root_index()` returns a nullable
@@ -187,33 +189,22 @@ const pointer. Save/restore the index separately and pass the restored index to
 another context; no constructor transfers index ownership. Cursors use native
 navigation when no index is provided.
 
-`scan(node, max_bits)` and `fetch(node, max_bits)` return immutable owned decoded
-records borrowing the source tree. `fetch` retains only the latest result;
-`clear` drops that reference. Caller-held results survive later operations.
-Logical examined bits, including repeat examinations, are counted across scanned
-regions; native index navigation for locating LOUDS child regions is separate.
-Limits yield partial or empty results. BP and DFUDS scan preorder encoding;
-LOUDS follows child runs in BFS order and can inspect multiple regions.
+`fetch(node, max_bits)` returns a `TreePart` by value. A nonempty result has one
+local root, `nodes()[0]`, and can outlive both the context and the source tree.
+BP reads preorder parentheses: an opening bit admits the node and its matching
+close confirms its children. DFUDS reads preorder unary degrees: starting a
+record admits the node, and its zero terminator establishes its degree. Its list
+is complete once every immediate child's record has started, even if the last
+child is incomplete. LOUDS uses the same unary rule in breadth-first order.
+Its native navigation to locate child runs is separate from the logical bits
+examined across those runs. The reader stops at the requested subtree boundary.
 
-Decoded results and root indexes satisfy the `IncompleteTree` inspection
-concept: `tree_base`, `contains`, `children_complete`, `represented_parent`, and
-`represented_children`. Inspection never falls back to source navigation.
-Root-index membership currently costs O(cached nodes); decoded membership is
-O(log represented nodes). Missing required membership throws `out_of_range`.
-The complete root is its own parent; an external parent is `nullopt`.
-Decoded `events(visitor)` emits enter/exit events for the represented topology,
-not a source-tree DFS prefix. Boundary nodes remain explicitly incomplete.
-
-One operation per context may execute at a time; sequential thread handoff is
-allowed. Results have independent immutable records. Context scan scratch is
-reused, and result memory is allocated separately. The context byte limit bounds
-scratch and its latest retained result, excluding caller-held results and the
-external index. Producing an output while an earlier result is live can increase
-process memory beyond that bound. Small limits may produce empty results.
-Existing whole-walk optimized kernels still allocate their own transient walkers;
-the context keeps their configuration and scratch allowance. They do not yet
-consume retained scan results. Decoder tables, compiler frames and allocator
-metadata are excluded from accounting. No locks or general cache lookup exist.
+Bit and byte limits can return partial or empty parts. The context byte limit
+covers the context, its whole-walk scratch allowance, reusable fetch scratch,
+and the nodes and child links of one output under construction. Previously
+returned parts, the external index, allocator overhead and stack frames are
+excluded. The context retains no output. Operations on a single context must
+not overlap; sequential thread handoff is allowed.
 
 `TreeBase::parentheses(start, count)` streams a canonical parenthesis slice for
 all encodings without allocating a full intermediate string.
@@ -230,8 +221,7 @@ you use; [implementations.h](implementations.h) lists the four promoted encoding
 | [forest_cover.h](forest_cover.h) | `ForestCoverTree` and its `TreeTraversalContext` and `RootNavigationIndex` specializations | Owning bounded forests, caller-owned decoder slots and optional root index. Use `ForestCoverTree::Node` for handles. |
 | [path_view.h](path_view.h) | `TreePathView` | Positioned navigation with bounded path state (`Tree::PathView`, `Tree::BoundedPathView<Capacity>`); use `tree_path` to materialize a path between endpoints. |
 | [root_navigation_index.h](root_navigation_index.h), [traversal_context.h](traversal_context.h), [traversal_budget.h](traversal_budget.h) | `RootNavigationIndex`, `TreeTraversalContext`, `kDefaultTraversalBytes` | Bounded navigation and traversal for the contiguous encodings. The default allowance is 512 KiB. |
-| [decoded_tree.h](decoded_tree.h), [incomplete_tree.h](../incomplete_tree.h) | `DecodedTree`, `IncompleteTree` | Immutable scan results and the inspection contract shared by decoded results and root indexes for the contiguous encodings. |
-| [tree_part.h](tree_part.h), [event_part.h](event_part.h) | `TreePart`, `inspect_event_part` | Owning inspection result (`Kind`, `Node`, `Range`, `Event`). A bounded BP/DFUDS probe returns a complete event part or `std::nullopt`. |
+| [tree_part.h](tree_part.h), [event_part.h](event_part.h) | `TreePart`, `inspect_event_part` | Owning snapshot of nodes and ordered child links. A bounded BP/DFUDS probe returns the complete subtree topology or `std::nullopt`. |
 
 The following headers are opt-in experiments in `pixie::tree::experimental`.
 None is required to navigate a promoted tree.

@@ -318,8 +318,8 @@ class ForestCoverTree : public TreeBase<ForestCoverTree> {
   /// Number of disjoint bounded forests.
   size_t unit_count() const { return sizes_.delta.size(); }
 
-  /// Copy one unit's local BFS rows. Portals name child units instead of
-  /// materializing external children. Throws out_of_range for an invalid unit.
+  /// Copy one unit's local BFS rows. Portal child lists omit external
+  /// children and are incomplete. Throws out_of_range for an invalid unit.
   TreePart inspect_unit(size_t unit) const {
     if (unit >= unit_count()) {
       throw std::out_of_range("forest unit");
@@ -329,28 +329,19 @@ class ForestCoverTree : public TreeBase<ForestCoverTree> {
     unpack_dense(detail::forest256::Codec::louds, stream_, 2ull * base, count,
                  decoded);
     std::vector<TreePart::Node> rows(count);
-    std::vector<size_t> roots;
     for (U i = 0; i < count; ++i) {
       auto& row = rows[i];
       row.source_id = base + i;
-      row.degree = decoded.degree(i);
-      row.children_complete = true;
-      if (decoded.is_root(i)) {
-        roots.push_back(i);
-      }
-      if (row.degree) {
+      if (const U degree = decoded.degree(i)) {
         const U first = decoded.offset_m1[i] + 1;
-        for (U k = 0; k < row.degree; ++k) {
+        for (U k = 0; k < degree; ++k) {
           row.children.push_back(first + k);
         }
-      } else if (const U p = portal(base + i); p != missing) {
-        const U x = begin(p), y = end(p);
-        row.degree = roots_.at(y) - roots_.at(x);
+      } else if (portal(base + i) != missing) {
         row.children_complete = false;
-        row.child_units = TreePart::Range{x, y};
       }
     }
-    return {TreePart::Kind::kForestUnit, std::move(rows), std::move(roots)};
+    return {std::move(rows), 1u + roots_.delta[unit]};
   }
 
  private:
@@ -751,7 +742,6 @@ class RootNavigationIndex<ForestCoverTree> {
       const auto& e = entries_[i];
       auto& row = rows[i];
       row.source_id = tree_.number(e.node);
-      row.degree = e.degree;
       row.children_complete = !e.degree || e.first != missing;
       if (e.first != missing) {
         for (U j = 0; j < e.degree; ++j) {
@@ -759,8 +749,7 @@ class RootNavigationIndex<ForestCoverTree> {
         }
       }
     }
-    return {TreePart::Kind::kRootIndex, std::move(rows),
-            size() ? std::vector<size_t>{0} : std::vector<size_t>{}};
+    return {std::move(rows), entries_.empty() ? 0u : 1u};
   }
 
  private:

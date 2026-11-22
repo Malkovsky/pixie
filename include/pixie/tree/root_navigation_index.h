@@ -1,7 +1,7 @@
 #pragma once
 
 #include <pixie/detail/serialization_frame.h>
-#include <pixie/incomplete_tree.h>
+#include <pixie/tree.h>
 #include <pixie/tree/traversal_budget.h>
 #include <pixie/tree/tree_part.h>
 
@@ -83,7 +83,7 @@ class RootNavigationIndex
   }
 
   /** @brief Copy this index's entries and represented edges for inspection.
-   * A nonleaf at the frontier keeps its degree and has an incomplete list.
+   * A nonleaf at the frontier has an incomplete child list.
    * The result is independent of both the tree and this index.
    */
   TreePart inspect_part() const {
@@ -93,7 +93,6 @@ class RootNavigationIndex
       auto& row = rows[i];
       row.source_id = entry.node.number;
       row.bit_position = entry.node.pos;
-      row.degree = entry.degree;
       row.children_complete = !entry.degree || entry.first != kMissing;
       if (entry.first != kMissing) {
         row.children.reserve(entry.degree);
@@ -102,11 +101,7 @@ class RootNavigationIndex
         }
       }
     }
-    std::vector<size_t> roots;
-    if (!rows.empty()) {
-      roots.push_back(0);
-    }
-    return {TreePart::Kind::kRootIndex, std::move(rows), std::move(roots)};
+    return {std::move(rows), entries_.empty() ? 0u : 1u};
   }
 
   /** @brief Write the immutable entries as a separate versioned artifact.
