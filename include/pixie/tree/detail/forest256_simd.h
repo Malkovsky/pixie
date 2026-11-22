@@ -63,18 +63,14 @@ inline constexpr uint8_t kNoParent = 0xFF;
  * @details For a forest of `1 <= count <= 256` nodes with `r` roots `0 .. r-1`:
  * - `parent[v]` (`0 <= v < count`) is `kNoParent` (`0xFF`) for roots `0 .. r-1`
  *   and the BFS node ID (`0 .. v-1`) of `v`'s parent otherwise.
- * - `parent[count]` is guaranteed to differ from `parent[count - 1]`, so
- *   `is_last_child(v)` holds without bounds branches for all `0 <= v < count`.
- * - `offset_m1[u]` (`0 <= u <= count`) stores `first_child_offset(u) - 1` in
- *   `0 .. 255`: `offset_m1[0] = r - 1`, `degree(u) = offset_m1[u + 1] -
- *   offset_m1[u]`, and `child(u, k) = offset_m1[u] + 1 + k` for
- *   `0 <= k < degree(u)`.
- * - Both arrays include 64-byte tail padding (`320` bytes each) so single-pass
- *   512-bit unaligned SIMD stores need no boundary masking.
+ * - `offset_m1[u]` stores `first_child_offset(u) - 1`; `offset_m1[0] = r - 1`.
+ * - Short units have `offset_m1[count] = count - 1` and a `parent[count]`
+ *   distinct from the preceding parent. For a full unit, node 255 is always
+ *   a leaf and last in its sibling group; neither array has a 257th entry.
  */
 struct alignas(64) LevelCsr256 {
-  uint8_t parent[320];
-  uint8_t offset_m1[320];
+  uint8_t parent[256];
+  uint8_t offset_m1[256];
 
   /** @brief Number of roots `r` (`1 <= r <= count`) in the unpacked forest. */
   constexpr size_t root_count() const noexcept {
@@ -92,13 +88,16 @@ struct alignas(64) LevelCsr256 {
 
   /** @brief Number of children of node @p u (`0 <= u < count`). */
   constexpr size_t degree(uint8_t u) const noexcept {
+    if (u == 255) {
+      return 0;
+    }
     return static_cast<size_t>(offset_m1[static_cast<size_t>(u) + 1]) -
            static_cast<size_t>(offset_m1[u]);
   }
 
   /** @brief True iff node @p u (`0 <= u < count`) has zero children. */
   constexpr bool is_leaf(uint8_t u) const noexcept {
-    return offset_m1[static_cast<size_t>(u) + 1] == offset_m1[u];
+    return u == 255 || offset_m1[static_cast<size_t>(u) + 1] == offset_m1[u];
   }
 
   /**
@@ -118,7 +117,7 @@ struct alignas(64) LevelCsr256 {
   /** @brief True iff @p v (`0 <= v < count`) is the last node in its sibling
    * group. */
   constexpr bool is_last_child(uint8_t v) const noexcept {
-    return parent[v] != parent[static_cast<size_t>(v) + 1];
+    return v == 255 || parent[v] != parent[static_cast<size_t>(v) + 1];
   }
 
   /**
@@ -128,6 +127,7 @@ struct alignas(64) LevelCsr256 {
     return static_cast<uint8_t>(v + 1);
   }
 };
+static_assert(sizeof(LevelCsr256) == 512);
 
 /**
  * @brief 64-byte (512-bit) truncated LOUDS representation of a `<= 256`-node
@@ -367,7 +367,7 @@ inline LoudsForest256 encode_louds_forest256(
   // When count < 256, bit == 2 * count + 1: pad remaining odd bit range
   // 2 * count + 1 .. 511 with alternating 1, 0, ..., 1 so total ones == 256,
   // total zeros == 256, and offset_m1[count] == count - 1. Unpackers set
-  // out.parent[count] = out.parent[count - 1] ^ 1u, handling all (count, r).
+  // a distinct parent[count] for these short units.
   for (size_t b = bit; b < 512; b += 2) {
     detail::set_bit(out.words, b);
   }
@@ -440,13 +440,14 @@ inline void unpack_louds_scalar(const uint64_t words[8],
       }
     }
   }
-  out.offset_m1[256] = 255;
-  out.parent[count] = static_cast<uint8_t>(out.parent[count - 1] ^ 1u);
+  if (count < 256) {
+    out.parent[count] = out.parent[count - 1] ^ 1u;
+  }
 }
 
 #ifdef __SSE2__
 /**
- * @brief SSE2/AVX2 2 KiB LUT unpacker for `LoudsForest256` (~74 ns on Zen 4).
+ * @brief SSE2/AVX2 2 KiB LUT unpacker for `LoudsForest256`.
  *
  * @details Uses `_mm_add_epi8` to avoid byte-carry wraparound when `n0 == 0`
  * (`n0 - 1 == 0xFF`) and writes 8-byte unaligned chunks directly into
@@ -470,34 +471,50 @@ inline void unpack_louds_swar_lut(const uint64_t words[8],
       const __m128i v0 = _mm_add_epi8(_mm_cvtsi64_si128(static_cast<long long>(
                                           detail::kLoudsDiffLut.packed[m0])),
                                       base0);
-      _mm_storeu_si64(out.parent + n1, v1);
-      _mm_storeu_si64(out.offset_m1 + n0, v0);
+      auto store = [](uint8_t* dst, size_t n, __m128i v) {
+        if (n <= 248) {
+          _mm_storeu_si64(dst + n, v);
+        } else {
+          uint64_t bytes = _mm_cvtsi128_si64(v);
+          for (; n < 256; ++n, bytes >>= 8) {
+            dst[n] = static_cast<uint8_t>(bytes);
+          }
+        }
+      };
+      store(out.parent, n1, v1);
+      store(out.offset_m1, n0, v0);
       const size_t c1 = static_cast<size_t>(std::popcount(m1));
       n1 += c1;
       n0 += 8 - c1;
       x >>= 8;
     }
   }
-  out.offset_m1[256] = 255;
-  out.parent[count] = static_cast<uint8_t>(out.parent[count - 1] ^ 1u);
+  if (count < 256) {
+    out.parent[count] = out.parent[count - 1] ^ 1u;
+  }
 }
 #endif  // __SSE2__
 
 #ifdef PIXIE_FOREST256_AVX512_VBMI2
+namespace detail {
+// The two output streams each contain 256 bytes. Overlapping stores are fine
+// within a stream: the next store replaces every unused compressed lane.
+inline void store_louds_block(uint8_t (&dst)[256], size_t start, __m512i v) {
+  const auto remaining =
+      static_cast<unsigned>(std::min(size_t{64}, 256 - start));
+  _mm512_mask_storeu_epi8(dst + start, ~mask_bits_from_u64(remaining), v);
+}
+}  // namespace detail
 /**
- * @brief Two-stage AVX-512 VBMI2 unpacker for `LoudsForest256` (~21.9 ns on Zen
- * 4).
+ * @brief Two-stage AVX-512 VBMI2 unpacker for `LoudsForest256`.
  *
- * @details Compresses 1-bit and 0-bit positions modulo 256 into `p1` and `p0`
- * via `_mm512_maskz_compress_epi8`, then computes
- * `parent[v] = (p1[v] - (v + 1)) mod 256` and
- * `offset_m1[u] = (p0[u] - (u + 1)) mod 256`.
+ * @details Compresses 1-bit and 0-bit positions modulo 256 into the output
+ * arrays via `_mm512_maskz_compress_epi8`, then computes `parent[v] = (p1[v] -
+ * (v + 1)) mod 256` and `offset_m1[u] = (p0[u] - (u + 1)) mod 256`.
  */
 inline void unpack_louds_avx512(const uint64_t words[8],
                                 LevelCsr256& out,
                                 size_t count) noexcept {
-  alignas(64) uint8_t p1[320];
-  alignas(64) uint8_t p0[320];
   const __m512i iota0 = _mm512_setr_epi64(
       0x0706050403020100ULL, 0x0F0E0D0C0B0A0908ULL, 0x1716151413121110ULL,
       0x1F1E1D1C1B1A1918ULL, 0x2726252423222120ULL, 0x2F2E2D2C2B2A2928ULL,
@@ -509,8 +526,10 @@ inline void unpack_louds_avx512(const uint64_t words[8],
   for (size_t w = 0; w < 8; ++w) {
     const uint64_t m1 = words[w];
     const uint64_t m0 = ~m1;
-    _mm512_storeu_si512(p1 + n1, _mm512_maskz_compress_epi8(m1, idx));
-    _mm512_storeu_si512(p0 + n0, _mm512_maskz_compress_epi8(m0, idx));
+    detail::store_louds_block(out.parent, n1,
+                              _mm512_maskz_compress_epi8(m1, idx));
+    detail::store_louds_block(out.offset_m1, n0,
+                              _mm512_maskz_compress_epi8(m0, idx));
     const size_t c1 = static_cast<size_t>(std::popcount(m1));
     n1 += c1;
     n0 += 64 - c1;
@@ -518,19 +537,19 @@ inline void unpack_louds_avx512(const uint64_t words[8],
   }
   __m512i sub = _mm512_add_epi8(iota0, _mm512_set1_epi8(1));
   for (size_t c = 0; c < 4; ++c) {
-    const __m512i v1 = _mm512_load_si512(p1 + 64 * c);
-    const __m512i v0 = _mm512_load_si512(p0 + 64 * c);
+    const __m512i v1 = _mm512_load_si512(out.parent + 64 * c);
+    const __m512i v0 = _mm512_load_si512(out.offset_m1 + 64 * c);
     _mm512_store_si512(out.parent + 64 * c, _mm512_sub_epi8(v1, sub));
     _mm512_store_si512(out.offset_m1 + 64 * c, _mm512_sub_epi8(v0, sub));
     sub = _mm512_add_epi8(sub, step64);
   }
-  out.offset_m1[256] = 255;
-  out.parent[count] = static_cast<uint8_t>(out.parent[count - 1] ^ 1u);
+  if (count < 256) {
+    out.parent[count] = out.parent[count - 1] ^ 1u;
+  }
 }
 
 /**
- * @brief Single-pass zero-scratch AVX-512 VBMI2 unpacker for `LoudsForest256`
- * (~26.0 ns standalone, ~91.9 ns with immediate queries on Zen 4).
+ * @brief Single-pass zero-scratch AVX-512 VBMI2 unpacker for `LoudsForest256`.
  *
  * @details Fuses `vpcompressb` and modular byte subtraction directly into
  * unaligned stores to `out.parent + n1` and `out.offset_m1 + n0`, avoiding all
@@ -554,14 +573,15 @@ inline void unpack_louds_fused_avx512(const uint64_t words[8],
         _mm512_add_epi8(iota0, _mm512_set1_epi8(static_cast<char>(1 - n0)));
     const __m512i sub0 =
         _mm512_add_epi8(iota0, _mm512_set1_epi8(static_cast<char>(1 - n1)));
-    _mm512_storeu_si512(out.parent + n1, _mm512_sub_epi8(z1, sub1));
-    _mm512_storeu_si512(out.offset_m1 + n0, _mm512_sub_epi8(z0, sub0));
+    detail::store_louds_block(out.parent, n1, _mm512_sub_epi8(z1, sub1));
+    detail::store_louds_block(out.offset_m1, n0, _mm512_sub_epi8(z0, sub0));
     const size_t c1 = static_cast<size_t>(std::popcount(m1));
     n1 += c1;
     n0 += 64 - c1;
   }
-  out.offset_m1[256] = 255;
-  out.parent[count] = static_cast<uint8_t>(out.parent[count - 1] ^ 1u);
+  if (count < 256) {
+    out.parent[count] = out.parent[count - 1] ^ 1u;
+  }
 }
 #endif  // PIXIE_FOREST256_AVX512_VBMI2
 
@@ -606,14 +626,16 @@ inline void unpack_twin256_scalar(const uint64_t words[8],
                                   LevelCsr256& out) noexcept {
   const uint64_t* H = words;
   const uint64_t* L = words + 4;
-  uint8_t u_ext[257]{};
+  uint8_t u_ext[256]{};
   uint8_t e_pos[256]{};
   u_ext[0] = kNoParent;
   size_t u_len = 1;
   size_t e_len = 0;
   for (size_t w = 0; w < 4; ++w) {
     for (uint64_t x = H[w]; x != 0; x &= x - 1) {
-      u_ext[u_len++] = static_cast<uint8_t>(64 * w + std::countr_zero(x));
+      if (u_len < 256) {
+        u_ext[u_len++] = static_cast<uint8_t>(64 * w + std::countr_zero(x));
+      }
     }
     for (uint64_t x = L[w]; x != 0; x &= x - 1) {
       e_pos[e_len++] = static_cast<uint8_t>(64 * w + std::countr_zero(x));
@@ -632,13 +654,11 @@ inline void unpack_twin256_scalar(const uint64_t words[8],
       r += static_cast<size_t>((hw >> b) & 1ULL);
     }
   }
-  out.offset_m1[256] = 255;
-  out.parent[256] = static_cast<uint8_t>(out.parent[255] ^ 1u);
 }
 
 #ifdef PIXIE_AVX2_SUPPORT
 /**
- * @brief Stall-free AVX2 unpacker for `TwinForest256` (~161 ns on Zen 4).
+ * @brief AVX2 unpacker for `TwinForest256`.
  *
  * @details Streams compressed set-bit tables `U_ext` and `E` through a 128-bit
  * integer accumulator into 16-byte-aligned XMM stores, then exploits the
@@ -651,8 +671,8 @@ inline void unpack_twin256_avx2(const uint64_t words[8],
   const uint64_t* H = words;
   const uint64_t* L = words + 4;
 
-  alignas(32) __m128i U_vec[20];
-  alignas(32) __m128i E_vec[20];
+  alignas(32) __m128i U_vec[16];
+  alignas(32) __m128i E_vec[16];
 
   auto compress_256_aligned16 = [](const uint64_t m[4], __m128i* dst16,
                                    uint64_t init_val, unsigned init_fill) {
@@ -695,17 +715,24 @@ inline void unpack_twin256_avx2(const uint64_t words[8],
     }
     const uint64_t tail0 = static_cast<uint64_t>(buf);
     const uint64_t tail1 = static_cast<uint64_t>(buf >> 64);
+    if (out_idx == 16) {
+      return;
+    }
     if (phase == 0) {
       _mm_store_si128(dst16 + out_idx++,
                       _mm_set_epi64x(static_cast<long long>(tail1),
                                      static_cast<long long>(tail0)));
-      _mm_store_si128(dst16 + out_idx++, _mm_setzero_si128());
+      if (out_idx < 16) {
+        _mm_store_si128(dst16 + out_idx, _mm_setzero_si128());
+      }
     } else {
       _mm_store_si128(dst16 + out_idx++,
                       _mm_set_epi64x(static_cast<long long>(tail0),
                                      static_cast<long long>(lo_half)));
-      _mm_store_si128(dst16 + out_idx++,
-                      _mm_set_epi64x(0, static_cast<long long>(tail1)));
+      if (out_idx < 16) {
+        _mm_store_si128(dst16 + out_idx,
+                        _mm_set_epi64x(0, static_cast<long long>(tail1)));
+      }
     }
   };
 
@@ -758,8 +785,11 @@ inline void unpack_twin256_avx2(const uint64_t words[8],
         const size_t q1 = r1 >> 4;
         const __m256i lo256 = _mm256_set_m128i(_mm_load_si128(tbl16 + q1),
                                                _mm_load_si128(tbl16 + q0));
-        const __m256i hi256 = _mm256_set_m128i(_mm_load_si128(tbl16 + q1 + 1),
-                                               _mm_load_si128(tbl16 + q0 + 1));
+        // A rank fits in a byte. At block 15 no live index selects the
+        // following block; wrap those unused high-lane loads to block zero.
+        const __m256i hi256 =
+            _mm256_set_m128i(_mm_load_si128(tbl16 + ((q1 + 1) & 15)),
+                             _mm_load_si128(tbl16 + ((q0 + 1) & 15)));
         const __m256i res = _mm256_or_si256(
             _mm256_shuffle_epi8(lo256, _mm256_add_epi8(idx, x70)),
             _mm256_shuffle_epi8(hi256, _mm256_sub_epi8(idx, x16)));
@@ -771,15 +801,12 @@ inline void unpack_twin256_avx2(const uint64_t words[8],
 
   expand_plane_aligned_avx2(L, U_vec, out.parent);
   expand_plane_aligned_avx2(H, E_vec, out.offset_m1);
-  out.offset_m1[256] = 255;
-  out.parent[256] = static_cast<uint8_t>(out.parent[255] ^ 1u);
 }
 #endif  // PIXIE_AVX2_SUPPORT
 
 #ifdef PIXIE_FOREST256_AVX512_FULL
 /**
- * @brief Branchless in-register AVX-512 unpacker for `TwinForest256`
- * (~25.3 ns on Zen 4).
+ * @brief Branchless in-register AVX-512 unpacker for `TwinForest256`.
  *
  * @details Compresses `H` and `L` into ZMM register tables (`U`, `E`) with zero
  * stack stores, places `kNoParent` (`0xFF`) at `U[255]`, evaluates 64-lane
@@ -835,8 +862,6 @@ inline void unpack_twin256_avx512(const uint64_t words[8],
   _mm512_store_si512(out.offset_m1 + 192,
                      detail::lookup_zmm_branchless_avx512(
                          E, detail::rank1_excl_64_avx512(H[3], h3)));
-  out.offset_m1[256] = 255;
-  out.parent[256] = static_cast<uint8_t>(out.parent[255] ^ 1u);
 }
 #endif  // PIXIE_FOREST256_AVX512_FULL
 
@@ -900,7 +925,7 @@ inline void decode_dense(Codec codec,
     LoudsForest256 encoded;
     std::fill_n(encoded.words, 8, pad);
     extract_plane(src, shift, 2 * count, encoded.words, pad);
-    // The unmasked kernels require exactly 256 ones/zeros for safe stores.
+    // Both output streams must have exactly 256 entries.
     unsigned ones = 0;
     for (auto word : encoded.words) {
       ones += std::popcount(word);

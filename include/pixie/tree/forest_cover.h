@@ -641,7 +641,7 @@ class TreeTraversalContext<ForestCoverTree> {
  public:
   /// Visit (node,true), inspect every child in order, then traverse the
   /// children and visit (node,false) once on return from a nonleaf. The
-  /// walk uses one 640-byte temporary decoded unit, independent of depth,
+  /// walk uses one 512-byte temporary decoded unit, independent of depth,
   /// with no extra heap slots or stack of ancestors.
   /// Empty trees throw out_of_range. Callback exceptions propagate. As for
   /// for_each_child, keep the original tree alive across callbacks/rebinding.

@@ -29,7 +29,6 @@ class Forest256Cache {
     size_t unit;
     bool valid = false;
   };
-  static_assert(sizeof(LevelCsr256) == 640);
 
  public:
   /// All requested heap bytes, including tag, validity and alignment rounding,

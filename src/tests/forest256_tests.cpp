@@ -69,7 +69,9 @@ void check(size_t roots, const std::vector<uint16_t>& degrees, size_t offset) {
         }
         next += degrees[i];
       }
-      ASSERT_EQ(csr.offset_m1[n] + 1u, n);
+      if (n < 256) {
+        ASSERT_EQ(csr.offset_m1[n] + 1u, n);
+      }
     }
   }
 }
@@ -133,6 +135,60 @@ TEST(Forest256Dense, RejectsInvalidExtents) {
   }
   EXPECT_THROW(unpack_dense(Codec::louds, words, 0, 1, csr),
                std::invalid_argument);
+}
+
+TEST(Forest256Padded, AllRawKernelsPreserveBfsRowsAndExactExtent) {
+  static_assert(sizeof(LevelCsr256::parent) == 256);
+  static_assert(sizeof(LevelCsr256::offset_m1) == 256);
+  static_assert(sizeof(LevelCsr256) == 512 && alignof(LevelCsr256) == 64);
+  struct Guarded {
+    std::array<uint8_t, 64> before;
+    LevelCsr256 csr;
+    std::array<uint8_t, 64> after;
+  } out;
+  std::array<uint8_t, 64> guard;
+  guard.fill(0xa5);
+  for (size_t n = 1; n <= 256; ++n) {
+    for (size_t shape = 0; shape < 5; ++shape) {
+      const size_t roots = shape == 0 ? n : shape == 1 ? (n + 1) / 2 : 1;
+      std::vector<uint16_t> degree(n);
+      std::vector<uint8_t> parent(roots, kNoParent);
+      for (size_t i = 0; parent.size() < n; ++i) {
+        size_t width = shape == 2 ? n : shape == 3 ? 1 : 1 + (i * 7 + n) % 5;
+        degree[i] = std::min(width, n - parent.size());
+        parent.insert(parent.end(), degree[i], i);
+      }
+      const auto louds = encode_louds_forest256(roots, degree);
+      const auto twin = encode_twin_forest256(roots, degree);
+      auto verify = [&](auto decode) {
+        out.before = out.after = guard;
+        auto& csr = out.csr;
+        decode(csr);
+        ASSERT_EQ(out.before, guard);
+        ASSERT_EQ(out.after, guard);
+        ASSERT_EQ(csr.root_count(), roots);
+        size_t next = roots;
+        for (size_t i = 0; i < n; ++i) {
+          ASSERT_EQ(csr.offset_m1[i] + 1u, next);
+          ASSERT_EQ(csr.parent_of(i), parent[i]);
+          ASSERT_EQ(csr.degree(i), degree[i]);
+          ASSERT_EQ(csr.is_leaf(i), degree[i] == 0);
+          ASSERT_EQ(csr.is_last_child(i),
+                    i + 1 == n || parent[i] != parent[i + 1]);
+          next += degree[i];
+        }
+        if (n < 256) {
+          EXPECT_EQ(csr.offset_m1[n] + 1u, n);
+        }
+      };
+      SCOPED_TRACE(::testing::Message() << "n=" << n << " shape=" << shape);
+      verify([&](auto& csr) { unpack_louds_scalar(louds.words, csr, n); });
+      verify([&](auto& csr) { unpack_twin256_scalar(twin.words, csr); });
+      verify([&](auto& csr) { unpack_louds(louds, csr, n); });
+      verify([&](auto& csr) { unpack_louds_fused(louds, csr, n); });
+      verify([&](auto& csr) { unpack_twin256(twin, csr); });
+    }
+  }
 }
 
 TEST(Forest256CacheTest, BudgetEvictionLifetimeAndRebinding) {
