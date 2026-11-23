@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <stdexcept>
 
 namespace pixie::detail {
 
@@ -34,6 +35,7 @@ struct HuffmanBuildTable {
   std::array<HuffmanBuildNode, kMaximumHuffmanNodes> tree{};
   std::array<std::uint8_t, kMaximumHuffmanNodes> split_rank{};
   std::array<std::uint8_t, kByteAlphabetSize> symbol_to_rank{};
+  std::array<std::uint8_t, kByteAlphabetSize> code_lengths{};
   std::int16_t root = -1;
   std::size_t node_count = 0;
   std::size_t symbol_count = 0;
@@ -372,13 +374,70 @@ inline HuffmanBuildTable build_huffman_table(
     table.node_count = 1;
     table.tree[0].symbol = used_symbols[0];
     table.symbol_to_rank[used_symbols[0]] = 0;
+    table.code_lengths[used_symbols[0]] = 1;
     return table;
   }
 
-  auto lengths = huffman_build_detail::build_code_lengths(
+  table.code_lengths = huffman_build_detail::build_code_lengths(
       frequencies, std::span(used_symbols).first(table.symbol_count));
-  huffman_build_detail::limit_code_lengths(lengths);
-  huffman_build_detail::build_canonical_tree(lengths, table);
+  huffman_build_detail::limit_code_lengths(table.code_lengths);
+  huffman_build_detail::build_canonical_tree(table.code_lengths, table);
+  return table;
+}
+
+/**
+ * @brief Reconstruct the canonical byte Huffman tree from serialized lengths.
+ * @param code_lengths One length per byte; zero marks an absent symbol.
+ * @throws std::invalid_argument if the lengths do not describe a complete
+ * prefix code with the configured maximum length.
+ */
+inline HuffmanBuildTable build_huffman_table_from_code_lengths(
+    std::span<const std::uint8_t, kByteAlphabetSize> code_lengths) {
+  HuffmanBuildTable table;
+  std::ranges::copy(code_lengths, table.code_lengths.begin());
+
+  std::uint8_t lone_symbol = 0;
+  std::size_t kraft = 0;
+  constexpr std::size_t kKraftTarget = std::size_t{1}
+                                       << kMaximumHuffmanCodeLength;
+  for (std::size_t symbol = 0; symbol < code_lengths.size(); ++symbol) {
+    const std::uint8_t length = code_lengths[symbol];
+    if (length > kMaximumHuffmanCodeLength) {
+      throw std::invalid_argument(
+          "Serialized Huffman code length exceeds its limit");
+    }
+    if (length == 0) {
+      continue;
+    }
+    lone_symbol = static_cast<std::uint8_t>(symbol);
+    ++table.symbol_count;
+    kraft += std::size_t{1} << (kMaximumHuffmanCodeLength - length);
+  }
+
+  if (table.symbol_count == 0) {
+    return table;
+  }
+  if (table.symbol_count == 1) {
+    if (code_lengths[lone_symbol] != 1) {
+      throw std::invalid_argument(
+          "A single-symbol Huffman code must have length one");
+    }
+    table.root = 0;
+    table.node_count = 1;
+    table.tree[0].symbol = lone_symbol;
+    table.symbol_to_rank[lone_symbol] = 0;
+    return table;
+  }
+  if (kraft != kKraftTarget) {
+    throw std::invalid_argument(
+        "Serialized Huffman lengths do not form a complete prefix code");
+  }
+
+  huffman_build_detail::build_canonical_tree(table.code_lengths, table);
+  if (table.node_count != 2 * table.symbol_count - 1) {
+    throw std::invalid_argument(
+        "Serialized Huffman lengths produce an invalid tree");
+  }
   return table;
 }
 

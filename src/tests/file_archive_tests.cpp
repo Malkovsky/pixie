@@ -308,7 +308,7 @@ TEST(FileArchiveTest, RejectsMalformedMetadataTransactionally) {
       };
 
   auto bad_version = valid;
-  OverwriteU32(bad_version, 8, 6);
+  OverwriteU32(bad_version, 8, pixie::FileArchive::format_version() + 1);
   expect_rejected(std::move(bad_version));
 
   auto bad_header_reserved = valid;
