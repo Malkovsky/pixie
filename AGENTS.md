@@ -373,8 +373,9 @@ Coverage uses one job by default. Set `PIXIE_COVERAGE_JOBS` to change it.
 To regenerate reports from existing profiles without rerunning tests, use
 `bash scripts/collect_gcov.sh build/coverage`.
 
-CI also runs the script with `PIXIE_COVERAGE_VARIANT=sse2`. This runs the bit
-algorithm, rank/select, Forest256, and SIMD microtree tests in
+CI also runs the script with `PIXIE_COVERAGE_VARIANT=sse2`. The SSE2 job runs
+the bit algorithms, rank/select, RmM, RMQ, wavelet tree, and excess suites,
+plus the Forest256, SIMD microtree, and tree unpacking cases, in
 `build/coverage-sse2`. Both jobs upload under the same Codecov flag.
 The native job uses the runner's available instructions. CI also compiles
 selected test targets with the `x86-64-v3` and `avx512-full` presets.

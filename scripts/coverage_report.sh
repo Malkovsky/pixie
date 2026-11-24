@@ -15,10 +15,13 @@ case "${VARIANT}" in
   sse2)
     BUILD_DIR="${ROOT_DIR}/build/coverage-sse2"
     CONFIGURE_ARGS+=(-B "${BUILD_DIR}" -DPIXIE_CPU_PROFILE=sse2)
-    BUILD_ARGS=("${BUILD_DIR}" --target bit_algorithms_unittests rank_select_tests tree_tests)
+    SSE2_SUITES=(bit_algorithms_unittests rank_select_tests test_rmm rmq_tests
+                 wavelet_tree_tests excess_positions_tests excess_record_lows_tests)
+    SSE2_PATTERN="$(IFS='|'; printf '%s' "${SSE2_SUITES[*]}")"
+    BUILD_ARGS=("${BUILD_DIR}" --target "${SSE2_SUITES[@]}" tree_tests)
     TEST_ARGS=(--test-dir "${BUILD_DIR}" -C Debug
                -LE '^heavy$'
-               -R '^(bit_algorithms_unittests\.|rank_select_tests\.|tree_tests\.(Forest256|OrdinalForest256|TreeSimdMicro))'
+               -R "^((${SSE2_PATTERN})\.|tree_tests\.(Forest256|OrdinalForest256|TreeSimdMicro|TreeUnpackingTest\.))"
                --no-tests=error --output-on-failure)
     ;;
   *)

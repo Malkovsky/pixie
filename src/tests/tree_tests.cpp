@@ -3154,7 +3154,7 @@ using SimdTestEvent = std::tuple<size_t, size_t, int>;
 template <class Tree>
 std::vector<SimdTestEvent> CollectExpectedSimdEvents(
     const Tree& tree,
-    pixie::tree::TreeNode root = {0, 0}) {
+    pixie::tree::TreeNode root) {
   std::vector<SimdTestEvent> expected;
   if (tree.empty()) {
     return expected;
@@ -3186,11 +3186,15 @@ std::vector<SimdTestEvent> CollectExpectedSimdEvents(
   return expected;
 }
 
-template <size_t MaxSimdBits, class Tree>
-void CheckBpSimdAgainstExpected(const Tree& tree,
-                                const std::vector<uint64_t>& words,
-                                const std::vector<SimdTestEvent>& expected,
-                                size_t max_depth = 128) {
+template <template <size_t, class, class, class> class Walk,
+          size_t MaxSimdBits,
+          class Tree>
+void CheckSimdWalk(const Tree& tree,
+                   const std::vector<uint64_t>& words,
+                   pixie::tree::TreeNode root,
+                   size_t nodes,
+                   size_t max_depth = 128) {
+  const auto expected = CollectExpectedSimdEvents(tree, root);
   std::vector<SimdTestEvent> actual;
   auto act_visit = [&, token = std::make_unique<int>(1)](
                        pixie::tree::TreeNode node, bool entering) {
@@ -3199,16 +3203,14 @@ void CheckBpSimdAgainstExpected(const Tree& tree,
   auto act_inspect = [&](pixie::tree::TreeNode node) {
     actual.emplace_back(node.number, node.pos, 2);
   };
-  pixie::tree::experimental::BpSimdMicroTraversal<
-      MaxSimdBits, Tree, decltype(act_visit), decltype(act_inspect)>
-      simd(tree, words, act_visit, act_inspect, max_depth);
-  const size_t n = tree.size();
-  simd.walk(n > 0 ? tree.root() : pixie::tree::TreeNode(0, 0));
-  ASSERT_EQ(simd.nodes, n);
-  ASSERT_EQ(simd.children, n > 0 ? n - 1 : 0u);
+  Walk<MaxSimdBits, Tree, decltype(act_visit), decltype(act_inspect)> simd(
+      tree, words, act_visit, act_inspect, max_depth);
+  simd.walk(root);
+  ASSERT_EQ(simd.nodes, nodes);
+  ASSERT_EQ(simd.children, nodes > 0 ? nodes - 1 : 0u);
   ASSERT_EQ(actual, expected)
-      << "BP mismatch for n=" << n << " MaxSimdBits=" << MaxSimdBits
-      << " max_depth=" << max_depth;
+      << "subtree nodes=" << nodes << " root=" << root.number
+      << " MaxSimdBits=" << MaxSimdBits << " max_depth=" << max_depth;
 }
 
 template <size_t MaxSimdBits>
@@ -3217,33 +3219,9 @@ void CheckBpSimdEquivalence(const std::vector<uint64_t>& words,
                             size_t max_depth = 128) {
   using Tree = pixie::tree::BPTree<pixie::RmMBTree<>>;
   Tree tree(words, n);
-  const auto expected = CollectExpectedSimdEvents(tree);
-  CheckBpSimdAgainstExpected<MaxSimdBits>(tree, words, expected, max_depth);
-}
-
-template <size_t MaxSimdBits, class Tree>
-void CheckDfudsSimdAgainstExpected(const Tree& tree,
-                                   const std::vector<uint64_t>& words,
-                                   const std::vector<SimdTestEvent>& expected,
-                                   size_t max_depth = 128) {
-  std::vector<SimdTestEvent> actual;
-  auto act_visit = [&, token = std::make_unique<int>(1)](
-                       pixie::tree::TreeNode node, bool entering) {
-    actual.emplace_back(node.number, node.pos, entering ? 1 : 0);
-  };
-  auto act_inspect = [&](pixie::tree::TreeNode node) {
-    actual.emplace_back(node.number, node.pos, 2);
-  };
-  pixie::tree::experimental::DfudsSimdMicroTraversal<
-      MaxSimdBits, Tree, decltype(act_visit), decltype(act_inspect)>
-      simd(tree, words, act_visit, act_inspect, max_depth);
-  const size_t n = tree.size();
-  simd.walk(n > 0 ? tree.root() : pixie::tree::TreeNode(0, 0));
-  ASSERT_EQ(simd.nodes, n);
-  ASSERT_EQ(simd.children, n > 0 ? n - 1 : 0u);
-  ASSERT_EQ(actual, expected)
-      << "DFUDS mismatch for n=" << n << " MaxSimdBits=" << MaxSimdBits
-      << " max_depth=" << max_depth;
+  const auto root = n ? tree.root() : pixie::tree::TreeNode(0, 0);
+  CheckSimdWalk<pixie::tree::experimental::BpSimdMicroTraversal, MaxSimdBits>(
+      tree, words, root, n, max_depth);
 }
 
 template <size_t MaxSimdBits>
@@ -3252,8 +3230,9 @@ void CheckDfudsSimdEquivalence(const std::vector<uint64_t>& words,
                                size_t max_depth = 128) {
   using Tree = pixie::tree::DFUDSTree<pixie::RmMBTree<>>;
   Tree tree(words, n);
-  const auto expected = CollectExpectedSimdEvents(tree);
-  CheckDfudsSimdAgainstExpected<MaxSimdBits>(tree, words, expected, max_depth);
+  const auto root = n ? tree.root() : pixie::tree::TreeNode(0, 0);
+  CheckSimdWalk<pixie::tree::experimental::DfudsSimdMicroTraversal,
+                MaxSimdBits>(tree, words, root, n, max_depth);
 }
 
 }  // namespace
@@ -3464,22 +3443,14 @@ TEST(TreeSimdMicroTraversalTest, NonrootMixedFanoutAcrossChildBuffer) {
   adj = dfs_order(adj.size(), adj);
   auto check = [&]<template <size_t, class, class, class> class Walk>(
                    const auto& tree, const auto& words) {
-    for (auto root :
-         {tree.first_child(tree.root()), tree.child(tree.root(), 1)}) {
-      const auto expected = CollectExpectedSimdEvents(tree, root);
-      std::vector<SimdTestEvent> events;
-      auto visit = [&](auto n, bool entering) {
-        events.emplace_back(n.number, n.pos, entering);
-      };
-      auto inspect = [&](auto n) { events.emplace_back(n.number, n.pos, 2); };
-      Walk<128, std::decay_t<decltype(tree)>, decltype(visit),
-           decltype(inspect)>
-          walk(tree, words, visit, inspect, 128);
-      walk.walk(root);
-      EXPECT_EQ(events, expected);
-      EXPECT_EQ(walk.nodes, tree.is_leaf(root) ? 1u : 161u);
-      EXPECT_EQ(walk.children + 1, walk.nodes);
-    }
+    const auto inner = tree.first_child(tree.root());
+    const auto leaf = tree.child(tree.root(), 1);
+    CheckSimdWalk<Walk, 128>(tree, words, inner, 161);
+    CheckSimdWalk<Walk, 128>(tree, words, leaf, 1);
+    CheckSimdWalk<Walk, 512>(tree, words, inner, 161);
+    CheckSimdWalk<Walk, 512>(tree, words, leaf, 1);
+    CheckSimdWalk<Walk, 1024>(tree, words, inner, 161);
+    CheckSimdWalk<Walk, 1024>(tree, words, leaf, 1);
   };
   using namespace pixie::tree;
   auto bp = EncodeReference<detail::TreeEncodingKind::kBP>(adj.size(), adj);

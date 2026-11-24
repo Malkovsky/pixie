@@ -323,6 +323,29 @@ TEST(WaveletTreeTest, HuffmanByteBuildLimitsDeepCodes) {
   }
 }
 
+TEST(WaveletTreeTest, BuildsQueriesAfterShorteningAnOverlongHuffmanCode) {
+  // The original tree reaches depth 12. The code-length limiter first
+  // lengthens other codes, then shortens one to fill the remaining code space.
+  constexpr std::array<std::size_t, 15> counts{
+      1, 1, 2, 2, 5, 11, 36, 40, 42, 123, 188, 1069, 1237, 3262, 5776};
+  std::vector<std::uint8_t> data;
+  for (std::size_t symbol = 0; symbol < counts.size(); ++symbol) {
+    data.insert(data.end(), counts[symbol], static_cast<std::uint8_t>(symbol));
+  }
+  const pixie::WaveletTree<std::uint8_t> tree(
+      256, data, pixie::WaveletTreeBuildType::Huffman);
+  EXPECT_EQ(tree.get_segment(0, data.size()), data);
+  std::size_t start = 0;
+  for (std::size_t i = 0; i < counts.size(); ++i) {
+    SCOPED_TRACE(i);
+    const auto symbol = static_cast<std::uint8_t>(i);
+    EXPECT_EQ(tree.rank(symbol, data.size()), counts[i]);
+    EXPECT_EQ(tree.select(symbol, 1), start);
+    EXPECT_EQ(tree.select(symbol, counts[i]), start + counts[i] - 1);
+    start += counts[i];
+  }
+}
+
 TEST(WaveletTreeTest, BuildsFromCountsAndOneStreamedPass) {
   const std::vector<std::uint8_t> data = {3, 0, 1, 3, 2, 1, 0};
   const std::array<std::size_t, 4> counts = {2, 2, 1, 2};
@@ -358,6 +381,38 @@ TEST(WaveletTreeTest, BuildsFromCountsAndOneStreamedPass) {
                    })),
                std::invalid_argument);
   EXPECT_THROW((pixie::WaveletTree<std::uint8_t>(257, data)),
+               std::invalid_argument);
+}
+
+TEST(WaveletTreeTest, RejectsInvalidByteBuildDimensionsBeforeReadingInput) {
+  using ByteTree = pixie::WaveletTree<std::uint8_t>;
+  const auto unexpected_input = [](auto&&) { ADD_FAILURE(); };
+  const std::array<std::size_t, 2> counts{1, 1};
+  EXPECT_THROW((void)ByteTree(3, counts, unexpected_input),
+               std::invalid_argument);
+
+  const std::array<std::size_t, 2> overflow{
+      std::numeric_limits<std::size_t>::max(), 1};
+  EXPECT_THROW((void)ByteTree(2, overflow, unexpected_input),
+               std::length_error);
+
+  const std::array<std::uint8_t, 1> outside_alphabet{2};
+  EXPECT_THROW((void)ByteTree(2, outside_alphabet), std::invalid_argument);
+
+  const std::array<std::uint64_t, 1> outside_wide_alphabet{2};
+  EXPECT_THROW((void)WaveletTree(2, outside_wide_alphabet),
+               std::invalid_argument);
+}
+
+TEST(WaveletTreeTest, RejectsAStreamThatExceedsItsDeclaredCounts) {
+  const std::array<std::size_t, 2> counts{1, 1};
+  EXPECT_THROW((void)pixie::WaveletTree<std::uint8_t>(
+                   2, counts,
+                   [](auto&& emit) {
+                     emit(std::uint8_t{0});
+                     const std::array<std::uint8_t, 2> tail{1, 0};
+                     emit(std::span(tail));
+                   }),
                std::invalid_argument);
 }
 
@@ -662,6 +717,16 @@ TEST(WaveletTreeTest,
                std::invalid_argument);
   EXPECT_EQ(leaf_full_reader.position(), 0u);
 
+  auto missing_leaf = valid;
+  overwrite_u64(missing_leaf, layout.leaves,
+                std::numeric_limits<std::uint64_t>::max());
+  pixie::BinaryReader missing_leaf_reader(missing_leaf);
+  EXPECT_THROW(
+      (void)pixie::WaveletTreeView<std::uint64_t>::deserialize(
+          missing_leaf_reader, pixie::DeserializationValidation::kFull),
+      std::invalid_argument);
+  EXPECT_EQ(missing_leaf_reader.position(), 0u);
+
   std::vector<std::byte> bad_child_length = valid;
   overwrite_u64(bad_child_length, layout.nodes[1].rank_num_bits, 3);
   pixie::BinaryReader child_full_reader(bad_child_length);
@@ -773,6 +838,10 @@ TEST(WaveletTreeTest, SerializationRejectsMalformedTopologyTransactionally) {
   auto zero_middle = valid;
   overwrite_u64(zero_middle, nodes[0].middle, 0);
   expect_rejected(std::move(zero_middle));
+
+  auto child_split_outside_subtree = valid;
+  overwrite_u64(child_split_outside_subtree, nodes[1].middle, 4);
+  expect_rejected(std::move(child_split_outside_subtree));
 
   auto invalid_parent = valid;
   overwrite_u64(invalid_parent, nodes[1].parent, nodes.size());

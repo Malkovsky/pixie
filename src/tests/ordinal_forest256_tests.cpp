@@ -250,6 +250,32 @@ TEST(ForestCover, RejectedBindPreservesIndexedPathsAndCacheBudget) {
   }
 }
 
+TEST(OrdinalForest256, InvalidPathChoicesPrecedeInspection) {
+  const Tree tree(Source({0, 0, 0, 1}));
+  const Tree other(Source({0}));
+  const Index index(tree), disabled(tree, 0);
+  EXPECT_THROW((void)Context(other, kSlot, &index), std::invalid_argument);
+  for (const Index* prefix :
+       {static_cast<const Index*>(nullptr), &disabled, &index}) {
+    Context reader(tree, kSlot, prefix);
+    std::vector<Node> visited;
+    const auto visit = [&](Node node) { visited.push_back(node); };
+    const auto inspect = [](Node) { ADD_FAILURE() << "inspected a child"; };
+    EXPECT_THROW(reader.inspect_path(visit, inspect,
+                                     [](size_t degree) { return degree; }),
+                 std::out_of_range);
+    EXPECT_EQ(visited, (std::vector<Node>{tree.root()}));
+
+    const auto leaf = tree.child(tree.root(), 1);
+    auto moved = std::move(reader);
+    std::vector<Node> path, scratch;
+    EXPECT_THROW(reader.tree_path(tree.root(), leaf, path, scratch),
+                 std::logic_error);
+    moved.tree_path(tree.root(), leaf, path, scratch);
+    EXPECT_EQ(path, (std::vector<Node>{tree.root(), leaf}));
+  }
+}
+
 TEST(OrdinalForest256, RandomTopologyAndReaderBudgets) {
   std::mt19937_64 rng(1729);
   std::vector<size_t> p(8192);

@@ -173,9 +173,11 @@ class BpSimdMicroTraversal {
       return;
     }
 
-    if (pairs <= kMaxPairs) {
-      replay_multi_word(u, pairs, depth);
-      return;
+    if constexpr (kMaxPairs > 64) {
+      if (pairs <= kMaxPairs) {
+        replay_multi_word(u, pairs, depth);
+        return;
+      }
     }
 
     visit_large(u, sub_nodes, depth);
@@ -541,26 +543,28 @@ class DfudsSimdMicroTraversal {
       return;
     }
 
-    if (child_bits <= MaxSimdBits) {
-      const size_t blocks128 = (child_bits + 127) / 128;
-      const size_t nw = (child_bits + 63) / 64;
-      std::array<uint64_t, kMaskWords> masks;
-      int gap = 0;
-      for (size_t b = 0; b < blocks128; ++b) {
-        uint64_t s[2];
-        load_bits_128(words_, base_pos + b * 128, s);
-        const Mask128 rl = dfuds_record_lows_128(s, gap, &gap);
-        masks[2 * b] = rl.lo;
-        if (2 * b + 1 < nw) {
-          masks[2 * b + 1] = rl.hi;
+    if constexpr (MaxSimdBits > 128) {
+      if (child_bits <= MaxSimdBits) {
+        const size_t blocks128 = (child_bits + 127) / 128;
+        const size_t nw = (child_bits + 63) / 64;
+        std::array<uint64_t, kMaskWords> masks;
+        int gap = 0;
+        for (size_t b = 0; b < blocks128; ++b) {
+          uint64_t s[2];
+          load_bits_128(words_, base_pos + b * 128, s);
+          const Mask128 rl = dfuds_record_lows_128(s, gap, &gap);
+          masks[2 * b] = rl.lo;
+          if (2 * b + 1 < nw) {
+            masks[2 * b + 1] = rl.hi;
+          }
         }
+        const unsigned rem = static_cast<unsigned>(child_bits & 63);
+        if (rem != 0) {
+          masks[nw - 1] &= (1ULL << rem) - 1ULL;
+        }
+        replay_words(u, masks.data(), nw, child_bits, depth);
+        return;
       }
-      const unsigned rem = static_cast<unsigned>(child_bits & 63);
-      if (rem != 0) {
-        masks[nw - 1] &= (1ULL << rem) - 1ULL;
-      }
-      replay_words(u, masks.data(), nw, child_bits, depth);
-      return;
     }
 
     visit_large(u, sub_nodes, depth);

@@ -17,6 +17,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -1465,6 +1466,57 @@ TEST(RmMBTreeTest, MinCountAndMinSelectAcrossNodeBoundaries) {
           << "rank=" << rank;
     }
     EXPECT_EQ(rm.minselect(left, right, count + 1), nv.npos);
+  }
+}
+
+TEST(RmMBTreeTest, RangeExtremaAndMinSelectAcrossFullAndPartialBlocks) {
+  using Tree = pixie::RmMBTree<>;
+  constexpr size_t block = Tree::kBlockBits;
+  constexpr size_t summary = Tree::kLowFanout * block;
+  constexpr size_t size = 2 * summary + 37;
+  const std::pair<size_t, size_t> ranges[] = {
+      {1, 8},
+      {0, block - 1},
+      {3, block - 1},
+      {block, block + 17},
+      {block - 3, summary + block + 3},
+      {summary, 2 * summary - 1},
+      {summary, size - 1},
+      {size - 19, size - 2},
+  };
+  for (std::string_view pattern : {"1", "0", "01"}) {
+    SCOPED_TRACE(pattern);
+    std::string bits(size, '0');
+    for (size_t i = 0; i < bits.size(); ++i) {
+      bits[i] = pattern[i % pattern.size()];
+    }
+    const auto words = pack_words_lsb_first(bits);
+    const Tree tree(words, bits.size());
+    const NaiveRmM reference(bits);
+    EXPECT_EQ(tree.fwdsearch(tree.size(), 0), Tree::npos);
+    const size_t tail = tree.size() - 2;
+    for (int delta : {-1, 0, 1}) {
+      EXPECT_EQ(tree.fwdsearch(tail, delta), reference.fwdsearch(tail, delta));
+    }
+
+    for (const auto& [left, right] : ranges) {
+      SCOPED_TRACE(::testing::Message() << left << ".." << right);
+      EXPECT_EQ(tree.range_min_query_pos(left, right),
+                reference.range_min_query_pos(left, right));
+      EXPECT_EQ(tree.range_max_query_pos(left, right),
+                reference.range_max_query_pos(left, right));
+      EXPECT_EQ(tree.range_min_query_val(left, right),
+                reference.range_min_query_val(left, right));
+      EXPECT_EQ(tree.range_max_query_val(left, right),
+                reference.range_max_query_val(left, right));
+      const size_t count = reference.mincount(left, right);
+      EXPECT_EQ(tree.mincount(left, right), count);
+      for (size_t rank : {size_t{1}, count / 2 + 1, count, count + 1}) {
+        SCOPED_TRACE(rank);
+        EXPECT_EQ(tree.minselect(left, right, rank),
+                  reference.minselect(left, right, rank));
+      }
+    }
   }
 }
 

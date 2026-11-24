@@ -1151,6 +1151,93 @@ TYPED_TEST(RankSelectSpecificationTest, DefaultSamplingOnSparsePartialSource) {
   }
 }
 
+TEST(CompressedRankSelectTest, WideDirectoryValidationIsTransactional) {
+  using Support =
+      pixie::RankSelectSupportCompressed<pixie::AlignedStorage, 8, 4>;
+  constexpr std::size_t kSuper = 16384;
+  constexpr std::size_t kSize = 8 * kSuper + 17;
+  constexpr std::array<std::size_t, 4> positions{
+      3, 2 * kSuper + 1, 3 * kSuper + 65, 5 * kSuper + 17};
+  std::vector<std::uint64_t> words((kSize + 63) / 64);
+  for (const auto position : positions) {
+    words[position / 64] |= std::uint64_t{1} << (position % 64);
+  }
+  const Support original(words, kSize, Support::SelectSupport::kSelect1);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  const auto valid = output.take();
+
+  for (const auto validation : {pixie::DeserializationValidation::kQuick,
+                                pixie::DeserializationValidation::kFull}) {
+    pixie::BinaryReader reader(valid);
+    const auto restored = Support::deserialize(reader, words, validation);
+    EXPECT_TRUE(reader.empty());
+    EXPECT_EQ(restored.rank(kSize), positions.size());
+    for (std::size_t i = 0; i < positions.size(); ++i) {
+      EXPECT_EQ(restored.select(i + 1), positions[i]);
+    }
+  }
+
+  pixie::BinaryReader layout(valid);
+  constexpr auto kWord = sizeof(std::uint64_t);
+  layout.skip(8 * kWord);  // Frame header, sample parameters and dimensions.
+  const auto skip_array = [&](std::size_t entry_bytes) {
+    const auto count = layout.read_size();
+    const auto start = layout.position();
+    layout.skip(count * entry_bytes);
+    return start;
+  };
+  const auto ranks = layout.position();
+  const auto rank_count = layout.read_size();
+  layout.skip(rank_count * kWord);
+  EXPECT_EQ(layout.read_u64(), 0u);  // Superblock samples, without prediction.
+  const auto shape = layout.position();
+  ASSERT_EQ(layout.read_u64(), 2u);  // Wide prefix.
+  const auto sample_words = skip_array(kWord);
+  skip_array(kWord);      // Primary sample offsets.
+  skip_array(2 * kWord);  // Wide bitmap.
+  layout.skip(3 * kWord);
+  skip_array(kWord);  // Predicted position samples.
+  const auto occupied_words = skip_array(kWord);
+  skip_array(kWord);  // Occupied superblock offsets.
+  ASSERT_EQ(layout.read_size(), 1u);
+  const auto wide_begin = layout.position();
+  ASSERT_EQ(layout.read_size(), 0u);
+  ASSERT_EQ(layout.read_size(), positions.size());
+  const auto endpoints = skip_array(sizeof(std::uint16_t));
+
+  const auto expect_rejected = [&](const std::vector<std::byte>& bytes) {
+    pixie::BinaryReader reader(bytes);
+    EXPECT_THROW((void)Support::deserialize(reader, words),
+                 std::invalid_argument);
+    EXPECT_EQ(reader.position(), 0u);
+  };
+  auto extra_rank_word = valid;
+  extra_rank_word.insert(extra_rank_word.begin() + ranks + kWord, kWord,
+                         std::byte{0});
+  overwrite_u64(extra_rank_word, 2 * kWord, extra_rank_word.size());
+  overwrite_u64(extra_rank_word, ranks, rank_count + 1);
+  expect_rejected(extra_rank_word);
+
+  const std::pair<std::size_t, std::uint64_t> corruptions[] = {
+      {shape, 1},  // Narrow shape with a wide entry.
+      {wide_begin + kWord, positions.size() - 1},  // Unclaimed endpoint.
+      {sample_words, 1},    // Sample selects an empty block.
+      {occupied_words, 1},  // Occupied list starts in a gap.
+  };
+  for (const auto& [offset, value] : corruptions) {
+    SCOPED_TRACE(offset);
+    auto invalid = valid;
+    overwrite_u64(invalid, offset, value);
+    expect_rejected(invalid);
+  }
+  auto invalid_endpoint = valid;
+  invalid_endpoint[endpoints] ^= std::byte{1};
+  expect_rejected(invalid_endpoint);
+}
+
 TEST(CompressedRankSelectTest, BitmapLookupOnNoncontiguousMixedSource) {
   constexpr std::size_t kBits = 521 * 16384 + 19;
   std::vector<std::uint64_t> words((kBits + 63) / 64);
