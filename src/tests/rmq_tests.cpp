@@ -1370,11 +1370,25 @@ TEST(RmqHybridBTree, QueriesEndingAtPackedSelectorBoundaries) {
 }
 
 TEST(RmqHybridBTree, RejectsValuesBeyondItsIndexType) {
-  using Rmq = pixie::rmq::HybridBTree<int, std::less<int>, std::uint8_t>;
-  constexpr auto max_size = std::numeric_limits<std::uint8_t>::max();
-  const std::vector<int> values(max_size + 1);
-  const Rmq fits{std::span(values).first(max_size)};
-  EXPECT_EQ(fits.arg_min(0, max_size), 0u);
+  using Rmq = pixie::rmq::HybridBTree<int, std::less<int>, std::uint16_t>;
+  constexpr std::size_t max_size = std::numeric_limits<std::uint16_t>::max();
+  constexpr auto leaf = Rmq::kLeafSize;
+  std::vector<int> values(max_size + 1);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] = static_cast<int>((7 * i + i / 83) % 509);
+  }
+  for (std::size_t size : {std::size_t{0}, leaf + 1, max_size}) {
+    SCOPED_TRACE(size);
+    const auto source = std::span<const int>(values).first(size);
+    const Rmq fits(source);
+    EXPECT_EQ(fits.size(), size);
+    const std::pair<std::size_t, std::size_t> ranges[] = {
+        {0, size}, {leaf - 1, leaf + 1}, {1, size}, {size / 2, size}};
+    for (const auto& [left, right] : ranges) {
+      EXPECT_EQ(fits.arg_min(left, right),
+                naive_arg_min(source, left, right, std::less<int>()));
+    }
+  }
   EXPECT_THROW((void)Rmq(values), std::length_error);
 }
 
@@ -1675,9 +1689,15 @@ TEST(RmqCartesianHybridBTree, DepthBackendDirectPaths) {
   const pixie::RankSelectSupport<> short_rank(words, kDepthCount - 2);
   EXPECT_THROW((void)HighSparseBackend(words, kDepthCount, short_rank),
                std::invalid_argument);
-  using SmallDepthRmq =
-      pixie::rmq::detail::HybridBTreePlusMinusOne<std::uint8_t, 512, true, 1>;
-  EXPECT_THROW((void)SmallDepthRmq(words, 256), std::length_error);
+  using NarrowDepthRmq =
+      pixie::rmq::detail::HybridBTreePlusMinusOne<std::uint16_t, 512, true, 1>;
+  const NarrowDepthRmq narrow(words, kDepthCount);
+  for (const auto& [left, right] : ranges) {
+    EXPECT_EQ(narrow.arg_min(left, right), high_sparse.arg_min(left, right));
+  }
+  const auto expected_max = std::numeric_limits<std::uint16_t>::max();
+  EXPECT_THROW((void)NarrowDepthRmq(words, std::size_t{expected_max} + 1),
+               std::length_error);
 }
 
 TEST(RmqCartesianHybridBTree, DepthQueriesAcrossMiddleLevel) {

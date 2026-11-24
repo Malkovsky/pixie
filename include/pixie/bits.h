@@ -1448,28 +1448,14 @@ static inline int prefix_excess_64(const uint64_t* s,
   return 2 * ones - static_cast<int>(end_offset);
 }
 
-static inline ExcessResult excess_min_128_byte_lut_short(
-    const uint64_t* s,
-    size_t left,
-    size_t right) noexcept {
-  int best = prefix_excess_128(s, left);
+// The dispatcher supplies byte-aligned prefix boundaries.
+static inline ExcessResult excess_min_128_byte_aligned(const uint64_t* s,
+                                                       size_t left,
+                                                       size_t right) noexcept {
+  int current = prefix_excess_128(s, left);
+  int best = current;
   size_t best_offset = left;
-  if (left == right) {
-    return {best, best_offset};
-  }
-
-  int current = best;
-  size_t bit = left;
-  for (; bit < right && (bit & 7u) != 0; ++bit) {
-    current += ((s[bit >> 6] >> (bit & 63)) & 1ull) != 0 ? 1 : -1;
-    const size_t offset = bit + 1;
-    if (current < best) {
-      best = current;
-      best_offset = offset;
-    }
-  }
-
-  for (; bit + 8 <= right; bit += 8) {
+  for (size_t bit = left; bit < right; bit += 8) {
     const uint8_t byte =
         static_cast<uint8_t>((s[bit >> 6] >> (bit & 63)) & 0xFFu);
     const int candidate = current + excess_byte_min_lut[byte];
@@ -1478,15 +1464,6 @@ static inline ExcessResult excess_min_128_byte_lut_short(
       best_offset = bit + static_cast<size_t>(excess_byte_min_offset_lut[byte]);
     }
     current += excess_byte_delta_lut[byte];
-  }
-
-  for (; bit < right; ++bit) {
-    current += ((s[bit >> 6] >> (bit & 63)) & 1ull) != 0 ? 1 : -1;
-    const size_t offset = bit + 1;
-    if (current < best) {
-      best = current;
-      best_offset = offset;
-    }
   }
 
   return {best, best_offset};
@@ -1610,17 +1587,6 @@ static inline ExcessResult excess_min_64(const uint64_t* s,
                       static_cast<size_t>(excess_nibble_min_offset[nibble]);
       }
     }
-
-    bit = end_nibble * 4;
-  }
-
-  for (; bit < right; ++bit) {
-    current += ((s[0] >> bit) & 1ull) != 0 ? 1 : -1;
-    const size_t offset = bit + 1;
-    if (current < best) {
-      best = current;
-      best_offset = offset;
-    }
   }
 #else
   int current = best;
@@ -1654,7 +1620,7 @@ static inline ExcessResult excess_min_128(const uint64_t* s,
 
   if (right - left <= 32 && (left & 7u) == 0 && (right & 7u) == 0)
       [[unlikely]] {
-    return excess_min_128_byte_lut_short(s, left, right);
+    return excess_min_128_byte_aligned(s, left, right);
   }
 
   int best = prefix_excess_128(s, left);

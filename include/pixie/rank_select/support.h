@@ -106,7 +106,6 @@ class RankSelectSupport
   size_t select0_sample_begin_{};
   size_t select0_sample_count_{};
   SelectSupport select_support_ = SelectSupport::kNone;
-  bool select0_samples_reversed_ = false;
 
   static bool builds_select1(SelectSupport support) {
     return (static_cast<uint8_t>(support) &
@@ -153,13 +152,6 @@ class RankSelectSupport
     if (padded_size_ != required_words * kWordSize || max_rank_ > num_bits_) {
       throw std::invalid_argument(
           "Invalid serialized rank/select size metadata");
-    }
-
-    const auto support_value = static_cast<std::uint8_t>(select_support_);
-    if (support_value > static_cast<std::uint8_t>(SelectSupport::kBoth) ||
-        select0_samples_reversed_) {
-      throw std::invalid_argument(
-          "Invalid serialized rank/select configuration");
     }
 
     const std::size_t data_superblocks = data_superblock_count();
@@ -476,7 +468,6 @@ class RankSelectSupport
     select1_sample_count_ = 0;
     select0_sample_begin_ = 0;
     select0_sample_count_ = 0;
-    select0_samples_reversed_ = false;
     select_samples_ = {};
 
     SelectSampleWriters writers;
@@ -500,7 +491,6 @@ class RankSelectSupport
       select_samples_ = allocate_metadata(total_samples * kWordSize);
       auto samples = select_samples_.writable_words64();
       select1_sample_begin_ = 0;
-      select0_samples_reversed_ = true;
       writers.ones =
           SelectSampleWriter(samples, 0, one_sample_capacity, true, false);
       writers.zeros = SelectSampleWriter(samples, total_samples - 1,
@@ -540,7 +530,6 @@ class RankSelectSupport
       auto zero_samples = writers.zeros.words.subspan(select0_sample_begin_,
                                                       select0_sample_count_);
       std::reverse(zero_samples.begin(), zero_samples.end());
-      select0_samples_reversed_ = false;
     }
     if (writers.shrink_after_build) {
       const size_t sample_count = select1_sample_count_ != 0
@@ -565,12 +554,7 @@ class RankSelectSupport
   }
 
   uint64_t select0_sample(size_t sample_index) const {
-    auto samples = select_samples_.as_words64();
-    if (select0_samples_reversed_) {
-      return samples[select0_sample_begin_ + select0_sample_count_ - 1 -
-                     sample_index];
-    }
-    return samples[select0_sample_begin_ + sample_index];
+    return select_samples_.as_words64()[select0_sample_begin_ + sample_index];
   }
 
   /**
@@ -1142,7 +1126,8 @@ class RankSelectSupport
     writer.write_size(select0_sample_begin_);
     writer.write_size(select0_sample_count_);
     writer.write_u32(static_cast<std::uint32_t>(select_support_));
-    writer.write_u32(static_cast<std::uint32_t>(select0_samples_reversed_));
+    writer.write_u32(
+        0);  // Zero-select samples are serialized in forward order.
     super_block_rank_.serialize(writer);
     basic_block_rank_.serialize(writer);
     select_samples_.serialize(writer);
@@ -1189,12 +1174,10 @@ class RankSelectSupport
           "Invalid serialized rank/select configuration");
     }
     result.select_support_ = static_cast<SelectSupport>(support);
-    const std::uint32_t reversed = candidate.read_u32();
-    if (reversed > 1) {
+    if (candidate.read_u32() != 0) {
       throw std::invalid_argument(
-          "Invalid serialized rank/select boolean value");
+          "Invalid serialized rank/select sample order");
     }
-    result.select0_samples_reversed_ = reversed != 0;
     result.super_block_rank_ = deserialize_metadata_storage(candidate);
     result.basic_block_rank_ = deserialize_metadata_storage(candidate);
     result.select_samples_ = deserialize_metadata_storage(candidate);

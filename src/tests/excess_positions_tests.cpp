@@ -2,10 +2,12 @@
 #include <pixie/bits.h>
 #include <pixie/experimental/excess.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <utility>
@@ -240,6 +242,7 @@ static void check_matches_naive(Fn fn,
                                 int case_id = 0) {
   alignas(64) uint64_t out[8];
   alignas(64) uint64_t ref[8];
+  std::fill_n(out, 8, UINT64_MAX);
   fn(s, target_x, out);
   naive_excess_positions_512(s, target_x, ref);
   for (int w = 0; w < 8; ++w) {
@@ -855,17 +858,26 @@ TEST(ExcessPositions512, Alternating) {
   }
 }
 
-TEST(ExcessPositions512, OutOfRange) {
-  alignas(64) uint64_t s[8] = {UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX,
-                               UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
-  alignas(64) uint64_t out[8];
-  excess_positions_512(s, 513, out);
-  for (int w = 0; w < 8; ++w) {
-    EXPECT_EQ(out[w], 0u);
-  }
-  excess_positions_512(s, -513, out);
-  for (int w = 0; w < 8; ++w) {
-    EXPECT_EQ(out[w], 0u);
+TEST(ExcessPositions512, ExtremeTargetsMatchEveryKernel) {
+  using Kernel = void (*)(const uint64_t*, int, uint64_t*);
+  constexpr std::pair<const char*, Kernel> kernels[] = {
+      {"default", excess_positions_512},
+      {"expand", excess_positions_512_expand},
+      {"expand8", excess_positions_512_expand8},
+      {"expand_avx512", excess_positions_512_expand_avx512},
+      {"branching_lut", excess_positions_512_branching_lut},
+      {"lut_avx512", excess_positions_512_lut_avx512},
+      {"byte_lut", excess_positions_512_byte_lut},
+  };
+  for (uint64_t word : {uint64_t{0}, UINT64_MAX}) {
+    alignas(64) std::array<uint64_t, 8> bits;
+    bits.fill(word);
+    for (int target : {std::numeric_limits<int>::min(), -513, -512, -128, 128,
+                       512, 513, std::numeric_limits<int>::max()}) {
+      for (const auto& [name, kernel] : kernels) {
+        check_matches_naive(kernel, name, bits.data(), target, word != 0);
+      }
+    }
   }
 }
 
