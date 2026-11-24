@@ -417,6 +417,57 @@ TEST(FileArchiveTest, RejectsUnalignedSerializationAndDeserialization) {
   EXPECT_EQ(reader.position(), 0u);
 }
 
+TEST(FileArchiveTest, ChecksRecordBoundsAndFullRecordOrdering) {
+  const pixie::FileArchive archive(Sources());
+  const auto valid = Serialize(archive);
+  constexpr std::size_t kFirst = 72;
+  const auto second = kFirst + archive.file_table_bytes() / archive.size();
+  constexpr auto kWord = sizeof(std::uint64_t);
+  constexpr auto kMax = std::numeric_limits<std::uint64_t>::max();
+  const auto expect_rejected = [](const auto& bytes, auto validation) {
+    pixie::BinaryReader owner(bytes), view(bytes);
+    EXPECT_THROW((void)pixie::FileArchive::deserialize(owner, validation),
+                 std::invalid_argument);
+    EXPECT_THROW((void)pixie::FileArchiveView::deserialize(view, validation),
+                 std::invalid_argument);
+    EXPECT_EQ(owner.position(), 0u);
+    EXPECT_EQ(view.position(), 0u);
+  };
+
+  const std::pair<std::size_t, std::uint64_t> bounds[] = {
+      {kFirst, kMax},
+      {kFirst + kWord, kMax},
+      {kFirst + 2 * kWord, kMax},
+      {kFirst + 3 * kWord, kMax},
+      {kFirst + 4 * kWord, kMax},
+      {kFirst + 5 * kWord, kMax},
+      {second + 5 * kWord, 1},  // A symlink has no line index.
+  };
+  for (const auto& [offset, value] : bounds) {
+    SCOPED_TRACE(offset);
+    auto bad = valid;
+    OverwriteU64(bad, offset, value);
+    expect_rejected(bad, pixie::DeserializationValidation::kQuick);
+  }
+
+  auto duplicate_path = valid;
+  std::ranges::copy(std::span(valid).subspan(kFirst, 2 * kWord),
+                    duplicate_path.begin() + second);
+  auto invalid_utf8 = valid;
+  invalid_utf8[kFirst + archive.file_table_bytes()] = std::byte{0xff};
+  auto gap = valid;
+  OverwriteU64(gap, kFirst + 2 * kWord, 1);
+  auto wrong_newline_base = valid;
+  OverwriteU64(wrong_newline_base, kFirst + 4 * kWord, 1);
+  for (const auto* bad :
+       {&duplicate_path, &invalid_utf8, &gap, &wrong_newline_base}) {
+    pixie::BinaryReader quick(*bad);
+    ASSERT_NO_THROW((void)pixie::FileArchiveView::deserialize(quick));
+    EXPECT_TRUE(quick.empty());
+    expect_rejected(*bad, pixie::DeserializationValidation::kFull);
+  }
+}
+
 TEST(FileArchiveTest, RejectsTrailingAndTruncatedArtifacts) {
   const pixie::FileArchive archive(Sources());
   std::vector<std::byte> bytes = Serialize(archive);

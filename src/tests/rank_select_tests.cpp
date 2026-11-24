@@ -1967,6 +1967,70 @@ TEST(RankSelectSupportTest,
   overwrite_u32(invalid_boolean,
                 7 * sizeof(std::uint64_t) + sizeof(std::uint32_t), 2);
   expect_rejected(std::move(invalid_boolean));
+
+  auto reversed_samples = valid;
+  overwrite_u32(reversed_samples,
+                7 * sizeof(std::uint64_t) + sizeof(std::uint32_t), 1);
+  expect_rejected(std::move(reversed_samples));
+}
+
+TEST(RankSelectSupportTest, FullValidationChecksEverySampleMilestone) {
+  constexpr std::size_t kBits = 2 * 65536;
+  constexpr auto kWord = sizeof(std::uint64_t);
+  const std::vector<std::uint64_t> words(kBits / 64, 0xaaaaaaaaaaaaaaaaULL);
+  const pixie::RankSelectSupport<> original(words, kBits);
+  pixie::VectorOutputSink output;
+  pixie::BinaryWriter writer(output);
+  original.serialize(writer);
+  writer.finish();
+  const auto valid = output.take();
+  const auto layout = locate_rank_select_samples(valid);
+  ASSERT_GE(layout.select1_count, 4u);
+  ASSERT_GE(layout.select0_count, 4u);
+
+  const std::pair<std::size_t, std::uint64_t> changes[] = {
+      {layout.storage_offset + (layout.select1_begin + 3) * kWord, 0},
+      {layout.storage_offset + (layout.select0_begin + 3) * kWord, 0},
+      {4 * kWord,
+       1},  // Keep the initial sample and omit one-select milestones.
+      {6 * kWord,
+       1},  // Keep the initial sample and omit zero-select milestones.
+  };
+  for (const auto& [offset, value] : changes) {
+    SCOPED_TRACE(offset);
+    auto bad = valid;
+    overwrite_u64(bad, offset, value);
+    const auto check = [&]<class Support>() {
+      pixie::BinaryReader quick(bad), full(bad);
+      ASSERT_NO_THROW((void)Support::deserialize(quick, words));
+      EXPECT_TRUE(quick.empty());
+      EXPECT_THROW((void)Support::deserialize(
+                       full, words, pixie::DeserializationValidation::kFull),
+                   std::invalid_argument);
+      EXPECT_EQ(full.position(), 0u);
+    };
+    check.template operator()<pixie::RankSelectSupport<>>();
+    check.template operator()<pixie::RankSelectSupportView>();
+  }
+
+  std::vector<std::byte> unaligned(valid.size() + 1);
+  std::ranges::copy(valid, unaligned.begin() + 1);
+  pixie::BinaryReader reader(std::span<const std::byte>(unaligned).subspan(1));
+  EXPECT_THROW((void)pixie::RankSelectSupportView::deserialize(reader, words),
+               std::invalid_argument);
+  EXPECT_EQ(reader.position(), 0u);
+}
+
+TEST(RankSelectSupportTest, SelectSkipsFourEmptySuperblocks) {
+  constexpr std::size_t kPosition = 4 * 65536;
+  for (bool zero : {false, true}) {
+    const std::uint64_t absent = zero ? UINT64_MAX : 0;
+    std::vector<std::uint64_t> words(kPosition / 64 + 1, absent);
+    words.back() ^= 1;
+    const pixie::RankSelectSupport<> support(words, kPosition + 1);
+    EXPECT_EQ(zero ? support.select0(1) : support.select(1), kPosition);
+    EXPECT_EQ(zero ? support.select0(2) : support.select(2), kPosition + 1);
+  }
 }
 
 TEST(CompressedPositionSampleTest, GroupEdgesLowWordCrossingsAndExtremes) {

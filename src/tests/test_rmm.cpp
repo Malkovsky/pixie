@@ -1520,6 +1520,29 @@ TEST(RmMBTreeTest, RangeExtremaAndMinSelectAcrossFullAndPartialBlocks) {
   }
 }
 
+TEST(RmMBTreeTest, ExactRootSpanUsesTheTopSummary) {
+  using Tree = pixie::RmMBTree<2, 16>;
+  constexpr auto size = Tree::kBlockBits * Tree::kLowFanout * Tree::kHighFanout;
+  std::string bits(size, '0');
+  for (size_t i = 1; i < size; i += 2) {
+    bits[i] = '1';
+  }
+  const auto words = pack_words_lsb_first(bits);
+  const Tree tree(words, bits.size());
+  const NaiveRmM reference(bits);
+  EXPECT_EQ(tree.range_min_query_val(0, size - 1),
+            reference.range_min_query_val(0, size - 1));
+  EXPECT_EQ(tree.range_max_query_val(0, size - 1),
+            reference.range_max_query_val(0, size - 1));
+  const auto minima = reference.mincount(0, size - 1);
+  EXPECT_EQ(tree.mincount(0, size - 1), minima);
+  for (size_t rank : {size_t{1}, minima / 2, minima, minima + 1}) {
+    SCOPED_TRACE(rank);
+    EXPECT_EQ(tree.minselect(0, size - 1, rank),
+              reference.minselect(0, size - 1, rank));
+  }
+}
+
 TEST(RmMTest, RankBasic) {
   std::vector<std::uint64_t> bits = {0b10110};
   pixie::RmMBTree<> rm(std::span<const std::uint64_t>(bits), 5);

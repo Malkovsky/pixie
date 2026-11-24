@@ -61,6 +61,27 @@ TEST(TreePartInspection, DisabledIndexFrontierAndLeafAreDifferent) {
   EXPECT_EQ(full.parentheses(1, 4), "()()");
 }
 
+TEST(TreePartInspection, RootIndexQueriesDistinguishFrontierAndAbsentNodes) {
+  const auto tree = star(5);
+  const auto root = tree.root();
+  const auto child = tree.first_child(root);
+  const pixie::tree::RootNavigationIndex<Bp, 1> frontier(tree);
+  EXPECT_TRUE(frontier.contains(root));
+  EXPECT_FALSE(frontier.contains(child));
+  EXPECT_FALSE(frontier.children_complete(root));
+  EXPECT_TRUE(frontier.represented_children(root).empty());
+  EXPECT_THROW(frontier.children_complete(child), std::out_of_range);
+  EXPECT_THROW(frontier.represented_children(child), std::out_of_range);
+  EXPECT_THROW(frontier.represented_parent(child), std::out_of_range);
+
+  const pixie::tree::RootNavigationIndex full(tree);
+  EXPECT_TRUE(full.contains(child));
+  EXPECT_TRUE(full.children_complete(child));
+  EXPECT_TRUE(full.represented_children(child).empty());
+  EXPECT_EQ(full.represented_parent(root), root);
+  EXPECT_EQ(full.represented_parent(child), root);
+}
+
 template <class Tree>
 void check_subtree_topology(const Tree& tree) {
   // Root with two children. The first child has two leaves, and the next
