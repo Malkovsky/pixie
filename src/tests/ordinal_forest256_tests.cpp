@@ -104,6 +104,29 @@ TEST(OrdinalForest256, EmptyAndInvalidExtents) {
   EXPECT_THROW({ Tree bad(edge); }, std::invalid_argument);
 }
 
+TEST(OrdinalForest256, InspectionKeepsPortalsInTheirOwnUnits) {
+  constexpr size_t fanout = 128;
+  std::vector<size_t> parents(1 + fanout, 0);
+  parents.insert(parents.end(), fanout, 1);
+  const Tree tree{Source(std::move(parents))};
+  const auto root = tree.root();
+  const auto portal = tree.first_child(root);
+  ASSERT_NE(root.unit, portal.unit);
+  EXPECT_EQ(tree.degree(root), fanout);
+  EXPECT_EQ(tree.degree(portal), fanout);
+
+  const auto root_part = tree.inspect_unit(root.unit);
+  EXPECT_TRUE(root_part.is_leaf(root.local));
+  EXPECT_FALSE(root_part.children_complete(root.local));
+
+  const auto child_part = tree.inspect_unit(portal.unit);
+  EXPECT_TRUE(child_part.is_leaf(portal.local));
+  EXPECT_FALSE(child_part.children_complete(portal.local));
+  const auto sibling = tree.next_sibling(portal);
+  ASSERT_EQ(sibling.unit, portal.unit);
+  EXPECT_TRUE(child_part.children_complete(sibling.local));
+}
+
 TEST(OrdinalForest256, ExhaustiveSmallOrderedTrees) {
   size_t shapes = 0;
   for (size_t n = 1; n <= 8; ++n) {

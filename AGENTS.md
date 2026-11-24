@@ -379,6 +379,10 @@ algorithm, rank/select, Forest256, and SIMD microtree tests in
 The native job uses the runner's available instructions. CI also compiles
 selected test targets with the `x86-64-v3` and `avx512-full` presets.
 
+Codecov excludes `src/tests/` from its totals. Test translation units still
+supply coverage for the library headers they instantiate, and the raw gcov
+reports include test sources.
+
 - The report uses `gcov -pb`, so Codecov receives branch probabilities as well
   as line hits. A Codecov partial line executed but did not take every branch.
 - Do not compare Codecov's branch-aware percentage with a line-only local

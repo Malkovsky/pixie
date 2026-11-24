@@ -5,6 +5,9 @@ codecov:
 comment:
   after_n_builds: 2
 
+ignore:
+  - "src/tests/**"
+
 coverage:
   # Display red below 90%, yellow from 90%, and green from 95%.
   range: "90...95"

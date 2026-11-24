@@ -42,6 +42,8 @@ TEST(TreePartInspection, DisabledIndexFrontierAndLeafAreDifferent) {
   }();
   ASSERT_EQ(full.root_count(), 1u);
   ASSERT_EQ(full.size(), 3u);
+  EXPECT_EQ(full.find_by_number(full.size() - 1), 2u);
+  EXPECT_THROW(full.find_by_number(full.size()), std::out_of_range);
   const auto root = full.root();
   EXPECT_EQ(full.parent(root), root);
   EXPECT_EQ(full.first_child(root), 1u);
@@ -54,6 +56,8 @@ TEST(TreePartInspection, DisabledIndexFrontierAndLeafAreDifferent) {
   EXPECT_TRUE(full.is_last_child(2));
   EXPECT_EQ(full.source_node(1), pixie::tree::TreeNode(1, 1));
   EXPECT_EQ(full.tree_path(2, 1), (std::vector<size_t>{2, 0, 1}));
+  EXPECT_EQ(full.parentheses(), "(()())");
+  EXPECT_TRUE(full.parentheses(1, 0).empty());
   EXPECT_EQ(full.parentheses(1, 4), "()()");
 }
 
@@ -129,6 +133,7 @@ TEST(TreePartInspection,
   EXPECT_LT(portal_part.memory_usage_bytes(), 640u);
   ASSERT_GT(parts[1].root_count(), 1u);
   EXPECT_TRUE(parts[1].tree_path(parts[1].root(0), parts[1].root(1)).empty());
+  EXPECT_TRUE(parts[1].tree_path(parts[1].root(1), parts[1].root(0)).empty());
   EXPECT_EQ(parts[1].parentheses(1, 3), ")()");
   size_t leaves = 0;
   for (size_t u = 1; u < parts.size(); ++u) {
