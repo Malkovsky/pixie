@@ -515,7 +515,8 @@ class RmMBTree
     if (!bit_impl(open_position)) {
       return open_position;
     }
-    return fwd_excess_at(open_position, -1);
+    // The search begins at the prefix boundary after the opening bit.
+    return fwdsearch_impl(open_position + 1, -1);
   }
 
   std::size_t open_impl(std::size_t close_position) const {
@@ -539,27 +540,6 @@ class RmMBTree
   }
 
  private:
-  /**
-   * @brief Search forward using SDSL-style inclusive-position excess semantics.
-   * @details Public `fwdsearch_impl` starts from a prefix boundary. This helper
-   * starts at @p position as an included bit position, so the equivalent btree
-   * boundary search begins at `position + 1`. It is used by
-   * balanced-parentheses operations such as `close`, where SDSL's
-   * `fwd_excess(i, -1)` maps to this wrapper.
-   * @param position Included bit position used as the search origin.
-   * @param delta Desired excess delta from the prefix after @p position.
-   * @return Matching bit position, or `npos` when no forward match exists.
-   */
-  std::size_t fwd_excess_at(std::size_t position, int delta) const {
-    if (position >= bit_count_) {
-      return npos;
-    }
-    if (position + 1 >= bit_count_) {
-      return npos;
-    }
-    return fwdsearch_impl(position + 1, delta);
-  }
-
   struct Summary {
     std::uint64_t size_bits = 0;
     std::uint64_t ones = 0;
@@ -2272,40 +2252,31 @@ class RmMBTree
         return npos;
       }
     }
-    return first_prefix_in_block(index, target);
+    return first_prefix_in_full_block(index, target);
   }
 
   /**
-   * @brief Find the first prefix in a 512-bit block with the target excess.
-   * @details Uses `excess_positions_512` for full blocks and scalar scanning
-   * for partial blocks.
+   * @brief Find the first prefix in a full block with the target excess.
+   * @details Summary descent starts from a cover of full blocks. Range queries
+   * scan partial blocks before selecting a summary to descend into.
    * @param block_index Zero-based block index.
    * @param target Target excess relative to the beginning of the block.
    * @return First bit position whose inclusive block prefix reaches @p target,
    * or `npos`.
    */
-  std::size_t first_prefix_in_block(std::size_t block_index,
-                                    std::int64_t target) const {
-    if (full_block_has_words(block_index) && target >= -512 && target <= 512) {
-      std::uint64_t out[kBlockWords];
-      excess_positions_512(bits_.data() + block_index * kBlockWords,
-                           static_cast<int>(target), out);
-      for (std::size_t word = 0; word < kBlockWords; ++word) {
-        const std::uint64_t mask = out[word];
-        if (mask != 0) {
-          return block_index * kBlockBits + word * 64 + std::countr_zero(mask);
-        }
-      }
+  std::size_t first_prefix_in_full_block(std::size_t block_index,
+                                         std::int64_t target) const {
+    constexpr auto limit = static_cast<std::int64_t>(kBlockBits);
+    if (target < -limit || target > limit) {
       return npos;
     }
-
-    const std::size_t begin = block_index * kBlockBits;
-    const std::size_t length = block_size(block_index);
-    std::int64_t current = 0;
-    for (std::size_t offset = 0; offset < length; ++offset) {
-      current += bit_impl(begin + offset) ? 1 : -1;
-      if (current == target) {
-        return begin + offset;
+    std::uint64_t out[kBlockWords];
+    excess_positions_512(bits_.data() + block_index * kBlockWords,
+                         static_cast<int>(target), out);
+    for (std::size_t word = 0; word < kBlockWords; ++word) {
+      const std::uint64_t mask = out[word];
+      if (mask != 0) {
+        return block_index * kBlockBits + word * 64 + std::countr_zero(mask);
       }
     }
     return npos;

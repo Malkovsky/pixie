@@ -417,28 +417,22 @@ class HybridBTreePlusMinusOne {
       int best_depth = prefix_excess(position);
       std::size_t best_position = position;
 
+      // Each chunk includes its ending prefix, including a terminal prefix
+      // on a chunk boundary.
       while (position < right) {
         const std::size_t chunk_begin = (position / 128) * 128;
         const std::size_t local_left = position - chunk_begin;
         const std::size_t local_right =
             std::min<std::size_t>(right - 1, chunk_begin + 128) - chunk_begin;
 
-        int candidate_depth;
-        std::size_t candidate_position;
-        if (chunk_begin >= bit_count) {
-          candidate_depth = prefix_excess(bit_count);
-          candidate_position = bit_count;
-        } else {
-          const std::size_t word = chunk_begin >> 6;
-          const ExcessResult result =
-              excess_min_128(bp_bits_.data() + word, local_left, local_right);
-          candidate_depth = prefix_excess(chunk_begin) + result.min_excess;
-          candidate_position = chunk_begin + result.offset;
-        }
-
+        const std::size_t word = chunk_begin >> 6;
+        const ExcessResult result =
+            excess_min_128(bp_bits_.data() + word, local_left, local_right);
+        const int candidate_depth =
+            prefix_excess(chunk_begin) + result.min_excess;
         if (candidate_depth < best_depth) {
           best_depth = candidate_depth;
-          best_position = candidate_position;
+          best_position = chunk_begin + result.offset;
         }
 
         position = chunk_begin + local_right + 1;

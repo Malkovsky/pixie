@@ -398,8 +398,8 @@ class HybridBTree
         return npos;
       }
 
-      const std::size_t shifted_min = depth_arg_min_with_zero_prefix(
-          first_close + 1, last_close + 2, bit_count);
+      const std::size_t shifted_min =
+          depth_arg_min<true>(first_close + 1, last_close + 2, bit_count);
       if (shifted_min == npos || shifted_min == 0) {
         return npos;
       }
@@ -565,7 +565,9 @@ class HybridBTree
 
     /**
      * @brief Return the position of the minimum BP depth in a depth range.
+     * @tparam WithZeroPrefix Read depth from the packed zero-rank metadata.
      */
+    template <bool WithZeroPrefix = false>
     std::size_t depth_arg_min(std::size_t left,
                               std::size_t right,
                               std::size_t bit_count) const {
@@ -574,80 +576,33 @@ class HybridBTree
         return npos;
       }
 
+      const auto prefix = [&](std::size_t position) {
+        if constexpr (WithZeroPrefix) {
+          return prefix_excess_with_zero_prefix(position, bit_count);
+        } else {
+          return prefix_excess(position);
+        }
+      };
+
       std::size_t position = left;
-      int best_depth = prefix_excess(position);
+      int best_depth = prefix(position);
       std::size_t best_position = position;
 
+      // Each chunk includes its ending prefix. A terminal prefix on a chunk
+      // boundary is already part of the preceding scan.
       while (position < right) {
         const std::size_t chunk_begin = (position / 128) * 128;
         const std::size_t local_left = position - chunk_begin;
         const std::size_t local_right =
             std::min<std::size_t>(right - 1, chunk_begin + 128) - chunk_begin;
 
-        int candidate_depth;
-        std::size_t candidate_position;
-        if (chunk_begin >= bit_count) {
-          candidate_depth = prefix_excess(chunk_begin);
-          candidate_position = chunk_begin;
-        } else {
-          const std::size_t word = chunk_begin >> 6;
-          const ExcessResult result =
-              excess_min_128(bp_bits_.data() + word, local_left, local_right);
-          candidate_depth = prefix_excess(chunk_begin) + result.min_excess;
-          candidate_position = chunk_begin + result.offset;
-        }
-
+        const std::size_t word = chunk_begin >> 6;
+        const ExcessResult result =
+            excess_min_128(bp_bits_.data() + word, local_left, local_right);
+        const int candidate_depth = prefix(chunk_begin) + result.min_excess;
         if (candidate_depth < best_depth) {
           best_depth = candidate_depth;
-          best_position = candidate_position;
-        }
-
-        position = chunk_begin + local_right + 1;
-      }
-
-      return best_position;
-    }
-
-    /**
-     * @brief Return the minimum-depth position for middle-node packed BP data.
-     */
-    std::size_t depth_arg_min_with_zero_prefix(std::size_t left,
-                                               std::size_t right,
-                                               std::size_t bit_count) const {
-      const std::size_t depth_count = bit_count + 1;
-      if (left >= right || right > depth_count) {
-        return npos;
-      }
-
-      std::size_t position = left;
-      int best_depth = prefix_excess_with_zero_prefix(position, bit_count);
-      std::size_t best_position = position;
-
-      while (position < right) {
-        const std::size_t chunk_begin = (position / 128) * 128;
-        const std::size_t local_left = position - chunk_begin;
-        const std::size_t local_right =
-            std::min<std::size_t>(right - 1, chunk_begin + 128) - chunk_begin;
-
-        int candidate_depth;
-        std::size_t candidate_position;
-        if (chunk_begin >= bit_count) {
-          candidate_depth =
-              prefix_excess_with_zero_prefix(chunk_begin, bit_count);
-          candidate_position = chunk_begin;
-        } else {
-          const std::size_t word = chunk_begin >> 6;
-          const ExcessResult result =
-              excess_min_128(bp_bits_.data() + word, local_left, local_right);
-          candidate_depth =
-              prefix_excess_with_zero_prefix(chunk_begin, bit_count) +
-              result.min_excess;
-          candidate_position = chunk_begin + result.offset;
-        }
-
-        if (candidate_depth < best_depth) {
-          best_depth = candidate_depth;
-          best_position = candidate_position;
+          best_position = chunk_begin + result.offset;
         }
 
         position = chunk_begin + local_right + 1;

@@ -1191,7 +1191,9 @@ TEST(CompressedRankSelectTest, WideDirectoryValidationIsTransactional) {
   };
   const auto ranks = layout.position();
   const auto rank_count = layout.read_size();
+  const auto rank_words = layout.position();
   layout.skip(rank_count * kWord);
+  const auto prediction = layout.position();
   EXPECT_EQ(layout.read_u64(), 0u);  // Superblock samples, without prediction.
   const auto shape = layout.position();
   ASSERT_EQ(layout.read_u64(), 2u);  // Wide prefix.
@@ -1208,22 +1210,32 @@ TEST(CompressedRankSelectTest, WideDirectoryValidationIsTransactional) {
   ASSERT_EQ(layout.read_size(), positions.size());
   const auto endpoints = skip_array(sizeof(std::uint16_t));
 
-  const auto expect_rejected = [&](const std::vector<std::byte>& bytes) {
-    pixie::BinaryReader reader(bytes);
-    EXPECT_THROW((void)Support::deserialize(reader, words),
-                 std::invalid_argument);
-    EXPECT_EQ(reader.position(), 0u);
+  const auto expect_rejected = [](std::span<const std::byte> bytes,
+                                  std::span<const std::uint64_t> source) {
+    for (const auto validation : {pixie::DeserializationValidation::kQuick,
+                                  pixie::DeserializationValidation::kFull}) {
+      pixie::BinaryReader reader(bytes);
+      EXPECT_THROW((void)Support::deserialize(reader, source, validation),
+                   std::invalid_argument);
+      EXPECT_EQ(reader.position(), 0u);
+    }
   };
   auto extra_rank_word = valid;
   extra_rank_word.insert(extra_rank_word.begin() + ranks + kWord, kWord,
                          std::byte{0});
   overwrite_u64(extra_rank_word, 2 * kWord, extra_rank_word.size());
   overwrite_u64(extra_rank_word, ranks, rank_count + 1);
-  expect_rejected(extra_rank_word);
+  expect_rejected(extra_rank_word, words);
 
   const std::pair<std::size_t, std::uint64_t> corruptions[] = {
-      {shape, 1},  // Narrow shape with a wide entry.
+      {rank_words + 8 * kWord, 0},  // Second block loses its global prefix.
+      {prediction, 2},              // Invalid prediction marker.
+      {shape, 4},                   // Unknown directory shape.
+      {shape, 1},                   // Narrow shape with a wide entry.
+      {wide_begin, 1},              // Directory skips the first endpoint.
+      {wide_begin + kWord, 0},      // Empty wide interval.
       {wide_begin + kWord, positions.size() - 1},  // Unclaimed endpoint.
+      {wide_begin + kWord, positions.size() + 1},  // Missing final endpoint.
       {sample_words, 1},    // Sample selects an empty block.
       {occupied_words, 1},  // Occupied list starts in a gap.
   };
@@ -1231,11 +1243,25 @@ TEST(CompressedRankSelectTest, WideDirectoryValidationIsTransactional) {
     SCOPED_TRACE(offset);
     auto invalid = valid;
     overwrite_u64(invalid, offset, value);
-    expect_rejected(invalid);
+    expect_rejected(invalid, words);
   }
   auto invalid_endpoint = valid;
   invalid_endpoint[endpoints] ^= std::byte{1};
-  expect_rejected(invalid_endpoint);
+  expect_rejected(invalid_endpoint, words);
+
+  std::vector<std::uint64_t> narrow_words(words.size());
+  narrow_words.back() = 0b10101;  // A nonuniform partial final superblock.
+  const Support narrow(narrow_words, kSize, Support::SelectSupport::kSelect1);
+  pixie::VectorOutputSink narrow_output;
+  pixie::BinaryWriter narrow_writer(narrow_output);
+  narrow.serialize(narrow_writer);
+  narrow_writer.finish();
+  auto false_homogeneous = narrow_output.take();
+  pixie::BinaryReader narrow_shape{
+      std::span<const std::byte>(false_homogeneous).subspan(shape)};
+  ASSERT_EQ(narrow_shape.read_u64(), 1u);
+  overwrite_u64(false_homogeneous, shape, 3);
+  expect_rejected(false_homogeneous, narrow_words);
 }
 
 TEST(CompressedRankSelectTest, BitmapLookupOnNoncontiguousMixedSource) {

@@ -88,6 +88,58 @@ WaveletArtifactOffsets locate_wavelet_artifact(
           std::move(nodes), leaves,    permutation};
 }
 
+template <class Symbol>
+void check_streamed_construction() {
+  using Tree = pixie::WaveletTree<Symbol>;
+  using Build = pixie::WaveletTreeBuildType;
+  const std::vector<Symbol> data = {3, 0, 1, 3, 1, 0};
+  const std::array<std::size_t, 5> counts = {2, 2, 0, 2, 0};
+  const std::array<std::size_t, 5> wrong_counts = {2, 2, 1, 1, 0};
+  const std::array<std::size_t, 5> incomplete_counts = {2, 2, 1, 2, 0};
+  const std::array<Symbol, 1> outside_alphabet = {5};
+  std::size_t passes = 0;
+  const auto build = [&](std::span<const std::size_t> histogram,
+                         std::span<const Symbol> input, Build shape) {
+    return Tree(
+        histogram.size(), histogram,
+        [&](auto&& emit) {
+          ++passes;
+          emit(input.first(0));
+          if (!input.empty()) {
+            emit(input.front());
+            emit(input.subspan(1));
+          }
+        },
+        shape);
+  };
+  for (Build shape : {Build::Standard, Build::Huffman}) {
+    passes = 0;
+    const Tree tree = build(counts, data, shape);
+    EXPECT_EQ(passes, 1u);
+    EXPECT_EQ(tree.get_segment(0, data.size()), data);
+    EXPECT_EQ(tree.rank(Symbol{3}, data.size()), 2u);
+    EXPECT_EQ(tree.select(Symbol{3}, 2), 3u);
+    EXPECT_EQ(tree.rank(Symbol{2}, data.size()), 0u);
+    EXPECT_EQ(tree.select(Symbol{2}, 1), data.size());
+
+    const Tree empty = build({}, {}, shape);
+    EXPECT_EQ(empty.size(), 0u);
+    EXPECT_TRUE(empty.get_segment(0, 1).empty());
+    const std::array<Symbol, 2> repeated = {0, 0};
+    const std::array<std::size_t, 1> singleton = {2};
+    const Tree one_symbol = build(singleton, repeated, shape);
+    EXPECT_EQ(one_symbol.rank(0, 1), 1u);
+    EXPECT_EQ(one_symbol.select(0, 2), 1u);
+
+    EXPECT_THROW((void)build(wrong_counts, data, shape), std::invalid_argument);
+    EXPECT_THROW((void)build(incomplete_counts, data, shape),
+                 std::invalid_argument);
+    const std::array<std::size_t, 5> one = {1, 0, 0, 0, 0};
+    EXPECT_THROW((void)build(one, outside_alphabet, shape),
+                 std::invalid_argument);
+  }
+}
+
 }  // namespace
 
 TEST(WaveletTreeTest, BasicSelect) {
@@ -347,41 +399,8 @@ TEST(WaveletTreeTest, BuildsQueriesAfterShorteningAnOverlongHuffmanCode) {
 }
 
 TEST(WaveletTreeTest, BuildsFromCountsAndOneStreamedPass) {
-  const std::vector<std::uint8_t> data = {3, 0, 1, 3, 2, 1, 0};
-  const std::array<std::size_t, 4> counts = {2, 2, 1, 2};
-  std::size_t passes = 0;
-  const pixie::WaveletTree<std::uint8_t> tree(
-      4, counts,
-      [&](auto&& emit) {
-        ++passes;
-        for (const std::uint8_t symbol : data) {
-          emit(symbol);
-        }
-      },
-      pixie::WaveletTreeBuildType::Huffman);
-  EXPECT_EQ(passes, 1u);
-  EXPECT_EQ(tree.get_segment(0, data.size()), data);
-
-  const pixie::WaveletTree<std::uint8_t> batched_tree(
-      4, counts,
-      [&](auto&& emit) {
-        emit(std::span(data).first(3));
-        emit(std::span(data).subspan(3));
-      },
-      pixie::WaveletTreeBuildType::Huffman);
-  EXPECT_EQ(batched_tree.get_segment(0, data.size()), data);
-
-  const std::array<std::size_t, 4> wrong_counts = {2, 2, 2, 1};
-  EXPECT_THROW((pixie::WaveletTree<std::uint8_t>(
-                   4, wrong_counts,
-                   [&](auto&& emit) {
-                     for (const std::uint8_t symbol : data) {
-                       emit(symbol);
-                     }
-                   })),
-               std::invalid_argument);
-  EXPECT_THROW((pixie::WaveletTree<std::uint8_t>(257, data)),
-               std::invalid_argument);
+  check_streamed_construction<std::uint8_t>();
+  check_streamed_construction<std::uint64_t>();
 }
 
 TEST(WaveletTreeTest, RejectsInvalidByteBuildDimensionsBeforeReadingInput) {
@@ -398,6 +417,7 @@ TEST(WaveletTreeTest, RejectsInvalidByteBuildDimensionsBeforeReadingInput) {
 
   const std::array<std::uint8_t, 1> outside_alphabet{2};
   EXPECT_THROW((void)ByteTree(2, outside_alphabet), std::invalid_argument);
+  EXPECT_THROW((void)ByteTree(257, outside_alphabet), std::invalid_argument);
 
   const std::array<std::uint64_t, 1> outside_wide_alphabet{2};
   EXPECT_THROW((void)WaveletTree(2, outside_wide_alphabet),
