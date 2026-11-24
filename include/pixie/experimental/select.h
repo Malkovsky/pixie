@@ -288,7 +288,7 @@ static inline uint64_t select0_512_scalar_experimental_default(
   return select_512_scalar_impl<select_64_experimental_default, true>(x, rank);
 }
 
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
 template <bool Invert>
 static inline void select_512_avx2_counts(const uint64_t* x,
                                           uint64_t* counts) noexcept {
@@ -334,7 +334,7 @@ static inline uint64_t select_512_avx2_impl(const uint64_t* x,
 
 static inline uint64_t select_512_avx2_pdep(const uint64_t* x,
                                             uint64_t rank) noexcept {
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   return select_512_avx2_impl<select_64_pdep, false>(x, rank);
 #else
   return select_512_scalar_pdep(x, rank);
@@ -343,7 +343,7 @@ static inline uint64_t select_512_avx2_pdep(const uint64_t* x,
 
 static inline uint64_t select0_512_avx2_pdep(const uint64_t* x,
                                              uint64_t rank) noexcept {
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   return select_512_avx2_impl<select_64_pdep, true>(x, rank);
 #else
   return select0_512_scalar_pdep(x, rank);
@@ -352,7 +352,7 @@ static inline uint64_t select0_512_avx2_pdep(const uint64_t* x,
 
 static inline uint64_t select_512_avx2_byte_lut(const uint64_t* x,
                                                 uint64_t rank) noexcept {
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   return select_512_avx2_impl<select_64_byte_lut, false>(x, rank);
 #else
   return select_512_scalar_byte_lut(x, rank);
@@ -361,7 +361,7 @@ static inline uint64_t select_512_avx2_byte_lut(const uint64_t* x,
 
 static inline uint64_t select0_512_avx2_byte_lut(const uint64_t* x,
                                                  uint64_t rank) noexcept {
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   return select_512_avx2_impl<select_64_byte_lut, true>(x, rank);
 #else
   return select0_512_scalar_byte_lut(x, rank);
@@ -370,7 +370,7 @@ static inline uint64_t select0_512_avx2_byte_lut(const uint64_t* x,
 
 static inline uint64_t select_512_avx2_broadword_lut(const uint64_t* x,
                                                      uint64_t rank) noexcept {
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   return select_512_avx2_impl<select_64_broadword_lut, false>(x, rank);
 #else
   return select_512_scalar_broadword_lut(x, rank);
@@ -379,7 +379,7 @@ static inline uint64_t select_512_avx2_broadword_lut(const uint64_t* x,
 
 static inline uint64_t select0_512_avx2_broadword_lut(const uint64_t* x,
                                                       uint64_t rank) noexcept {
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   return select_512_avx2_impl<select_64_broadword_lut, true>(x, rank);
 #else
   return select0_512_scalar_broadword_lut(x, rank);
@@ -388,7 +388,7 @@ static inline uint64_t select0_512_avx2_broadword_lut(const uint64_t* x,
 
 static inline uint64_t select_512_avx2_binary_lut(const uint64_t* x,
                                                   uint64_t rank) noexcept {
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   return select_512_avx2_impl<select_64_binary_lut, false>(x, rank);
 #else
   return select_512_scalar_binary_lut(x, rank);
@@ -397,7 +397,7 @@ static inline uint64_t select_512_avx2_binary_lut(const uint64_t* x,
 
 static inline uint64_t select0_512_avx2_binary_lut(const uint64_t* x,
                                                    uint64_t rank) noexcept {
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   return select_512_avx2_impl<select_64_binary_lut, true>(x, rank);
 #else
   return select0_512_scalar_binary_lut(x, rank);
@@ -406,7 +406,7 @@ static inline uint64_t select0_512_avx2_binary_lut(const uint64_t* x,
 
 static inline uint64_t select_512_avx2_vigna_broadword(const uint64_t* x,
                                                        uint64_t rank) noexcept {
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   return select_512_avx2_impl<select_64_vigna_broadword, false>(x, rank);
 #else
   return select_512_scalar_vigna_broadword(x, rank);
@@ -416,7 +416,7 @@ static inline uint64_t select_512_avx2_vigna_broadword(const uint64_t* x,
 static inline uint64_t select0_512_avx2_vigna_broadword(
     const uint64_t* x,
     uint64_t rank) noexcept {
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   return select_512_avx2_impl<select_64_vigna_broadword, true>(x, rank);
 #else
   return select0_512_scalar_vigna_broadword(x, rank);
@@ -425,7 +425,7 @@ static inline uint64_t select0_512_avx2_vigna_broadword(
 
 static inline uint64_t select_512_avx2_no_pdep(const uint64_t* x,
                                                uint64_t rank) noexcept {
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   return select_512_avx2_impl<select_64_no_pdep, false>(x, rank);
 #else
   return select_512_scalar_no_pdep(x, rank);
@@ -434,7 +434,7 @@ static inline uint64_t select_512_avx2_no_pdep(const uint64_t* x,
 
 static inline uint64_t select0_512_avx2_no_pdep(const uint64_t* x,
                                                 uint64_t rank) noexcept {
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   return select_512_avx2_impl<select_64_no_pdep, true>(x, rank);
 #else
   return select0_512_scalar_no_pdep(x, rank);
@@ -444,7 +444,7 @@ static inline uint64_t select0_512_avx2_no_pdep(const uint64_t* x,
 static inline uint64_t select_512_avx2_experimental_default(
     const uint64_t* x,
     uint64_t rank) noexcept {
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   return select_512_avx2_impl<select_64_experimental_default, false>(x, rank);
 #else
   return select_512_scalar_experimental_default(x, rank);
@@ -454,14 +454,14 @@ static inline uint64_t select_512_avx2_experimental_default(
 static inline uint64_t select0_512_avx2_experimental_default(
     const uint64_t* x,
     uint64_t rank) noexcept {
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   return select_512_avx2_impl<select_64_experimental_default, true>(x, rank);
 #else
   return select0_512_scalar_experimental_default(x, rank);
 #endif
 }
 
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
 static inline __m512i select_512_avx512_prefix_sum_u64(
     __m512i counts) noexcept {
   const __m512i idx_shift1 = _mm512_set_epi64(6, 5, 4, 3, 2, 1, 0, 0);
@@ -502,7 +502,7 @@ static inline uint64_t select_512_avx512_impl(const uint64_t* x,
 
   const __mmask8 mask = _mm512_cmpgt_epu64_mask(
       prefix, _mm512_set1_epi64(static_cast<int64_t>(rank)));
-  const uint32_t lane = _tzcnt_u32(static_cast<uint32_t>(mask));
+  const uint32_t lane = std::countr_zero(static_cast<uint32_t>(mask));
 
   const uint64_t previous = select_512_avx512_previous_prefix(prefix, lane);
   const uint64_t word = select_512_select_word<Invert>(x[lane]);
@@ -530,7 +530,7 @@ static inline uint64_t select_512_avx512_tail_impl(
     return 512;
   }
 
-  const uint32_t lane = _tzcnt_u32(static_cast<uint32_t>(mask));
+  const uint32_t lane = std::countr_zero(static_cast<uint32_t>(mask));
   const uint64_t previous = select_512_avx512_previous_prefix(prefix, lane);
   const uint64_t word = select_512_select_word<Invert>(x[base_word + lane]);
   return (base_word + lane) * 64 + SelectWord(word, rank - previous);
@@ -556,7 +556,7 @@ static inline uint64_t select_512_avx512_hybrid_impl(const uint64_t* x,
 
 static inline uint64_t select_512_avx512_pdep(const uint64_t* x,
                                               uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_impl<select_64_pdep, false>(x, rank);
 #else
   return select_512_avx2_pdep(x, rank);
@@ -565,7 +565,7 @@ static inline uint64_t select_512_avx512_pdep(const uint64_t* x,
 
 static inline uint64_t select0_512_avx512_pdep(const uint64_t* x,
                                                uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_impl<select_64_pdep, true>(x, rank);
 #else
   return select0_512_avx2_pdep(x, rank);
@@ -574,7 +574,7 @@ static inline uint64_t select0_512_avx512_pdep(const uint64_t* x,
 
 static inline uint64_t select_512_avx512_byte_lut(const uint64_t* x,
                                                   uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_impl<select_64_byte_lut, false>(x, rank);
 #else
   return select_512_avx2_byte_lut(x, rank);
@@ -583,7 +583,7 @@ static inline uint64_t select_512_avx512_byte_lut(const uint64_t* x,
 
 static inline uint64_t select0_512_avx512_byte_lut(const uint64_t* x,
                                                    uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_impl<select_64_byte_lut, true>(x, rank);
 #else
   return select0_512_avx2_byte_lut(x, rank);
@@ -592,7 +592,7 @@ static inline uint64_t select0_512_avx512_byte_lut(const uint64_t* x,
 
 static inline uint64_t select_512_avx512_broadword_lut(const uint64_t* x,
                                                        uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_impl<select_64_broadword_lut, false>(x, rank);
 #else
   return select_512_avx2_broadword_lut(x, rank);
@@ -602,7 +602,7 @@ static inline uint64_t select_512_avx512_broadword_lut(const uint64_t* x,
 static inline uint64_t select0_512_avx512_broadword_lut(
     const uint64_t* x,
     uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_impl<select_64_broadword_lut, true>(x, rank);
 #else
   return select0_512_avx2_broadword_lut(x, rank);
@@ -611,7 +611,7 @@ static inline uint64_t select0_512_avx512_broadword_lut(
 
 static inline uint64_t select_512_avx512_binary_lut(const uint64_t* x,
                                                     uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_impl<select_64_binary_lut, false>(x, rank);
 #else
   return select_512_avx2_binary_lut(x, rank);
@@ -620,7 +620,7 @@ static inline uint64_t select_512_avx512_binary_lut(const uint64_t* x,
 
 static inline uint64_t select0_512_avx512_binary_lut(const uint64_t* x,
                                                      uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_impl<select_64_binary_lut, true>(x, rank);
 #else
   return select0_512_avx2_binary_lut(x, rank);
@@ -630,7 +630,7 @@ static inline uint64_t select0_512_avx512_binary_lut(const uint64_t* x,
 static inline uint64_t select_512_avx512_vigna_broadword(
     const uint64_t* x,
     uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_impl<select_64_vigna_broadword, false>(x, rank);
 #else
   return select_512_avx2_vigna_broadword(x, rank);
@@ -640,7 +640,7 @@ static inline uint64_t select_512_avx512_vigna_broadword(
 static inline uint64_t select0_512_avx512_vigna_broadword(
     const uint64_t* x,
     uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_impl<select_64_vigna_broadword, true>(x, rank);
 #else
   return select0_512_avx2_vigna_broadword(x, rank);
@@ -649,7 +649,7 @@ static inline uint64_t select0_512_avx512_vigna_broadword(
 
 static inline uint64_t select_512_avx512_no_pdep(const uint64_t* x,
                                                  uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_impl<select_64_no_pdep, false>(x, rank);
 #else
   return select_512_avx2_no_pdep(x, rank);
@@ -658,7 +658,7 @@ static inline uint64_t select_512_avx512_no_pdep(const uint64_t* x,
 
 static inline uint64_t select0_512_avx512_no_pdep(const uint64_t* x,
                                                   uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_impl<select_64_no_pdep, true>(x, rank);
 #else
   return select0_512_avx2_no_pdep(x, rank);
@@ -667,7 +667,7 @@ static inline uint64_t select0_512_avx512_no_pdep(const uint64_t* x,
 
 static inline uint64_t select_512_avx512_hybrid1_pdep(const uint64_t* x,
                                                       uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_hybrid_impl<select_64_pdep, false, 1>(x, rank);
 #else
   return select_512_scalar_pdep(x, rank);
@@ -676,7 +676,7 @@ static inline uint64_t select_512_avx512_hybrid1_pdep(const uint64_t* x,
 
 static inline uint64_t select0_512_avx512_hybrid1_pdep(const uint64_t* x,
                                                        uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_hybrid_impl<select_64_pdep, true, 1>(x, rank);
 #else
   return select0_512_scalar_pdep(x, rank);
@@ -685,7 +685,7 @@ static inline uint64_t select0_512_avx512_hybrid1_pdep(const uint64_t* x,
 
 static inline uint64_t select_512_avx512_hybrid2_pdep(const uint64_t* x,
                                                       uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_hybrid_impl<select_64_pdep, false, 2>(x, rank);
 #else
   return select_512_scalar_pdep(x, rank);
@@ -694,7 +694,7 @@ static inline uint64_t select_512_avx512_hybrid2_pdep(const uint64_t* x,
 
 static inline uint64_t select0_512_avx512_hybrid2_pdep(const uint64_t* x,
                                                        uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_hybrid_impl<select_64_pdep, true, 2>(x, rank);
 #else
   return select0_512_scalar_pdep(x, rank);
@@ -703,7 +703,7 @@ static inline uint64_t select0_512_avx512_hybrid2_pdep(const uint64_t* x,
 
 static inline uint64_t select_512_avx512_hybrid4_pdep(const uint64_t* x,
                                                       uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_hybrid_impl<select_64_pdep, false, 4>(x, rank);
 #else
   return select_512_scalar_pdep(x, rank);
@@ -712,7 +712,7 @@ static inline uint64_t select_512_avx512_hybrid4_pdep(const uint64_t* x,
 
 static inline uint64_t select0_512_avx512_hybrid4_pdep(const uint64_t* x,
                                                        uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_hybrid_impl<select_64_pdep, true, 4>(x, rank);
 #else
   return select0_512_scalar_pdep(x, rank);
@@ -722,7 +722,7 @@ static inline uint64_t select0_512_avx512_hybrid4_pdep(const uint64_t* x,
 static inline uint64_t select_512_avx512_hybrid2_no_pdep(
     const uint64_t* x,
     uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_hybrid_impl<select_64_no_pdep, false, 2>(x, rank);
 #else
   return select_512_scalar_no_pdep(x, rank);
@@ -732,7 +732,7 @@ static inline uint64_t select_512_avx512_hybrid2_no_pdep(
 static inline uint64_t select0_512_avx512_hybrid2_no_pdep(
     const uint64_t* x,
     uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_hybrid_impl<select_64_no_pdep, true, 2>(x, rank);
 #else
   return select0_512_scalar_no_pdep(x, rank);
@@ -742,7 +742,7 @@ static inline uint64_t select0_512_avx512_hybrid2_no_pdep(
 static inline uint64_t select_512_avx512_experimental_default(
     const uint64_t* x,
     uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_impl<select_64_experimental_default, false>(x, rank);
 #else
   return select_512_avx2_experimental_default(x, rank);
@@ -752,7 +752,7 @@ static inline uint64_t select_512_avx512_experimental_default(
 static inline uint64_t select0_512_avx512_experimental_default(
     const uint64_t* x,
     uint64_t rank) noexcept {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_impl<select_64_experimental_default, true>(x, rank);
 #else
   return select0_512_avx2_experimental_default(x, rank);
@@ -763,7 +763,7 @@ static inline uint64_t select_512_experimental_default(const uint64_t* x,
                                                        uint64_t rank) noexcept {
 #ifdef PIXIE_EXPERIMENTAL_SELECT_NO_PDEP
   return select_512_scalar_no_pdep(x, rank);
-#elif defined(PIXIE_AVX512_SUPPORT)
+#elif defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select_512_avx512_experimental_default(x, rank);
 #else
   return select_512_scalar_experimental_default(x, rank);
@@ -775,7 +775,7 @@ static inline uint64_t select0_512_experimental_default(
     uint64_t rank) noexcept {
 #ifdef PIXIE_EXPERIMENTAL_SELECT_NO_PDEP
   return select0_512_scalar_no_pdep(x, rank);
-#elif defined(PIXIE_AVX512_SUPPORT)
+#elif defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   return select0_512_avx512_experimental_default(x, rank);
 #else
   return select0_512_scalar_experimental_default(x, rank);

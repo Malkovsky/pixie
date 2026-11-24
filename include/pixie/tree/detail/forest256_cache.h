@@ -23,7 +23,9 @@ struct NodeInfo {
 /// Copies borrow the same stream and allocate their own empty slots (O(K)).
 /// Moves transfer the slots and binding, leaving an unbound zero-slot reader.
 /// A reader is not thread-safe. Child enumeration needs only a copied NodeInfo.
-class Forest256Cache {
+template <void (
+    *Unpack)(std::span<const uint64_t>, size_t, size_t, LevelCsr256&)>
+class Forest256CacheFor {
   struct Slot {
     LevelCsr256 csr;
     size_t unit;
@@ -34,14 +36,14 @@ class Forest256Cache {
   /// All requested heap bytes, including tag, validity and alignment rounding,
   /// are charged. Allocator-internal metadata is outside this byte model.
   static constexpr size_t slot_bytes() noexcept { return sizeof(Slot); }
-  explicit Forest256Cache(std::span<const uint64_t> stream, size_t budget)
+  explicit Forest256CacheFor(std::span<const uint64_t> stream, size_t budget)
       : stream_(stream),
         k_(budget / slot_bytes()),
         slots_(k_ ? new Slot[k_] : nullptr) {}
 
-  Forest256Cache(const Forest256Cache& rhs)
-      : Forest256Cache(rhs.stream_, rhs.allocated_bytes()) {}
-  Forest256Cache(Forest256Cache&& rhs) noexcept
+  Forest256CacheFor(const Forest256CacheFor& rhs)
+      : Forest256CacheFor(rhs.stream_, rhs.allocated_bytes()) {}
+  Forest256CacheFor(Forest256CacheFor&& rhs) noexcept
       : stream_(std::exchange(rhs.stream_, {})),
         k_(std::exchange(rhs.k_, 0)),
         slots_(std::move(rhs.slots_)) {}
@@ -49,7 +51,7 @@ class Forest256Cache {
   /// assignment allocates the replacement before releasing the old slots, so
   /// both allocations coexist briefly. The byte budget bounds retained slots,
   /// not assignment peak memory. Move assignment allocates no slots.
-  Forest256Cache& operator=(Forest256Cache rhs) noexcept {
+  Forest256CacheFor& operator=(Forest256CacheFor rhs) noexcept {
     std::swap(stream_, rhs.stream_);
     std::swap(k_, rhs.k_);
     slots_.swap(rhs.slots_);
@@ -64,7 +66,7 @@ class Forest256Cache {
     }
   }
   size_t slot_count() const noexcept { return k_; }
-  /// Add sizeof(Forest256Cache) for fixed per-reader resident storage.
+  /// Add sizeof(Forest256CacheFor) for fixed per-reader resident storage.
   size_t allocated_bytes() const noexcept { return k_ * slot_bytes(); }
 
   /// Optional caller-owned diagnostics; packed bits count the logical input.
@@ -72,36 +74,27 @@ class Forest256Cache {
     size_t hits{}, misses{}, evictions{}, packed_bits{};
   };
 
-  /// Each unit must consistently identify one (codec, offset, count) within
+  /// Each unit must consistently identify one (offset, count) within
   /// the current binding. local is in [0,count). No CSR reference escapes.
-  NodeInfo lookup(size_t unit,
-                  Codec codec,
-                  size_t offset,
-                  size_t count,
-                  size_t local) {
-    return get<false>(unit, codec, offset, count, local, nullptr);
+  NodeInfo lookup(size_t unit, size_t offset, size_t count, size_t local) {
+    return get<false>(unit, offset, count, local, nullptr);
   }
   NodeInfo lookup_counted(size_t unit,
-                          Codec codec,
                           size_t offset,
                           size_t count,
                           size_t local,
                           Stats& stats) {
-    return get<true>(unit, codec, offset, count, local, &stats);
+    return get<true>(unit, offset, count, local, &stats);
   }
 
   /// Copy a decoded unit into caller-owned walk scratch. The same unit-key
   /// contract as lookup applies. The copy survives eviction and rebinding.
-  void snapshot(size_t unit,
-                Codec codec,
-                size_t offset,
-                size_t count,
-                LevelCsr256& out) {
+  void snapshot(size_t unit, size_t offset, size_t count, LevelCsr256& out) {
     if (k_) {
-      const auto& decoded = cached<false>(unit, codec, offset, count, nullptr);
+      const auto& decoded = cached<false>(unit, offset, count, nullptr);
       std::memcpy(&out, &decoded, sizeof(out));
     } else {
-      unpack_dense(codec, stream_, offset, count, out);
+      Unpack(stream_, offset, count, out);
     }
   }
 
@@ -114,7 +107,6 @@ class Forest256Cache {
   }
   template <bool Count>
   NodeInfo get(size_t unit,
-               Codec codec,
                size_t offset,
                size_t count,
                size_t local,
@@ -123,10 +115,10 @@ class Forest256Cache {
       throw std::out_of_range("Forest256 local");
     }
     if (k_) {
-      return inspect(cached<Count>(unit, codec, offset, count, stats), local);
+      return inspect(cached<Count>(unit, offset, count, stats), local);
     }
     LevelCsr256 transient;
-    unpack_dense(codec, stream_, offset, count, transient);
+    Unpack(stream_, offset, count, transient);
     if constexpr (Count) {
       ++stats->misses;
       stats->packed_bits += 2 * count;
@@ -135,7 +127,6 @@ class Forest256Cache {
   }
   template <bool Count>
   const LevelCsr256& cached(size_t unit,
-                            Codec codec,
                             size_t offset,
                             size_t count,
                             Stats* stats) {
@@ -146,7 +137,7 @@ class Forest256Cache {
       }
     } else {
       // Extent/population checks throw before any output stores.
-      unpack_dense(codec, stream_, offset, count, slot.csr);
+      Unpack(stream_, offset, count, slot.csr);
       if constexpr (Count) {
         stats->evictions += slot.valid;
         ++stats->misses;
@@ -162,4 +153,5 @@ class Forest256Cache {
   size_t k_;
   std::unique_ptr<Slot[]> slots_;
 };
+using Forest256Cache = Forest256CacheFor<unpack_dense>;
 }  // namespace pixie::tree::detail::forest256

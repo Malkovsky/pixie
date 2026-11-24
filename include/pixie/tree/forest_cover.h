@@ -4,13 +4,16 @@
 #include <pixie/tree/detail/construction.h>
 #include <pixie/tree/detail/forest256_cache.h>
 #include <pixie/tree/detail/forest_cover_node_view.h>
+#include <pixie/tree/detail/indexed_tree_part.h>
 #include <pixie/tree/root_navigation_index.h>
 #include <pixie/tree/tree_part.h>
 
 #include <algorithm>
 #include <bit>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
+#include <ranges>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -26,6 +29,45 @@ struct TreeTraits<ForestCoverTree> {
   using Node = detail::ForestCoverNode;
   using NodeView = detail::ForestCoverNodeView<ForestCoverTree>;
 };
+/** @brief Owning inspection snapshot of one bounded ForestCover unit.
+ * @details Local handles are breadth-first ordinals. Local roots occupy the
+ * leading ordinals. Child lists at portals omit the external child units.
+ */
+class ForestUnitPart : public TreePart<ForestUnitPart, ForestCoverTree> {
+  using Base = TreePart<ForestUnitPart, ForestCoverTree>;
+  friend Base;
+  friend class ForestCoverTree;
+  friend class TreeTraversalContext<ForestCoverTree>;
+
+  using Topology = detail::forest256::LevelCsr256;
+
+  ForestUnitPart(const ForestCoverTree& tree, uint16_t count)
+      : Base(tree), count_(count) {}
+
+  size_t size_impl() const { return count_; }
+  size_t root_count_impl() const { return topology_.root_count(); }
+  bool children_complete_impl(Node node) const { return !portals_[node]; }
+  size_t degree_impl(Node node) const { return topology_.degree(node); }
+  Node child_impl(Node node, size_t i) const {
+    return topology_.child(node, i);
+  }
+  auto children_impl(Node node) const {
+    const Node first = topology_.first_child(node);
+    return std::views::iota(first, first + topology_.degree(node));
+  }
+  Node parent_impl(Node node) const {
+    return topology_.is_root(node) ? node : topology_.parent_of(node);
+  }
+  Node next_sibling_impl(Node node) const {
+    return topology_.is_last_child(node) ? node : topology_.next_sibling(node);
+  }
+  size_t memory_usage_bytes_impl() const { return sizeof(*this); }
+
+  std::bitset<256> portals_;
+  uint16_t count_;
+  Topology topology_;
+};
+
 /** @brief Store an ordered tree as disjoint LOUDS forests of at most 256 nodes.
  * @details The threshold is 128. Units and their nodes are each numbered in
  * breadth-first order. Global IDs concatenate units; they need not match the
@@ -318,33 +360,29 @@ class ForestCoverTree : public TreeBase<ForestCoverTree> {
   /// Number of disjoint bounded forests.
   size_t unit_count() const { return sizes_.delta.size(); }
 
-  /// Copy one unit's local BFS rows. Portal child lists omit external
-  /// children and are incomplete. Throws out_of_range for an invalid unit.
-  TreePart inspect_unit(size_t unit) const {
+  /// Decode one unit into an owning snapshot. Throws for an invalid unit.
+  ForestUnitPart inspect_unit(size_t unit) const {
     if (unit >= unit_count()) {
       throw std::out_of_range("forest unit");
     }
     const U base = sizes_.at(unit), count = 1u + sizes_.delta[unit];
-    detail::forest256::LevelCsr256 decoded;
-    unpack_dense(detail::forest256::Codec::louds, stream_, 2ull * base, count,
-                 decoded);
-    std::vector<TreePart::Node> rows(count);
-    for (U i = 0; i < count; ++i) {
-      auto& row = rows[i];
-      row.source_id = base + i;
-      if (const U degree = decoded.degree(i)) {
-        const U first = decoded.offset_m1[i] + 1;
-        for (U k = 0; k < degree; ++k) {
-          row.children.push_back(first + k);
-        }
-      } else if (portal(base + i) != missing) {
-        row.children_complete = false;
+    ForestUnitPart part(*this, count);
+    decode_unit(base, count, part.topology_);
+    for (U p = lower_portal(base); p < portals_; ++p) {
+      const U id = key(p);
+      if (id >= base + count) {
+        break;
       }
+      part.portals_.set(id - base);
     }
-    return {std::move(rows), 1u + roots_.delta[unit]};
+    return part;
   }
 
  private:
+  void decode_unit(U base, U count, ForestUnitPart::Topology& out) const {
+    detail::forest256::unpack_dense(stream_, 2ull * base, count, out);
+  }
+
   size_t size_impl() const { return size_; }
   /// Root handle, or out_of_range on empty input.
   Node root_impl() const {
@@ -385,9 +423,8 @@ class ForestCoverTree : public TreeBase<ForestCoverTree> {
       Node h,
       detail::forest256::Forest256Cache& cache) const {
     check(h);
-    return cache.lookup(h.unit, detail::forest256::Codec::louds,
-                        2ull * sizes_.at(h.unit), 1u + sizes_.delta[h.unit],
-                        h.local);
+    return cache.lookup(h.unit, 2ull * sizes_.at(h.unit),
+                        1u + sizes_.delta[h.unit], h.local);
   }
   detail::forest256::NodeInfo info(Node h) const {
     detail::forest256::Forest256Cache transient(stream_, 0);
@@ -458,7 +495,7 @@ class TreeTraversalContext<ForestCoverTree> {
             Inspect& inspect,
             Choose& choose) {
     std::conditional_t<Path, detail::forest256::NodeInfo,
-                       detail::forest256::LevelCsr256>
+                       ForestUnitPart::Topology>
         local;
     bool entering = true;
     U previous = missing, base = 0, first_portal = 0, first_key = missing,
@@ -479,11 +516,9 @@ class TreeTraversalContext<ForestCoverTree> {
         base = tree->sizes_.at(h.unit);
         const auto count = 1u + tree->sizes_.delta[h.unit];
         if (tree == t_) {
-          cache_.snapshot(h.unit, detail::forest256::Codec::louds, 2ull * base,
-                          count, local);
+          cache_.snapshot(h.unit, 2ull * base, count, local);
         } else {
-          unpack_dense(detail::forest256::Codec::louds, tree->stream_,
-                       2ull * base, count, local);
+          tree->decode_unit(base, count, local);
         }
         first_portal = tree->lower_portal(base);
         first_key =
@@ -736,20 +771,17 @@ class RootNavigationIndex<ForestCoverTree> {
     return sizeof(*this) + entries_.capacity() * sizeof(Entry);
   }
   /// Copy cached BFS rows, leaving unexpanded child lists incomplete.
-  TreePart inspect_part() const {
-    std::vector<TreePart::Node> rows(entries_.size());
-    for (size_t i = 0; i < entries_.size(); ++i) {
-      const auto& e = entries_[i];
-      auto& row = rows[i];
-      row.source_id = tree_.number(e.node);
-      row.children_complete = !e.degree || e.first != missing;
-      if (e.first != missing) {
-        for (U j = 0; j < e.degree; ++j) {
-          row.children.push_back(e.first + j);
-        }
-      }
+  auto inspect_part() const {
+    using Part = detail::IndexedTreePart<ForestCoverTree, true>;
+    std::vector<Part::Record> rows;
+    rows.reserve(entries_.size());
+    for (const auto& entry : entries_) {
+      const bool expanded = entry.first != missing;
+      rows.emplace_back(entry.node, expanded ? entry.first : 0,
+                        expanded ? entry.degree : 0,
+                        expanded || entry.degree == 0);
     }
-    return {std::move(rows), entries_.empty() ? 0u : 1u};
+    return Part(tree_, std::move(rows));
   }
 
  private:

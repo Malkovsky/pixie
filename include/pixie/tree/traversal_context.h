@@ -1,14 +1,19 @@
 #pragma once
 
 #include <pixie/tree/bp.h>
-#include <pixie/tree/detail/bp_micro.h>
-#include <pixie/tree/detail/dfuds_micro.h>
-#include <pixie/tree/detail/louds_inspection_iterative.h>
-#include <pixie/tree/detail/traversal_profiles.h>
+#include <pixie/tree/detail/indexed_tree_part.h>
 #include <pixie/tree/dfuds.h>
 #include <pixie/tree/louds.h>
 #include <pixie/tree/root_navigation_index.h>
-#include <pixie/tree/tree_part.h>
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <span>
+#include <stdexcept>
+#include <utility>
+#include <vector>
 
 namespace pixie::tree {
 namespace detail::tree_traversal {
@@ -26,9 +31,6 @@ template <class B, detail::TreeEncodingStorage S>
 struct Encoding<LoudsTree<B, S>> {
   static constexpr int value = 2;
 };
-struct SizingVisitor {
-  void operator()(TreeNode) const {}
-};
 }  // namespace detail::tree_traversal
 
 /**
@@ -36,29 +38,16 @@ struct SizingVisitor {
  * index.
  * @details The byte limit covers this context, reusable fetch scratch and one
  * output under construction; the immutable index is independently budgeted.
- * Legacy whole-walk decoder scratch is a reserved allowance, allocated by the
- * walker. Fetched parts own their records and do not borrow the tree.
+ * Fetched parts own their topology. Their source accessor borrows the
+ * original tree, independently of this context.
  * Multiple results can coexist; operations on one context must not overlap.
  * Sequential thread handoff is allowed. No locks or shared cache lookup exist.
  */
 template <class Tree>
 class TreeTraversalContext {
   static constexpr int encoding = detail::tree_traversal::Encoding<Tree>::value;
-  static constexpr size_t kStreamBytes = 4096;
-  struct Plan {
-    size_t scratch = 0;
-    size_t bits = 0;
-    size_t depth = 0;
-  };
-  template <size_t Bits, class V, class I>
-  using ParenthesisWalk = std::conditional_t<
-      encoding == 0,
-      detail::bp_micro::BpMicroTraversal<Bits, Tree, V, I>,
-      detail::dfuds_micro::DfudsMicroTraversal<Bits, Tree, V, I>>;
-  using SizingVisitor = detail::tree_traversal::SizingVisitor;
   const Tree& tree_;
   std::span<const uint64_t> words_;
-  Plan plan_;
   const RootNavigationIndex<Tree>* index_ = nullptr;
   size_t byte_limit_;
   static constexpr size_t missing = std::numeric_limits<size_t>::max();
@@ -68,52 +57,8 @@ class TreeTraversalContext {
   };
   std::vector<Frame> scratch_;
 
-  static constexpr size_t overhead() { return sizeof(TreeTraversalContext); }
-  template <size_t Bits>
-  static Plan parentheses_plan(size_t allowance) {
-    using Walk = ParenthesisWalk<Bits, SizingVisitor, SizingVisitor>;
-    if (Walk::scratch_bytes(8) > allowance) {
-      return {};
-    }
-    const size_t depth =
-        std::min(size_t{128},
-                 (allowance - Walk::scratch_bytes(0)) / (64 * sizeof(size_t)));
-    return {std::max(kStreamBytes, Walk::scratch_bytes(depth)), Bits, depth};
-  }
-  template <size_t Depth, size_t Children>
-  static Plan louds_plan(size_t allowance) {
-    using Walk = detail::tree_unpack::LoudsIterativeTraversal<
-        Tree, SizingVisitor, SizingVisitor, true, Depth, Children>;
-    constexpr size_t bytes = std::max(kStreamBytes, Walk::scratch_bytes());
-    return bytes <= allowance ? Plan{bytes, 0, Depth} : Plan{};
-  }
-  static Plan choose_plan(size_t budget) {
-    if (budget < sizeof(TreeTraversalContext) + kStreamBytes) {
-      return {};
-    }
-    const size_t available = budget - sizeof(TreeTraversalContext);
-    const size_t allowance = std::min(size_t{encoding == 2 ? 80 : 192} * 1024,
-                                      std::max(kStreamBytes, available / 2));
-    using Profiles =
-        std::conditional_t<encoding == 2, detail::tree_traversal::LoudsProfiles,
-                           detail::tree_traversal::ParenthesisProfiles>;
-    Plan plan;
-    if (Profiles::visit_until([&](auto profile) {
-          using Profile = decltype(profile);
-          if constexpr (encoding == 2) {
-            plan = louds_plan<Profile::depth, Profile::children>(allowance);
-          } else {
-            plan = parentheses_plan<Profile::bits>(allowance);
-          }
-          return plan.depth != 0;
-        })) {
-      return plan;
-    }
-    return {kStreamBytes, 0, 0};
-  }
-
  public:
-  /** @brief Configure scan storage and whole-walk scratch allowance.
+  /** @brief Configure the byte limit for fetch().
    * @details Borrows tree and an optional independently budgeted index. They
    * must remain alive and unmoved while this context or its cursors use them.
    * Mutating operations on one context must not overlap.
@@ -125,7 +70,6 @@ class TreeTraversalContext {
                        const RootNavigationIndex<Tree>* index = nullptr)
       : tree_(tree),
         words_(tree.encoding_words()),
-        plan_(choose_plan(byte_limit)),
         index_(index),
         byte_limit_(byte_limit) {
     if (tree.empty()) {
@@ -146,15 +90,15 @@ class TreeTraversalContext {
    * byte_limit; caller-held output memory is accounted separately from context
    * scratch. No general cache lookup or deduplication is performed.
    */
-  TreePart fetch(TreeNode root, size_t max_bits) {
-    const size_t fixed = sizeof(*this) + sizeof(TreePart) + plan_.scratch;
+  auto fetch(TreeNode root, size_t max_bits) {
+    using Part = detail::IndexedTreePart<Tree, encoding == 2>;
+    const size_t fixed = sizeof(*this) + sizeof(Part);
     const size_t available = byte_limit_ > fixed ? byte_limit_ - fixed : 0;
     const size_t capacity =
         std::min({max_bits, tree_.size(),
-                  available / (sizeof(TreePart::Node) + sizeof(Frame) +
-                               sizeof(size_t))});
+                  available / (Part::bytes_per_node + sizeof(Frame))});
     if (!capacity) {
-      return {{}, 0};
+      return Part(tree_, {});
     }
     scratch_.clear();
     scratch_.reserve(capacity);
@@ -234,48 +178,43 @@ class TreeTraversalContext {
         }
       }
     }
-    std::vector<TreePart::Node> nodes(scratch_.size());
-    for (size_t i = 0; i < nodes.size(); ++i) {
-      const auto& frame = scratch_[i];
-      auto& row = nodes[i];
-      row.source_id = frame.node.number;
-      row.bit_position = frame.node.pos;
-      row.children_complete = frame.degree == frame.children;
-      row.children.reserve(frame.children);
-      if (i) {
-        nodes[frame.parent].children.push_back(i);
+    std::vector<typename Part::Record> records;
+    records.reserve(scratch_.size());
+    // LOUDS emits sibling runs in consecutive local order starting at node 1.
+    // For preorder scans the offsets index the explicit child buffer instead.
+    size_t child_offset = encoding == 2 ? 1 : 0;
+    for (auto& frame : scratch_) {
+      const auto count = frame.children;
+      records.emplace_back(frame.node, child_offset, count,
+                           frame.degree == count);
+      if constexpr (encoding != 2) {
+        frame.children = child_offset;
+      }
+      child_offset += count;
+    }
+    typename Part::ChildStorage children;
+    if constexpr (encoding != 2) {
+      children.resize(child_offset);
+      for (size_t i = 1; i < scratch_.size(); ++i) {
+        children[scratch_[scratch_[i].parent].children++] = i;
       }
     }
     scratch_.clear();
-    return {std::move(nodes), 1};
+    return Part(tree_, std::move(records), std::move(children));
   }
   /** @brief Bytes of allocated reusable scan scratch. */
   size_t scan_scratch_bytes() const {
     return scratch_.capacity() * sizeof(Frame);
   }
 
-  /** @brief Peak explicit traversal-buffer allowance, including decoder loads.
+  /** @brief Active fetch budget charge. Zero before scan scratch is allocated.
    */
-  size_t scratch_bytes() const { return plan_.scratch; }
-  /** @brief Whether plain DFS uses its streaming decoder. */
-  bool streaming_enabled() const { return plan_.scratch >= kStreamBytes; }
-  /** @brief Whether inspected DFS can use decoded subtrees/level cursors. */
-  bool optimized_inspection_enabled() const { return plan_.depth != 0; }
-  /** @brief BP/DFUDS chunk size in bits; zero for LOUDS or direct inspection.
-   */
-  size_t decoded_chunk_bits() const { return plan_.bits; }
-  /** @brief Cached traversal depth; BP/DFUDS keep decoding below this depth.
-   */
-  size_t cached_depth() const { return plan_.depth; }
-  /** @brief Active index/context/scratch budget charge; zero when disabled. */
   size_t budget_usage_bytes() const {
-    const size_t charged = plan_.scratch + scan_scratch_bytes();
-    return charged ? sizeof(*this) + charged : size_t{0};
+    return scratch_.capacity() ? memory_usage_bytes() : 0;
   }
-  /** @brief Context and reserved/allocated scratch, excluding index and
-   * outputs. */
+  /** @brief Context and allocated scan scratch, excluding index and outputs. */
   size_t memory_usage_bytes() const {
-    return std::max(sizeof(*this), budget_usage_bytes());
+    return sizeof(*this) + scan_scratch_bytes();
   }
   /** @brief Reject a temporary tree because this context borrows it. */
   TreeTraversalContext(Tree&&,

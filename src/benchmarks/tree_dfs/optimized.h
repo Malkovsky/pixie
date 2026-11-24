@@ -1,6 +1,18 @@
 #pragma once
 
+#include <pixie/tree/detail/bp_micro.h>
+#include <pixie/tree/detail/dfuds_micro.h>
+#include <pixie/tree/detail/louds_inspection_iterative.h>
 #include <pixie/tree/traversal_context.h>
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <span>
+#include <type_traits>
+#include <utility>
+
+#include "traversal_profiles.h"
 
 namespace pixie::benchmarks {
 // Benchmark event contract: preorder entries and one return after the final
@@ -9,10 +21,9 @@ template <class Tree>
 class TreeTraversalWorkloads {
   static constexpr int encoding =
       tree::detail::tree_traversal::Encoding<Tree>::value;
-  using Profiles =
-      std::conditional_t<encoding == 2,
-                         tree::detail::tree_traversal::LoudsProfiles,
-                         tree::detail::tree_traversal::ParenthesisProfiles>;
+  using Profiles = std::conditional_t<encoding == 2,
+                                      detail::LoudsProfiles,
+                                      detail::ParenthesisProfiles>;
   template <size_t Index>
   using Profile = typename Profiles::template At<Index>;
   template <size_t Bits, class V, class I>
@@ -20,21 +31,85 @@ class TreeTraversalWorkloads {
       encoding == 0,
       tree::detail::bp_micro::BpMicroTraversal<Bits, Tree, V, I>,
       tree::detail::dfuds_micro::DfudsMicroTraversal<Bits, Tree, V, I>>;
-  const tree::TreeTraversalContext<Tree>& context_;
+  static constexpr size_t kStreamBytes = 4096;
+  struct Plan {
+    size_t scratch = 0;
+    size_t bits = 0;
+    size_t depth = 0;
+  };
+  struct SizingVisitor {
+    void operator()(tree::TreeNode) const {}
+  };
   const Tree& tree_;
   std::span<const uint64_t> words_;
+  Plan plan_;
+
+  template <size_t Bits>
+  static Plan parentheses_plan(size_t allowance) {
+    using Walk = ParenthesisWalk<Bits, SizingVisitor, SizingVisitor>;
+    if (Walk::scratch_bytes(8) > allowance) {
+      return {};
+    }
+    const size_t depth =
+        std::min(size_t{128},
+                 (allowance - Walk::scratch_bytes(0)) / (64 * sizeof(size_t)));
+    return {std::max(kStreamBytes, Walk::scratch_bytes(depth)), Bits, depth};
+  }
+  template <size_t Depth, size_t Children>
+  static Plan louds_plan(size_t allowance) {
+    using Walk = tree::detail::tree_unpack::LoudsIterativeTraversal<
+        Tree, SizingVisitor, SizingVisitor, true, Depth, Children>;
+    constexpr size_t bytes = std::max(kStreamBytes, Walk::scratch_bytes());
+    return bytes <= allowance ? Plan{bytes, 0, Depth} : Plan{};
+  }
+  static Plan choose_plan(size_t budget) {
+    if (budget < fixture_metadata_bytes() + kStreamBytes) {
+      return {};
+    }
+    const size_t available = budget - fixture_metadata_bytes();
+    const size_t allowance = std::min(size_t{encoding == 2 ? 80 : 192} * 1024,
+                                      std::max(kStreamBytes, available / 2));
+    Plan plan;
+    if (Profiles::visit_until([&](auto profile) {
+          using Profile = decltype(profile);
+          if constexpr (encoding == 2) {
+            plan = louds_plan<Profile::depth, Profile::children>(allowance);
+          } else {
+            plan = parentheses_plan<Profile::bits>(allowance);
+          }
+          return plan.depth != 0;
+        })) {
+      return plan;
+    }
+    return {kStreamBytes, 0, 0};
+  }
 
  public:
-  explicit TreeTraversalWorkloads(
-      const tree::TreeTraversalContext<Tree>& context)
-      : context_(context),
-        tree_(context.tree()),
-        words_(context.source_words()) {}
+  explicit TreeTraversalWorkloads(const Tree& tree,
+                                  size_t budget = tree::kDefaultTraversalBytes)
+      : tree_(tree),
+        words_(tree.encoding_words()),
+        plan_(choose_plan(budget)) {}
+
+  // The matched fixtures budget one navigation context and one decoder plan
+  // for both DFS and root paths, so the index gets the same remaining budget.
+  static constexpr size_t fixture_metadata_bytes() {
+    return sizeof(tree::TreeTraversalContext<Tree>) + sizeof(Plan);
+  }
+  size_t reserved_bytes() const {
+    return streaming_enabled() ? fixture_metadata_bytes() + scratch_bytes() : 0;
+  }
+  size_t scratch_bytes() const { return plan_.scratch; }
+  bool streaming_enabled() const { return scratch_bytes() >= kStreamBytes; }
+  bool optimized_inspection_enabled() const { return plan_.depth != 0; }
+  size_t decoded_chunk_bits() const { return plan_.bits; }
+  size_t cached_depth() const { return plan_.depth; }
+
   /** @brief Emit DFS entry and final-child return events to a borrowed visitor.
    */
   template <class Visitor>
   void traverse(Visitor& visit) const {
-    if (context_.streaming_enabled()) {
+    if (streaming_enabled()) {
       traverse_decoded(visit);
     } else {
       pixie::tree::detail::tree_unpack::subtree(tree_, tree_.root(), visit);
@@ -50,7 +125,7 @@ class TreeTraversalWorkloads {
     // must extend dispatch explicitly rather than silently using the fallback.
     if constexpr (encoding == 2) {
       static_assert(Profiles::size == 5);
-      switch (context_.cached_depth()) {
+      switch (cached_depth()) {
         case Profile<0>::depth:
           return inspect_louds<Profile<0>::depth, Profile<0>::children>(visit,
                                                                         child);
@@ -69,7 +144,7 @@ class TreeTraversalWorkloads {
       }
     } else {
       static_assert(Profiles::size == 4);
-      switch (context_.decoded_chunk_bits()) {
+      switch (decoded_chunk_bits()) {
         case Profile<0>::bits:
           return inspect_parentheses<Profile<0>::bits>(visit, child);
         case Profile<1>::bits:
@@ -115,7 +190,7 @@ class TreeTraversalWorkloads {
       Visitor& visit,
       Inspector& child) const {
     ParenthesisWalk<Bits, Visitor, Inspector> walk(tree_, words_, visit, child,
-                                                   context_.cached_depth());
+                                                   cached_depth());
     walk.walk(tree_.root());
     return {walk.nodes, walk.children};
   }

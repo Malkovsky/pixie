@@ -1556,8 +1556,9 @@ class RmMBTree
                                            std::size_t lane_count,
                                            std::int64_t target_in_node,
                                            bool include_zero_boundary) {
-#ifdef PIXIE_AVX2_SUPPORT
-    if constexpr (std::is_same_v<typename Node::ExcessType, std::int16_t>) {
+#ifdef __AVX2__
+    if constexpr (Node::kFanout >= 16 &&
+                  std::is_same_v<typename Node::ExcessType, std::int16_t>) {
       if (lane_count == 16 &&
           target_in_node >= std::numeric_limits<std::int16_t>::min() &&
           target_in_node <= std::numeric_limits<std::int16_t>::max()) {
@@ -1568,7 +1569,8 @@ class RmMBTree
             node.max_excess.data() + slot,
             static_cast<std::int16_t>(target_in_node), include_zero_boundary);
       }
-    } else if constexpr (std::is_same_v<typename Node::ExcessType,
+    } else if constexpr (Node::kFanout >= 4 &&
+                         std::is_same_v<typename Node::ExcessType,
                                         std::int64_t>) {
       if (lane_count == 4) {
         alignas(32) std::int64_t prefix_before[4]{};

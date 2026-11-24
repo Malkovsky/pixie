@@ -184,6 +184,60 @@ void expect_matches_packed_bits(const Support& support,
   EXPECT_EQ(support.to_string(), expected);
 }
 
+template <class Check>
+void check_sample_boundaries(std::size_t count,
+                             std::size_t frequency,
+                             const Check& check) {
+  check(0);
+  check(count + 1);
+  if (count == 0) {
+    return;
+  }
+  check(1);
+  check(count);
+  for (const std::size_t sample : {1u, 2u, 31u, 32u, 33u, 63u, 64u, 65u}) {
+    const auto rank = sample * frequency;
+    if (rank <= count) {
+      check(rank - 1);
+      check(rank);
+      check(rank + 1);
+    }
+  }
+}
+
+template <class Support>
+void expect_select_boundaries(const Support& support,
+                              bool zero,
+                              std::span<const std::uint64_t> positions,
+                              std::size_t frequency,
+                              std::size_t block_bits) {
+  const auto check = [&](std::size_t rank) {
+    const auto expected = rank == 0                  ? 0
+                          : rank <= positions.size() ? positions[rank - 1]
+                                                     : support.size();
+    EXPECT_EQ(zero ? support.select0(rank) : support.select(rank),
+              expected_select(support, zero, rank, expected))
+        << "zero=" << zero << " rank=" << rank;
+  };
+  check_sample_boundaries(positions.size(), frequency, check);
+  for (std::size_t start = 0; start < support.size(); start += block_bits) {
+    const auto rank_at = [&](std::size_t position) {
+      return static_cast<std::size_t>(
+          std::lower_bound(positions.begin(), positions.end(), position) -
+          positions.begin());
+    };
+    for (const auto end : {start == 0 ? 0 : start - 1, start, start + 1}) {
+      const auto rank = rank_at(end);
+      EXPECT_EQ(zero ? support.rank0(end) : support.rank(end), rank)
+          << "zero=" << zero << " end=" << end;
+      check(rank);
+      check(rank + 1);
+    }
+  }
+  EXPECT_EQ(zero ? support.rank0(support.size()) : support.rank(support.size()),
+            positions.size());
+}
+
 template <class Support, class Reference>
 void expect_same_queries(const Support& support,
                          const Reference& reference,
@@ -305,7 +359,8 @@ TYPED_TEST(RankSelectSpecificationTest, ExhaustiveShortPatterns) {
   }
 }
 
-TYPED_TEST(RankSelectSpecificationTest, BlocksSamplesAndPartialTails) {
+template <class Support, bool Exhaustive>
+void check_blocks_samples_and_partial_tails() {
   constexpr std::array sizes{
       1u,    63u,    64u,    65u,    255u,    256u,    257u,   511u,  512u,
       513u,  2047u,  2048u,  2049u,  4095u,   4096u,   4097u,  5631u, 5632u,
@@ -322,10 +377,30 @@ TYPED_TEST(RankSelectSpecificationTest, BlocksSamplesAndPartialTails) {
                       : pattern == 2 ? rng()
                                      : (word % 97 == 0 ? 1 : 0);
       }
-      const TypeParam support(words, size);
-      expect_matches_packed_bits(support, words);
+      const Support support(words, size);
+      if (Exhaustive || size <= 4097) {
+        expect_matches_packed_bits(support, words);
+      } else {
+        std::array<std::vector<std::uint64_t>, 2> positions;
+        for (std::size_t p = 0; p < size; ++p) {
+          const bool bit = (words[p / 64] >> (p % 64)) & 1u;
+          positions[!bit].push_back(p);
+        }
+        for (const bool zero : {false, true}) {
+          // The baseline interval is a multiple of the compressed interval.
+          expect_select_boundaries(support, zero, positions[zero], 4096, 512);
+        }
+      }
     }
   }
+}
+
+TYPED_TEST(RankSelectSpecificationTest, BlocksSamplesAndPartialTails) {
+  check_blocks_samples_and_partial_tails<TypeParam, false>();
+}
+
+TYPED_TEST(RankSelectSpecificationTest, HeavyBlocksSamplesAndPartialTails) {
+  check_blocks_samples_and_partial_tails<TypeParam, true>();
 }
 
 TYPED_TEST(RankSelectSpecificationTest, SparseAndClusteredSamples) {
@@ -436,7 +511,8 @@ TYPED_TEST(RankSelectSpecificationTest, ShortSpansAndDirtyTrailingWords) {
   }
 }
 
-TYPED_TEST(RankSelectSpecificationTest, LargeRandomSourceAcrossSuperblocks) {
+TYPED_TEST(RankSelectSpecificationTest,
+           HeavyLargeRandomSourceAcrossSuperblocks) {
   // Preserve the old stress input's 2^27-bit extent. Exhaustive bit checks are
   // covered above; here check every word boundary and sampled word selections.
   std::vector<std::uint64_t> words(65536 * 32);
@@ -824,7 +900,8 @@ TEST(CompressedRankSelectTest,
   check.template operator()<WordAlignedCompressed>();
 }
 
-TEST(CompressedRankSelectTest, ExactSamplesGroupEdgesGapsAndPartialTerminal) {
+template <bool Exhaustive>
+void check_samples_group_edges_gaps_and_partial_terminal() {
   constexpr std::size_t kSuper = 16384;
   constexpr std::size_t kSize = 100 * kSuper + 37;
   std::mt19937_64 random(731);
@@ -846,6 +923,11 @@ TEST(CompressedRankSelectTest, ExactSamplesGroupEdgesGapsAndPartialTerminal) {
       const pixie::RankSelectSupportCompressed<pixie::AlignedStorage, Frequency>
           index(words, kSize);
       for (bool zero : {false, true}) {
+        if constexpr (!Exhaustive) {
+          expect_select_boundaries(index, zero, positions[zero], Frequency,
+                                   kSuper);
+          continue;
+        }
         for (std::size_t k = 1; k <= positions[zero].size(); ++k) {
           const auto result = zero ? index.select0(k) : index.select(k);
           ASSERT_EQ(result, positions[zero][k - 1])
@@ -861,6 +943,15 @@ TEST(CompressedRankSelectTest, ExactSamplesGroupEdgesGapsAndPartialTerminal) {
     check.template operator()<4096>();
     check.template operator()<65536>();
   }
+}
+
+TEST(CompressedRankSelectTest, ExactSamplesGroupEdgesGapsAndPartialTerminal) {
+  check_samples_group_edges_gaps_and_partial_terminal<false>();
+}
+
+TEST(CompressedRankSelectTest,
+     HeavyExactSamplesGroupEdgesGapsAndPartialTerminal) {
+  check_samples_group_edges_gaps_and_partial_terminal<true>();
 }
 
 TEST(CompressedRankSelectTest, CopyMoveAssignmentPreservesMixedDirectories) {
@@ -1835,7 +1926,8 @@ TEST(CompressedPositionSampleTest, InterleavedBitmapAcrossGroupBoundaries) {
   }
 }
 
-TEST(CompressedRankSelectTest, SkewedBlocksGapsAndTerminalSamples) {
+template <bool Exhaustive>
+void check_skewed_blocks_gaps_and_terminal_samples() {
   constexpr std::size_t kSuperBits = 16384;
   constexpr std::size_t kBits = 80 * kSuperBits + 137;
   constexpr std::array<std::size_t, 10> kPopulations{0,     1,  4095, 0, 0,
@@ -1853,18 +1945,43 @@ TEST(CompressedRankSelectTest, SkewedBlocksGapsAndTerminalSamples) {
   // the terminal sample. Complementing also swaps the skew between directions.
   for (unsigned pattern = 0; pattern < 3; ++pattern) {
     const pixie::RankSelectSupport<> reference(words, kBits);
-    const auto check = [&]<class Support>() {
+    const auto check = [&]<std::size_t Frequency>() {
+      using Support =
+          pixie::RankSelectSupportCompressed<pixie::AlignedStorage, Frequency>;
       const Support support(words, kBits);
-      for (std::size_t k = 1; k <= reference.rank(kBits); ++k) {
-        ASSERT_EQ(support.select(k), reference.select(k)) << k;
-      }
-      for (std::size_t k = 1; k <= reference.rank0(kBits); ++k) {
-        ASSERT_EQ(support.select0(k), reference.select0(k)) << k;
+      for (const bool zero : {false, true}) {
+        const auto rank_at = [&](std::size_t p) {
+          return zero ? reference.rank0(p) : reference.rank(p);
+        };
+        const auto check_rank = [&](std::size_t rank) {
+          ASSERT_EQ(zero ? support.select0(rank) : support.select(rank),
+                    zero ? reference.select0(rank) : reference.select(rank))
+              << "zero=" << zero << " rank=" << rank;
+        };
+        if constexpr (Exhaustive) {
+          for (std::size_t rank = 1; rank <= rank_at(kBits); ++rank) {
+            ASSERT_EQ(zero ? support.select0(rank) : support.select(rank),
+                      zero ? reference.select0(rank) : reference.select(rank))
+                << "zero=" << zero << " rank=" << rank;
+          }
+        } else {
+          check_sample_boundaries(rank_at(kBits), Frequency, check_rank);
+          for (std::size_t end = kSuperBits; end < kBits; end += kSuperBits) {
+            const auto rank = rank_at(end);
+            check_rank(rank);
+            check_rank(rank + 1);
+          }
+          const auto tail_start = kBits - kBits % kSuperBits;
+          const auto rank_before_tail = rank_at(tail_start);
+          const auto count = rank_at(kBits);
+          for (std::size_t rank = rank_before_tail + 1; rank <= count; ++rank) {
+            check_rank(rank);
+          }
+        }
       }
     };
-    check.operator()<pixie::RankSelectSupportCompressed<>>();
-    check.
-    operator()<pixie::RankSelectSupportCompressed<pixie::AlignedStorage, 64>>();
+    check.template operator()<4096>();
+    check.template operator()<64>();
     if (pattern == 0) {
       words.back() |= 1;
     } else {
@@ -1873,6 +1990,14 @@ TEST(CompressedRankSelectTest, SkewedBlocksGapsAndTerminalSamples) {
       }
     }
   }
+}
+
+TEST(CompressedRankSelectTest, SkewedBlocksGapsAndTerminalSamples) {
+  check_skewed_blocks_gaps_and_terminal_samples<false>();
+}
+
+TEST(CompressedRankSelectTest, HeavySkewedBlocksGapsAndTerminalSamples) {
+  check_skewed_blocks_gaps_and_terminal_samples<true>();
 }
 
 }  // namespace

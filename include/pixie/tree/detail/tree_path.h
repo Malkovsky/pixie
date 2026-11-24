@@ -7,7 +7,7 @@ namespace pixie::tree::detail {
 
 // Keys are unique and strictly decrease on each non-root parent step. The
 // larger endpoint therefore cannot be an ancestor of the smaller one.
-template <class Node, class Key, class Parent>
+template <bool AllowDisconnected = false, class Node, class Key, class Parent>
 void collect_tree_path(Node u,
                        Node v,
                        std::vector<Node>& out,
@@ -22,12 +22,28 @@ void collect_tree_path(Node u,
   auto a = key(u), b = key(v);
   while (a != b) {
     if (a > b) {
+      const Node next = parent(u);
+      if constexpr (AllowDisconnected) {
+        if (key(next) == a) {
+          out.clear();
+          scratch.clear();
+          return;
+        }
+      }
       out.push_back(u);
-      u = parent(u);
+      u = next;
       a = key(u);
     } else {
+      const Node next = parent(v);
+      if constexpr (AllowDisconnected) {
+        if (key(next) == b) {
+          out.clear();
+          scratch.clear();
+          return;
+        }
+      }
       scratch.push_back(v);
-      v = parent(v);
+      v = next;
       b = key(v);
     }
   }

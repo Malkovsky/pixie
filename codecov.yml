@@ -1,4 +1,4 @@
-# The coverage matrix uploads native and scalar reports separately.
+# The coverage matrix uploads native and SSE2 reports separately.
 codecov:
   notify:
     after_n_builds: 2

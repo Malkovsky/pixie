@@ -313,11 +313,21 @@ TYPED_TEST(TreeSerializationTest,
         reader, tree, budget);
     const pixie::tree::TreeTraversalContext<TypeParam> loaded(tree, budget,
                                                               &restored);
-    EXPECT_EQ(loaded.cached_depth(), context.cached_depth());
-    EXPECT_EQ(loaded.decoded_chunk_bits(), context.decoded_chunk_bits());
-    EXPECT_EQ(loaded.scratch_bytes(), context.scratch_bytes());
-    EXPECT_LE(loaded.budget_usage_bytes(), budget);
+    EXPECT_EQ(loaded.root_index(), &restored);
+    EXPECT_EQ(loaded.budget_usage_bytes(), 0u);
     EXPECT_EQ(save(*loaded.root_index()), bytes);
+    auto original_cursor = context.cursor();
+    auto loaded_cursor = loaded.cursor();
+    while (true) {
+      EXPECT_EQ(loaded_cursor.node(), original_cursor.node());
+      const size_t degree = original_cursor.degree();
+      ASSERT_EQ(loaded_cursor.degree(), degree);
+      if (degree == 0) {
+        break;
+      }
+      original_cursor.move_to_child(degree - 1);
+      loaded_cursor.move_to_child(degree - 1);
+    }
   }
 }
 

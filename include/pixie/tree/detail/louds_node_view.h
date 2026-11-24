@@ -4,7 +4,6 @@
 
 #include <cstddef>
 #include <limits>
-#include <optional>
 #include <utility>
 
 namespace pixie::tree::detail {
@@ -29,10 +28,10 @@ class LoudsNodeView {
    */
   void reset(TreeNode node) {
     node_ = node;
-    incoming_ = std::numeric_limits<size_t>::max();
-    next_.reset();
-    first_.reset();
-    parent_.reset();
+    incoming_ = kUncached;
+    next_ = 0;
+    first_.number = kUncached;
+    parent_.number = kUncached;
   }
 
   /** @brief Test whether the current node is the root. */
@@ -49,10 +48,10 @@ class LoudsNodeView {
   }
   /** @brief Return the first child; requires a non-leaf current node. */
   TreeNode first_child() const {
-    if (!first_) {
+    if (first_.number == kUncached) {
       first_ = tree_->first_child(node_);
     }
-    return *first_;
+    return first_;
   }
   /** @brief Return the next sibling; requires a non-root, non-last child. */
   TreeNode next_sibling() const {
@@ -67,10 +66,10 @@ class LoudsNodeView {
     if (is_root()) {
       return node_;
     }
-    if (!parent_) {
+    if (parent_.number == kUncached) {
       parent_ = tree_->parent_from_edge(node_, incoming_edge());
     }
-    return *parent_;
+    return parent_;
   }
 
   /** @brief Enumerate children with TreeBase::for_each_child semantics. */
@@ -84,26 +83,28 @@ class LoudsNodeView {
   LoudsNodeView(const Tree& tree, TreeNode node) : tree_(&tree), node_(node) {}
 
  private:
+  static constexpr size_t kUncached = std::numeric_limits<size_t>::max();
+
   size_t incoming_edge() const {
     // Bit zero can be a valid incoming edge.
-    if (incoming_ == std::numeric_limits<size_t>::max()) {
+    if (incoming_ == kUncached) {
       incoming_ = tree_->bv.select(node_.number);
     }
     return incoming_;
   }
 
   size_t next_delimiter() const {
-    if (!next_) {
+    if (next_ == 0) {
       next_ = tree_->next_delimiter(node_.pos, node_.number + 1);
     }
-    return *next_;
+    return next_;
   }
 
-  mutable std::optional<size_t> next_;
-  mutable std::optional<TreeNode> first_, parent_;
+  mutable size_t next_ = 0;  // A next record always starts after bit zero.
+  mutable TreeNode first_{kUncached, 0}, parent_{kUncached, 0};
   const Tree* tree_;
   TreeNode node_;
-  mutable size_t incoming_ = std::numeric_limits<size_t>::max();
+  mutable size_t incoming_ = kUncached;
 };
 
 }  // namespace pixie::tree::detail

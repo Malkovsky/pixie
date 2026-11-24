@@ -144,55 +144,56 @@ static void run_case_and_compare(const std::string& bits,
       }
     }
 
-    auto trace_header = ::testing::Message()
-                        << "\nseed=" << seed << " | N=" << N
-                        << " | use_words=" << (use_words ? 1 : 0)
-                        << "\nbits:   " << bits
-                        << "\nparens: " << bits_to_parens(bits)
-                        << "\nwhich=" << which << " (0..17)\n";
+    const auto trace_header = [&] {
+      return ::testing::Message()
+             << "\nseed=" << seed << " | N=" << N
+             << " | use_words=" << (use_words ? 1 : 0) << "\nbits:   " << bits
+             << "\nparens: " << bits_to_parens(bits) << "\nwhich=" << which
+             << " (0..17)\n";
+    };
 
     switch (which) {
       case 0: {  // rank1
         size_t x = pos_i(rng);
         auto a = nv.rank1(x), b = rm.rank1(x);
-        EXPECT_EQ(a, b) << trace_header << "op=rank1(" << x << ")";
+        EXPECT_EQ(a, b) << trace_header() << "op=rank1(" << x << ")";
       } break;
 
       case 1: {  // rank0
         size_t x = pos_i(rng);
         auto a = nv.rank0(x), b = rm.rank0(x);
-        EXPECT_EQ(a, b) << trace_header << "op=rank0(" << x << ")";
+        EXPECT_EQ(a, b) << trace_header() << "op=rank0(" << x << ")";
       } break;
 
       case 2: {  // select1
         size_t k = std::uniform_int_distribution<size_t>(0, ones + 3)(rng);
         auto a = nv.select1(k), b = rm.select1(k);
-        EXPECT_EQ(a, b) << trace_header << "op=select1(" << k << ")";
+        EXPECT_EQ(a, b) << trace_header() << "op=select1(" << k << ")";
       } break;
 
       case 3: {  // select0
         size_t k = std::uniform_int_distribution<size_t>(0, zeros + 3)(rng);
         auto a = nv.select0(k), b = rm.select0(k);
-        EXPECT_EQ(a, b) << trace_header << "op=select0(" << k << ")";
+        EXPECT_EQ(a, b) << trace_header() << "op=select0(" << k << ")";
       } break;
 
       case 4: {  // rank10
         size_t x =
             (N >= 2 ? std::uniform_int_distribution<size_t>(0, N)(rng) : 0);
         auto a = nv.rank10(x), b = rm.rank10(x);
-        EXPECT_EQ(a, b) << trace_header << "op=rank10(" << x << ")";
+        EXPECT_EQ(a, b) << trace_header() << "op=rank10(" << x << ")";
       } break;
 
       case 5: {  // select10
         size_t k = std::uniform_int_distribution<size_t>(0, pairs10 + 3)(rng);
         auto a = nv.select10(k), b = rm.select10(k);
-        EXPECT_EQ(a, b) << trace_header << "op=select10(" << k << ")";
+        EXPECT_EQ(a, b) << trace_header() << "op=select10(" << k << ")";
       } break;
 
       case 6: {  // excess
         size_t x = pos_i(rng);
         auto a = nv.excess(x), b = rm.excess(x);
-        EXPECT_EQ(a, b) << trace_header << "op=excess(" << x << ")";
+        EXPECT_EQ(a, b) << trace_header() << "op=excess(" << x << ")";
       } break;
 
       case 7: {  // fwdsearch
@@ -202,8 +203,8 @@ static void run_case_and_compare(const std::string& bits,
         size_t start = pos_i_nz(rng);
         int d = d_dist(rng);
         auto a = nv.fwdsearch(start, d), b = rm.fwdsearch(start, d);
-        EXPECT_EQ(a, b) << trace_header << "op=fwdsearch(" << start << "," << d
-                        << ")";
+        EXPECT_EQ(a, b) << trace_header() << "op=fwdsearch(" << start << ","
+                        << d << ")";
       } break;
 
       case 8: {  // bwdsearch
@@ -213,8 +214,8 @@ static void run_case_and_compare(const std::string& bits,
         size_t start = pos_i_nz(rng);
         int d = d_dist(rng);
         auto a = nv.bwdsearch(start, d), b = rm.bwdsearch(start, d);
-        EXPECT_EQ(a, b) << trace_header << "op=bwdsearch(" << start << "," << d
-                        << ")";
+        EXPECT_EQ(a, b) << trace_header() << "op=bwdsearch(" << start << ","
+                        << d << ")";
       } break;
 
       case 9: {  // range_min_query_pos
@@ -222,8 +223,8 @@ static void run_case_and_compare(const std::string& bits,
           break;
         }
         auto a = nv.range_min_query_pos(i, j), b = rm.range_min_query_pos(i, j);
-        EXPECT_EQ(a, b) << trace_header << "op=range_min_query_pos(" << i << ","
-                        << j << ")";
+        EXPECT_EQ(a, b) << trace_header() << "op=range_min_query_pos(" << i
+                        << "," << j << ")";
       } break;
 
       case 10: {  // range_min_query_val
@@ -231,8 +232,8 @@ static void run_case_and_compare(const std::string& bits,
           break;
         }
         auto a = nv.range_min_query_val(i, j), b = rm.range_min_query_val(i, j);
-        EXPECT_EQ(a, b) << trace_header << "op=range_min_query_val(" << i << ","
-                        << j << ")";
+        EXPECT_EQ(a, b) << trace_header() << "op=range_min_query_val(" << i
+                        << "," << j << ")";
       } break;
 
       case 11: {  // mincount
@@ -240,7 +241,7 @@ static void run_case_and_compare(const std::string& bits,
           break;
         }
         auto a = nv.mincount(i, j), b = rm.mincount(i, j);
-        EXPECT_EQ(a, b) << trace_header << "op=mincount(" << i << "," << j
+        EXPECT_EQ(a, b) << trace_header() << "op=mincount(" << i << "," << j
                         << ")";
       } break;
 
@@ -253,7 +254,7 @@ static void run_case_and_compare(const std::string& bits,
                        ? 1
                        : std::uniform_int_distribution<size_t>(1, cnt + 1)(rng);
         auto a = nv.minselect(i, j, k), b = rm.minselect(i, j, k);
-        EXPECT_EQ(a, b) << trace_header << "op=minselect(" << i << "," << j
+        EXPECT_EQ(a, b) << trace_header() << "op=minselect(" << i << "," << j
                         << "," << k << ")";
       } break;
 
@@ -262,8 +263,8 @@ static void run_case_and_compare(const std::string& bits,
           break;
         }
         auto a = nv.range_max_query_pos(i, j), b = rm.range_max_query_pos(i, j);
-        EXPECT_EQ(a, b) << trace_header << "op=range_max_query_pos(" << i << ","
-                        << j << ")";
+        EXPECT_EQ(a, b) << trace_header() << "op=range_max_query_pos(" << i
+                        << "," << j << ")";
       } break;
 
       case 14: {  // range_max_query_val
@@ -271,8 +272,8 @@ static void run_case_and_compare(const std::string& bits,
           break;
         }
         auto a = nv.range_max_query_val(i, j), b = rm.range_max_query_val(i, j);
-        EXPECT_EQ(a, b) << trace_header << "op=range_max_query_val(" << i << ","
-                        << j << ")";
+        EXPECT_EQ(a, b) << trace_header() << "op=range_max_query_val(" << i
+                        << "," << j << ")";
       } break;
 
       case 15: {  // close
@@ -281,7 +282,7 @@ static void run_case_and_compare(const std::string& bits,
         }
         size_t x = pos_i_nz(rng);
         auto a = nv.close(x), b = rm.close(x);
-        EXPECT_EQ(a, b) << trace_header << "op=close(" << x << ")";
+        EXPECT_EQ(a, b) << trace_header() << "op=close(" << x << ")";
       } break;
 
       case 16: {  // open
@@ -290,7 +291,7 @@ static void run_case_and_compare(const std::string& bits,
         }
         size_t x = pos_i(rng);
         auto a = nv.open(x), b = rm.open(x);
-        EXPECT_EQ(a, b) << trace_header << "op=open(" << x << ")";
+        EXPECT_EQ(a, b) << trace_header() << "op=open(" << x << ")";
       } break;
 
       case 17: {  // enclose
@@ -299,7 +300,7 @@ static void run_case_and_compare(const std::string& bits,
         }
         size_t x = pos_i(rng);
         auto a = nv.enclose(x), b = rm.enclose(x);
-        EXPECT_EQ(a, b) << trace_header << "op=enclose(" << x << ")";
+        EXPECT_EQ(a, b) << trace_header() << "op=enclose(" << x << ")";
       } break;
     }
   }
@@ -544,6 +545,69 @@ static void expect_range_ops_equal(const Tree& rm,
   }
 }
 
+template <class Tree>
+static void expect_queries_across_summary_boundary(const Tree& rm,
+                                                   const NaiveRmM& reference,
+                                                   size_t size,
+                                                   size_t boundary) {
+  for (const size_t position :
+       {size_t{0}, size_t{63}, size_t{64}, size_t{511}, size_t{512},
+        boundary - 1, boundary, boundary + 1, size - 1}) {
+    SCOPED_TRACE(position);
+    const auto ones = reference.rank1(position);
+    const auto zeros = reference.rank0(position);
+    const auto pairs = reference.rank10(position);
+    EXPECT_EQ(rm.rank1(position), ones);
+    EXPECT_EQ(rm.rank0(position), zeros);
+    EXPECT_EQ(rm.rank10(position), pairs);
+    for (size_t next : {size_t{0}, size_t{1}}) {
+      EXPECT_EQ(rm.select1(ones + next), reference.select1(ones + next));
+      EXPECT_EQ(rm.select0(zeros + next), reference.select0(zeros + next));
+      EXPECT_EQ(rm.select10(pairs + next), reference.select10(pairs + next));
+    }
+    for (const int delta : {-17, -1, 0, 1, 17}) {
+      EXPECT_EQ(rm.fwdsearch(position, delta),
+                reference.fwdsearch(position, delta));
+      EXPECT_EQ(rm.bwdsearch(position + 1, delta),
+                reference.bwdsearch(position + 1, delta));
+    }
+  }
+
+  const std::pair<size_t, size_t> ranges[] = {{63, 129},
+                                              {510, 513},
+                                              {boundary - 2, boundary + 2},
+                                              {boundary - 512, size - 1},
+                                              {0, size - 1},
+                                              {size - 37, size - 1}};
+  for (const auto& [left, right] : ranges) {
+    SCOPED_TRACE(::testing::Message() << "left=" << left << " right=" << right);
+    EXPECT_EQ(rm.range_min_query_pos(left, right),
+              reference.range_min_query_pos(left, right));
+    EXPECT_EQ(rm.range_max_query_pos(left, right),
+              reference.range_max_query_pos(left, right));
+    const auto count = reference.mincount(left, right);
+    EXPECT_EQ(rm.mincount(left, right), count);
+    for (const auto rank : {size_t{1}, count, count + 1}) {
+      EXPECT_EQ(rm.minselect(left, right, rank),
+                reference.minselect(left, right, rank));
+    }
+  }
+}
+
+TYPED_TEST(RmMRandomTest, SelectSearchAndMinimaAcrossSummaryNodes) {
+  constexpr size_t kSummaryBits = 32 * 512;
+  std::string bits(2 * kSummaryBits + 37, '1');
+  std::fill_n(bits.begin() + kSummaryBits, kSummaryBits, '0');
+  for (size_t i = 2 * kSummaryBits; i < bits.size(); i += 2) {
+    bits[i] = '0';
+  }
+  const auto words = pack_words_lsb_first(bits);
+  const TypeParam tree(words, bits.size());
+  const NaiveRmM reference(bits);
+  expect_queries_across_summary_boundary(tree, reference, bits.size(),
+                                         kSummaryBits);
+}
+
 TEST(RmMEdgeCases, MultiwordPattern10AcrossWordBoundaries) {
   const size_t n = 640;
   std::string bits(n, '1');
@@ -742,7 +806,22 @@ TEST(RmMSdslEdgeCases, PublicNavigationAcrossBlocks) {
 #endif
 
 // Compile-time fanout choices must preserve the common query contract.
-TEST(RmMEdgeCases, DifferentFanoutsMatchReference) {
+TEST(RmMEdgeCases, SummaryBoundariesWithDifferentFanouts) {
+  std::mt19937_64 rng(kSeed);
+  const auto bits = random_bits(rng, 40 * 512 + 37);
+  const auto words = pack_words_lsb_first(bits);
+  const NaiveRmM reference(bits);
+  expect_queries_across_summary_boundary(pixie::RmMBTree<>(words, bits.size()),
+                                         reference, bits.size(), 32 * 512);
+  expect_queries_across_summary_boundary(
+      pixie::RmMBTree<2, 16>(words, bits.size()), reference, bits.size(),
+      16 * 512);
+  expect_queries_across_summary_boundary(
+      pixie::RmMBTree<8, 8>(words, bits.size()), reference, bits.size(),
+      8 * 512);
+}
+
+TEST(RmMEdgeCases, HeavyDifferentFanoutsMatchReference) {
   std::mt19937_64 rng(42);
   const size_t n = 512 * 40 + 37;
   const std::string bits = random_bits(rng, n);
@@ -855,7 +934,7 @@ TEST(RmMEdgeCases, SdslStyleParenthesesIndexing) {
   EXPECT_EQ(rm.enclose(0), pixie::RmMBTree<>::npos);
 }
 
-TYPED_TEST(RmMRandomTest, LongRandom) {
+TYPED_TEST(RmMRandomTest, HeavyLongRandom) {
   auto& rng = this->rng;
   std::uniform_int_distribution<int> coin(0, 1);
   std::uniform_int_distribution<int> len_u(1, (int)kLongMaxBits);
@@ -1424,7 +1503,7 @@ TEST(RmMTest, SelectBasic) {
   EXPECT_EQ(rm.select1(8), 15);
 }
 
-TEST(RmMTest, MainRankTest) {
+TEST(RmMTest, HeavyMainRankTest) {
   std::mt19937_64 rng(42);
   std::vector<std::uint64_t> bits(65536 * 32);
   for (size_t i = 0; i < 65536 * 32; i++) {
@@ -1440,7 +1519,7 @@ TEST(RmMTest, MainRankTest) {
   }
 }
 
-TEST(RmMTest, MainSelectTest) {
+TEST(RmMTest, HeavyMainSelectTest) {
   std::mt19937_64 rng(42);
   std::vector<std::uint64_t> bits(65536 * 32);
   for (size_t i = 0; i < 65536 * 32; i++) {

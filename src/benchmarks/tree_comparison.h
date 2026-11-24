@@ -34,16 +34,16 @@ inline size_t TreeCacheBudget() {
 template <TreeWorkload Workload, class Tree>
 void RunTreeComparison(benchmark::State& state, const Tree& tree) {
   const size_t budget = TreeCacheBudget();
-  const size_t context_charge =
-      tree::TreeTraversalContext<Tree>(tree, budget).budget_usage_bytes();
-  tree::RootNavigationIndex<Tree> index(tree, budget - context_charge);
-  tree::TreeTraversalContext<Tree> cache(tree, budget, &index);
-  if (cache.budget_usage_bytes() + index.budget_usage_bytes() >
-      TreeCacheBudget()) {
+  TreeTraversalWorkloads workload(tree, budget);
+  tree::RootNavigationIndex<Tree> index(tree,
+                                        budget - workload.reserved_bytes());
+  tree::TreeTraversalContext<Tree> context(tree, 0, &index);
+  const auto budget_used =
+      workload.reserved_bytes() + index.budget_usage_bytes();
+  if (budget_used > budget) {
     state.SkipWithError("Combined cache and scratch budget exceeded");
     return;
   }
-  TreeTraversalWorkloads workload(cache);
   std::optional<ShiftedQueryPool> queries;
   if constexpr (Workload == TreeWorkload::kRandomPath ||
                 Workload == TreeWorkload::kRandomPathChildren) {
@@ -65,20 +65,20 @@ void RunTreeComparison(benchmark::State& state, const Tree& tree) {
     } else {
       auto work = IndexedRandomRootToLeaf<Workload ==
                                           TreeWorkload::kRandomPathChildren>(
-          cache, *queries, observe, observe);
+          context, *queries, observe, observe);
       nodes += work.nodes;
       benchmark::DoNotOptimize(work);
     }
   }
   state.counters["nodes"] = tree.size();
   state.counters["cache_limit_bytes"] = TreeCacheBudget();
-  state.counters["cache_and_scratch_bytes"] =
-      cache.budget_usage_bytes() + index.budget_usage_bytes();
-  state.counters["scratch_reserved_bytes"] = cache.scratch_bytes();
-  state.counters["streaming_dfs"] = cache.streaming_enabled();
-  state.counters["decoded_inspection"] = cache.optimized_inspection_enabled();
-  state.counters["decode_chunk_bits"] = cache.decoded_chunk_bits();
-  state.counters["decode_depth"] = cache.cached_depth();
+  state.counters["cache_and_scratch_bytes"] = budget_used;
+  state.counters["scratch_reserved_bytes"] = workload.scratch_bytes();
+  state.counters["streaming_dfs"] = workload.streaming_enabled();
+  state.counters["decoded_inspection"] =
+      workload.optimized_inspection_enabled();
+  state.counters["decode_chunk_bits"] = workload.decoded_chunk_bits();
+  state.counters["decode_depth"] = workload.cached_depth();
   state.counters["visited_nodes_per_iteration"] =
       double(nodes) / state.iterations();
 }

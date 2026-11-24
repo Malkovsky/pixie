@@ -13,11 +13,30 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Configure CMake
+    - name: Configure AVX2 ASan preset
       run: cmake --preset asan
 
     - name: Build Project
-      run: cmake --build --preset asan --parallel
+      run: cmake --build --preset asan --parallel 1
 
     - name: Run tests
       run: ctest --preset asan
+
+  build-optimized-profiles:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [x86-64-v3, avx512-full]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure CPU profile
+      run: cmake --preset "${{ matrix.profile }}"
+
+    - name: Compile ISA-sensitive test targets
+      run: >-
+        cmake --build --preset "${{ matrix.profile }}" --parallel 1
+        --target bit_algorithms_unittests rank_select_tests
+        select512_experimental_tests wavelet_tree_tests

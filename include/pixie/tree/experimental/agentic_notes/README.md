@@ -72,14 +72,16 @@ DFS also remains behind pointers. No single encoding wins every workload.
 
 ## Current code map
 
-| Responsibility | Location relative to `include/pixie/` |
+| Responsibility | Location (library paths relative to `include/pixie/`) |
 | --- | --- |
 | Tree facade and child enumeration contract | `tree.h` |
 | Encodings and local views | `tree/{bp,dfuds,louds}.h` |
 | Lazy per-node results | `tree/detail/{bp,dfuds,louds}_node_view.h` |
 | Streaming kernels and bit primitives | `tree/detail/unpack*.h` |
 | Bounded root index | `tree/root_navigation_index.h` |
-| Combined runtime budget selection | `tree/traversal_context.h` |
+| Bounded subtree scans | `tree/traversal_context.h` |
+| Whole-tree benchmark profiles and budgets | `src/benchmarks/tree_dfs/optimized.h` |
+| Twin forest codec comparison | `src/benchmarks/forest256_twin.h` |
 | BP compact records and vector program arguments | `tree/detail/bp_micro.h`, `bp_micro_vector.h` |
 | Shared small BP programs | `tree/detail/bp_micro_tables.h` |
 | DFUDS programs/records | `tree/detail/dfuds_micro.h` |

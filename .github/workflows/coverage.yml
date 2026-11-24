@@ -8,16 +8,19 @@ on:
 
 jobs:
   coverage:
-    name: ${{ matrix.variant == 'native' && 'coverage' || 'coverage (scalar)' }}
+    name: ${{ matrix.variant == 'native' && 'coverage' || 'coverage (SSE2)' }}
     runs-on: ubuntu-latest
+    env:
+      CC: gcc
+      CXX: g++
     strategy:
       fail-fast: false
       matrix:
         include:
           - variant: native
             build_directory: coverage
-          - variant: scalar
-            build_directory: coverage-scalar
+          - variant: sse2
+            build_directory: coverage-sse2
 
     steps:
     - uses: actions/checkout@v4

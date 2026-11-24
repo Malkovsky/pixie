@@ -133,11 +133,10 @@ each implementation.
 2. **Non-owning indexes**: indexes use external immutable data where
    appropriate, commonly `std::span<const std::uint64_t>`. The caller keeps
    that data alive and stable for the index lifetime.
-3. **SIMD primitive dispatch**: keep `PIXIE_AVX512_SUPPORT` and
-   `PIXIE_AVX2_SUPPORT` feature guards, SIMD implementations, and scalar
-   fallbacks inside the low-level primitive header that owns the operation.
-   Callers use one unconditional primitive API and must not branch on Pixie
-   SIMD feature macros.
+3. **SIMD primitive dispatch**: check the compiler feature macros for the
+   instructions each kernel uses. Keep the implementations and fallbacks in
+   the primitive that owns the operation. Callers use one unconditional
+   primitive API.
 4. **Target domain**: optimize for bit sequences and indexes up to `2^64`
    bits.
 5. **Platform**: Linux/Unix is the current target platform. `MappedFile`
@@ -257,7 +256,8 @@ under `build/<preset>` and export `compile_commands.json`.
 | --- | --- |
 | `debug` | Debug tests. |
 | `release` | Optimized tests. |
-| `asan` | Debug tests with AddressSanitizer and AVX-512 disabled. |
+| `sse2`, `avx2`, `x86-64-v3`, `avx512-full` | Optimized tests with the selected CPU profile. |
+| `asan` | Debug tests with AddressSanitizer and the AVX2 profile. |
 | `coverage` | Debug tests with GCC coverage instrumentation. |
 | `benchmarks` | Native Pixie benchmarks. |
 | `benchmark-all-backends` | Native benchmarks plus every currently registered optional backend target. |
@@ -288,10 +288,10 @@ options. Do not overwrite a supported preset build merely to test an unrelated
 configuration.
 
 ```bash
-cmake -S . -B build/local-avx2 -DCMAKE_BUILD_TYPE=Release \
-  -DPIXIE_TESTS=ON -DDISABLE_AVX512=ON
-cmake --build build/local-avx2 -j
-ctest --test-dir build/local-avx2 --output-on-failure
+cmake -S . -B build/local-no-bmi2 -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_FLAGS="-march=native -mno-bmi2"
+cmake --build build/local-no-bmi2 -j
+ctest --test-dir build/local-no-bmi2 --output-on-failure
 ```
 
 ## Testing
@@ -308,6 +308,13 @@ ctest --preset coverage
 # Run only a registered test-target label.
 ctest --preset release -L rank_select_tests
 ```
+
+The standard test presets, CI, and coverage runs exclude the `heavy` label.
+Name large stress cases with a `Heavy` prefix on the Google Test case name.
+Keep targeted checks for the same operations in the standard suite.
+After building the release preset, run the stress cases with
+`ctest --preset heavy`. Use `ctest --test-dir <build> -L '^heavy$'` to
+run them in another build. Plain CTest runs both sets.
 
 The registered test executables are `bit_algorithms_unittests`,
 `rank_select_tests`, `benchmark_tests`, `test_rmm`,
@@ -362,14 +369,15 @@ The script configures and builds the `coverage` preset, deletes stale
 `.gcda`/`.gcov` files, runs `ctest --preset coverage`, and writes
 `build/coverage/coverage.txt`. Detailed reports live under
 `build/coverage/gcov/`, with a separate directory per translation unit.
+Coverage uses one job by default. Set `PIXIE_COVERAGE_JOBS` to change it.
 To regenerate reports from existing profiles without rerunning tests, use
 `bash scripts/collect_gcov.sh build/coverage`.
 
-CI also runs the script with `PIXIE_COVERAGE_VARIANT=scalar`. This runs
-rank/select tests and the Forest256 and SIMD microtree suites for baseline
-`x86-64` in `build/coverage-scalar`. Both jobs upload under the same Codecov flag.
-The native job uses only the runner's available instructions; CI does not
-require AVX-512 hardware.
+CI also runs the script with `PIXIE_COVERAGE_VARIANT=sse2`. This runs the bit
+algorithm, rank/select, Forest256, and SIMD microtree tests in
+`build/coverage-sse2`. Both jobs upload under the same Codecov flag.
+The native job uses the runner's available instructions. CI also compiles
+selected test targets with the `x86-64-v3` and `avx512-full` presets.
 
 - The report uses `gcov -pb`, so Codecov receives branch probabilities as well
   as line hits. A Codecov partial line executed but did not take every branch.
@@ -436,16 +444,14 @@ require AVX-512 hardware.
 
 ### Modifying SIMD Code
 
-1. Keep feature detection and SIMD/scalar dispatch local to the low-level
-   primitive that owns the operation. Callers must use its stable API
-   unconditionally; do not leak `PIXIE_*_SUPPORT` guards into data-structure
-   code.
+1. Keep compiler feature checks and SIMD dispatch local to each low-level
+   primitive. Callers use its stable API unconditionally.
 2. Keep an AVX-512 implementation, AVX2 implementation where useful, and a
    scalar fallback behind the existing feature guards.
 3. Include `<immintrin.h>` only in translation units or headers that use SIMD
    intrinsics; do not make it a generic benchmark dependency.
-4. Validate the fallback with the `asan` preset or an isolated
-   `DISABLE_AVX512=ON` build.
+4. Test fallbacks with the `sse2`, `avx2`, and `asan` presets. Use explicit
+   compiler flags to isolate additional feature combinations.
 5. Build the relevant benchmark preset before claiming a performance result.
    Use `benchmarks-profile` for hardware counters when supported by the host.
 

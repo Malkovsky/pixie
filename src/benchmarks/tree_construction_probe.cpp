@@ -13,6 +13,7 @@
 #include <string>
 
 #include "tree_cover_source.h"
+#include "tree_dfs/optimized.h"
 #include "tree_input.h"
 
 using Clock = std::chrono::steady_clock;
@@ -65,19 +66,16 @@ Result succinct(size_t n, size_t budget, bool copy_input) {
     return r;
   }
   start = Clock::now();
-  const size_t context_charge =
-      pixie::tree::TreeTraversalContext(tree, budget).budget_usage_bytes();
-  pixie::tree::RootNavigationIndex index(tree, budget - context_charge);
-  pixie::tree::TreeTraversalContext cache(tree, budget, &index);
+  pixie::benchmarks::TreeTraversalWorkloads walk(tree, budget);
+  pixie::tree::RootNavigationIndex index(tree, budget - walk.reserved_bytes());
   r.cache = seconds(start);
   r.encoding = tree.encoding_owned_bytes();
   r.structure = tree.memory_usage_bytes();
-  r.scratch = cache.scratch_bytes();
-  r.persistent =
-      cache.memory_usage_bytes() - r.scratch + index.memory_usage_bytes();
+  r.scratch = walk.scratch_bytes();
+  r.persistent = walk.fixture_metadata_bytes() + index.memory_usage_bytes();
   if (tree.size() != n ||
-      cache.budget_usage_bytes() + index.budget_usage_bytes() > budget ||
-      !cache.optimized_inspection_enabled()) {
+      walk.reserved_bytes() + index.budget_usage_bytes() > budget ||
+      !walk.optimized_inspection_enabled()) {
     throw std::runtime_error("construction validation failed");
   }
   return r;

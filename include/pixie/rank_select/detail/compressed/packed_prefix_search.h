@@ -9,7 +9,7 @@
 #include <cstdint>
 #include <optional>
 
-#if defined(PIXIE_AVX512_SUPPORT) && defined(__AVX512VBMI__)
+#if defined(__AVX512BW__) && defined(__AVX512VBMI__)
 #include <immintrin.h>
 #endif
 
@@ -48,7 +48,7 @@ inline std::optional<PackedPrefixLocation> packed_prefix_search(
     const std::uint64_t* record,
     std::uint64_t target,
     std::size_t valid_bits) {
-#if defined(PIXIE_AVX512_SUPPORT) && defined(__AVX512VBMI__)
+#if defined(__AVX512BW__) && defined(__AVX512VBMI__)
   const auto packed = _mm512_loadu_si512(record);
   const auto low = _mm512_permutexvar_epi8(
       _mm512_load_si512(kPrefixLowBytes.data()), packed);

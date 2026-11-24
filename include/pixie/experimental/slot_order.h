@@ -96,7 +96,7 @@ void rotate_bytes(std::array<std::uint8_t, N>& bytes,
                   std::size_t left,
                   std::size_t right,
                   std::size_t distance) noexcept {
-#if defined(PIXIE_AVX512_SUPPORT) && defined(__AVX512VBMI__)
+#if defined(__AVX512BW__) && defined(__AVX512VBMI__)
   if constexpr (N == 64) {
     const auto positions = _mm512_loadu_si512(identity<N>.data());
     auto source = _mm512_add_epi8(positions, _mm512_set1_epi8(distance));
@@ -112,7 +112,7 @@ void rotate_bytes(std::array<std::uint8_t, N>& bytes,
     return;
   }
 #endif
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   const auto input0 =
       _mm256_loadu_si256(reinterpret_cast<const __m256i*>(bytes.data()));
   const auto bank0 = _mm256_permute2x128_si256(input0, input0, 0x00);
@@ -151,7 +151,7 @@ void rotate_bytes(std::array<std::uint8_t, N>& bytes,
     _mm256_storeu_si256(reinterpret_cast<__m256i*>(bytes.data() + offset),
                         result);
   }
-#elif defined(PIXIE_SSE41_SUPPORT)
+#elif defined(__SSSE3__) && defined(__SSE4_1__)
   __m128i banks[N / 16];
   for (std::size_t i = 0; i < N / 16; ++i) {
     banks[i] = _mm_loadu_si128(

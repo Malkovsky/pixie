@@ -6,7 +6,6 @@
 namespace {
 using Bp = pixie::tree::BPTree<pixie::RmMBTree<>>;
 using Dfuds = pixie::tree::DFUDSTree<pixie::RmMBTree<>>;
-using Part = pixie::tree::TreePart;
 
 Bp star(size_t n) {
   std::vector<uint64_t> words((2 * n + 63) / 64);
@@ -26,25 +25,36 @@ TEST(TreePartInspection, DisabledIndexFrontierAndLeafAreDifferent) {
       pixie::tree::RootNavigationIndex(tree, 0).inspect_part();
   EXPECT_TRUE(disabled.empty());
   EXPECT_EQ(disabled.root_count(), 0u);
+  EXPECT_THROW(disabled.root(), std::out_of_range);
+  EXPECT_TRUE(disabled.parentheses().empty());
   const auto partial =
       pixie::tree::RootNavigationIndex<Bp, 1>(tree).inspect_part();
-  ASSERT_EQ(partial.nodes().size(), 1u);
+  ASSERT_EQ(partial.size(), 1u);
   EXPECT_EQ(partial.root_count(), 1u);
-  EXPECT_TRUE(partial.nodes()[0].children.empty());
-  EXPECT_FALSE(partial.nodes()[0].children_complete);
+  EXPECT_EQ(&partial.source_tree(), &tree);
+  const auto frontier = partial.navigate(partial.root());
+  EXPECT_TRUE(frontier.is_leaf());
+  EXPECT_FALSE(frontier.children_complete());
 
   const auto full = [] {
     const auto owner = star(3);
     return pixie::tree::RootNavigationIndex(owner).inspect_part();
   }();
   ASSERT_EQ(full.root_count(), 1u);
-  ASSERT_EQ(full.nodes().size(), 3u);
-  EXPECT_EQ(full.nodes()[0].children, (std::vector<size_t>{1, 2}));
-  EXPECT_TRUE(full.nodes()[0].children_complete);
-  EXPECT_TRUE(full.nodes()[1].children_complete);
-  EXPECT_TRUE(full.nodes()[1].children.empty());
-  EXPECT_EQ(full.nodes()[1].source_id, 1u);
-  EXPECT_EQ(full.nodes()[1].bit_position, 1u);
+  ASSERT_EQ(full.size(), 3u);
+  const auto root = full.root();
+  EXPECT_EQ(full.parent(root), root);
+  EXPECT_EQ(full.first_child(root), 1u);
+  EXPECT_EQ(full.child(root, 1), 2u);
+  EXPECT_TRUE(full.children_complete(root));
+  EXPECT_TRUE(full.children_complete(1));
+  EXPECT_TRUE(full.is_leaf(1));
+  EXPECT_FALSE(full.is_last_child(1));
+  EXPECT_EQ(full.next_sibling(1), 2u);
+  EXPECT_TRUE(full.is_last_child(2));
+  EXPECT_EQ(full.source_node(1), pixie::tree::TreeNode(1, 1));
+  EXPECT_EQ(full.tree_path(2, 1), (std::vector<size_t>{2, 0, 1}));
+  EXPECT_EQ(full.parentheses(1, 4), "()()");
 }
 
 template <class Tree>
@@ -55,15 +65,15 @@ void check_subtree_topology(const Tree& tree) {
   const auto part = pixie::tree::inspect_event_part<128>(tree, child);
   ASSERT_TRUE(part);
   EXPECT_EQ(part->root_count(), 1u);
-  ASSERT_EQ(part->nodes().size(), 3u);
-  EXPECT_EQ(part->nodes()[0].children, (std::vector<size_t>{1, 2}));
-  for (size_t i = 0; i < 3; ++i) {
-    const auto& node = part->nodes()[i];
-    EXPECT_EQ(node.source_id, child.number + i);
+  ASSERT_EQ(part->size(), 3u);
+  EXPECT_EQ(&part->source_tree(), &tree);
+  EXPECT_EQ(part->first_child(part->root()), 1u);
+  EXPECT_EQ(part->child(part->root(), 1), 2u);
+  for (size_t i = 0; i < part->size(); ++i) {
     const auto source = i ? tree.child(child, i - 1) : child;
-    EXPECT_EQ(node.bit_position, source.pos);
-    EXPECT_TRUE(node.children_complete);
-    EXPECT_EQ(node.children.size(), tree.degree(source));
+    EXPECT_EQ(part->source_node(i), source);
+    EXPECT_TRUE(part->children_complete(i));
+    EXPECT_EQ(part->degree(i), tree.degree(source));
   }
 }
 
@@ -82,16 +92,16 @@ void check_probe_limit(const Tree& empty,
   EXPECT_FALSE(pixie::tree::inspect_event_part<128>(empty, {0, 0}));
   const auto hit = pixie::tree::inspect_event_part<128>(fits, fits.root());
   ASSERT_TRUE(hit);
-  ASSERT_EQ(hit->nodes().size(), 64u);
-  EXPECT_EQ(hit->nodes()[0].children.size(), 63u);
+  ASSERT_EQ(hit->size(), 64u);
+  EXPECT_EQ(hit->degree(hit->root()), 63u);
   EXPECT_FALSE(pixie::tree::inspect_event_part<128>(misses, misses.root()));
   const auto last = misses.child(misses.root(), 63);
   const auto leaf = pixie::tree::inspect_event_part<128>(misses, last);
   ASSERT_TRUE(leaf);
-  ASSERT_EQ(leaf->nodes().size(), 1u);
-  EXPECT_EQ(leaf->nodes()[0].bit_position, last.pos);
-  EXPECT_TRUE(leaf->nodes()[0].children_complete);
-  EXPECT_TRUE(leaf->nodes()[0].children.empty());
+  ASSERT_EQ(leaf->size(), 1u);
+  EXPECT_EQ(leaf->source_node(leaf->root()), last);
+  EXPECT_TRUE(leaf->children_complete(leaf->root()));
+  EXPECT_TRUE(leaf->is_leaf(leaf->root()));
 }
 
 TEST(TreePartInspection, EventProbeAcceptsOnlyCompleteSubtrees) {
@@ -105,7 +115,7 @@ TEST(TreePartInspection,
   const auto parts = [] {
     const pixie::tree::ForestCoverTree tree(star(700));
     EXPECT_THROW(tree.inspect_unit(tree.unit_count()), std::out_of_range);
-    std::vector<Part> parts;
+    std::vector<pixie::tree::ForestUnitPart> parts;
     for (size_t u = 0; u < tree.unit_count(); ++u) {
       parts.push_back(tree.inspect_unit(u));
     }
@@ -113,22 +123,26 @@ TEST(TreePartInspection,
   }();
   ASSERT_GT(parts.size(), 1u);
   ASSERT_EQ(parts[0].root_count(), 1u);
-  const auto& portal = parts[0].nodes().at(0);
-  EXPECT_FALSE(portal.children_complete);
-  EXPECT_TRUE(portal.children.empty());
-  EXPECT_GT(parts[1].root_count(), 1u);
-  size_t next = 1;
+  const auto& portal_part = parts[0];
+  EXPECT_FALSE(portal_part.children_complete(portal_part.root()));
+  EXPECT_TRUE(portal_part.is_leaf(portal_part.root()));
+  EXPECT_LT(portal_part.memory_usage_bytes(), 640u);
+  ASSERT_GT(parts[1].root_count(), 1u);
+  EXPECT_TRUE(parts[1].tree_path(parts[1].root(0), parts[1].root(1)).empty());
+  EXPECT_EQ(parts[1].parentheses(1, 3), ")()");
+  size_t leaves = 0;
   for (size_t u = 1; u < parts.size(); ++u) {
-    ASSERT_EQ(parts[u].root_count(), parts[u].nodes().size());
-    for (size_t root = 0; root < parts[u].root_count(); ++root) {
-      const auto& leaf = parts[u].nodes().at(root);
-      EXPECT_EQ(leaf.source_id, next++);
-      EXPECT_TRUE(leaf.children_complete);
-      EXPECT_TRUE(leaf.children.empty());
-      EXPECT_FALSE(leaf.bit_position);
+    const auto& part = parts[u];
+    ASSERT_EQ(part.root_count(), part.size());
+    for (size_t i = 0; i < part.root_count(); ++i) {
+      const auto root = part.root(i);
+      EXPECT_EQ(part.parent(root), root);
+      EXPECT_TRUE(part.children_complete(root));
+      EXPECT_TRUE(part.is_leaf(root));
+      ++leaves;
     }
   }
-  EXPECT_EQ(next, 700u);
+  EXPECT_EQ(leaves, 699u);
 }
 
 TEST(TreePartInspection, ForestIndexAndUnitUseTheirOwnLocalCoordinates) {
@@ -137,19 +151,24 @@ TEST(TreePartInspection, ForestIndexAndUnitUseTheirOwnLocalCoordinates) {
   const auto index =
       pixie::tree::RootNavigationIndex<pixie::tree::ForestCoverTree>(tree)
           .inspect_part();
-  for (const Part* part : {&index, &unit}) {
-    ASSERT_EQ(part->root_count(), 1u);
-    ASSERT_EQ(part->nodes().size(), 5u);
-    const auto& parent = part->nodes()[0];
-    EXPECT_TRUE(parent.children_complete);
-    ASSERT_EQ(parent.children.size(), tree.degree(tree.root()));
-    for (size_t i = 0; i < parent.children.size(); ++i) {
-      const auto& leaf = part->nodes().at(parent.children[i]);
-      EXPECT_EQ(leaf.source_id, tree.number(tree.child(tree.root(), i)));
-      EXPECT_FALSE(leaf.bit_position);
-      EXPECT_TRUE(leaf.children_complete);
-      EXPECT_TRUE(leaf.children.empty());
+  const auto check_star = [&](const auto& part) {
+    EXPECT_EQ(&part.source_tree(), &tree);
+    ASSERT_EQ(part.root_count(), 1u);
+    ASSERT_EQ(part.size(), 5u);
+    const auto root = part.root();
+    EXPECT_TRUE(part.children_complete(root));
+    ASSERT_EQ(part.degree(root), tree.degree(tree.root()));
+    for (size_t i = 0; i < part.degree(root); ++i) {
+      const auto leaf = part.child(root, i);
+      EXPECT_EQ(part.number(leaf), i + 1);
+      EXPECT_EQ(part.parent(leaf), root);
+      EXPECT_TRUE(part.children_complete(leaf));
+      EXPECT_TRUE(part.is_leaf(leaf));
+      EXPECT_EQ(part.is_last_child(leaf), i + 1 == part.degree(root));
     }
-  }
+  };
+  check_star(index);
+  check_star(unit);
+  EXPECT_EQ(unit.tree_path(1, 4), (std::vector<size_t>{1, 0, 4}));
 }
 }  // namespace

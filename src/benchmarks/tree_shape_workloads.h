@@ -15,15 +15,6 @@
 #include "tree_traversal_workloads.h"
 
 namespace pixie::benchmarks {
-// The immutable index gets the part of the budget not reserved for the walk.
-template <class Tree>
-auto MakeWalkIndex(const Tree& tree,
-                   size_t budget = tree::kDefaultTraversalBytes) {
-  const auto reserved =
-      tree::TreeTraversalContext(tree, budget).budget_usage_bytes();
-  return tree::RootNavigationIndex<Tree>(tree, budget - reserved);
-}
-
 template <class Tree>
 constexpr bool kDecomposed =
     requires(const Tree& tree) { tree.component_count(); };
@@ -137,12 +128,11 @@ void CoverDfs(benchmark::State& state,
     // The optimized baseline's immutable root index is setup, not scratch.
     // Every walk still creates its own decoder buffers inside the timed call.
     auto start = std::chrono::steady_clock::now();
-    auto index = MakeWalkIndex(tree, budget);
-    pixie::tree::TreeTraversalContext context(tree, budget, &index);
+    TreeTraversalWorkloads walk(tree, budget);
+    tree::RootNavigationIndex index(tree, budget - walk.reserved_bytes());
     state.counters["prepare_seconds"] =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
             .count();
-    pixie::benchmarks::TreeTraversalWorkloads walk(context);
     for (auto _ : state) {
       if constexpr (Inspect) {
         benchmark::DoNotOptimize(walk.inspect(visit, child));
@@ -151,15 +141,15 @@ void CoverDfs(benchmark::State& state,
         walk.traverse(entry);
       }
     }
-    const auto retained = context.memory_usage_bytes() -
-                          context.scratch_bytes() + index.memory_usage_bytes();
+    const auto retained =
+        walk.fixture_metadata_bytes() + index.memory_usage_bytes();
     state.counters["traversal_index_bytes"] = retained;
     state.counters["total_bytes"] = tree.memory_usage_bytes() + retained;
     state.counters["bits_per_node"] =
         8.0 * (tree.memory_usage_bytes() + retained) / tree.size();
-    state.counters["scratch_bytes"] = context.scratch_bytes();
+    state.counters["scratch_bytes"] = walk.scratch_bytes();
     state.counters["budget_usage_bytes"] =
-        context.budget_usage_bytes() + index.budget_usage_bytes();
+        walk.reserved_bytes() + index.budget_usage_bytes();
     state.counters.erase("cursor_bytes");
   } else {
     if constexpr (Inspect && kDecomposed<Tree>) {
@@ -180,10 +170,7 @@ void CoverDfs(benchmark::State& state,
     };
     auto child_count = [&](auto) { ++inspected; };
     if constexpr (Optimized) {
-      auto index = MakeWalkIndex(tree, budget);
-      pixie::tree::TreeTraversalContext context(tree, budget, &index);
-      pixie::benchmarks::TreeTraversalWorkloads(context).inspect(count,
-                                                                 child_count);
+      TreeTraversalWorkloads(tree, budget).inspect(count, child_count);
     } else {
       CoverWalk<true>(tree, count, child_count);
     }

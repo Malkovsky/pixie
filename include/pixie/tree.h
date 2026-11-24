@@ -8,6 +8,7 @@
  * encodings.
  */
 
+#include <pixie/tree/detail/tree_parentheses.h>
 #include <pixie/tree/detail/tree_path.h>
 
 #include <concepts>
@@ -149,42 +150,9 @@ class TreeBase {
   std::string parentheses(
       std::size_t start = 0,
       std::size_t count = std::numeric_limits<std::size_t>::max()) const {
-    std::string output;
-    if (empty() || !count) {
-      return output;
-    }
-    std::size_t offset = 0;
-    auto emit = [&](char c) {
-      if (offset++ >= start) {
-        output.push_back(c);
-      }
-    };
-    auto node = root();
-    bool entering = true;
-    while (true) {
-      emit(entering ? '(' : ')');
-      if (output.size() == count) {
-        break;
-      }
-      if (entering && !is_leaf(node)) {
-        node = first_child(node);
-        continue;
-      }
-      if (entering) {
-        entering = false;
-        continue;
-      }
-      if (is_root(node)) {
-        break;
-      }
-      if (!is_last_child(node)) {
-        node = next_sibling(node);
-        entering = true;
-      } else {
-        node = parent(node);
-      }
-    }
-    return output;
+    return detail::tree_parentheses(
+        *this, empty() ? 0u : 1u, [this](std::size_t) { return root(); }, start,
+        count);
   }
 
   /**

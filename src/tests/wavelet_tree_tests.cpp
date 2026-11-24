@@ -361,7 +361,40 @@ TEST(WaveletTreeTest, BuildsFromCountsAndOneStreamedPass) {
                std::invalid_argument);
 }
 
-TEST(WaveletTreeTest, SmokeSelect) {
+TEST(WaveletTreeTest, RankAndSelectAcrossPartialBlocks) {
+  constexpr size_t kSize = 4097;
+  constexpr size_t kAlphabet = 1024;
+  constexpr std::array<std::uint64_t, 4> symbols{0, 1, 511, 1023};
+  std::vector<std::uint64_t> data(kSize);
+  std::array<std::vector<size_t>, kAlphabet> positions;
+  for (size_t i = 0; i < kSize; ++i) {
+    const auto symbol = i % 509 == 0 ? 17 : symbols[(i / 129 + i % 3) % 4];
+    data[i] = symbol;
+    positions[symbol].push_back(i);
+  }
+
+  for (const auto type : {pixie::WaveletTreeBuildType::Standard,
+                          pixie::WaveletTreeBuildType::Huffman}) {
+    const WaveletTree tree(kAlphabet, data, type);
+    for (const std::uint64_t symbol : {0u, 1u, 17u, 42u, 511u, 1023u}) {
+      const auto& occurrences = positions[symbol];
+      for (const size_t end : {0u, 1u, 63u, 64u, 511u, 512u, 513u, 1023u, 1024u,
+                               1025u, 4095u, 4096u, 4097u}) {
+        EXPECT_EQ(
+            tree.rank(symbol, end),
+            std::lower_bound(occurrences.begin(), occurrences.end(), end) -
+                occurrences.begin());
+      }
+      for (const size_t rank :
+           {size_t{1}, occurrences.size() / 2 + 1, occurrences.size() + 1}) {
+        EXPECT_EQ(tree.select(symbol, rank),
+                  rank <= occurrences.size() ? occurrences[rank - 1] : kSize);
+      }
+    }
+  }
+}
+
+TEST(WaveletTreeTest, HeavySmokeSelect) {
   std::vector<std::vector<size_t>> rank;
   for (size_t data_size = 8; data_size < (1 << 22); data_size <<= 1) {
     size_t alphabet_size = 1024;
@@ -389,7 +422,7 @@ TEST(WaveletTreeTest, SmokeSelect) {
   }
 }
 
-TEST(WaveletTreeTest, SmokeRank) {
+TEST(WaveletTreeTest, HeavySmokeRank) {
   std::vector<size_t> count;
   for (size_t data_size = 8; data_size < (1 << 22); data_size <<= 1) {
     size_t alphabet_size = 1024;

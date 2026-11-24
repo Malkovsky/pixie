@@ -2,7 +2,7 @@
 
 #include <pixie/bits.h>
 
-#if defined(PIXIE_AVX512_SUPPORT) || defined(PIXIE_AVX2_SUPPORT)
+#if defined(__AVX512F__) || defined(__AVX2__)
 #include <immintrin.h>
 #endif
 
@@ -32,7 +32,7 @@ inline uint64_t word_at(std::span<const uint64_t> words, size_t p) {
 inline void fill_parent_slots(uint16_t* destination,
                               unsigned count,
                               uint16_t parent) {
-#if defined(PIXIE_AVX512_SUPPORT) && defined(__AVX512BW__)
+#if defined(__AVX512F__) && defined(__AVX512BW__)
   const __m512i values = _mm512_set1_epi16(parent);
   while (count >= 32) {
     _mm512_storeu_si512(destination, values);
@@ -41,7 +41,7 @@ inline void fill_parent_slots(uint16_t* destination,
   }
   const __mmask32 mask = (uint32_t{1} << count) - 1;
   _mm512_mask_storeu_epi16(destination, mask, values);
-#elif defined(PIXIE_AVX2_SUPPORT)
+#elif defined(__AVX2__)
   const auto values = _mm256_set1_epi16(parent);
   while (count >= 16) {
     _mm256_storeu_si256(reinterpret_cast<__m256i*>(destination), values);
@@ -125,7 +125,7 @@ inline void decode_byte(const ByteProgram& p,
                         std::array<uint64_t, 136>& positions,
                         uint64_t* event_numbers,
                         uint64_t* event_positions) {
-#if defined(PIXIE_AVX512_SUPPORT)
+#if defined(__AVX512F__)
   auto local_num = _mm512_add_epi64(
       _mm512_set1_epi64(number),
       _mm512_cvtepu8_epi64(
@@ -149,7 +149,7 @@ inline void decode_byte(const ByteProgram& p,
                            _mm512_permutexvar_epi64(keep, local_num));
   _mm512_mask_storeu_epi64(positions.data() + 8 + depth - p.kept, mask,
                            _mm512_permutexvar_epi64(keep, local_pos));
-#elif defined(PIXIE_AVX2_SUPPORT)
+#elif defined(__AVX2__)
   // AVX2 permutes 32-bit lanes. Duplicate each event index to move both
   // halves of a 64-bit coordinate together, then select local or saved nodes.
   const auto ranks = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(p.rank));
@@ -242,7 +242,7 @@ inline void decode_relative_events(const uint8_t* codes,
                                    uint64_t number,
                                    uint64_t position,
                                    uint64_t* output) {
-#if defined(PIXIE_AVX512_SUPPORT)
+#if defined(__AVX512F__)
   const auto nbase = _mm512_set1_epi64(number),
              pbase = _mm512_set1_epi64(position);
   const auto low = _mm512_setr_epi64(0, 8, 1, 9, 2, 10, 3, 11);
@@ -260,7 +260,7 @@ inline void decode_relative_events(const uint8_t* codes,
     _mm512_storeu_si512(output + 2 * i + 8,
                         _mm512_permutex2var_epi64(nums, high, positions));
   }
-#elif defined(PIXIE_AVX2_SUPPORT)
+#elif defined(__AVX2__)
   const auto nbase = _mm256_set1_epi64x(number),
              pbase = _mm256_set1_epi64x(position);
   for (size_t i = 0; i < count; i += 4) {
@@ -287,8 +287,7 @@ inline void decode_relative_events(const uint8_t* codes,
 #endif
 }
 
-#if defined(PIXIE_AVX2_SUPPORT) && \
-    !(defined(PIXIE_AVX512_SUPPORT) && defined(__AVX512VBMI2__))
+#if defined(__AVX2__) && !(defined(__AVX512BW__) && defined(__AVX512VBMI2__))
 // Keep the packing loop out of recursive traversal instantiations to limit
 // code growth and preserve the compiler's recursive DFS unrolling budget.
 [[gnu::noinline]] inline unsigned zero_offsets_avx2(uint64_t mask,
@@ -340,7 +339,7 @@ inline unsigned zero_offsets(uint64_t word, unsigned valid, uint8_t* out) {
   if (valid < 64) {
     mask &= (uint64_t(1) << valid) - 1;
   }
-#if defined(PIXIE_AVX512_SUPPORT) && defined(__AVX512VBMI2__)
+#if defined(__AVX512BW__) && defined(__AVX512VBMI2__)
   alignas(64) static constexpr auto indices = [] {
     std::array<uint8_t, 64> x{};
     for (unsigned i = 0; i < 64; ++i) {
@@ -353,7 +352,7 @@ inline unsigned zero_offsets(uint64_t word, unsigned valid, uint8_t* out) {
   _mm512_storeu_si512(out, packed);
   const unsigned count = std::popcount(mask);
   return count;
-#elif defined(PIXIE_AVX2_SUPPORT)
+#elif defined(__AVX2__)
   return zero_offsets_avx2(mask, valid, out);
 #else
   unsigned count = 0;

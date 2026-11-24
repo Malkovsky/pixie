@@ -77,7 +77,7 @@ TEST(TreeBenchmarkInputTest, EmptyInputsAndGeneratorLimit) {
       std::length_error);
 }
 
-TEST(RankSelectBenchmarkTest, Select10PercentFill) {
+TEST(RankSelectBenchmarkTest, HeavySelect10PercentFill) {
   for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 
@@ -98,7 +98,7 @@ TEST(RankSelectBenchmarkTest, Select10PercentFill) {
   }
 }
 
-TEST(RankSelectBenchmarkTest, SelectZero10PercentFill) {
+TEST(RankSelectBenchmarkTest, HeavySelectZero10PercentFill) {
   for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 
@@ -119,7 +119,7 @@ TEST(RankSelectBenchmarkTest, SelectZero10PercentFill) {
   }
 }
 
-TEST(RankSelectBenchmarkTest, Select90PercentFill) {
+TEST(RankSelectBenchmarkTest, HeavySelect90PercentFill) {
   for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 
@@ -140,7 +140,7 @@ TEST(RankSelectBenchmarkTest, Select90PercentFill) {
   }
 }
 
-TEST(RankSelectBenchmarkTest, SelectZero90PercentFill) {
+TEST(RankSelectBenchmarkTest, HeavySelectZero90PercentFill) {
   for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 
@@ -161,7 +161,7 @@ TEST(RankSelectBenchmarkTest, SelectZero90PercentFill) {
   }
 }
 
-TEST(RankSelectBenchmarkTest, Select) {
+TEST(RankSelectBenchmarkTest, HeavySelect) {
   for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 
@@ -180,7 +180,7 @@ TEST(RankSelectBenchmarkTest, Select) {
   }
 }
 
-TEST(RankSelectBenchmarkTest, SelectZero) {
+TEST(RankSelectBenchmarkTest, HeavySelectZero) {
   for (size_t n = 8; n <= (1ull << 28); n <<= 2) {
     std::mt19937_64 rng(42);
 

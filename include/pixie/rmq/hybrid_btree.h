@@ -1137,7 +1137,7 @@ class HybridBTree
     if (left >= right) {
       return npos;
     }
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
     if constexpr (std::is_same_v<T, std::int64_t> &&
                   std::is_same_v<Compare, std::less<T>>) {
       if (right - left >= kLeafAvx2ScanThreshold) {
@@ -1154,7 +1154,7 @@ class HybridBTree
     return best;
   }
 
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   /**
    * @brief AVX2 scan for signed 64-bit minimum ranges.
    *

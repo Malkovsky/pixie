@@ -1,0 +1,22 @@
+include_guard(GLOBAL)
+
+function(pixie_cpu_profile_flags output profile)
+    if (profile STREQUAL "")
+        set(flags "")
+    elseif (profile STREQUAL "sse2")
+        set(flags -march=x86-64)
+    elseif (profile STREQUAL "avx2")
+        set(flags -march=x86-64 -mavx2)
+    elseif (profile STREQUAL "x86-64-v3")
+        set(flags -march=x86-64-v3)
+    elseif (profile STREQUAL "avx512-full")
+        set(flags -march=x86-64-v4
+                -mavx512vpopcntdq -mavx512bitalg -mavx512vbmi -mavx512vbmi2)
+    elseif (profile STREQUAL "native")
+        set(flags -march=native)
+    else ()
+        message(FATAL_ERROR "Unknown Pixie CPU profile '${profile}'. "
+                "Choose sse2, avx2, x86-64-v3, avx512-full, native, or an empty profile.")
+    endif ()
+    set(${output} "${flags}" PARENT_SCOPE)
+endfunction()

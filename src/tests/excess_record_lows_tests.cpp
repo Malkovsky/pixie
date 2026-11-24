@@ -162,7 +162,7 @@ TEST(ExcessRecordLows128, Random) {
   }
 }
 
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
 static void check_nibble_lut_matches_naive(const uint64_t* s, int case_id = 0) {
   alignas(16) uint64_t out[2];
   alignas(16) uint64_t ref[2];
