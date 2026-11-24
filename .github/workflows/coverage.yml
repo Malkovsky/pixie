@@ -32,6 +32,7 @@ jobs:
       run: ./scripts/coverage_report.sh
       env:
         PIXIE_COVERAGE_VARIANT: ${{ matrix.variant }}
+        PIXIE_COVERAGE_JOBS: "4"
 
     - name: Prepare gcov reports for Codecov
       working-directory: build/${{ matrix.build_directory }}

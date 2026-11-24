@@ -17,7 +17,7 @@ jobs:
       run: cmake --preset asan
 
     - name: Build Project
-      run: cmake --build --preset asan --parallel 1
+      run: cmake --build --preset asan --parallel 4
 
     - name: Run tests
       run: ctest --preset asan
@@ -37,6 +37,6 @@ jobs:
 
     - name: Compile ISA-sensitive test targets
       run: >-
-        cmake --build --preset "${{ matrix.profile }}" --parallel 1
+        cmake --build --preset "${{ matrix.profile }}" --parallel 4
         --target bit_algorithms_unittests rank_select_tests
         select512_experimental_tests wavelet_tree_tests
