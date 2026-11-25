@@ -303,18 +303,11 @@ class HybridBTree
      * supplied comparator returns whether the left entry is strictly better
      * than the right entry. Equal entries keep the smaller slot by using the
      * same stable rule as the value-level RMQ.
+     * @pre The node has between one and kSelectorEntries entries.
      */
     template <class EntryLess>
     void build(std::size_t entry_count, EntryLess entry_less) {
-      if (entry_count > kSelectorEntries) {
-        throw std::length_error("HybridBTree local selector too large");
-      }
-
       bp_bits_.fill(0);
-      if (entry_count == 0) {
-        return;
-      }
-
       std::array<std::uint16_t, kSelectorEntries> stack{};
       std::size_t stack_size = 0;
       std::size_t write_position = 2 * entry_count;
@@ -338,17 +331,12 @@ class HybridBTree
      *
      * @tparam WithZeroPrefix The selector's last word stores zero-rank
      * prefixes for middle nodes. BP leaves use the raw BP words.
+     * @pre The slots form a nonempty subrange of the encoded entries.
      */
     template <bool WithZeroPrefix = false>
     std::size_t arg_min(std::size_t slot_left,
                         std::size_t slot_right,
                         std::size_t entry_count) const {
-      constexpr auto max_entries =
-          WithZeroPrefix ? kEmbeddedPositionEntries : kSelectorEntries;
-      if (slot_left >= slot_right || slot_right > entry_count ||
-          entry_count > max_entries) {
-        return npos;
-      }
       if (slot_left + 1 == slot_right) {
         return slot_left;
       }
@@ -363,28 +351,16 @@ class HybridBTree
       };
       const std::size_t first_close = close(slot_left);
       const std::size_t last_close = close(slot_right - 1);
-      if (first_close > last_close || last_close >= bit_count) {
-        return npos;
-      }
 
       const std::size_t shifted_min = depth_arg_min<WithZeroPrefix>(
           first_close + 1, last_close + 2, bit_count);
-      if (shifted_min == npos || shifted_min == 0) {
-        return npos;
+      // The range starts just after the first close, so every candidate
+      // prefix contains at least one zero.
+      if constexpr (WithZeroPrefix) {
+        return rank0_at_with_zero_prefix(shifted_min, bit_count) - 1;
+      } else {
+        return rank0_at(shifted_min, bit_count) - 1;
       }
-
-      const std::size_t zero_rank = [&] {
-        if constexpr (WithZeroPrefix) {
-          return rank0_at_with_zero_prefix(shifted_min, bit_count);
-        } else {
-          return rank0_at(shifted_min, bit_count);
-        }
-      }();
-      if (zero_rank == 0) {
-        return npos;
-      }
-      const std::size_t entry = zero_rank - 1;
-      return entry < entry_count ? entry : npos;
     }
 
     /**
@@ -540,16 +516,12 @@ class HybridBTree
     /**
      * @brief Return the position of the minimum BP depth in a depth range.
      * @tparam WithZeroPrefix Read depth from the packed zero-rank metadata.
+     * @pre The range contains at least two valid prefix positions.
      */
     template <bool WithZeroPrefix = false>
     std::size_t depth_arg_min(std::size_t left,
                               std::size_t right,
                               std::size_t bit_count) const {
-      const std::size_t depth_count = bit_count + 1;
-      if (left >= right || right > depth_count) {
-        return npos;
-      }
-
       const auto prefix = [&](std::size_t position) {
         if constexpr (WithZeroPrefix) {
           return prefix_excess_with_zero_prefix(position, bit_count);
@@ -603,20 +575,11 @@ class HybridBTree
      * @details A bit is set for every prefix-minimum record and every
      * suffix-minimum record. Equal suffix values set the smaller slot so
      * first-minimum tie-breaking is preserved.
+     * @pre The leaf has between one and kMaskEntries entries.
      */
     template <class EntryLess>
     void build(std::size_t entry_count, EntryLess entry_less) {
-      if (entry_count > kMaskEntries) {
-        throw std::length_error(
-            "HybridBTree prefix/suffix leaf selector too large");
-      }
-
       words_.fill(0);
-      if (entry_count == 0) {
-        set_embedded_min_offset(0);
-        return;
-      }
-
       std::size_t prefix_best = 0;
       set_mask_bit(0);
       for (std::size_t slot = 1; slot < entry_count; ++slot) {
@@ -646,14 +609,11 @@ class HybridBTree
      * leaf minimum, and suffixes after the global leaf minimum. Interior ranges
      * that cannot be represented by prefix/suffix records return `npos` so the
      * caller can scan original values.
+     * @pre The slots form a nonempty subrange of the encoded entries.
      */
     std::size_t arg_min(std::size_t slot_left,
                         std::size_t slot_right,
                         std::size_t entry_count) const {
-      if (slot_left >= slot_right || slot_right > entry_count ||
-          entry_count > kMaskEntries) {
-        return npos;
-      }
       if (slot_left + 1 == slot_right) {
         return slot_left;
       }
@@ -1406,17 +1366,14 @@ class HybridBTree
     top_sparse_candidates_.clear();
     top_block_size_ = top_sparse_block_size_for(values_.size());
     top_block_count_ = top_sparse_block_count_for(values_.size());
-    top_sparse_levels_ =
-        top_block_count_ == 0 ? 0 : std::bit_width(top_block_count_);
-    if (top_block_count_ == 0) {
-      return;
-    }
+    top_sparse_levels_ = std::bit_width(top_block_count_);
 
     top_sparse_candidates_.assign(top_sparse_levels_ * top_block_count_,
                                   TopCandidate{});
     for (std::size_t block = 0; block < top_block_count_; ++block) {
       const std::size_t begin = block * top_block_size_;
-      const std::size_t end = std::min(values_.size(), begin + top_block_size_);
+      const std::size_t end =
+          begin + std::min(values_.size() - begin, top_block_size_);
       std::size_t minimum = begin;
       for (std::size_t position = begin + 1; position < end; ++position) {
         if (strictly_better_value_position(position, minimum)) {
@@ -1491,13 +1448,10 @@ class HybridBTree
 
   /**
    * @brief Return the sparse-table candidate over a top-block range.
+   * @pre The range contains at least one existing block.
    */
   TopCandidate top_sparse_block_arg_min(std::size_t block_left,
                                         std::size_t block_right) const {
-    if (block_left >= block_right || block_right > top_block_count_ ||
-        top_sparse_levels_ == 0) {
-      return {};
-    }
     const std::size_t length = block_right - block_left;
     const std::size_t level = std::bit_width(length) - 1;
     const std::size_t span = std::size_t{1} << level;
@@ -1519,17 +1473,11 @@ class HybridBTree
 
   /**
    * @brief Return the top-overlay answer, or `npos` when the tree should run.
+   * @pre The query is valid and longer than a top-level block.
    */
   std::size_t top_sparse_arg_min(std::size_t left, std::size_t right) const {
-    if (top_block_count_ <= 1) {
-      return npos;
-    }
-
     const std::size_t padded_block_left = left / top_block_size_;
     const std::size_t padded_block_right = (right - 1) / top_block_size_ + 1;
-    if (padded_block_left + 1 >= padded_block_right) {
-      return npos;
-    }
 
     const TopCandidate padded =
         top_sparse_block_arg_min(padded_block_left, padded_block_right);
@@ -1537,8 +1485,7 @@ class HybridBTree
       return static_cast<std::size_t>(padded.position);
     }
 
-    const std::size_t first_full_block =
-        (left + top_block_size_ - 1) / top_block_size_;
+    const std::size_t first_full_block = ceil_div(left, top_block_size_);
     const std::size_t full_block_right = right / top_block_size_;
     if (first_full_block >= full_block_right) {
       return npos;

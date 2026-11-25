@@ -98,6 +98,10 @@ class ForestCoverTree : public TreeBase<ForestCoverTree> {
   using U = uint32_t;
   using V = std::vector<U>;
   static constexpr U missing = UINT32_MAX;
+  struct SourceNode {
+    U parent = missing, first = missing, last = missing, next = missing,
+      owner = missing, res = 1;
+  };
   template <class T>
   static size_t bytes(const std::vector<T>& v) {
     return v.capacity() * sizeof(T);
@@ -212,11 +216,7 @@ class ForestCoverTree : public TreeBase<ForestCoverTree> {
     if (!n) {
       return;
     }
-    struct Tmp {
-      U parent = missing, first = missing, last = missing, next = missing,
-        owner = missing, res = 1;
-    };
-    std::vector<Tmp> a;
+    std::vector<SourceNode> a;
     a.reserve(n);
     V stack;
     size_t edges = 0;
@@ -245,6 +245,12 @@ class ForestCoverTree : public TreeBase<ForestCoverTree> {
     if (a.size() != n || edges != n - 1) {
       throw std::invalid_argument("source size/topology");
     }
+    build_units(a);
+  }
+
+ private:
+  void build_units(std::span<SourceNode> a) {
+    const size_t n = a.size();
     // Reverse traversal order is postorder for residual sizes. A portal sends
     // all its children to consecutive buckets and returns one node to its
     // parent.
@@ -357,6 +363,8 @@ class ForestCoverTree : public TreeBase<ForestCoverTree> {
       rank_[i + 1] = rank_[i] + std::popcount(ends_[i]);
     }
   }
+
+ public:
   /// Number of disjoint bounded forests.
   size_t unit_count() const { return sizes_.delta.size(); }
 

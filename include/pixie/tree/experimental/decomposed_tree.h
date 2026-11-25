@@ -200,9 +200,18 @@ class StaticDecomposedTree {
                                                                       : nullptr;
   }
 
+  struct Original {
+    size_t first = kAbsent;
+    size_t next = kAbsent;
+    size_t parent = kAbsent;
+    size_t last = kAbsent;
+    size_t subtree = 0;
+    size_t residual = 0;
+    bool marked = false;
+  };
+
   template <pixie::tree::detail::OrderedTreeSource Source>
   void construct(const Source& source) {
-    using decomposition_detail::checked_add;
     size_ = source.size();
     if (size_ > std::numeric_limits<size_t>::max() / 2) {
       throw std::length_error("Decomposed topology bit count overflow");
@@ -210,15 +219,6 @@ class StaticDecomposedTree {
     if (!size_) {
       return;
     }
-    struct Original {
-      size_t first = kAbsent;
-      size_t next = kAbsent;
-      size_t parent = kAbsent;
-      size_t last = kAbsent;
-      size_t subtree = 0;
-      size_t residual = 0;
-      bool marked = false;
-    };
     std::vector<Original> original;
     original.reserve(size_);
     std::vector<size_t> stack;
@@ -246,6 +246,11 @@ class StaticDecomposedTree {
     if (original.size() != size_) {
       throw std::invalid_argument("Source size disagrees with topology");
     }
+    build_components(original);
+  }
+
+  void build_components(std::span<Original> original) {
+    using decomposition_detail::checked_add;
 
     // Binary preorder is ordinal preorder, so reverse preorder evaluates both
     // FCNS children before the parent. Original, not residual, sizes decide the

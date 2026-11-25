@@ -90,13 +90,6 @@ inline std::array<std::uint8_t, kByteAlphabetSize> build_code_lengths(
     std::span<const std::size_t> frequencies,
     std::span<const std::uint16_t> used_symbols) {
   std::array<std::uint8_t, kByteAlphabetSize> lengths{};
-  if (used_symbols.size() < 2) {
-    if (!used_symbols.empty()) {
-      lengths[used_symbols.front()] = 1;
-    }
-    return lengths;
-  }
-
   std::array<FrequencyLeaf, kByteAlphabetSize> leaves{};
   for (std::size_t index = 0; index < used_symbols.size(); ++index) {
     const std::uint16_t symbol = used_symbols[index];
@@ -173,13 +166,13 @@ inline void limit_code_lengths(
   }
   constexpr std::size_t kKraftTarget = std::size_t{1}
                                        << kMaximumHuffmanCodeLength;
+  static_assert(kByteAlphabetSize <= kKraftTarget);
   while (kraft > kKraftTarget) {
+    // If all lengths were maximal, their weight would be at most the alphabet
+    // size, so there is a shorter code to lengthen.
     std::size_t best = kMaximumHuffmanCodeLength - 1;
-    while (best > 0 && length_counts[best] == 0) {
+    while (length_counts[best] == 0) {
       --best;
-    }
-    if (best == 0) {
-      break;
     }
     --length_counts[best];
     ++length_counts[best + 1];
@@ -187,7 +180,7 @@ inline void limit_code_lengths(
   }
   while (kraft < kKraftTarget &&
          length_counts[kMaximumHuffmanCodeLength] != 0) {
-    bool shortened = false;
+    // Shortening by one always fits because it adds one unit of weight.
     for (std::size_t length = kMaximumHuffmanCodeLength - 1; length > 0;
          --length) {
       const std::size_t delta =
@@ -196,12 +189,8 @@ inline void limit_code_lengths(
         --length_counts[kMaximumHuffmanCodeLength];
         ++length_counts[length];
         kraft += delta;
-        shortened = true;
         break;
       }
-    }
-    if (!shortened) {
-      break;
     }
   }
 
@@ -288,6 +277,8 @@ inline void build_canonical_tree(
 
   std::array<CanonicalChunk, kByteAlphabetSize> chunks{};
   std::size_t chunk_count = 0;
+  // Pairs have one less depth than singletons. The next length starts with
+  // pairs at the preceding singleton depth, so emission order is sorted.
   for (std::size_t length = 1; length <= maximum_length; ++length) {
     std::size_t symbol = length_begin[length];
     for (std::size_t pair = 0; pair < length_counts[length] / 2; ++pair) {
@@ -299,15 +290,6 @@ inline void build_canonical_tree(
       chunks[chunk_count++] = {false, static_cast<std::uint16_t>(length), 0,
                                symbol};
     }
-  }
-  for (std::size_t index = 1; index < chunk_count; ++index) {
-    const CanonicalChunk current = chunks[index];
-    std::size_t position = index;
-    while (position != 0 && chunks[position - 1].depth > current.depth) {
-      chunks[position] = chunks[position - 1];
-      --position;
-    }
-    chunks[position] = current;
   }
 
   std::uint32_t code = 0;

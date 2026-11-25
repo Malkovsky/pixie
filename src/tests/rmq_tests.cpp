@@ -1692,7 +1692,7 @@ TEST(RmqCartesianHybridBTree, DuplicateHeavyRandomDifferentialTo8193) {
 
 TEST(RmqCartesianHybridBTree, DepthBackendDirectPaths) {
   using HighSparseBackend =
-      pixie::rmq::detail::HybridBTreePlusMinusOne<std::size_t, 512, true, 1>;
+      pixie::rmq::detail::HybridBTreePlusMinusOne<std::size_t>;
   constexpr std::size_t kDepthCount = 3 * 512 + 17;
 
   const std::vector<std::uint64_t> words =
@@ -1732,7 +1732,7 @@ TEST(RmqCartesianHybridBTree, DepthBackendDirectPaths) {
   EXPECT_THROW((void)HighSparseBackend(words, kDepthCount, short_rank),
                std::invalid_argument);
   using NarrowDepthRmq =
-      pixie::rmq::detail::HybridBTreePlusMinusOne<std::uint16_t, 512, true, 1>;
+      pixie::rmq::detail::HybridBTreePlusMinusOne<std::uint16_t>;
   const NarrowDepthRmq narrow(words, kDepthCount);
   for (const auto& [left, right] : ranges) {
     EXPECT_EQ(narrow.arg_min(left, right), high_sparse.arg_min(left, right));
@@ -1743,8 +1743,7 @@ TEST(RmqCartesianHybridBTree, DepthBackendDirectPaths) {
 }
 
 TEST(RmqCartesianHybridBTree, DepthQueriesAcrossMiddleLevel) {
-  using DepthRmq =
-      pixie::rmq::detail::HybridBTreePlusMinusOne<std::size_t, 512, true, 1>;
+  using DepthRmq = pixie::rmq::detail::HybridBTreePlusMinusOne<std::size_t>;
   constexpr std::size_t leaf = DepthRmq::kLeafSize;
   constexpr std::size_t middle_span = leaf * DepthRmq::kMiddleFanout;
   constexpr std::size_t high_fanout = DepthRmq::kHighLevelFanout;

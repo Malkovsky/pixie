@@ -46,8 +46,8 @@ namespace detail {
  * B-tree, and every internal node stores a local Cartesian/BP selector over the
  * minima of its immediate children. Middle levels are fixed at 192 child slots:
  * their selector uses 384 BP bits and reserves the remaining 128 bits for the
- * embedded subtree minimum position/depth. A configurable number of top levels
- * additionally keep sparse tables over child-minimum slots. Unlike value
+ * embedded subtree minimum position/depth. The root keeps a sparse table over
+ * child-minimum slots when it is an internal node. Unlike value
  * `HybridBTree`, leaves do not store another local Cartesian selector or
  * cached minima. Leaf minima are recomputed from the original BP delta bits
  * with the 128-bit excess primitives from `bits.h`, using rank support to
@@ -56,15 +56,8 @@ namespace detail {
  * @tparam Index Unsigned integer type used for stored positions.
  * @tparam LeafSize Number of depth positions per low-level leaf; must be a
  * multiple of 512.
- * @tparam UseHighSparseLayout Whether top levels use sparse tables instead of
- * local BP selectors.
- * @tparam HighSparseLayoutLevels Number of top tree levels using that sparse
- * layout when enabled.
  */
-template <class Index = std::size_t,
-          std::size_t LeafSize = 512,
-          bool UseHighSparseLayout = true,
-          std::size_t HighSparseLayoutLevels = 2>
+template <class Index = std::size_t, std::size_t LeafSize = 512>
 class HybridBTreePlusMinusOne {
   template <class, class, class, std::size_t, bool>
   friend class ::pixie::rmq::CartesianHybridBTree;
@@ -75,17 +68,12 @@ class HybridBTreePlusMinusOne {
   static_assert(LeafSize != 0 && LeafSize % 512 == 0,
                 "HybridBTreePlusMinusOne leaf size must be a positive "
                 "multiple of 512");
-  static_assert(!UseHighSparseLayout || HighSparseLayoutLevels > 0,
-                "HybridBTreePlusMinusOne high sparse layout must cover "
-                "at least one level when enabled");
 
   static constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
   static constexpr Index invalid_index = std::numeric_limits<Index>::max();
   static constexpr std::size_t kLeafSize = LeafSize;
   static constexpr std::size_t kHighLevelFanout = 256;
   static constexpr std::size_t kMiddleFanout = 192;
-  static constexpr bool kUseHighSparseLayout = UseHighSparseLayout;
-  static constexpr std::size_t kHighSparseLayoutLevels = HighSparseLayoutLevels;
 
   /**
    * @brief Construct an empty ±1 RMQ index.
@@ -973,30 +961,11 @@ class HybridBTreePlusMinusOne {
     }
     internal_selectors_.resize(internal_count);
 
-    if constexpr (UseHighSparseLayout) {
-      const std::size_t root_level = level_count() - 1;
-      std::size_t high_layout_levels = 0;
-      for (std::size_t level = root_level;
-           level > 0 && high_layout_levels < HighSparseLayoutLevels &&
-           fanout_at_level(level) == kHighLevelFanout;
-           --level) {
-        ++high_layout_levels;
-      }
-      high_level_begin_ = high_layout_levels == 0
-                              ? level_count()
-                              : root_level + 1 - high_layout_levels;
-
-      std::size_t high_node_count = 0;
-      for (std::size_t level = high_level_begin_; level < level_count();
-           ++level) {
-        high_level_offsets_[level] = high_node_count;
-        high_node_count += level_sizes_[level];
-      }
-      high_child_metadata_.resize(high_node_count * kHighLevelFanout);
-      high_sparse_min_slots_.resize(high_node_count * kHighSparseSlotsPerNode);
-    } else {
-      high_level_begin_ = level_count();
-    }
+    // A group can produce the sole root only when it starts with at most
+    // kHighLevelFanout children, so the root always has the high fanout.
+    high_level_begin_ = level_count() - 1;
+    high_child_metadata_.resize(kHighLevelFanout);
+    high_sparse_min_slots_.resize(kHighSparseSlotsPerNode);
 
     std::size_t side_summary_count = 0;
     for (std::size_t level = 1; level < level_count(); ++level) {
@@ -1536,10 +1505,8 @@ class HybridBTreePlusMinusOne {
                                std::size_t slot_left,
                                std::size_t slot_right,
                                std::size_t count) const {
-    if constexpr (UseHighSparseLayout) {
-      if (is_high_level(level)) {
-        return high_sparse_arg_min(level, node, slot_left, slot_right, count);
-      }
+    if (is_high_level(level)) {
+      return high_sparse_arg_min(level, node, slot_left, slot_right, count);
     }
     return selector_at(level, node).arg_min(slot_left, slot_right, count);
   }
@@ -1548,11 +1515,7 @@ class HybridBTreePlusMinusOne {
    * @brief Return whether a level uses the high-node layout.
    */
   bool is_high_level(std::size_t level) const {
-    if constexpr (!UseHighSparseLayout) {
-      (void)level;
-      return false;
-    }
-    return level > 0 && level >= high_level_begin_ && level < level_count();
+    return level == high_level_begin_;
   }
 
   /**
@@ -1758,7 +1721,7 @@ class CartesianHybridBTree
                                                     LeafSize,
                                                     UseTopSparseOverlay>> {
  private:
-  using BpDepthRmq = detail::HybridBTreePlusMinusOne<Index, LeafSize, true, 1>;
+  using BpDepthRmq = detail::HybridBTreePlusMinusOne<Index, LeafSize>;
 
   struct TopCandidate {
     Index position = std::numeric_limits<Index>::max();

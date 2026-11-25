@@ -238,11 +238,6 @@ class BasicPackedIntegerVector
       }
       storage = ReadOnlyStorageView(bytes);
     }
-    if (!payload.empty()) {
-      throw std::invalid_argument(
-          "Serialized packed integer vector has trailing payload bytes");
-    }
-
     BasicPackedIntegerVector result(std::move(storage), count, width,
                                     LoadTag{});
     reader = candidate;
@@ -325,10 +320,6 @@ class BasicPackedIntegerVector
     const size_type bit_count = count * width;
     const size_type word_count =
         bit_count == 0 ? 0 : 1 + (bit_count - 1) / kWordBits;
-    if (word_count >
-        std::numeric_limits<size_type>::max() / sizeof(std::uint64_t)) {
-      throw std::length_error("Packed integer-vector payload is too large");
-    }
     return {bit_count, word_count, word_count * sizeof(std::uint64_t)};
   }
 
