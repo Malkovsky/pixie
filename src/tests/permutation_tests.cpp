@@ -170,6 +170,39 @@ TYPED_TEST(PermutationSpec, EveryShortRotation) {
   }
 }
 
+TYPED_TEST(PermutationSpec, LowerBoundAcrossRebasedMerge) {
+  using P = TypeParam;
+  using Tree =
+      std::remove_cvref_t<decltype(std::declval<const P&>().test_tree())>;
+  using Value = typename P::value_type;
+  constexpr auto block = Tree::block_capacity;
+  constexpr auto seam = 21 * block + 3;
+  constexpr auto tail = 37 * block + 5;
+  const auto check = [](const P& permutation, std::size_t target) {
+    EXPECT_EQ(
+        permutation.lower_bound([target](Value i) { return i >= target; }),
+        std::min(permutation.size(), target))
+        << "target=" << target;
+  };
+
+  check(P{}, 0);
+  const auto leaf = P::identity(block - 1);
+  for (std::size_t target : {std::size_t{0}, block / 2, block - 1}) {
+    check(leaf, target);
+  }
+
+  auto left = P::identity(seam);
+  auto right = P::identity(tail);
+  left.merge(right);
+  ASSERT_TRUE(right.empty());
+  ASSERT_EQ(left.size(), seam + tail);
+  for (std::size_t target :
+       {std::size_t{0}, block - 1, block, seam - 1, seam, seam + 1,
+        seam + block, left.size() - 1, left.size(), left.size() + 1}) {
+    check(left, target);
+  }
+}
+
 TYPED_TEST(PermutationSpec, TwoLeafSpillPreflightsBeforeRebasing) {
   using P = TypeParam;
   using Tree =

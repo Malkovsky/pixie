@@ -667,6 +667,14 @@ TEST(RmqSerializationTest, RejectsMalformedIndexMetadataTransactionally) {
                 layout.bp_storage_bytes - 1);
   expect_rejected(std::move(misaligned_storage));
 
+  auto extra_bp_word = valid;
+  extra_bp_word.insert(extra_bp_word.begin() + layout.candidate_count,
+                       sizeof(std::uint64_t), std::byte{0});
+  overwrite_u64(extra_bp_word, layout.bp_storage_size,
+                layout.bp_storage_bytes + sizeof(std::uint64_t));
+  overwrite_u64(extra_bp_word, 2 * sizeof(std::uint64_t), extra_bp_word.size());
+  expect_rejected(std::move(extra_bp_word));
+
   auto insufficient_storage = valid;
   overwrite_u64(insufficient_storage, layout.bp_bit_count,
                 layout.bp_storage_bytes * 8 + 64);
@@ -752,6 +760,21 @@ TEST(RmqSerializationTest, RejectsMalformedIndexMetadataTransactionally) {
       std::invalid_argument);
   EXPECT_EQ(exact_full_reader.position(), 0u);
 
+  auto incorrect_sparse_minimum = valid;
+  overwrite_u64(incorrect_sparse_minimum,
+                layout.candidates + 2 * sizeof(std::uint64_t),
+                values.size() - 1);
+  pixie::BinaryReader sparse_quick(incorrect_sparse_minimum);
+  EXPECT_NO_THROW((void)SerializableRmq::deserialize(
+      sparse_quick, values, pixie::DeserializationValidation::kQuick));
+  EXPECT_TRUE(sparse_quick.empty());
+  pixie::BinaryReader sparse_full(incorrect_sparse_minimum);
+  EXPECT_THROW(
+      (void)SerializableRmq::deserialize(
+          sparse_full, values, pixie::DeserializationValidation::kFull),
+      std::invalid_argument);
+  EXPECT_EQ(sparse_full.position(), 0u);
+
   auto wrong_depth_selector = valid;
   wrong_depth_selector[layout.depth_selectors] ^= std::byte{1};
   pixie::BinaryReader selector_quick_reader(wrong_depth_selector);
@@ -803,6 +826,14 @@ TEST(RmqSerializationTest, RejectsMalformedIndexMetadataTransactionally) {
   EXPECT_THROW((void)SerializableRmq::deserialize(empty_reader, empty_values),
                std::invalid_argument);
   EXPECT_EQ(empty_reader.position(), 0u);
+
+  auto invalid_empty_depth = serialize_rmq(empty);
+  overwrite_u64(invalid_empty_depth, empty_layout.depth_high_level_begin, 0);
+  pixie::BinaryReader empty_depth_reader(invalid_empty_depth);
+  EXPECT_THROW(
+      (void)SerializableRmq::deserialize(empty_depth_reader, empty_values),
+      std::invalid_argument);
+  EXPECT_EQ(empty_depth_reader.position(), 0u);
 }
 
 template <class Case>
@@ -1319,6 +1350,7 @@ TEST(RmqHybridBTree, BorderCorrectionForLeafSelectorVariants) {
 
 TEST(RmqHybridBTree, MiddleFanoutBoundaryRanges) {
   using Rmq = pixie::rmq::HybridBTree<int>;
+  using MaxRmq = pixie::rmq::HybridBTree<int, std::greater<int>>;
   constexpr std::size_t kLeaf = Rmq::kLeafSize;
   constexpr std::size_t kMiddleBoundary = kLeaf * Rmq::kMiddleFanout;
 
@@ -1329,8 +1361,12 @@ TEST(RmqHybridBTree, MiddleFanoutBoundaryRanges) {
   values[13] = -100;
   values[kMiddleBoundary - 29] = -90;
   values[kMiddleBoundary + kLeaf + 7] = -110;
+  values[kMiddleBoundary - 33] = 20000;
+  values[kMiddleBoundary + kLeaf + 32] = 20000;
 
-  const Rmq rmq{std::span<const int>(values)};
+  const std::span<const int> source(values);
+  const Rmq rmq(source);
+  const MaxRmq max_rmq(source);
   const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
       {0, values.size()},
       {kMiddleBoundary - 2 * kLeaf, kMiddleBoundary + 2 * kLeaf},
@@ -1341,10 +1377,11 @@ TEST(RmqHybridBTree, MiddleFanoutBoundaryRanges) {
   };
 
   for (const auto& [left, right] : ranges) {
-    const std::size_t expected = naive_arg_min(std::span<const int>(values),
-                                               left, right, std::less<int>());
-    EXPECT_EQ(rmq.arg_min(left, right), expected)
-        << "range=[" << left << "," << right << ")";
+    SCOPED_TRACE(::testing::Message() << left << ".." << right);
+    EXPECT_EQ(rmq.arg_min(left, right),
+              naive_arg_min(source, left, right, std::less<int>()));
+    EXPECT_EQ(max_rmq.arg_min(left, right),
+              naive_arg_min(source, left, right, std::greater<int>()));
   }
 }
 
@@ -1370,9 +1407,10 @@ TEST(RmqHybridBTree, QueriesEndingAtPackedSelectorBoundaries) {
 }
 
 TEST(RmqHybridBTree, RejectsValuesBeyondItsIndexType) {
-  using Rmq = pixie::rmq::HybridBTree<int, std::less<int>, std::uint16_t>;
+  using Rmq = pixie::rmq::HybridBTree<int, std::less<int>, std::uint16_t, 248>;
   constexpr std::size_t max_size = std::numeric_limits<std::uint16_t>::max();
   constexpr auto leaf = Rmq::kLeafSize;
+  constexpr auto middle = leaf * Rmq::kMiddleFanout;
   std::vector<int> values(max_size + 1);
   for (std::size_t i = 0; i < values.size(); ++i) {
     values[i] = static_cast<int>((7 * i + i / 83) % 509);
@@ -1383,7 +1421,11 @@ TEST(RmqHybridBTree, RejectsValuesBeyondItsIndexType) {
     const Rmq fits(source);
     EXPECT_EQ(fits.size(), size);
     const std::pair<std::size_t, std::size_t> ranges[] = {
-        {0, size}, {leaf - 1, leaf + 1}, {1, size}, {size / 2, size}};
+        {0, size},
+        {leaf - 1, leaf + 1},
+        {1, size},
+        {size / 2, size},
+        {middle - 4, middle + 7}};
     for (const auto& [left, right] : ranges) {
       EXPECT_EQ(fits.arg_min(left, right),
                 naive_arg_min(source, left, right, std::less<int>()));
@@ -1844,20 +1886,26 @@ TEST(RmqCartesianHybridBTree, TopSparseOverlayCapsBlockCount) {
 
 TEST(RmqCartesianHybridBTree, TopSparseOverlayComparatorMaximum) {
   using Rmq = pixie::rmq::CartesianHybridBTree<int, std::greater<int>>;
-  constexpr std::size_t kTopBlock = 4096;
-  std::vector<int> values(2 * kTopBlock + 33, -1000);
+  constexpr std::size_t kTopBlock = Rmq::kMinTopSparseBlockSize;
+  constexpr std::size_t kDepthBoundary = 65536;
+  std::vector<int> values(kDepthBoundary + 33, -1000);
   for (std::size_t i = 0; i < values.size(); ++i) {
     values[i] = -1000 + static_cast<int>((i * 13 + i / 5) % 71);
   }
   values[0] = 1000;
   values[kTopBlock + 17] = 900;
   values[kTopBlock + 18] = 900;
+  values[kDepthBoundary - 37] = 950;
+  values[kDepthBoundary + 7] = 950;
 
   const Rmq rmq(values);
   const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
       {1, values.size()},
       {kTopBlock, kTopBlock + 100},
       {kTopBlock + 18, values.size()},
+      {kDepthBoundary - 39, kDepthBoundary + 11},
+      {kDepthBoundary - 36, kDepthBoundary + 7},
+      {kDepthBoundary - 36, kDepthBoundary + 8},
       {0, values.size()},
   };
 

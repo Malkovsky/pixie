@@ -219,6 +219,31 @@ TEST(Select64Experimental, ByteLutMatchesPdep) {
           << "experimental_default case=" << t << " rank=" << rank;
     }
   }
+  EXPECT_EQ(select_64_byte_lut(0, 0), 64u);
+  EXPECT_EQ(select_64_byte_lut(~uint64_t{0}, 64), 64u);
+}
+
+TEST(Select512Experimental, CheckedKernelsReturnEndForMissingRanks) {
+  const SelectVariant checked[] = {
+      {"scalar_pdep", select_512_scalar_pdep, select0_512_scalar_pdep},
+      {"avx2_pdep", select_512_avx2_pdep, select0_512_avx2_pdep},
+      {"avx512_hybrid1_pdep", select_512_avx512_hybrid1_pdep,
+       select0_512_avx512_hybrid1_pdep},
+      {"avx512_hybrid2_pdep", select_512_avx512_hybrid2_pdep,
+       select0_512_avx512_hybrid2_pdep},
+      {"avx512_hybrid4_pdep", select_512_avx512_hybrid4_pdep,
+       select0_512_avx512_hybrid4_pdep},
+  };
+  for (uint64_t word : {uint64_t{0}, uint64_t{1}, ~uint64_t{0}}) {
+    Block block;
+    block.fill(word);
+    const auto ones = count_ones(block);
+    for (const auto& kernel : checked) {
+      SCOPED_TRACE(kernel.name);
+      EXPECT_EQ(kernel.select1(block.data(), ones), 512u);
+      EXPECT_EQ(kernel.select0(block.data(), 512 - ones), 512u);
+    }
+  }
 }
 
 TEST(Select512Experimental, AllOnes) {

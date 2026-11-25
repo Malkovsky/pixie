@@ -874,6 +874,39 @@ TEST(WaveletTreeTest, SerializationRejectsMalformedTopologyTransactionally) {
   auto invalid_right_child = valid;
   overwrite_u64(invalid_right_child, nodes[0].right_child, nodes.size());
   expect_rejected(std::move(invalid_right_child));
+
+  const auto expect_full_rejection = [](std::span<const std::byte> bytes) {
+    using View = pixie::WaveletTreeView<std::uint64_t>;
+    pixie::BinaryReader quick(bytes), full(bytes);
+    EXPECT_NO_THROW((void)View::deserialize(
+        quick, pixie::DeserializationValidation::kQuick));
+    EXPECT_TRUE(quick.empty());
+    EXPECT_THROW(
+        (void)View::deserialize(full, pixie::DeserializationValidation::kFull),
+        std::invalid_argument);
+    EXPECT_EQ(full.position(), 0u);
+  };
+
+  auto missing_leaf = valid;
+  overwrite_u64(missing_leaf, layout.leaves, kNoNode);
+  expect_full_rejection(missing_leaf);
+
+  auto extended = data;
+  extended.insert(extended.end(), {0, 1});
+  pixie::VectorOutputSink extended_output;
+  pixie::BinaryWriter extended_writer(extended_output);
+  WaveletTree(8, extended).serialize(extended_writer);
+  extended_writer.finish();
+  const auto extended_bytes = extended_output.take();
+  const auto extended_layout = locate_wavelet_artifact(extended_bytes);
+  ASSERT_EQ(extended_layout.nodes.size(), nodes.size());
+  const auto left_child_size = nodes[2].parent - nodes[1].parent;
+  ASSERT_EQ(extended_layout.nodes[2].parent - extended_layout.nodes[1].parent,
+            left_child_size);
+  auto wrong_child_length = valid;
+  std::copy_n(extended_bytes.begin() + extended_layout.nodes[1].parent,
+              left_child_size, wrong_child_length.begin() + nodes[1].parent);
+  expect_full_rejection(wrong_child_length);
 }
 
 TEST(WaveletTreeTest,

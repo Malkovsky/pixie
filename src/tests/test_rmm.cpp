@@ -1126,7 +1126,10 @@ TEST(RmMBTreeTest, SdslStyleParenthesesIndexing) {
 
 template <class Tree>
 class RmMBTreeBackendTest : public testing::Test {};
-using BTreeBackends = testing::Types<CompressedRmMBTree, BaselineRmMBTree>;
+using BTreeBackends = testing::Types<CompressedRmMBTree,
+                                     BaselineRmMBTree,
+                                     pixie::RmMBTree<2, 16>,
+                                     pixie::RmMBTree<8, 8>>;
 TYPED_TEST_SUITE(RmMBTreeBackendTest, BTreeBackends);
 
 TYPED_TEST(RmMBTreeBackendTest, EmptyInput) {
@@ -1469,8 +1472,9 @@ TEST(RmMBTreeTest, MinCountAndMinSelectAcrossNodeBoundaries) {
   }
 }
 
-TEST(RmMBTreeTest, RangeExtremaAndMinSelectAcrossFullAndPartialBlocks) {
-  using Tree = pixie::RmMBTree<>;
+TYPED_TEST(RmMBTreeBackendTest,
+           RangeExtremaAndMinSelectAcrossFullAndPartialBlocks) {
+  using Tree = TypeParam;
   constexpr size_t block = Tree::kBlockBits;
   constexpr size_t summary = Tree::kLowFanout * block;
   constexpr size_t size = 2 * summary + 37;
@@ -1520,8 +1524,8 @@ TEST(RmMBTreeTest, RangeExtremaAndMinSelectAcrossFullAndPartialBlocks) {
   }
 }
 
-TEST(RmMBTreeTest, ExactRootSpanUsesTheTopSummary) {
-  using Tree = pixie::RmMBTree<2, 16>;
+TYPED_TEST(RmMBTreeBackendTest, ExactRootSpanUsesTheTopSummary) {
+  using Tree = TypeParam;
   constexpr auto size = Tree::kBlockBits * Tree::kLowFanout * Tree::kHighFanout;
   std::string bits(size, '0');
   for (size_t i = 1; i < size; i += 2) {
