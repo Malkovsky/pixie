@@ -1295,6 +1295,45 @@ TEST(CompressedRankSelectTest, BitmapLookupOnNoncontiguousMixedSource) {
   }
 }
 
+TEST(CompressedRankSelectTest, DenseSamplesCrossLongGapsAndPartialTail) {
+  constexpr std::size_t super = 16384;
+  constexpr std::size_t sample = 4096;
+  constexpr std::size_t size = 36 * super + 37;
+  std::vector<std::uint64_t> words((size + 63) / 64);
+  for (std::size_t block : {0u, 1u, 18u, 19u, 20u, 35u}) {
+    std::fill_n(words.begin() + block * super / 64, super / 64,
+                0x5555555555555555ull);
+  }
+  words.back() = 0xaaaaaaaaaaaaaaaaull;
+
+  // The selected population is dense enough to enable position prediction.
+  // Some consecutive samples span gaps where prediction must fall back.
+  for (bool zero : {false, true}) {
+    SCOPED_TRACE(zero);
+    const pixie::RankSelectSupport<> reference(words, size);
+    const pixie::RankSelectSupportCompressed<> index(words, size);
+    const auto population = zero ? reference.rank0(size) : reference.rank(size);
+    const auto check = [&](std::size_t rank) {
+      const auto expected =
+          zero ? reference.select0(rank) : reference.select(rank);
+      EXPECT_EQ(zero ? index.select0(rank) : index.select(rank), expected)
+          << "rank=" << rank;
+    };
+    for (std::size_t boundary = sample; boundary < population;
+         boundary += sample) {
+      check(boundary - 1);
+      check(boundary);
+      check(boundary + 1);
+    }
+    check(1);
+    check(population);
+    check(population + 1);
+    for (auto& word : words) {
+      word = ~word;
+    }
+  }
+}
+
 template <class Samples>
 class MonotoneSampleEncodingTest : public testing::Test {};
 using MonotoneSampleImplementations = testing::Types<
@@ -1585,19 +1624,28 @@ TEST(CompressedRankSelectTest, PackedPrefixKernelsMatchBlockBoundaries) {
           while (prefix(block + 1) < rank) {
             ++block;
           }
+          const pixie::detail::compressed::PackedPrefixLocation expected{
+              static_cast<std::uint32_t>(block),
+              static_cast<std::uint32_t>(prefix(block)),
+              static_cast<std::uint32_t>(prefix(block + 1))};
+          bool used_scalar = false;
           const auto selected =
               pixie::detail::compressed::packed_prefix_search<Zero>(
-                  record.data(), rank, valid);
+                  record.data(), rank, valid, [&] {
+                    used_scalar = true;
+                    return expected;
+                  });
+          ASSERT_EQ(selected.basic, expected.basic);
+          ASSERT_EQ(selected.before, expected.before);
+          ASSERT_EQ(selected.after, expected.after);
           const auto multishift =
               pixie::experimental::packed_prefix_search_multishift<Zero>(
                   record.data(), rank, valid);
-          ASSERT_EQ(selected.has_value(), multishift.has_value());
-          for (const auto& location : {selected, multishift}) {
-            if (location) {
-              ASSERT_EQ(location->basic, block);
-              ASSERT_EQ(location->before, prefix(block));
-              ASSERT_EQ(location->after, prefix(block + 1));
-            }
+          ASSERT_NE(used_scalar, multishift.has_value());
+          if (multishift) {
+            ASSERT_EQ(multishift->basic, expected.basic);
+            ASSERT_EQ(multishift->before, expected.before);
+            ASSERT_EQ(multishift->after, expected.after);
           }
         }
       };

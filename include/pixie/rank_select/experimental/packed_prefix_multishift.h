@@ -2,6 +2,8 @@
 
 #include <pixie/rank_select/detail/compressed/packed_prefix_search.h>
 
+#include <optional>
+
 namespace pixie::experimental {
 
 // Four 14-bit values occupy seven bytes. Gather each group into a 64-bit
