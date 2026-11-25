@@ -1415,6 +1415,7 @@ TEST(RmqHybridBTree, RejectsValuesBeyondItsIndexType) {
   for (std::size_t i = 0; i < values.size(); ++i) {
     values[i] = static_cast<int>((7 * i + i / 83) % 509);
   }
+  values[max_size - 1] = -1;
   for (std::size_t size : {std::size_t{0}, leaf + 1, max_size}) {
     SCOPED_TRACE(size);
     const auto source = std::span<const int>(values).first(size);

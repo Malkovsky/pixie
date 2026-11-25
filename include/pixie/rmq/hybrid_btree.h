@@ -271,8 +271,6 @@ class HybridBTree
   static constexpr std::size_t kLeafAvx2ScanThreshold = 16;
   static constexpr std::uint64_t kEmbeddedOffsetMask =
       std::uint64_t{0xFF} << (kEmbeddedOffsetBit & 63);
-  static constexpr bool kInvalidIndexEqualsNpos =
-      static_cast<std::size_t>(invalid_index) == npos;
 
   static_assert(kEmbeddedOffsetBit + 8 == kSelectorBits);
   static_assert(kEmbeddedPositionBit + 128 == kSelectorBits);
@@ -280,8 +278,8 @@ class HybridBTree
   static_assert(kMiddleFanout <= kEmbeddedPositionEntries);
 
   struct MinCandidate {
-    std::size_t position = npos;
-    const T* value = nullptr;
+    std::size_t position;
+    const T* value;
   };
 
   struct TopCandidate {
@@ -743,24 +741,9 @@ class HybridBTree
                                           Bp512Selector>;
 
   /**
-   * @brief Return whether a stored position is one of the missing sentinels.
-   */
-  bool missing_position(std::size_t position) const {
-    if constexpr (kInvalidIndexEqualsNpos) {
-      return position == npos;
-    } else {
-      return position == npos ||
-             position == static_cast<std::size_t>(invalid_index);
-    }
-  }
-
-  /**
    * @brief Wrap an original value position as a comparable candidate.
    */
   MinCandidate value_candidate(std::size_t position) const {
-    if (missing_position(position) || position >= values_.size()) {
-      return {};
-    }
     return {position, values_.data() + position};
   }
 
@@ -769,11 +752,7 @@ class HybridBTree
    */
   MinCandidate subtree_min_candidate(std::size_t level,
                                      std::size_t node) const {
-    const std::size_t position = subtree_min_position(level, node);
-    if (missing_position(position)) {
-      return {};
-    }
-    return {position, &subtree_min_value(level, node)};
+    return {subtree_min_position(level, node), &subtree_min_value(level, node)};
   }
 
   /**
@@ -788,28 +767,9 @@ class HybridBTree
   }
 
   /**
-   * @brief Return whether @p left is strictly better than @p right.
-   */
-  bool strictly_better_candidate(MinCandidate left, MinCandidate right) const {
-    if (missing_position(left.position)) {
-      return false;
-    }
-    if (missing_position(right.position)) {
-      return true;
-    }
-    return compare_(*left.value, *right.value);
-  }
-
-  /**
    * @brief Choose the better candidate using value, then smaller position.
    */
   MinCandidate better_candidate(MinCandidate left, MinCandidate right) const {
-    if (missing_position(left.position)) {
-      return right;
-    }
-    if (missing_position(right.position)) {
-      return left;
-    }
     if (compare_(*right.value, *left.value)) {
       return right;
     }
@@ -826,9 +786,9 @@ class HybridBTree
                                           std::size_t node,
                                           std::size_t left_slot,
                                           std::size_t right_slot) const {
-    return strictly_better_candidate(
-        subtree_child_min_candidate(level, node, left_slot),
-        subtree_child_min_candidate(level, node, right_slot));
+    const std::size_t first_child = node * fanout_at_level(level);
+    return compare_(subtree_min_value(level - 1, first_child + left_slot),
+                    subtree_min_value(level - 1, first_child + right_slot));
   }
 
   /**
@@ -959,6 +919,7 @@ class HybridBTree
 
   /**
    * @brief Return the first minimum position through the B-tree fallback.
+   * @pre The query is a nonempty subrange of the indexed values.
    */
   std::size_t tree_arg_min(std::size_t left, std::size_t right) const {
     const std::size_t root_level = level_count() - 1;
@@ -986,10 +947,6 @@ class HybridBTree
   std::size_t leaf_range_min(std::size_t leaf,
                              std::size_t left,
                              std::size_t right) const {
-    if (left >= right) {
-      return npos;
-    }
-
     const std::size_t begin = node_value_begin(0, leaf);
     const std::size_t end = node_value_end(0, leaf);
     if (left <= begin && end <= right) {
@@ -1010,12 +967,8 @@ class HybridBTree
         return linear_range_min(left, right);
       }
 
-      const std::size_t slot = leaf_selectors_[leaf].arg_min(
-          slot_left, slot_right, entry_count(0, leaf));
-      if (slot == npos) {
-        return npos;
-      }
-      return begin + slot;
+      return begin + leaf_selectors_[leaf].arg_min(slot_left, slot_right,
+                                                   entry_count(0, leaf));
     }
   }
 
@@ -1023,9 +976,6 @@ class HybridBTree
    * @brief Scan original values to answer a range inside a leaf.
    */
   std::size_t linear_range_min(std::size_t left, std::size_t right) const {
-    if (left >= right) {
-      return npos;
-    }
 #ifdef __AVX2__
     if constexpr (std::is_same_v<T, std::int64_t> &&
                   std::is_same_v<Compare, std::less<T>>) {
@@ -1145,6 +1095,7 @@ class HybridBTree
    * range. If that child cannot be accepted directly because only a border part
    * is queried, the two border children are queried recursively and the middle
    * full-child range is answered by the current node selector.
+   * @pre The slots are exactly those intersecting the nonempty query.
    */
   MinCandidate query_child_slots(std::size_t level,
                                  std::size_t node,
@@ -1152,49 +1103,32 @@ class HybridBTree
                                  std::size_t slot_right,
                                  std::size_t left,
                                  std::size_t right) const {
-    if (slot_left >= slot_right) {
-      return {};
-    }
-
     const std::size_t count = entry_count(level, node);
     const std::size_t slot =
-        slot_left + 1 == slot_right
-            ? slot_left
-            : selector_arg_min(level, node, slot_left, slot_right, count);
-    if (slot == npos) {
-      return {};
-    }
+        selector_arg_min(level, node, slot_left, slot_right, count);
 
     const std::size_t child_level = level - 1;
     const std::size_t first_child = node * fanout_at_level(level);
     const std::size_t child = first_child + slot;
     const MinCandidate child_min = subtree_min_candidate(child_level, child);
-    const std::size_t child_begin = node_value_begin(child_level, child);
-    const std::size_t child_end = node_value_end(child_level, child);
-    if ((left <= child_begin && child_end <= right) ||
-        contains_position(left, right, child_min.position)) {
+    if (left <= child_min.position && child_min.position < right) {
       return child_min;
     }
 
     const std::size_t last_slot = slot_right - 1;
-    const std::size_t left_child_begin =
-        node_value_begin(child_level, first_child + slot_left);
+    if (slot_left == last_slot) {
+      return query_node(child_level, first_child + slot_left, left, right);
+    }
     const std::size_t left_child_end =
         node_value_end(child_level, first_child + slot_left);
-    MinCandidate answer = query_node(child_level, first_child + slot_left,
-                                     std::max(left, left_child_begin),
-                                     std::min(right, left_child_end));
+    MinCandidate answer =
+        query_node(child_level, first_child + slot_left, left, left_child_end);
 
-    if (slot_left != last_slot) {
-      const std::size_t right_child_begin =
-          node_value_begin(child_level, first_child + last_slot);
-      const std::size_t right_child_end =
-          node_value_end(child_level, first_child + last_slot);
-      answer = better_candidate(answer,
-                                query_node(child_level, first_child + last_slot,
-                                           std::max(left, right_child_begin),
-                                           std::min(right, right_child_end)));
-    }
+    const std::size_t right_child_begin =
+        node_value_begin(child_level, first_child + last_slot);
+    answer = better_candidate(answer,
+                              query_node(child_level, first_child + last_slot,
+                                         right_child_begin, right));
 
     if (slot_left + 1 < last_slot) {
       answer = better_candidate(
@@ -1207,37 +1141,25 @@ class HybridBTree
 
   /**
    * @brief Return the best candidate among fully covered child slots.
+   * @pre The slot range contains at least one child.
    */
   MinCandidate full_child_slot_range_min(std::size_t level,
                                          std::size_t node,
                                          std::size_t slot_left,
                                          std::size_t slot_right) const {
-    if (slot_left >= slot_right) {
-      return {};
-    }
-
-    const std::size_t slot =
-        slot_left + 1 == slot_right
-            ? slot_left
-            : selector_arg_min(level, node, slot_left, slot_right,
-                               entry_count(level, node));
-    if (slot == npos) {
-      return {};
-    }
-
+    const std::size_t slot = selector_arg_min(
+        level, node, slot_left, slot_right, entry_count(level, node));
     return subtree_child_min_candidate(level, node, slot);
   }
 
   /**
    * @brief Query a tree node for the minimum candidate in a value range.
+   * @pre The query is a nonempty subrange of the node.
    */
   MinCandidate query_node(std::size_t level,
                           std::size_t node,
                           std::size_t left,
                           std::size_t right) const {
-    if (left >= right) {
-      return {};
-    }
     const std::size_t begin = node_value_begin(level, node);
     const std::size_t end = node_value_end(level, node);
     if (left <= begin && end <= right) {
@@ -1254,15 +1176,6 @@ class HybridBTree
     const std::size_t left_slot = left_child - first_child;
     const std::size_t right_slot = right_child - first_child + 1;
     return query_child_slots(level, node, left_slot, right_slot, left, right);
-  }
-
-  /**
-   * @brief Return whether a position lies inside a half-open range.
-   */
-  bool contains_position(std::size_t left,
-                         std::size_t right,
-                         std::size_t position) const {
-    return !missing_position(position) && left <= position && position < right;
   }
 
   /**
@@ -1294,8 +1207,8 @@ class HybridBTree
    * @brief Return one past the last original value position covered by a node.
    */
   std::size_t node_value_end(std::size_t level, std::size_t node) const {
-    return std::min(values_.size(),
-                    node_value_begin(level, node) + level_value_spans_[level]);
+    const std::size_t begin = node_value_begin(level, node);
+    return begin + std::min(values_.size() - begin, level_value_spans_[level]);
   }
 
   /**
@@ -1401,17 +1314,7 @@ class HybridBTree
    * @brief Wrap an original value position as a top sparse-table candidate.
    */
   TopCandidate make_top_candidate(std::size_t position) const {
-    if (!valid_value_position(position)) {
-      return {};
-    }
     return {static_cast<Index>(position)};
-  }
-
-  /**
-   * @brief Return whether @p position is a valid original-value index.
-   */
-  bool valid_value_position(std::size_t position) const {
-    return !missing_position(position) && position < values_.size();
   }
 
   /**
@@ -1420,12 +1323,6 @@ class HybridBTree
    */
   bool strictly_better_value_position(std::size_t left,
                                       std::size_t right) const {
-    if (!valid_value_position(left)) {
-      return false;
-    }
-    if (!valid_value_position(right)) {
-      return true;
-    }
     if (compare_(values_[left], values_[right])) {
       return true;
     }
@@ -1467,8 +1364,7 @@ class HybridBTree
                             std::size_t left,
                             std::size_t right) const {
     const std::size_t position = static_cast<std::size_t>(candidate.position);
-    return valid_value_position(position) && left <= position &&
-           position < right;
+    return left <= position && position < right;
   }
 
   /**
@@ -1506,9 +1402,7 @@ class HybridBTree
           answer, make_top_candidate(tree_arg_min(right_border_begin, right)));
     }
 
-    return valid_value_position(static_cast<std::size_t>(answer.position))
-               ? static_cast<std::size_t>(answer.position)
-               : npos;
+    return answer.position;
   }
 
   std::span<const T> values_;
