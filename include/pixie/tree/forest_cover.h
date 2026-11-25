@@ -473,12 +473,6 @@ class TreeTraversalContext<ForestCoverTree> {
   const ForestCoverTree* t_;
   const Index* index_;
   detail::forest256::Forest256Cache cache_;
-  detail::forest256::NodeInfo info(Node h) {
-    if (!t_) {
-      throw std::logic_error("unbound reader");
-    }
-    return t_->info(h, cache_);
-  }
   ForestCoverTree::NodeView view(Node h) {
     if (!t_) {
       throw std::logic_error("unbound context");
@@ -508,7 +502,7 @@ class TreeTraversalContext<ForestCoverTree> {
       }
       if constexpr (Path) {
         base = tree->sizes_.at(h.unit);
-        local = t_ == tree ? info(h) : tree->info(h);
+        local = t_ == tree ? tree->info(h, cache_) : tree->info(h);
       } else if (previous != h.unit) {
         // DFS usually touches many local leaves before changing units. No
         // packed-key search is needed for IDs below the second portal key.

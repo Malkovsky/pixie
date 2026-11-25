@@ -336,14 +336,17 @@ class HybridBTree
     /**
      * @brief Return the first minimum slot in a local entry range.
      *
-     * @details This path is used by BP leaves and high nodes whose BP words do
-     * not share storage with zero-rank prefix metadata.
+     * @tparam WithZeroPrefix The selector's last word stores zero-rank
+     * prefixes for middle nodes. BP leaves use the raw BP words.
      */
+    template <bool WithZeroPrefix = false>
     std::size_t arg_min(std::size_t slot_left,
                         std::size_t slot_right,
                         std::size_t entry_count) const {
+      constexpr auto max_entries =
+          WithZeroPrefix ? kEmbeddedPositionEntries : kSelectorEntries;
       if (slot_left >= slot_right || slot_right > entry_count ||
-          entry_count > kSelectorEntries) {
+          entry_count > max_entries) {
         return npos;
       }
       if (slot_left + 1 == slot_right) {
@@ -351,61 +354,32 @@ class HybridBTree
       }
 
       const std::size_t bit_count = 2 * entry_count;
-      const std::size_t first_close = close_position(slot_left);
-      const std::size_t last_close = close_position(slot_right - 1);
+      const auto close = [&](std::size_t slot) {
+        if constexpr (WithZeroPrefix) {
+          return close_position_with_zero_prefix(slot, bit_count);
+        } else {
+          return close_position(slot);
+        }
+      };
+      const std::size_t first_close = close(slot_left);
+      const std::size_t last_close = close(slot_right - 1);
       if (first_close > last_close || last_close >= bit_count) {
         return npos;
       }
 
-      const std::size_t shifted_min =
-          depth_arg_min(first_close + 1, last_close + 2, bit_count);
+      const std::size_t shifted_min = depth_arg_min<WithZeroPrefix>(
+          first_close + 1, last_close + 2, bit_count);
       if (shifted_min == npos || shifted_min == 0) {
         return npos;
       }
 
-      const std::size_t zero_rank = rank0_at(shifted_min, bit_count);
-      if (zero_rank == 0) {
-        return npos;
-      }
-      const std::size_t entry = zero_rank - 1;
-      return entry < entry_count ? entry : npos;
-    }
-
-    /**
-     * @brief Return the first minimum slot using packed zero-rank metadata.
-     *
-     * @details Middle nodes overwrite the last selector word with zero-rank
-     * prefixes, so rank/select operations must consult the packed metadata
-     * instead of treating all eight words as raw BP bits.
-     */
-    std::size_t arg_min_with_zero_prefix(std::size_t slot_left,
-                                         std::size_t slot_right,
-                                         std::size_t entry_count) const {
-      if (slot_left >= slot_right || slot_right > entry_count ||
-          entry_count > kEmbeddedPositionEntries) {
-        return npos;
-      }
-      if (slot_left + 1 == slot_right) {
-        return slot_left;
-      }
-
-      const std::size_t bit_count = 2 * entry_count;
-      const std::size_t first_close =
-          close_position_with_zero_prefix(slot_left, bit_count);
-      const std::size_t last_close =
-          close_position_with_zero_prefix(slot_right - 1, bit_count);
-      if (first_close > last_close || last_close >= bit_count) {
-        return npos;
-      }
-
-      const std::size_t shifted_min =
-          depth_arg_min<true>(first_close + 1, last_close + 2, bit_count);
-      if (shifted_min == npos || shifted_min == 0) {
-        return npos;
-      }
-
-      const std::size_t zero_rank =
-          rank0_at_with_zero_prefix(shifted_min, bit_count);
+      const std::size_t zero_rank = [&] {
+        if constexpr (WithZeroPrefix) {
+          return rank0_at_with_zero_prefix(shifted_min, bit_count);
+        } else {
+          return rank0_at(shifted_min, bit_count);
+        }
+      }();
       if (zero_rank == 0) {
         return npos;
       }
@@ -1408,7 +1382,7 @@ class HybridBTree
                                std::size_t slot_right,
                                std::size_t count) const {
     const Bp512Selector& selector = selector_at(level, node);
-    return selector.arg_min_with_zero_prefix(slot_left, slot_right, count);
+    return selector.template arg_min<true>(slot_left, slot_right, count);
   }
 
   /**

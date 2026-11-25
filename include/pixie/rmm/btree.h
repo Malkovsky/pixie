@@ -1761,36 +1761,15 @@ class RmMBTree
   }
 
   /**
-   * @brief Number of valid bits covered by a node.
-   * @details Returns the full level span for interior nodes and the remaining
-   * sequence length for the last partial node.
-   * @param level Summary level.
-   * @param index Node index within @p level.
-   * @return Number of valid bits covered by the node.
-   */
-  std::size_t node_size_bits(std::size_t level, std::size_t index) const {
-    const std::size_t start = node_start_bit(level, index);
-    if (start >= bit_count_) {
-      return 0;
-    }
-    return std::min(level_span_bits(level), bit_count_ - start);
-  }
-
-  /**
    * @brief Exclusive end bit position covered by a node.
-   * @details Adds `node_size_bits(level, index)` to `node_start_bit(level,
-   * index)`, clamping to the sequence size on overflow.
+   * @details Truncates the node's span to the bits remaining after its start.
    * @param level Summary level.
    * @param index Node index within @p level.
    * @return Exclusive end position of the covered bit interval.
    */
   std::size_t node_end_bit(std::size_t level, std::size_t index) const {
     const std::size_t start = node_start_bit(level, index);
-    const std::uint64_t size = node_size_bits(level, index);
-    if (size > std::numeric_limits<std::size_t>::max() - start) {
-      return bit_count_;
-    }
-    return std::min(bit_count_, start + static_cast<std::size_t>(size));
+    return start + std::min(level_span_bits(level), bit_count_ - start);
   }
 
   struct NodeRef {
@@ -1798,7 +1777,17 @@ class RmMBTree
     std::size_t index;
   };
 
-  static constexpr std::size_t kMaxCoverNodes = 512;
+  // Every right fringe contributes at most one digit of the exclusive block
+  // end in the tree's mixed-radix layout. Summing the maximum digit at each
+  // level bounds the stack even for the largest representable interval.
+  static constexpr std::size_t kMaxRightCoverNodes = [] {
+    std::size_t end = std::numeric_limits<std::size_t>::max() / kBlockBits;
+    std::size_t count = std::min(end, kLowFanout - 1);
+    for (end /= kLowFanout; end != 0; end /= kHighFanout) {
+      count += std::min(end, kHighFanout - 1);
+    }
+    return count;
+  }();
 
   struct ScanResult {
     std::int64_t block_excess = 0;
@@ -1842,8 +1831,7 @@ class RmMBTree
 
   /**
    * @brief Return the value of the range minimum or maximum.
-   * @details Wrapper around `range_extreme_query` that extracts only the
-   * relative excess value.
+   * @details Skip position tracking and summary descent.
    * @param range_begin Inclusive range start.
    * @param range_end Inclusive range end.
    * @param find_min True for minimum, false for maximum.
@@ -1853,90 +1841,21 @@ class RmMBTree
                               std::size_t range_end,
                               bool find_min) const {
     return static_cast<int>(
-        range_extreme_query_value(range_begin, range_end, find_min));
+        range_extreme_query<false>(range_begin, range_end, find_min).value);
   }
 
   /**
-   * @brief Return only the minimum or maximum relative excess in a range.
-   * @details Uses the same decomposition as `range_extreme_query`, but skips
-   * the final descent needed to recover a bit position.
-   * @param range_begin Inclusive range start.
-   * @param range_end Inclusive range end.
-   * @param find_min True for minimum, false for maximum.
-   * @return Extreme relative excess value.
-   */
-  std::int64_t range_extreme_query_value(std::size_t range_begin,
-                                         std::size_t range_end,
-                                         bool find_min) const {
-    std::int64_t value = 0;
-    std::int64_t best = find_min ? std::numeric_limits<std::int64_t>::max()
-                                 : std::numeric_limits<std::int64_t>::min();
-
-    auto consider_value = [&](std::int64_t candidate) {
-      if ((find_min && candidate < best) || (!find_min && candidate > best)) {
-        best = candidate;
-      }
-    };
-
-    const std::size_t range_end_exclusive = range_end + 1;
-    const std::size_t first_full_block =
-        (range_begin + kBlockBits - 1) / kBlockBits;
-    const std::size_t full_begin =
-        std::min(range_end_exclusive, first_full_block * kBlockBits);
-    if (range_begin < full_begin) {
-      if (find_min) {
-        const MinScanResult scan = scan_min_range(range_begin, full_begin);
-        consider_value(scan.min_value);
-        value += scan.block_excess;
-      } else {
-        const ScanResult scan = scan_range(range_begin, full_begin);
-        consider_value(scan.max_value);
-        value += scan.block_excess;
-      }
-    }
-
-    const std::size_t last_full_block_exclusive =
-        range_end_exclusive / kBlockBits;
-    const std::size_t middle_begin = full_begin;
-    const std::size_t middle_end =
-        std::max(middle_begin, last_full_block_exclusive * kBlockBits);
-    if (middle_begin < middle_end) {
-      for_each_cover_node(middle_begin, middle_end, [&](NodeRef node) {
-        const Summary summary = summary_at(node.level, node.index);
-        consider_value(value +
-                       (find_min ? summary.min_excess : summary.max_excess));
-        value += summary.block_excess;
-        return true;
-      });
-    }
-
-    if (middle_end < range_end_exclusive) {
-      if (find_min) {
-        const MinScanResult scan =
-            scan_min_range(middle_end, range_end_exclusive);
-        consider_value(value + scan.min_value);
-      } else {
-        const ScanResult scan = scan_range(middle_end, range_end_exclusive);
-        consider_value(value + scan.max_value);
-      }
-    }
-    if (best == std::numeric_limits<std::int64_t>::max() ||
-        best == std::numeric_limits<std::int64_t>::min()) {
-      return 0;
-    }
-    return best;
-  }
-
-  /**
-   * @brief Compute both position and value for a range minimum or maximum.
+   * @brief Compute a range minimum or maximum and optionally its position.
    * @details Scans partial edge blocks directly, covers the aligned middle with
    * summary nodes, and descends only if the best extreme is represented by a
    * summary node.
+   * @tparam TrackPosition Whether to retain and resolve the first position.
    * @param range_begin Inclusive range start.
    * @param range_end Inclusive range end.
    * @param find_min True for minimum, false for maximum.
    * @return Extreme position and value.
    */
+  template <bool TrackPosition = true>
   RangeExtremeResult range_extreme_query(std::size_t range_begin,
                                          std::size_t range_end,
                                          bool find_min) const {
@@ -1944,15 +1863,21 @@ class RmMBTree
     std::int64_t best = find_min ? std::numeric_limits<std::int64_t>::max()
                                  : std::numeric_limits<std::int64_t>::min();
     std::size_t best_position = npos;
-    NodeRef best_node;
+    NodeRef best_node{};
     std::int64_t prefix_at_best_node = 0;
     bool best_is_node = false;
 
-    auto consider_point = [&](std::int64_t candidate, std::size_t position) {
-      if ((find_min && candidate < best) || (!find_min && candidate > best)) {
+    const auto improves = [&](std::int64_t candidate) {
+      return find_min ? candidate < best : candidate > best;
+    };
+    const auto consider_point = [&](std::int64_t candidate,
+                                    std::size_t position) {
+      if (improves(candidate)) {
         best = candidate;
-        best_position = position;
-        best_is_node = false;
+        if constexpr (TrackPosition) {
+          best_position = position;
+          best_is_node = false;
+        }
       }
     };
 
@@ -1983,11 +1908,13 @@ class RmMBTree
         const Summary summary = summary_at(node.level, node.index);
         const std::int64_t candidate =
             value + (find_min ? summary.min_excess : summary.max_excess);
-        if ((find_min && candidate < best) || (!find_min && candidate > best)) {
+        if (improves(candidate)) {
           best = candidate;
-          best_node = node;
-          prefix_at_best_node = value;
-          best_is_node = true;
+          if constexpr (TrackPosition) {
+            best_node = node;
+            prefix_at_best_node = value;
+            best_is_node = true;
+          }
         }
         value += summary.block_excess;
         return true;
@@ -2005,10 +1932,12 @@ class RmMBTree
       }
     }
 
-    if (best_is_node) {
-      best_position =
-          descend_first_extreme(best_node.level, best_node.index,
-                                best - prefix_at_best_node, find_min);
+    if constexpr (TrackPosition) {
+      if (best_is_node) {
+        best_position =
+            descend_first_extreme(best_node.level, best_node.index,
+                                  best - prefix_at_best_node, find_min);
+      }
     }
     return {best_position,
             best == std::numeric_limits<std::int64_t>::max() ||
@@ -2144,46 +2073,26 @@ class RmMBTree
 
   /**
    * @brief Visit an aligned block interval as summary nodes.
-   * @details Produces the same left-to-right cover as the previous materialized
-   * cover helper, but streams nodes into @p callback and only keeps the right
-   * boundary stack needed to preserve bit order. The callback should return
-   * false to stop early.
+   * @details Streams left-to-right into @p callback and retains the right
+   * fringe to emit it in reverse decomposition order. Returning false from
+   * the callback stops the walk.
+   * @pre [@p begin, @p end) is a nonempty interval of complete blocks.
    */
   template <class Callback>
-  bool for_each_cover_node(std::size_t begin,
+  void for_each_cover_node(std::size_t begin,
                            std::size_t end,
                            Callback&& callback) const {
-    if (begin >= end || total_levels() == 0 || (begin % kBlockBits) != 0 ||
-        (end % kBlockBits) != 0) {
-      return true;
-    }
-
-    std::array<NodeRef, kMaxCoverNodes> right_nodes;
+    std::array<NodeRef, kMaxRightCoverNodes> right_nodes;
     std::size_t right_size = 0;
-    std::size_t emitted = 0;
     std::size_t level = 0;
     std::size_t left = begin / kBlockBits;
     std::size_t right = end / kBlockBits;
 
-    auto emit = [&](NodeRef node) {
-      if (emitted >= kMaxCoverNodes) {
-        return true;
-      }
-      ++emitted;
-      return callback(node);
-    };
-
-    auto push_right = [&](NodeRef node) {
-      if (right_size < right_nodes.size()) {
-        right_nodes[right_size++] = node;
-      }
-    };
-
     while (left < right) {
       if (!has_parent_level(level)) {
         for (std::size_t index = left; index < right; ++index) {
-          if (!emit({level, index})) {
-            return false;
+          if (!callback(NodeRef{level, index})) {
+            return;
           }
         }
         break;
@@ -2191,14 +2100,14 @@ class RmMBTree
 
       const std::size_t fanout = fanout_to_parent(level);
       while (left < right && (left % fanout) != 0) {
-        if (!emit({level, left})) {
-          return false;
+        if (!callback(NodeRef{level, left})) {
+          return;
         }
         ++left;
       }
       while (left < right && (right % fanout) != 0) {
         --right;
-        push_right({level, right});
+        right_nodes[right_size++] = {level, right};
       }
       left /= fanout;
       right /= fanout;
@@ -2206,11 +2115,10 @@ class RmMBTree
     }
 
     while (right_size > 0) {
-      if (!emit(right_nodes[--right_size])) {
-        return false;
+      if (!callback(right_nodes[--right_size])) {
+        return;
       }
     }
-    return true;
   }
 
   /**

@@ -507,9 +507,6 @@ class FileArchiveIndex : public FileArchiveBase<FileArchiveIndex<Storage>>,
       record.is_text = is_text != 0;
       result.records_.push_back(record);
     }
-    if (!records_reader.empty()) {
-      throw std::invalid_argument("Invalid file-archive record section");
-    }
     result.paths_ = MakeStorage(payload.read_bytes(paths_bytes));
     const std::size_t padding =
         (alignof(std::uint64_t) -
