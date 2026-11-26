@@ -2,10 +2,12 @@
 #include <pixie/bits.h>
 #include <pixie/experimental/excess.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <utility>
@@ -18,7 +20,7 @@ using pixie::experimental::excess_positions_512_expand;
 using pixie::experimental::excess_positions_512_expand8;
 using pixie::experimental::excess_positions_512_expand_avx512;
 using pixie::experimental::excess_positions_512_lut_avx512;
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
 using pixie::experimental::excess_min_128_deinterleaved_byte16_sse;
 using pixie::experimental::excess_min_128_deinterleaved_full_sse;
 using pixie::experimental::excess_min_128_deinterleaved_sse;
@@ -240,6 +242,7 @@ static void check_matches_naive(Fn fn,
                                 int case_id = 0) {
   alignas(64) uint64_t out[8];
   alignas(64) uint64_t ref[8];
+  std::fill_n(out, 8, UINT64_MAX);
   fn(s, target_x, out);
   naive_excess_positions_512(s, target_x, ref);
   for (int w = 0; w < 8; ++w) {
@@ -639,7 +642,7 @@ TEST(ExcessPositions128Experimental, MinVariantsMatchNaive) {
                               left, right, case_id);
       check_min_matches_naive(excess_min_128_hybrid_lut, "hybrid_lut", s.data(),
                               left, right, case_id);
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
       check_min_matches_naive(excess_min_128_expand16_avx2, "expand16_avx2",
                               s.data(), left, right, case_id);
       check_min_matches_naive(excess_min_128_deinterleaved_sse,
@@ -680,7 +683,7 @@ TEST(ExcessPositions128Experimental, MinVariantsMatchNaiveRandom) {
                               left, right, t);
       check_min_matches_naive(excess_min_128_hybrid_lut, "hybrid_lut", s.data(),
                               left, right, t);
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
       check_min_matches_naive(excess_min_128_expand16_avx2, "expand16_avx2",
                               s.data(), left, right, t);
       check_min_matches_naive(excess_min_128_deinterleaved_sse,
@@ -702,7 +705,7 @@ TEST(ExcessPositions128Experimental, MinVariantsMatchNaiveRandom) {
   }
 }
 
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
 TEST(ExcessPositions128Experimental, DeinterleavedSseBoundaryAndTieCases) {
   const std::array<std::array<uint64_t, 2>, 5> cases = {{
       {0x0F0F0F0F0F0F0F0Full, 0xF0F0F0F0F0F0F0F0ull},
@@ -855,50 +858,58 @@ TEST(ExcessPositions512, Alternating) {
   }
 }
 
-TEST(ExcessPositions512, OutOfRange) {
-  alignas(64) uint64_t s[8] = {UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX,
-                               UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
-  alignas(64) uint64_t out[8];
-  excess_positions_512(s, 513, out);
-  for (int w = 0; w < 8; ++w) {
-    EXPECT_EQ(out[w], 0u);
-  }
-  excess_positions_512(s, -513, out);
-  for (int w = 0; w < 8; ++w) {
-    EXPECT_EQ(out[w], 0u);
+TEST(ExcessPositions512, ExtremeTargetsMatchEveryKernel) {
+  using Kernel = void (*)(const uint64_t*, int, uint64_t*);
+  constexpr std::pair<const char*, Kernel> kernels[] = {
+      {"default", excess_positions_512},
+      {"expand", excess_positions_512_expand},
+      {"expand8", excess_positions_512_expand8},
+      {"expand_avx512", excess_positions_512_expand_avx512},
+      {"branching_lut", excess_positions_512_branching_lut},
+      {"lut_avx512", excess_positions_512_lut_avx512},
+      {"byte_lut", excess_positions_512_byte_lut},
+  };
+  for (uint64_t word : {uint64_t{0}, UINT64_MAX}) {
+    alignas(64) std::array<uint64_t, 8> bits;
+    bits.fill(word);
+    for (int target : {std::numeric_limits<int>::min(), -513, -512, -128, 128,
+                       512, 513, std::numeric_limits<int>::max()}) {
+      for (const auto& [name, kernel] : kernels) {
+        check_matches_naive(kernel, name, bits.data(), target, word != 0);
+      }
+    }
   }
 }
 
-TEST(ExcessPositions512, ExhaustiveSmall16) {
-  alignas(64) uint64_t s[8];
-  alignas(64) uint64_t out[8];
-  alignas(64) uint64_t ref[8];
+static void check_small16_excess_pattern(uint64_t pattern) {
+  alignas(64) const uint64_t words[8] = {pattern};
+  for (int x = -20; x <= 20; ++x) {
+    const auto id = static_cast<int>(pattern);
+    check_matches_naive(excess_positions_512, "default", words, x, id);
+    check_matches_naive(excess_positions_512_expand, "expand", words, x, id);
+    check_matches_naive(excess_positions_512_expand8, "expand8", words, x, id);
+    check_matches_naive(excess_positions_512_expand_avx512, "expand_avx512",
+                        words, x, id);
+    check_matches_naive(excess_positions_512_branching_lut, "branching_lut",
+                        words, x, id);
+    check_matches_naive(excess_positions_512_lut_avx512, "lut_avx512", words, x,
+                        id);
+    check_matches_naive(excess_positions_512_byte_lut, "byte_lut", words, x,
+                        id);
+  }
+}
 
+TEST(ExcessPositions512, Small16BoundaryPatterns) {
+  for (const uint64_t pattern :
+       {0x0000, 0x0001, 0x0080, 0x0100, 0x8000, 0x00ff, 0xff00, 0xaaaa, 0x5555,
+        0x0ff0, 0xf00f, 0xffff}) {
+    check_small16_excess_pattern(pattern);
+  }
+}
+
+TEST(ExcessPositions512, HeavyExhaustiveSmall16) {
   for (uint64_t pattern = 0; pattern < (1ull << 16); ++pattern) {
-    s[0] = pattern;
-    for (int w = 1; w < 8; ++w) {
-      s[w] = 0;
-    }
-    for (int x = -20; x <= 20; ++x) {
-      excess_positions_512(s, x, out);
-      naive_excess_positions_512(s, x, ref);
-      check_matches_naive(excess_positions_512_expand, "expand", s, x,
-                          static_cast<int>(pattern));
-      check_matches_naive(excess_positions_512_expand8, "expand8", s, x,
-                          static_cast<int>(pattern));
-      check_matches_naive(excess_positions_512_expand_avx512, "expand_avx512",
-                          s, x, static_cast<int>(pattern));
-      check_matches_naive(excess_positions_512_branching_lut, "branching_lut",
-                          s, x, static_cast<int>(pattern));
-      check_matches_naive(excess_positions_512_lut_avx512, "lut_avx512", s, x,
-                          static_cast<int>(pattern));
-      check_matches_naive(excess_positions_512_byte_lut, "byte_lut", s, x,
-                          static_cast<int>(pattern));
-      for (int w = 0; w < 8; ++w) {
-        ASSERT_EQ(out[w], ref[w])
-            << "pattern=" << pattern << " x=" << x << " word=" << w;
-      }
-    }
+    check_small16_excess_pattern(pattern);
   }
 }
 

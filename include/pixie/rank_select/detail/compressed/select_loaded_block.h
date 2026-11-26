@@ -14,7 +14,7 @@ namespace pixie::detail::compressed {
 template <bool Zero>
 inline std::size_t select_loaded_block(const std::uint64_t* words,
                                        std::size_t rank) {
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512VPOPCNTDQ__)
   auto bits = _mm512_loadu_si512(words);
   if constexpr (Zero) {
     bits = _mm512_xor_si512(bits, _mm512_set1_epi64(-1));

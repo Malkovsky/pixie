@@ -343,21 +343,7 @@ class LayeredDFUDSTree {
     if (records.size() != size_) {
       throw std::invalid_argument("Layered DFUDS source size mismatch");
     }
-    size_t cuts = 0;
-    size_t bitmap = 0, boundaries = 0, cross_edges = 0;
-    for (size_t i = 0; budget_ > 0 && i + 1 < bands.size(); ++i) {
-      bitmap = add(bitmap, bands[i].nodes);
-      boundaries = add(boundaries, bands[i].boundaries);
-      cross_edges = add(cross_edges, bands[i].cross_edges);
-      if (!fits(planned_overhead(bitmap, boundaries, cross_edges, i + 1))) {
-        break;
-      }
-      ++cuts;
-    }
-    build(records, bands, cuts);
-    if (cuts && !fits(boundary_overhead_bits())) {
-      build(records, bands, 0);
-    }
+    build_with_budget(records, bands);
   }
 
   /** @brief Deep-copy streams and rebuild indexes against the new storage. */
@@ -622,6 +608,24 @@ class LayeredDFUDSTree {
     allocation = add(allocation, rank_bytes(edges, boundaries));
     allocation = add(allocation, multiply(cuts, sizeof(Start)));
     return multiply(allocation, 8) - edges;
+  }
+  void build_with_budget(const std::vector<Record>& records,
+                         const std::vector<Counts>& bands) {
+    size_t cuts = 0;
+    size_t bitmap = 0, boundaries = 0, cross_edges = 0;
+    for (size_t i = 0; budget_ > 0 && i + 1 < bands.size(); ++i) {
+      bitmap = add(bitmap, bands[i].nodes);
+      boundaries = add(boundaries, bands[i].boundaries);
+      cross_edges = add(cross_edges, bands[i].cross_edges);
+      if (!fits(planned_overhead(bitmap, boundaries, cross_edges, i + 1))) {
+        break;
+      }
+      ++cuts;
+    }
+    build(records, bands, cuts);
+    if (cuts && !fits(boundary_overhead_bits())) {
+      build(records, bands, 0);
+    }
   }
   static void set_one(std::vector<uint64_t>& words, size_t p) {
     words[p / 64] |= uint64_t{1} << (p % 64);

@@ -38,12 +38,14 @@ static void LoudsInspectFetchedPart(benchmark::State& state) {
   pixie::tree::TreeTraversalContext context(tree);
   auto result = context.fetch(tree.root(), 1024);
   for (auto _ : state) {
-    for (const auto& node : result.nodes()) {
-      benchmark::DoNotOptimize(node.source_id);
-      for (auto child : node.children) {
-        benchmark::DoNotOptimize(child);
-      }
+    // Consume actual node and child IDs. Per-ID barriers can leave a
+    // materialized ID in memory while forcing a computed ID to be produced.
+    size_t checksum = 0;
+    for (auto node : result.nodes()) {
+      checksum += result.source_node(node).number;
+      result.for_each_child(node, [&](auto child) { checksum += child; });
     }
+    benchmark::DoNotOptimize(checksum);
   }
 }
 BENCHMARK(LoudsInspectFetchedPart);

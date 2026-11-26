@@ -141,14 +141,14 @@ void Matched(benchmark::State& state, CoverShape shape, bool dfs) {
     if (dfs) {
       return CoverDfs<true, false, true>(state, tree, budget);
     }
-    auto index = MakeWalkIndex(tree, budget);
-    tree::TreeTraversalContext context(tree, budget, &index);
+    TreeTraversalWorkloads walk(tree, budget);
+    tree::RootNavigationIndex index(tree, budget - walk.reserved_bytes());
+    tree::TreeTraversalContext context(tree, 0, &index);
     state.counters["budget_usage_bytes"] =
-        context.budget_usage_bytes() + index.budget_usage_bytes();
-    state.counters["scratch_bytes"] = context.scratch_bytes();
-    state.counters["traversal_index_bytes"] = context.memory_usage_bytes() -
-                                              context.scratch_bytes() +
-                                              index.memory_usage_bytes();
+        walk.reserved_bytes() + index.budget_usage_bytes();
+    state.counters["scratch_bytes"] = walk.scratch_bytes();
+    state.counters["traversal_index_bytes"] =
+        walk.fixture_metadata_bytes() + index.memory_usage_bytes();
     return CoverInspectedRootPath<true, true>(state, context, paths);
   }
 }

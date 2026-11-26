@@ -16,7 +16,7 @@ using pixie::experimental::excess_positions_512_expand;
 using pixie::experimental::excess_positions_512_expand8;
 using pixie::experimental::excess_positions_512_expand_avx512;
 using pixie::experimental::excess_positions_512_lut_avx512;
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
 using pixie::experimental::excess_min_128_deinterleaved_byte16_sse;
 using pixie::experimental::excess_min_128_deinterleaved_full_sse;
 using pixie::experimental::excess_min_128_deinterleaved_sse;
@@ -383,7 +383,7 @@ PIXIE_BENCH_EXCESS_MIN_VARIANT("BM_ExcessMin128_ByteLUT",
                                excess_min_128_byte_lut);
 PIXIE_BENCH_EXCESS_MIN_VARIANT("BM_ExcessMin128_HybridLUT",
                                excess_min_128_hybrid_lut);
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
 PIXIE_BENCH_EXCESS_MIN_VARIANT("BM_ExcessMin128_Expand16AVX2",
                                excess_min_128_expand16_avx2);
 PIXIE_BENCH_EXCESS_MIN_VARIANT("BM_ExcessMin128_DeinterleavedSSE",
@@ -456,7 +456,7 @@ PIXIE_BENCH_EXCESS_MIN_RANDOM_VARIANT("BM_ExcessMin128_ByteLUT_RandomRange",
                                       excess_min_128_byte_lut);
 PIXIE_BENCH_EXCESS_MIN_RANDOM_VARIANT("BM_ExcessMin128_HybridLUT_RandomRange",
                                       excess_min_128_hybrid_lut);
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
 PIXIE_BENCH_EXCESS_MIN_RANDOM_VARIANT(
     "BM_ExcessMin128_Expand16AVX2_RandomRange",
     excess_min_128_expand16_avx2);
@@ -837,7 +837,7 @@ static void BM_ExcessRecordLows128_LUT(benchmark::State& state) {
 
 BENCHMARK(BM_ExcessRecordLows128_LUT);
 
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
 static void BM_ExcessRecordLows128_AVX2(benchmark::State& state) {
   const auto blocks = make_128_blocks();
   const size_t num_blocks = blocks.size();

@@ -2,20 +2,20 @@
 // Compiled BP events carry both full-width root coordinates in a SIMD pair.
 // Scalar fallback is local; callbacks always receive ordinary TreeNode handles.
 #include <pixie/tree/detail/bp_micro_tables.h>
-#if defined(PIXIE_AVX2_SUPPORT) || defined(PIXIE_AVX512_SUPPORT)
-#include <immintrin.h>
+#ifdef __SSE2__
+#include <emmintrin.h>
 #endif
 
 namespace pixie::tree::detail::bp_micro::vector_micro {
 struct Pair {
-#if defined(PIXIE_AVX2_SUPPORT) || defined(PIXIE_AVX512_SUPPORT)
+#ifdef __SSE2__
   __m128i lanes;
 #else
   uint64_t number, position;
 #endif
 };
 inline Pair pack(TreeNode root) {
-#if defined(PIXIE_AVX2_SUPPORT) || defined(PIXIE_AVX512_SUPPORT)
+#ifdef __SSE2__
   return {_mm_set_epi64x(root.pos, root.number)};
 #else
   return {root.number, root.pos};
@@ -23,7 +23,7 @@ inline Pair pack(TreeNode root) {
 }
 template <unsigned Number, unsigned Position>
 [[gnu::always_inline]] inline TreeNode offset(Pair root) {
-#if defined(PIXIE_AVX2_SUPPORT) || defined(PIXIE_AVX512_SUPPORT)
+#ifdef __SSE2__
   const auto value =
       _mm_add_epi64(root.lanes, _mm_set_epi64x(Position, Number));
   uint64_t fields[2];

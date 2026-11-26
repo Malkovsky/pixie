@@ -347,7 +347,7 @@ static inline ExcessResult excess_min_128_hybrid_lut(const uint64_t* s,
   return excess_min_128(s, left, right);
 }
 
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
 // clang-format off
 static inline const __m128i excess_lut_delta_128 = _mm_setr_epi8(
     -4, -2, -2,  0,
@@ -1174,7 +1174,7 @@ static inline void excess_positions_512_branching_lut(const uint64_t* s,
 }
 #endif
 
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512BW__)
 static inline __m512i excess_lut_delta_64x() noexcept {
   return _mm512_broadcast_i32x4(
       _mm_setr_epi8(-4, -2, -2, 0, -2, 0, 0, 2, -2, 0, 0, 2, 0, 2, 2, 4));
@@ -1430,7 +1430,7 @@ static inline void excess_positions_512_expand(const uint64_t* s,
     return;
   }
 
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   static const __m256i masks = excess_bit_masks_16x();
   static const __m256i vzero = _mm256_setzero_si256();
   static const __m256i vallones = _mm256_cmpeq_epi16(vzero, vzero);
@@ -1472,7 +1472,7 @@ static inline void excess_positions_512_expand(const uint64_t* s,
       const __m256i cmp = _mm256_cmpeq_epi16(pref_abs, vtarget);
 
       const uint32_t m32 = (uint32_t)_mm256_movemask_epi8(cmp);
-#ifdef PIXIE_BMI2_SUPPORT
+#ifdef __BMI2__
       const uint16_t m16 = static_cast<uint16_t>(_pext_u32(m32, 0xAAAAAAAAu));
 #else
       // Compact one comparison bit per 16-bit lane without BMI2.
@@ -1523,7 +1523,7 @@ static inline void excess_positions_512_expand8(const uint64_t* s,
     return;
   }
 
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   static const __m256i byte_selectors = excess_byte_selectors_32x8();
   static const __m256i masks = excess_bit_masks_32x8();
   static const __m256i vzero = _mm256_setzero_si256();
@@ -1595,7 +1595,7 @@ static inline void excess_positions_512_expand_avx512(const uint64_t* s,
     return;
   }
 
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512BW__)
   static const __m512i byte_selectors = excess_byte_selectors_64x8();
   static const __m512i masks = excess_bit_masks_64x8();
   static const __m512i vzero = _mm512_setzero_si512();

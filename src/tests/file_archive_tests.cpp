@@ -11,6 +11,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -233,17 +234,40 @@ TEST(FileArchiveTest, StreamsTypedBytesAcrossTwoBuildPasses) {
 }
 
 TEST(FileArchiveTest, RejectsContentChangedBetweenStreamingPasses) {
-  std::size_t pass = 0;
-  EXPECT_THROW(
-      (pixie::FileArchive(
-          {{.path = "changed", .type = pixie::FileArchiveEntryType::kRegular}},
-          [&](const auto&, auto&& consume) {
-            const std::vector<std::byte> bytes =
-                Bytes(pass++ == 0 ? "ab" : "ba");
-            consume(std::span<const std::byte>(bytes));
-          })),
-      std::invalid_argument);
-  EXPECT_EQ(pass, 2u);
+  for (std::string_view replacement : {"ba", "a", "abc"}) {
+    SCOPED_TRACE(replacement);
+    std::size_t pass = 0;
+    EXPECT_THROW(
+        (pixie::FileArchive({{.path = "changed",
+                              .type = pixie::FileArchiveEntryType::kRegular}},
+                            [&](const auto&, auto&& consume) {
+                              const auto bytes =
+                                  Bytes(pass++ == 0 ? "ab" : replacement);
+                              consume(std::span<const std::byte>(bytes));
+                            })),
+        std::invalid_argument);
+    EXPECT_EQ(pass, 2u);
+  }
+}
+
+TEST(FileArchiveTest, PreservesChunksAfterInvalidUtf8) {
+  const auto first = Bytes("\xff");
+  const auto tail = Bytes("later text\n");
+  const pixie::FileArchive archive(
+      {{.path = "binary", .type = pixie::FileArchiveEntryType::kRegular}},
+      [&](const auto&, auto&& consume) {
+        consume(std::span(first));
+        consume(std::span(tail));
+      });
+  auto expected = first;
+  expected.insert(expected.end(), tail.begin(), tail.end());
+  EXPECT_EQ(archive.extract(0), expected);
+  EXPECT_FALSE(archive.entry(0).is_text);
+}
+
+TEST(FileArchiveTest, RejectsSerializingAnUninitializedView) {
+  const pixie::FileArchiveView view;
+  EXPECT_THROW(Serialize(view), std::logic_error);
 }
 
 TEST(FileArchiveTest, SerializesAnEmptyArchiveWithoutATerminalSymbol) {
@@ -365,6 +389,16 @@ TEST(FileArchiveTest, RejectsMalformedMetadataTransactionally) {
   wrong_derived_text[kFirstRecord + 53] = std::byte{1};
   expect_rejected(std::move(wrong_derived_text),
                   pixie::DeserializationValidation::kFull);
+
+  auto unclaimed_content = valid;
+  const std::size_t last_record = kFirstRecord + archive.file_table_bytes() *
+                                                     (archive.size() - 1) /
+                                                     archive.size();
+  constexpr std::size_t kContentSize = 3 * sizeof(std::uint64_t);
+  OverwriteU64(unclaimed_content, last_record + kContentSize,
+               archive.extract(archive.size() - 1).size() - 1);
+  expect_rejected(std::move(unclaimed_content),
+                  pixie::DeserializationValidation::kFull);
 }
 
 TEST(FileArchiveTest, RejectsUnalignedSerializationAndDeserialization) {
@@ -381,6 +415,57 @@ TEST(FileArchiveTest, RejectsUnalignedSerializationAndDeserialization) {
   EXPECT_THROW(pixie::FileArchiveView::deserialize(reader),
                std::invalid_argument);
   EXPECT_EQ(reader.position(), 0u);
+}
+
+TEST(FileArchiveTest, ChecksRecordBoundsAndFullRecordOrdering) {
+  const pixie::FileArchive archive(Sources());
+  const auto valid = Serialize(archive);
+  constexpr std::size_t kFirst = 72;
+  const auto second = kFirst + archive.file_table_bytes() / archive.size();
+  constexpr auto kWord = sizeof(std::uint64_t);
+  constexpr auto kMax = std::numeric_limits<std::uint64_t>::max();
+  const auto expect_rejected = [](const auto& bytes, auto validation) {
+    pixie::BinaryReader owner(bytes), view(bytes);
+    EXPECT_THROW((void)pixie::FileArchive::deserialize(owner, validation),
+                 std::invalid_argument);
+    EXPECT_THROW((void)pixie::FileArchiveView::deserialize(view, validation),
+                 std::invalid_argument);
+    EXPECT_EQ(owner.position(), 0u);
+    EXPECT_EQ(view.position(), 0u);
+  };
+
+  const std::pair<std::size_t, std::uint64_t> bounds[] = {
+      {kFirst, kMax},
+      {kFirst + kWord, kMax},
+      {kFirst + 2 * kWord, kMax},
+      {kFirst + 3 * kWord, kMax},
+      {kFirst + 4 * kWord, kMax},
+      {kFirst + 5 * kWord, kMax},
+      {second + 5 * kWord, 1},  // A symlink has no line index.
+  };
+  for (const auto& [offset, value] : bounds) {
+    SCOPED_TRACE(offset);
+    auto bad = valid;
+    OverwriteU64(bad, offset, value);
+    expect_rejected(bad, pixie::DeserializationValidation::kQuick);
+  }
+
+  auto duplicate_path = valid;
+  std::ranges::copy(std::span(valid).subspan(kFirst, 2 * kWord),
+                    duplicate_path.begin() + second);
+  auto invalid_utf8 = valid;
+  invalid_utf8[kFirst + archive.file_table_bytes()] = std::byte{0xff};
+  auto gap = valid;
+  OverwriteU64(gap, kFirst + 2 * kWord, 1);
+  auto wrong_newline_base = valid;
+  OverwriteU64(wrong_newline_base, kFirst + 4 * kWord, 1);
+  for (const auto* bad :
+       {&duplicate_path, &invalid_utf8, &gap, &wrong_newline_base}) {
+    pixie::BinaryReader quick(*bad);
+    ASSERT_NO_THROW((void)pixie::FileArchiveView::deserialize(quick));
+    EXPECT_TRUE(quick.empty());
+    expect_rejected(*bad, pixie::DeserializationValidation::kFull);
+  }
 }
 
 TEST(FileArchiveTest, RejectsTrailingAndTruncatedArtifacts) {

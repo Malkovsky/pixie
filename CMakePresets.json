@@ -12,7 +12,6 @@
             "binaryDir": "${sourceDir}/build/${presetName}",
             "cacheVariables": {
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "DISABLE_AVX512": "OFF",
                 "ENABLE_ADDRESS_SANITIZER": "OFF",
                 "PIXIE_BENCHMARKS": "OFF",
                 "PIXIE_COVERAGE": "OFF",
@@ -36,7 +35,8 @@
             "inherits": "base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
-                "PIXIE_BENCHMARKS": "ON"
+                "PIXIE_BENCHMARKS": "ON",
+                "PIXIE_CPU_PROFILE": "native"
             }
         },
         {
@@ -56,13 +56,41 @@
             }
         },
         {
+            "name": "sse2",
+            "inherits": "release",
+            "cacheVariables": {
+                "PIXIE_CPU_PROFILE": "sse2"
+            }
+        },
+        {
+            "name": "avx2",
+            "inherits": "release",
+            "cacheVariables": {
+                "PIXIE_CPU_PROFILE": "avx2"
+            }
+        },
+        {
+            "name": "x86-64-v3",
+            "inherits": "release",
+            "cacheVariables": {
+                "PIXIE_CPU_PROFILE": "x86-64-v3"
+            }
+        },
+        {
+            "name": "avx512-full",
+            "inherits": "release",
+            "cacheVariables": {
+                "PIXIE_CPU_PROFILE": "avx512-full"
+            }
+        },
+        {
             "name": "asan",
             "displayName": "AddressSanitizer",
             "inherits": "test-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "DISABLE_AVX512": "ON",
-                "ENABLE_ADDRESS_SANITIZER": "ON"
+                "ENABLE_ADDRESS_SANITIZER": "ON",
+                "PIXIE_CPU_PROFILE": "avx2"
             }
         },
         {
@@ -71,7 +99,8 @@
             "inherits": "test-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "PIXIE_COVERAGE": "ON"
+                "PIXIE_COVERAGE": "ON",
+                "PIXIE_CPU_PROFILE": "native"
             }
         },
         {
@@ -119,6 +148,22 @@
             "configurePreset": "release"
         },
         {
+            "name": "sse2",
+            "configurePreset": "sse2"
+        },
+        {
+            "name": "avx2",
+            "configurePreset": "avx2"
+        },
+        {
+            "name": "x86-64-v3",
+            "configurePreset": "x86-64-v3"
+        },
+        {
+            "name": "avx512-full",
+            "configurePreset": "avx512-full"
+        },
+        {
             "name": "asan",
             "displayName": "Build AddressSanitizer",
             "configurePreset": "asan"
@@ -161,24 +206,67 @@
             }
         },
         {
-            "name": "debug",
+            "name": "routine-tests",
+            "hidden": true,
             "inherits": "test-base",
+            "filter": {
+                "exclude": {
+                    "label": "^heavy$"
+                }
+            }
+        },
+        {
+            "name": "debug",
+            "inherits": "routine-tests",
             "configurePreset": "debug"
         },
         {
             "name": "release",
-            "inherits": "test-base",
+            "inherits": "routine-tests",
             "configurePreset": "release"
         },
         {
+            "name": "sse2",
+            "configurePreset": "sse2",
+            "inherits": "routine-tests"
+        },
+        {
+            "name": "avx2",
+            "configurePreset": "avx2",
+            "inherits": "routine-tests"
+        },
+        {
+            "name": "x86-64-v3",
+            "configurePreset": "x86-64-v3",
+            "inherits": "routine-tests"
+        },
+        {
+            "name": "avx512-full",
+            "configurePreset": "avx512-full",
+            "inherits": "routine-tests"
+        },
+        {
             "name": "asan",
-            "inherits": "test-base",
+            "inherits": "routine-tests",
             "configurePreset": "asan"
         },
         {
             "name": "coverage",
-            "inherits": "test-base",
+            "inherits": "routine-tests",
             "configurePreset": "coverage"
+        },
+        {
+            "name": "heavy",
+            "configurePreset": "release",
+            "inherits": "test-base",
+            "filter": {
+                "include": {
+                    "label": "^heavy$"
+                }
+            },
+            "execution": {
+                "noTestsAction": "error"
+            }
         }
     ]
 }

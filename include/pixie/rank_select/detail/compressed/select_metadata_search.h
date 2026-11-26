@@ -10,7 +10,7 @@
 #include <limits>
 #include <type_traits>
 
-#if defined(PIXIE_AVX512_SUPPORT) || defined(PIXIE_AVX2_SUPPORT)
+#if defined(__AVX512F__) || defined(__AVX2__)
 #include <immintrin.h>
 #endif
 
@@ -28,27 +28,31 @@ inline std::size_t first_metadata_ge(const Endpoint* endpoints,
                  sizeof(Endpoint) == 8));
   assert(count <= 64 / sizeof(Endpoint));
   assert(key <= std::numeric_limits<Endpoint>::max());
-#ifdef PIXIE_AVX512_SUPPORT
+#ifdef __AVX512F__
+#ifdef __AVX512BW__
   if constexpr (sizeof(Endpoint) == 2) {
     const auto valid = static_cast<__mmask32>((std::uint64_t{1} << count) - 1);
     const auto values = _mm512_maskz_loadu_epi16(valid, endpoints);
     const std::uint32_t matches =
         valid & _mm512_cmpge_epu16_mask(values, _mm512_set1_epi16(key));
     return matches == 0 ? count : std::countr_zero(matches);
-  } else if constexpr (sizeof(Endpoint) == 4) {
+  }
+#endif
+  if constexpr (sizeof(Endpoint) == 4) {
     const auto valid = static_cast<__mmask16>((std::uint64_t{1} << count) - 1);
     const auto values = _mm512_maskz_loadu_epi32(valid, endpoints);
     const std::uint32_t matches =
         valid & _mm512_cmpge_epu32_mask(values, _mm512_set1_epi32(key));
     return matches == 0 ? count : std::countr_zero(matches);
-  } else {
+  } else if constexpr (sizeof(Endpoint) == 8) {
     const auto valid = static_cast<__mmask8>((std::uint64_t{1} << count) - 1);
     const auto values = _mm512_maskz_loadu_epi64(valid, endpoints);
     const std::uint32_t matches =
         valid & _mm512_cmpge_epu64_mask(values, _mm512_set1_epi64(key));
     return matches == 0 ? count : std::countr_zero(matches);
   }
-#elif defined(PIXIE_AVX2_SUPPORT)
+#endif
+#ifdef __AVX2__
   constexpr std::size_t lanes = 32 / sizeof(Endpoint);
   std::size_t begin = 0;
   while (count - begin >= lanes) {

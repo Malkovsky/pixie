@@ -19,18 +19,17 @@
 #include <span>
 #include <stdexcept>
 
-#if defined(PIXIE_AVX2_SUPPORT) || defined(PIXIE_AVX512_SUPPORT)
+#ifdef __AVX2__
 #include <immintrin.h>
 #endif
 
 #if defined(__aarch64__) && defined(__ARM_NEON)
-#define PIXIE_WAVELET_NEON_SUPPORT
 #include <arm_neon.h>
 #endif
 
 namespace pixie::detail {
 
-#if defined(PIXIE_AVX2_SUPPORT)
+#if defined(__AVX2__)
 
 struct WaveletCompaction16Tables {
   std::array<std::array<std::uint8_t, 16>, 256> low{};
@@ -89,7 +88,7 @@ inline __m128i compact_wavelet_16(__m128i ranks, std::uint16_t right_mask) {
 
 #endif
 
-#if defined(PIXIE_WAVELET_NEON_SUPPORT)
+#if defined(__aarch64__) && defined(__ARM_NEON)
 
 struct NeonWaveletCompactionTables {
   std::array<std::array<std::uint8_t, 16>, 256> low{};
@@ -268,7 +267,7 @@ inline void map_wavelet_byte_ranks(
     throw std::invalid_argument("Invalid wavelet rank mapping buffers");
   }
   std::size_t offset = 0;
-#if defined(PIXIE_WAVELET_NEON_SUPPORT)
+#if defined(__aarch64__) && defined(__ARM_NEON)
   if (symbols.size() >= 20) {
     uint8x16x4_t table0;
     uint8x16x4_t table1;
@@ -376,7 +375,7 @@ std::size_t partition_wavelet_byte_block_scalar(
   return left;
 }
 
-#if defined(PIXIE_WAVELET_NEON_SUPPORT)
+#if defined(__aarch64__) && defined(__ARM_NEON)
 
 // PivCo's p16rev idea expressed with AArch64 TBL. The two halves are loaded
 // before either in-place store, and the template removes dead leaf scatters.
@@ -465,7 +464,7 @@ std::size_t partition_wavelet_byte_block_neon(
 
 #endif
 
-#if defined(PIXIE_AVX2_SUPPORT)
+#if defined(__AVX2__)
 
 // PivCo's non-flat p16rev kernel adapted to append direction masks directly to
 // a Pixie node stream. This deliberately keeps the full/right/none compile-time
@@ -485,7 +484,7 @@ std::size_t partition_wavelet_byte_block_x86(
   std::size_t right = 0;
   std::size_t offset = 0;
 
-#if defined(PIXIE_AVX512_SUPPORT) && defined(__AVX512VBMI2__)
+#if defined(__AVX512BW__) && defined(__AVX512VBMI2__)
   const __m512i threshold_512 =
       _mm512_set1_epi8(static_cast<char>(first_right - 1));
   for (; offset + 64 <= ranks.size(); offset += 64) {
@@ -604,10 +603,10 @@ inline std::size_t partition_wavelet_byte_block(
   }
 
   const auto partition = [&]<bool WriteLeft, bool WriteRight>() {
-#if defined(PIXIE_AVX2_SUPPORT)
+#if defined(__AVX2__)
     return partition_wavelet_byte_block_x86<WriteLeft, WriteRight>(
         ranks, first_right, right_output, directions);
-#elif defined(PIXIE_WAVELET_NEON_SUPPORT)
+#elif defined(__aarch64__) && defined(__ARM_NEON)
     return partition_wavelet_byte_block_neon<WriteLeft, WriteRight>(
         ranks, first_right, right_output, directions);
 #else
@@ -624,7 +623,3 @@ inline std::size_t partition_wavelet_byte_block(
 }
 
 }  // namespace pixie::detail
-
-#if defined(PIXIE_WAVELET_NEON_SUPPORT)
-#undef PIXIE_WAVELET_NEON_SUPPORT
-#endif

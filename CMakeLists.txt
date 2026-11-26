@@ -10,22 +10,18 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(MARCH "native" CACHE STRING "march compilier flag")
-set(CMAKE_CXX_FLAGS "-march=${MARCH}")
-message(STATUS "MARCH is '${MARCH}'")
-
-option(DISABLE_AVX512 "Disable AVX512 instructions" OFF)
-if (DISABLE_AVX512)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mno-avx512f")
-    message(STATUS "DISABLE_AVX512 is ON")
+if (PIXIE_IS_TOP_LEVEL)
+    set(PIXIE_CPU_PROFILE "" CACHE STRING "CPU profile for Pixie's own build")
+    set_property(CACHE PIXIE_CPU_PROFILE PROPERTY STRINGS
+            "" sse2 avx2 x86-64-v3 avx512-full native)
+    if (NOT PIXIE_CPU_PROFILE STREQUAL "")
+        include(cmake/PixieCpuProfiles.cmake)
+        pixie_cpu_profile_flags(pixie_cpu_flags "${PIXIE_CPU_PROFILE}")
+        string(JOIN " " pixie_cpu_flags ${pixie_cpu_flags})
+        string(APPEND CMAKE_CXX_FLAGS " ${pixie_cpu_flags}")
+        message(STATUS "Pixie CPU profile: ${PIXIE_CPU_PROFILE} (${pixie_cpu_flags})")
+    endif ()
 endif ()
-
-option(PIXIE_DISABLE_BMI2 "Disable BMI2 instructions" OFF)
-if(PIXIE_DISABLE_BMI2)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mno-bmi2")
-    add_compile_definitions(PIXIE_DISABLE_BMI2)
-    message(STATUS "PIXIE_DISABLE_BMI2 is ON")
-endif()
 
 option(ENABLE_ADDRESS_SANITIZER "Enable AddressSanitizer" OFF)
 if (ENABLE_ADDRESS_SANITIZER)
@@ -142,7 +138,7 @@ if (PIXIE_THIRD_PARTY_BACKENDS)
     FetchContent_MakeAvailable(succinct_bitvec)
 
     include(CheckCXXSourceCompiles)
-    # Recheck when the configured architecture or BMI2 option changes.
+    # Recheck when the compiler flags change.
     unset(PIXIE_RANK_SELECT_HAS_BMI CACHE)
     check_cxx_source_compiles("
         #if !defined(__BMI__) || !defined(__BMI2__)
@@ -481,6 +477,10 @@ if (PIXIE_TESTS)
                 TEST_PREFIX "${test_target}."
                 PROPERTIES LABELS "${test_target}")
     endforeach ()
+    # Apply per-case labels after Google Test discovery.
+    configure_file(cmake/PixieTestLabels.cmake.in PixieTestLabels.cmake @ONLY)
+    set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+            "${CMAKE_CURRENT_BINARY_DIR}/PixieTestLabels.cmake")
 endif ()
 
 # ---------------------------------------------------------------------------

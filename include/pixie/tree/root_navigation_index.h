@@ -2,8 +2,8 @@
 
 #include <pixie/detail/serialization_frame.h>
 #include <pixie/tree.h>
+#include <pixie/tree/detail/indexed_tree_part.h>
 #include <pixie/tree/traversal_budget.h>
-#include <pixie/tree/tree_part.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -86,22 +86,17 @@ class RootNavigationIndex
    * A nonleaf at the frontier has an incomplete child list.
    * The result is independent of both the tree and this index.
    */
-  TreePart inspect_part() const {
-    std::vector<TreePart::Node> rows(entries_.size());
-    for (size_t i = 0; i < entries_.size(); ++i) {
-      const auto& entry = entries_[i];
-      auto& row = rows[i];
-      row.source_id = entry.node.number;
-      row.bit_position = entry.node.pos;
-      row.children_complete = !entry.degree || entry.first != kMissing;
-      if (entry.first != kMissing) {
-        row.children.reserve(entry.degree);
-        for (size_t j = 0; j < entry.degree; ++j) {
-          row.children.push_back(entry.first + j);
-        }
-      }
+  auto inspect_part() const {
+    using Part = detail::IndexedTreePart<Tree, true>;
+    std::vector<typename Part::Record> rows;
+    rows.reserve(entries_.size());
+    for (const auto& entry : entries_) {
+      const bool expanded = entry.first != kMissing;
+      rows.emplace_back(entry.node, expanded ? entry.first : 0,
+                        expanded ? entry.degree : 0,
+                        expanded || entry.degree == 0);
     }
-    return {std::move(rows), entries_.empty() ? 0u : 1u};
+    return Part(tree_, std::move(rows));
   }
 
   /** @brief Write the immutable entries as a separate versioned artifact.

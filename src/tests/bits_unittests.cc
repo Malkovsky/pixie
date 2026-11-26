@@ -405,6 +405,16 @@ TEST(LowerBound8x64, Random) {
   }
 }
 
+TEST(LowerBound, ZeroThreshold) {
+  const uint64_t values[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+  const uint64_t deltas[8] = {};
+
+  EXPECT_EQ(lower_bound_4x64(values, 0), 0);
+  EXPECT_EQ(lower_bound_8x64(values, 0), 0);
+  EXPECT_EQ(lower_bound_delta_4x64(values, 0, deltas, 0), 0);
+  EXPECT_EQ(lower_bound_delta_8x64(values, 0, deltas, 0), 0);
+}
+
 TEST(LowerBoundDelta4x64, Random) {
   std::vector<uint64_t> x(4);
   uint64_t dlt_array[4];

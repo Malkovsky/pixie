@@ -1,0 +1,7 @@
+foreach(test_target IN ITEMS @PIXIE_TEST_TARGETS@)
+    foreach(test_name IN LISTS ${test_target}_TESTS)
+        if (test_name MATCHES "^[^.]+\\.[^.]+\\.Heavy")
+            set_tests_properties("${test_name}" PROPERTIES LABELS "${test_target};heavy")
+        endif ()
+    endforeach ()
+endforeach ()

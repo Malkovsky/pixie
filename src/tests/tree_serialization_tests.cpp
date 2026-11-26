@@ -313,11 +313,21 @@ TYPED_TEST(TreeSerializationTest,
         reader, tree, budget);
     const pixie::tree::TreeTraversalContext<TypeParam> loaded(tree, budget,
                                                               &restored);
-    EXPECT_EQ(loaded.cached_depth(), context.cached_depth());
-    EXPECT_EQ(loaded.decoded_chunk_bits(), context.decoded_chunk_bits());
-    EXPECT_EQ(loaded.scratch_bytes(), context.scratch_bytes());
-    EXPECT_LE(loaded.budget_usage_bytes(), budget);
+    EXPECT_EQ(loaded.root_index(), &restored);
+    EXPECT_EQ(loaded.budget_usage_bytes(), 0u);
     EXPECT_EQ(save(*loaded.root_index()), bytes);
+    auto original_cursor = context.cursor();
+    auto loaded_cursor = loaded.cursor();
+    while (true) {
+      EXPECT_EQ(loaded_cursor.node(), original_cursor.node());
+      const size_t degree = original_cursor.degree();
+      ASSERT_EQ(loaded_cursor.degree(), degree);
+      if (degree == 0) {
+        break;
+      }
+      original_cursor.move_to_child(degree - 1);
+      loaded_cursor.move_to_child(degree - 1);
+    }
   }
 }
 
@@ -468,7 +478,8 @@ TEST(RmMBTreeSerialization, RejectsDamagedSummaryAndTruncatedLevel) {
   const Rmm original(words, 513);
   const auto bytes = save(original);
   // Header plus four scalar fields precede the nested rank/select frame.
-  const size_t summary = 56 + get_u64(bytes, 56 + 16);
+  constexpr size_t rank = 56;
+  const size_t summary = rank + get_u64(bytes, rank + 16);
   for (const auto& [field, value] : std::vector<std::pair<size_t, uint64_t>>{
            {40, 512},  // Nested rank index still describes 513 bits.
            {summary + 8, original.rank1(513) + 1}}) {
@@ -478,6 +489,20 @@ TEST(RmMBTreeSerialization, RejectsDamagedSummaryAndTruncatedLevel) {
     EXPECT_THROW(Rmm::deserialize(reader, words), std::invalid_argument);
     EXPECT_EQ(reader.position(), 0u);
   }
+
+  auto other_words = words;
+  other_words.front() = 0;
+  const auto other_rank = save(Rmm::RankSelectBackend(other_words, 513));
+  auto mismatched_rank = bytes;
+  mismatched_rank.erase(mismatched_rank.begin() + rank,
+                        mismatched_rank.begin() + summary);
+  mismatched_rank.insert(mismatched_rank.begin() + rank, other_rank.begin(),
+                         other_rank.end());
+  set_u64(mismatched_rank, 16, mismatched_rank.size());
+  pixie::BinaryReader rank_reader(mismatched_rank);
+  EXPECT_THROW(Rmm::deserialize(rank_reader, words), std::invalid_argument);
+  EXPECT_EQ(rank_reader.position(), 0u);
+
   auto truncated = bytes;
   truncated.resize(summary + 48);
   set_u64(truncated, 16, truncated.size());

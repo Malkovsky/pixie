@@ -1,9 +1,12 @@
-# The coverage matrix uploads native and scalar reports separately.
+# The coverage matrix uploads native and SSE2 reports separately.
 codecov:
   notify:
     after_n_builds: 2
 comment:
   after_n_builds: 2
+
+ignore:
+  - "src/tests/**"
 
 coverage:
   # Display red below 90%, yellow from 90%, and green from 95%.

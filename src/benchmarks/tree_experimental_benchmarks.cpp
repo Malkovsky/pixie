@@ -20,6 +20,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "forest256_twin.h"
 #include "tree_conversion_benchmarks.h"
 #include "tree_dfs/optimized.h"
 #include "tree_input.h"
@@ -43,8 +44,7 @@ void Prepared(benchmark::State& state) {
         pixie::tree::detail::TreeEncodingKind::kDFUDS>(words, n);
   }
   Tree tree(words, n);
-  pixie::tree::TreeTraversalContext context(tree);
-  pixie::benchmarks::TreeTraversalWorkloads fallback(context);
+  pixie::benchmarks::TreeTraversalWorkloads fallback(tree);
   auto prepared = [&] {
     if constexpr (Events) {
       return pixie::tree::experimental::PreparedTreeEvents<>(tree);
@@ -271,17 +271,19 @@ void CoverBenchmark(benchmark::State& state, CoverShape shape, CoverWork work) {
   if (work == CoverWork::kInspectedRootPath) {
     if constexpr (Optimized) {
       const auto start = std::chrono::steady_clock::now();
-      auto index = pixie::benchmarks::MakeWalkIndex(tree);
-      pixie::tree::TreeTraversalContext context(
-          tree, pixie::tree::kDefaultTraversalBytes, &index);
+      const auto budget = pixie::tree::kDefaultTraversalBytes;
+      pixie::benchmarks::TreeTraversalWorkloads walk(tree, budget);
+      pixie::tree::RootNavigationIndex index(tree,
+                                             budget - walk.reserved_bytes());
+      pixie::tree::TreeTraversalContext context(tree, 0, &index);
       state.counters["prepare_seconds"] =
           std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                         start)
               .count();
-      const auto bytes = context.memory_usage_bytes() -
-                         context.scratch_bytes() + index.memory_usage_bytes();
+      const auto bytes =
+          walk.fixture_metadata_bytes() + index.memory_usage_bytes();
       state.counters["traversal_index_bytes"] = bytes;
-      state.counters["scratch_reserved_bytes"] = context.scratch_bytes();
+      state.counters["scratch_reserved_bytes"] = walk.scratch_bytes();
       state.counters["cursor_bytes"] = sizeof(context.cursor());
       state.counters["total_bytes"] = tree.memory_usage_bytes() + bytes;
       state.counters["bits_per_node"] =
@@ -620,10 +622,10 @@ void LayeredBaseline(benchmark::State& state,
         return Tree(source);
       }();
       CoverMemory(state, tree);
-      auto index = pixie::benchmarks::MakeWalkIndex(tree);
-      pixie::tree::TreeTraversalContext context(
-          tree, pixie::tree::kDefaultTraversalBytes, &index);
-      pixie::benchmarks::TreeTraversalWorkloads walk(context);
+      const auto budget = pixie::tree::kDefaultTraversalBytes;
+      pixie::benchmarks::TreeTraversalWorkloads walk(tree, budget);
+      pixie::tree::RootNavigationIndex index(tree,
+                                             budget - walk.reserved_bytes());
       for (auto _ : state) {
         // Streaming traversal emits unary entries AND returns. Preorder entry
         // numbers increase by one; returns revisit an already entered node.
@@ -637,14 +639,13 @@ void LayeredBaseline(benchmark::State& state,
         walk.traverse(entry);
         benchmark::DoNotOptimize(next_entry);
       }
-      const auto retained = context.memory_usage_bytes() -
-                            context.scratch_bytes() +
-                            index.memory_usage_bytes();
+      const auto retained =
+          walk.fixture_metadata_bytes() + index.memory_usage_bytes();
       state.counters["traversal_index_bytes"] = retained;
       state.counters["total_bytes"] = tree.memory_usage_bytes() + retained;
       state.counters["bits_per_node"] =
           8.0 * (tree.memory_usage_bytes() + retained) / tree.size();
-      state.counters["scratch_bytes"] = context.scratch_bytes();
+      state.counters["scratch_bytes"] = walk.scratch_bytes();
       state.counters.erase("cursor_bytes");
       state.SetItemsProcessed(state.iterations() * tree.size());
     } else {
@@ -667,10 +668,12 @@ void LayeredBaseline(benchmark::State& state,
 }
 
 namespace f256 = pixie::tree::detail::forest256;
+namespace twin = pixie::benchmarks::forest256_twin;
 
 // Two concatenated logical units, with no per-unit padding. The topology and
 // local observations are identical for the two codecs and all cache budgets.
-std::vector<uint64_t> ForestStream(f256::Codec codec, size_t n, size_t offset) {
+template <bool Twin>
+std::vector<uint64_t> ForestStream(size_t n, size_t offset) {
   std::vector<uint64_t> stream((offset + 4 * n + 63) / 64, ~uint64_t{});
   for (size_t unit = 0; unit < 2; ++unit) {
     const size_t roots = unit + 1;
@@ -678,13 +681,16 @@ std::vector<uint64_t> ForestStream(f256::Codec codec, size_t n, size_t offset) {
     for (size_t child = roots; child < n; ++child) {
       ++degrees[(child - roots) / (roots + 1)];
     }
-    const auto louds = f256::encode_louds_forest256(roots, degrees);
-    const auto twin = f256::encode_twin_forest256(roots, degrees);
+    const auto packed = [&] {
+      if constexpr (Twin) {
+        return twin::encode_twin_forest256(roots, degrees);
+      } else {
+        return f256::encode_louds_forest256(roots, degrees);
+      }
+    }();
     for (size_t i = 0; i < 2 * n; ++i) {
-      const bool is_louds = codec == f256::Codec::louds;
-      const size_t src = is_louds || i < n ? i : 256 + i - n;
-      const auto* words = is_louds ? louds.words : twin.words;
-      if (!((words[src / 64] >> (src % 64)) & 1)) {
+      const size_t src = Twin && i >= n ? 256 + i - n : i;
+      if (!((packed.words[src / 64] >> (src % 64)) & 1)) {
         const size_t dst = offset + unit * 2 * n + i;
         stream[dst / 64] &= ~(uint64_t{1} << (dst % 64));
       }
@@ -695,11 +701,11 @@ std::vector<uint64_t> ForestStream(f256::Codec codec, size_t n, size_t offset) {
 
 enum class ForestProbe { Scalar, Native, Cache };
 
-template <ForestProbe Probe>
-void ForestBenchmark(benchmark::State& state, f256::Codec codec, size_t peer) {
+template <ForestProbe Probe, bool Twin>
+void ForestBenchmark(benchmark::State& state, size_t peer) {
   const size_t n = state.range(0), offset = state.range(1);
-  const auto words = ForestStream(codec, n, offset);
-  using Cache = f256::Forest256Cache;
+  const auto words = ForestStream<Twin>(n, offset);
+  using Cache = std::conditional_t<Twin, twin::Cache, f256::Forest256Cache>;
   const size_t budget =
       Probe == ForestProbe::Cache ? state.range(2) * Cache::slot_bytes() : 0;
   Cache cache(words, budget);
@@ -710,13 +716,13 @@ void ForestBenchmark(benchmark::State& state, f256::Codec codec, size_t peer) {
       lookup(second * peer, offset + second * 2 * n, uint8_t((73 * i) % n));
     }
   };
-  Cache::Stats stats;
+  typename Cache::Stats stats;
   if constexpr (Probe == ForestProbe::Cache) {
     // Warm once and count one steady-state batch outside the timed path.
     for (int pass = 0; pass < 2; ++pass) {
       stats = {};
       replay([&](size_t unit, size_t bit, uint8_t u) {
-        cache.lookup_counted(unit, codec, bit, n, u, stats);
+        cache.lookup_counted(unit, bit, n, u, stats);
       });
     }
   }
@@ -724,14 +730,14 @@ void ForestBenchmark(benchmark::State& state, f256::Codec codec, size_t peer) {
     replay([&](size_t unit, size_t bit, uint8_t u) {
       f256::NodeInfo node;
       if constexpr (Probe == ForestProbe::Cache) {
-        node = cache.lookup(unit, codec, bit, n, u);
+        node = cache.lookup(unit, bit, n, u);
       } else {
         f256::LevelCsr256 csr;
-        if constexpr (Probe == ForestProbe::Scalar) {
-          f256::unpack_dense_scalar(codec, words, bit, n, csr);
-        } else {
-          f256::unpack_dense(codec, words, bit, n, csr);
-        }
+        constexpr auto decode =
+            Probe == ForestProbe::Scalar
+                ? (Twin ? twin::unpack_dense_scalar : f256::unpack_dense_scalar)
+                : (Twin ? twin::unpack_dense : f256::unpack_dense);
+        decode(words, bit, n, csr);
         node = {uint16_t(csr.root_count()), uint16_t(csr.offset_m1[u] + 1),
                 uint16_t(csr.degree(u)), csr.parent_of(u),
                 csr.is_last_child(u)};
@@ -757,17 +763,16 @@ void ForestBenchmark(benchmark::State& state, f256::Codec codec, size_t peer) {
 }
 
 const bool kForestRegistered = [] {
-  for (auto codec : {f256::Codec::louds, f256::Codec::twin}) {
+  auto register_codec = []<bool Twin>(const char* name) {
     for (size_t peer : {0, 1, 4}) {
-      const auto prefix = std::string("forest256/dense/") +
-                          (codec == f256::Codec::louds ? "louds/" : "twin/") +
+      const auto prefix = std::string("forest256/dense/") + name + "/" +
                           (peer == 0   ? "repeat/"
                            : peer == 1 ? "pair/"
                                        : "conflict/");
       auto add = [&]<ForestProbe Probe>(const char* suffix) {
         auto* row = benchmark::RegisterBenchmark(
             (prefix + suffix).c_str(), [=](benchmark::State& s) {
-              ForestBenchmark<Probe>(s, codec, peer);
+              ForestBenchmark<Probe, Twin>(s, peer);
             });
         if constexpr (Probe == ForestProbe::Cache) {
           row->ArgNames({"M", "offset", "K"});
@@ -790,7 +795,9 @@ const bool kForestRegistered = [] {
       add.template operator()<ForestProbe::Native>("native");
       add.template operator()<ForestProbe::Cache>("cache");
     }
-  }
+  };
+  register_codec.template operator()<false>("louds");
+  register_codec.template operator()<true>("twin");
   return true;
 }();
 

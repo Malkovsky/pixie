@@ -104,6 +104,29 @@ TEST(OrdinalForest256, EmptyAndInvalidExtents) {
   EXPECT_THROW({ Tree bad(edge); }, std::invalid_argument);
 }
 
+TEST(OrdinalForest256, InspectionKeepsPortalsInTheirOwnUnits) {
+  constexpr size_t fanout = 128;
+  std::vector<size_t> parents(1 + fanout, 0);
+  parents.insert(parents.end(), fanout, 1);
+  const Tree tree{Source(std::move(parents))};
+  const auto root = tree.root();
+  const auto portal = tree.first_child(root);
+  ASSERT_NE(root.unit, portal.unit);
+  EXPECT_EQ(tree.degree(root), fanout);
+  EXPECT_EQ(tree.degree(portal), fanout);
+
+  const auto root_part = tree.inspect_unit(root.unit);
+  EXPECT_TRUE(root_part.is_leaf(root.local));
+  EXPECT_FALSE(root_part.children_complete(root.local));
+
+  const auto child_part = tree.inspect_unit(portal.unit);
+  EXPECT_TRUE(child_part.is_leaf(portal.local));
+  EXPECT_FALSE(child_part.children_complete(portal.local));
+  const auto sibling = tree.next_sibling(portal);
+  ASSERT_EQ(sibling.unit, portal.unit);
+  EXPECT_TRUE(child_part.children_complete(sibling.local));
+}
+
 TEST(OrdinalForest256, ExhaustiveSmallOrderedTrees) {
   size_t shapes = 0;
   for (size_t n = 1; n <= 8; ++n) {
@@ -224,6 +247,32 @@ TEST(ForestCover, RejectedBindPreservesIndexedPathsAndCacheBudget) {
       EXPECT_EQ(visits, (std::vector<Node>{root, left, grandchild}));
       EXPECT_EQ(inspected, (std::vector<Node>{left, right, grandchild}));
     }
+  }
+}
+
+TEST(OrdinalForest256, InvalidPathChoicesPrecedeInspection) {
+  const Tree tree(Source({0, 0, 0, 1}));
+  const Tree other(Source({0}));
+  const Index index(tree), disabled(tree, 0);
+  EXPECT_THROW((void)Context(other, kSlot, &index), std::invalid_argument);
+  for (const Index* prefix :
+       {static_cast<const Index*>(nullptr), &disabled, &index}) {
+    Context reader(tree, kSlot, prefix);
+    std::vector<Node> visited;
+    const auto visit = [&](Node node) { visited.push_back(node); };
+    const auto inspect = [](Node) { ADD_FAILURE() << "inspected a child"; };
+    EXPECT_THROW(reader.inspect_path(visit, inspect,
+                                     [](size_t degree) { return degree; }),
+                 std::out_of_range);
+    EXPECT_EQ(visited, (std::vector<Node>{tree.root()}));
+
+    const auto leaf = tree.child(tree.root(), 1);
+    auto moved = std::move(reader);
+    std::vector<Node> path, scratch;
+    EXPECT_THROW(reader.tree_path(tree.root(), leaf, path, scratch),
+                 std::logic_error);
+    moved.tree_path(tree.root(), leaf, path, scratch);
+    EXPECT_EQ(path, (std::vector<Node>{tree.root(), leaf}));
   }
 }
 

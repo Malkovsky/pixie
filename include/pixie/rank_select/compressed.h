@@ -876,27 +876,17 @@ class RankSelectSupportCompressed
     if (total_local == valid) {
       return super * kSuperBits + target - 1;
     }
-    const std::size_t blocks = 1 + (valid - 1) / kBasicBits;
-    const auto packed_location =
-        detail::compressed::packed_prefix_search<Zero>(record, target, valid);
-
-    std::size_t basic;
-    std::uint64_t before;
-    std::uint64_t after;
-    if (packed_location) {
-      basic = packed_location->basic;
-      before = packed_location->before;
-      after = packed_location->after;
-    } else {
-      basic = (target - 1) * blocks / total_local;
+    const auto locate_scalar = [&] {
+      const std::size_t blocks = 1 + (valid - 1) / kBasicBits;
+      std::size_t basic = (target - 1) * blocks / total_local;
       const auto count_at = [&](std::size_t boundary) {
         const std::uint64_t ones = local_rank(record, boundary);
         return Zero ? std::min(boundary * kBasicBits, valid) - ones : ones;
       };
       // The estimate is only a starting point. Exact corrections also handle
       // arbitrary clustering and repeated local counts within this cache line.
-      before = count_at(basic);
-      after = before;
+      std::uint64_t before = count_at(basic);
+      std::uint64_t after = before;
       if (before >= target) {
         do {
           after = before;
@@ -909,7 +899,13 @@ class RankSelectSupportCompressed
           after = count_at(++basic + 1);
         }
       }
-    }
+      return detail::compressed::PackedPrefixLocation{
+          static_cast<std::uint32_t>(basic), static_cast<std::uint32_t>(before),
+          static_cast<std::uint32_t>(after)};
+    };
+    const auto [basic, before, after] =
+        detail::compressed::packed_prefix_search<Zero>(record, target, valid,
+                                                       locate_scalar);
     const std::size_t base = super * kSuperBits + basic * kBasicBits;
     return select_basic<Zero>(base, target - before, after - before);
   }

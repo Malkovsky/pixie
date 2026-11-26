@@ -1,14 +1,14 @@
 #include <benchmark/benchmark.h>
-#include <immintrin.h>
-#include <pixie/bits.h>
 
-#include <chrono>
+#if defined(__AVX512F__) || defined(__AVX__)
+#include <immintrin.h>
+
+#include <cstdint>
 #include <random>
-#include <vector>
 
 alignas(64) uint8_t data[(1 << 29) + 1];
 
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__)
 
 static void BM_Loadu512_aligned(benchmark::State& state) {
   size_t k = state.range(0);
@@ -241,4 +241,5 @@ BENCHMARK(BM_Storeu256_unaligned_crossing_64byte_border)
 
 BENCHMARK(BM_Store256_aligned)->ArgNames({"k"})->DenseRange(1, 23, 2);
 
+#endif
 #endif

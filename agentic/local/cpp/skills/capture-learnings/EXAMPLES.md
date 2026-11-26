@@ -73,7 +73,7 @@ Claim: Candidate X reduces query time for 128-bit excess minima on the tested
 AVX2 path and input distribution.
 
 Evidence: pinned Release benchmark comparison, differential tests against the
-scalar implementation, and a successful DISABLE_AVX512 build.
+scalar implementation, and a successful build and test with the avx2 preset.
 
 Scope: Pixie's AVX2 implementation for the measured workload; not a general
 claim about all CPUs or range distributions.

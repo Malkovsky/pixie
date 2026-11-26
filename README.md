@@ -63,6 +63,35 @@ const auto minimum = rmq.range_min(1, 6); // 1
 
 ## Tests and benchmarks
 
+Pixie's headers select kernels from the consuming target's compiler flags.
+Use the same ISA flags throughout a program that includes Pixie's headers.
+A plain core build honors your compiler or toolchain flags. On x86-64, this
+build targets the local CPU with BMI2 disabled.
+
+```bash
+cmake -S . -B build/local-no-bmi2 -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_FLAGS="-march=native -mno-bmi2"
+cmake --build build/local-no-bmi2
+ctest --test-dir build/local-no-bmi2 --output-on-failure
+```
+
+Core has matching configure, build, and test presets for four x86-64 profiles.
+
+| Preset | CPU flags |
+| --- | --- |
+| `sse2` | `-march=x86-64` |
+| `avx2` | `-march=x86-64 -mavx2` |
+| `x86-64-v3` | `-march=x86-64-v3` (includes AVX2 and BMI2) |
+| `avx512-full` | `-march=x86-64-v4 -mavx512vpopcntdq -mavx512bitalg -mavx512vbmi -mavx512vbmi2` |
+
+Use `-DPIXIE_CPU_PROFILE=<profile>` to pair a profile with a different build
+configuration. The benchmark presets select the `native` profile by default.
+Leave the profile empty in a custom configuration to choose the ISA flags
+yourself.
+
+The standard test presets run the routine suite. After building the
+`release` preset, use `ctest --preset heavy` to run the large stress cases.
+
 The native RmM implementation is `pixie::RmMBTree<HighCacheLines, LowFanout,
 RankSelect>`. It borrows immutable encoding words and owns its index metadata.
 The former `pixie::experimental::RmMBTree` namespace and legacy `RmMTree`

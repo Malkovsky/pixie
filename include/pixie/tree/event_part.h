@@ -1,36 +1,42 @@
 #pragma once
 
 #include <pixie/tree/bp.h>
+#include <pixie/tree/detail/indexed_tree_part.h>
 #include <pixie/tree/dfuds.h>
-#include <pixie/tree/tree_part.h>
+
+#include <optional>
+#include <utility>
+#include <vector>
 
 namespace pixie::tree {
 namespace detail {
 template <class Decoder, class Tree>
-std::optional<TreePart> inspect_decoded_events(const Tree& tree,
-                                               TreeNode root) {
+std::optional<IndexedTreePart<Tree, false>> inspect_decoded_events(
+    const Tree& tree,
+    TreeNode root) {
+  using Part = IndexedTreePart<Tree, false>;
   Decoder decoder;
   if (tree.empty() || !decoder.load(tree.encoding_words(),
                                     Decoder::bit_size(tree.size()), root)) {
     return std::nullopt;
   }
-  std::vector<TreePart::Node> nodes(decoder.size());
-  size_t parent = 0;
-  auto visit = [&](TreeNode n, bool entering) {
+  std::vector<typename Part::Record> rows;
+  rows.reserve(decoder.size());
+  std::vector<typename Part::Node> children;
+  children.reserve(decoder.size() - 1);
+  auto visit = [&](TreeNode node, bool entering) {
     if (entering) {
-      parent = n.number - root.number;
-      nodes[parent].source_id = n.number;
-      nodes[parent].bit_position = n.pos;
+      rows.emplace_back(node, children.size(), 0, true);
     }
   };
-  // All inspect callbacks immediately follow their parent's entry, before
-  // the first child is visited. No source navigation or stack is needed.
+  // The decoder emits each child list immediately after its parent's entry
+  // and before visiting its first child.
   auto inspect = [&](TreeNode child) {
-    const auto i = child.number - root.number;
-    nodes[parent].children.push_back(i);
+    children.push_back(child.number - root.number);
+    rows.back().append_child();
   };
   decoder.walk(visit, inspect);
-  return TreePart(std::move(nodes), 1);
+  return Part(tree, std::move(rows), std::move(children));
 }
 }  // namespace detail
 
@@ -42,8 +48,7 @@ std::optional<TreePart> inspect_decoded_events(const Tree& tree,
  * for n local nodes. The root's parent and siblings are outside the part.
  * Bits is a multiple of 128 in [128,32768]. */
 template <size_t Bits = 256, class Backend, detail::TreeEncodingStorage Storage>
-std::optional<TreePart> inspect_event_part(const BPTree<Backend, Storage>& tree,
-                                           TreeNode root) {
+auto inspect_event_part(const BPTree<Backend, Storage>& tree, TreeNode root) {
   return detail::inspect_decoded_events<detail::bp_micro::BpMicroSubtree<Bits>>(
       tree, root);
 }
@@ -53,9 +58,8 @@ std::optional<TreePart> inspect_event_part(const BPTree<Backend, Storage>& tree,
  * just after the final descendant's zero delimiter (2*n-1 bits for n nodes).
  * Neither word padding nor any following sibling record belongs to the part. */
 template <size_t Bits = 256, class Backend, detail::TreeEncodingStorage Storage>
-std::optional<TreePart> inspect_event_part(
-    const DFUDSTree<Backend, Storage>& tree,
-    TreeNode root) {
+auto inspect_event_part(const DFUDSTree<Backend, Storage>& tree,
+                        TreeNode root) {
   return detail::inspect_decoded_events<
       detail::dfuds_micro::DfudsMicroSubtree<Bits>>(tree, root);
 }

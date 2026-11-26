@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <tuple>
 
-namespace pixie::tree::detail::tree_traversal {
+namespace pixie::benchmarks::detail {
 template <size_t Bits>
 struct ParenthesisProfile {
   static constexpr size_t bits = Bits;
@@ -35,4 +35,4 @@ using LoudsProfiles = ProfileList<LoudsProfile<128, 32>,
                                   LoudsProfile<32, 16>,
                                   LoudsProfile<16, 8>,
                                   LoudsProfile<8, 8>>;
-}  // namespace pixie::tree::detail::tree_traversal
+}  // namespace pixie::benchmarks::detail

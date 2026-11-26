@@ -250,9 +250,9 @@ The low-level primitives own feature dispatch:
   bounded head/tail stores for short ranges.
 - Relative-event expansion has both AVX-512 and AVX2 implementations.
 
-Each primitive retains a scalar fallback. Selection is at compile time;
-`DISABLE_AVX512=ON` retains AVX2 when the compiler target supports it. SIMD
-accelerates decoding; it does not batch or omit callbacks.
+Each primitive retains a scalar fallback. Selection follows the compiler
+target. The `avx2` and `x86-64-v3` presets exercise the AVX2 decode paths.
+SIMD accelerates decoding and preserves the callback sequence.
 
 ## Bounded path index
 

@@ -148,7 +148,7 @@ inline constexpr std::array<int8_t, 16> kNibbleMin = [] {
  */
 [[gnu::always_inline]] inline uint32_t bp_pair_zero_mask_64(
     uint64_t bits) noexcept {
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   const __m128i raw = _mm_cvtsi64_si128(static_cast<long long>(bits));
   const __m256i z = _mm256_cvtepu8_epi32(raw);
   const __m256i a = _mm256_or_si256(z, _mm256_slli_epi32(z, 12));
@@ -207,7 +207,7 @@ inline constexpr std::array<int8_t, 16> kNibbleMin = [] {
     return 0;
   }
 
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512BW__)
   const __m128i raw = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s));
   const __m512i z = _mm512_cvtepu8_epi32(raw);
   const __m512i a = _mm512_or_si512(z, _mm512_slli_epi32(z, 12));
@@ -233,7 +233,7 @@ inline constexpr std::array<int8_t, 16> kNibbleMin = [] {
   const __m512i target =
       _mm512_set1_epi8(static_cast<int8_t>(-initial_half_excess));
   return static_cast<uint64_t>(_mm512_cmpeq_epi8_mask(ps, target));
-#elif defined(PIXIE_AVX2_SUPPORT)
+#elif defined(__AVX2__)
   const __m256i lut_hd =
       _mm256_setr_epi8(-1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, 0,
                        0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
@@ -308,7 +308,7 @@ inline constexpr std::array<int8_t, 16> kNibbleMin = [] {
     return false;
   }
 
-#ifdef PIXIE_AVX512_SUPPORT
+#if defined(__AVX512F__) && defined(__AVX512BW__)
   const __m128i raw = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s));
   const __m512i z = _mm512_cvtepu8_epi32(raw);
   const __m512i a = _mm512_or_si512(z, _mm512_slli_epi32(z, 12));
@@ -346,10 +346,10 @@ inline constexpr std::array<int8_t, 16> kNibbleMin = [] {
   }
   child_ends_mask = eq0;
   return false;
-#elif defined(PIXIE_AVX2_SUPPORT)
+#elif defined(__AVX2__)
   const uint64_t eq0 = bp_pair_zero_mask_128(s, initial_half_excess, nullptr);
   uint64_t s_even = 0;
-#ifdef PIXIE_BMI2_SUPPORT
+#ifdef __BMI2__
   s_even = _pext_u64(s[0], 0x5555555555555555ULL) |
            (_pext_u64(s[1], 0x5555555555555555ULL) << 32);
 #else
@@ -409,7 +409,7 @@ inline constexpr std::array<int8_t, 16> kNibbleMin = [] {
  */
 [[gnu::always_inline]] inline uint64_t dfuds_record_lows_64(
     uint64_t bits) noexcept {
-#ifdef PIXIE_SSE41_SUPPORT
+#if defined(__SSSE3__) && defined(__SSE4_1__)
   const __m128i raw = _mm_cvtsi64_si128(static_cast<long long>(bits));
   const __m128i mask0f = _mm_set1_epi8(0x0F);
   const __m128i lo_nib = _mm_and_si128(raw, mask0f);
@@ -492,7 +492,7 @@ inline constexpr std::array<int8_t, 16> kNibbleMin = [] {
     return {0, 0};
   }
 
-#ifdef PIXIE_AVX2_SUPPORT
+#ifdef __AVX2__
   const __m128i raw = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s));
   const __m256i mask0f = _mm256_set1_epi8(0x0F);
   const __m128i lo_raw = _mm_unpacklo_epi64(raw, raw);

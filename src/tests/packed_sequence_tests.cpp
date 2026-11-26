@@ -223,19 +223,39 @@ using TaggedTrees =
 TYPED_TEST_SUITE(TaggedTreeSpec, TaggedTrees);
 
 template <class Tree>
-Tree make_tagged(std::size_t n) {
+Tree make_tagged(std::size_t n, bool intersperse_empty_blocks = false) {
   using Block = typename Tree::block_type;
+  const auto count = n / Block::capacity + (n % Block::capacity != 0);
+  const auto input_count = intersperse_empty_blocks ? 2 * count + 3 : count;
   auto blocks =
-      std::views::iota(std::size_t{0},
-                       n / Block::capacity + (n % Block::capacity != 0)) |
-      std::views::transform([n](std::size_t index) {
+      std::views::iota(std::size_t{0}, input_count) |
+      std::views::transform([=](std::size_t index) {
+        if (intersperse_empty_blocks) {
+          if (index % 2 == 0 || index / 2 >= count) {
+            return Block{};
+          }
+          index /= 2;
+        }
         std::array<std::uint64_t, Block::capacity> fields;
         const auto start = index * Block::capacity;
-        const auto count = std::min(Block::capacity, n - start);
+        const auto length = std::min(Block::capacity, n - start);
         std::iota(fields.begin(), fields.end(), start);
-        return Block(std::span<const std::uint64_t>(fields.data(), count));
+        return Block(std::span<const std::uint64_t>(fields.data(), length));
       });
   return Tree::from_blocks(blocks);
+}
+
+TYPED_TEST(TaggedTreeSpec, StreamingConstructionSkipsEmptyBlocks) {
+  using Tree = TypeParam;
+  constexpr auto capacity = Tree::block_capacity;
+  for (std::size_t n : {std::size_t{0}, capacity - 1, capacity, capacity + 1}) {
+    SCOPED_TRACE(n);
+    const auto tree = make_tagged<Tree>(n, true);
+    std::vector<std::uint64_t> expected(n);
+    std::iota(expected.begin(), expected.end(), 0);
+    EXPECT_EQ(contents(tree), expected);
+    EXPECT_TRUE(tree.test_validate());
+  }
 }
 
 TYPED_TEST(TaggedTreeSpec, FullWidthBiasConstReadsNestedSplitsAndRejoins) {

@@ -2,6 +2,8 @@
 
 #include <pixie/rank_select/detail/compressed/packed_prefix_search.h>
 
+#include <optional>
+
 namespace pixie::experimental {
 
 // Four 14-bit values occupy seven bytes. Gather each group into a 64-bit
@@ -26,7 +28,7 @@ inline std::optional<detail::compressed::PackedPrefixLocation>
 packed_prefix_search_multishift(const std::uint64_t* record,
                                 std::uint64_t target,
                                 std::size_t valid_bits) {
-#if defined(PIXIE_AVX512_SUPPORT) && defined(__AVX512VBMI__)
+#if defined(__AVX512BW__) && defined(__AVX512VBMI__)
   const auto packed = _mm512_loadu_si512(record);
   const auto groups = _mm512_permutexvar_epi8(
       _mm512_load_si512(kPrefixGroupBytes.data()), packed);

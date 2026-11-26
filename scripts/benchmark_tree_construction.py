@@ -12,6 +12,7 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--binary', type=Path, required=True)
+parser.add_argument('--compiler-flags', help='Record the flags used to build the probe')
 parser.add_argument('--output-dir', type=Path, required=True)
 parser.add_argument('--exponents', type=int, nargs='+', default=[20,22,24,26])
 parser.add_argument('--resume', action='store_true')
@@ -48,8 +49,11 @@ for exponent in args.exponents:
 random.Random(43).shuffle(jobs)
 manifest_jobs = list(dict.fromkeys(tuple(j) for j in
                                  (previous['jobs'] if previous else []) + jobs))
+compiler_flags = args.compiler_flags
+if compiler_flags is None and previous:
+    compiler_flags = previous.get('compiler_flags')
 (root / "manifest.json").write_text(json.dumps({
-    "jobs": manifest_jobs, "cpu": 0, "seed": 42, "compiler_flags": "-O3 -DNDEBUG -march=native -std=c++20",
+    "jobs": manifest_jobs, "cpu": 0, "seed": 42, "compiler_flags": compiler_flags,
     "binary_sha256": digest, "construction_mode": args.construction_mode,
     "clock": "steady_clock elapsed", "repetitions": 3,
 }, indent=2))

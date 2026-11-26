@@ -31,6 +31,7 @@
 #include <optional>
 #include <queue>
 #include <random>
+#include <span>
 #include <stack>
 #include <stdexcept>
 #include <tuple>
@@ -712,21 +713,34 @@ TYPED_TEST(BoundedTraversalTest, FetchMatchesSubtreeBitPrefixes) {
         auto part = context.fetch(handle, bits);
         const size_t count = std::count_if(
             ids.begin(), ids.end(), [&](auto id) { return start[id] < bits; });
-        ASSERT_EQ(part.nodes().size(), count);
+        ASSERT_EQ(part.size(), count);
         ASSERT_EQ(part.root_count(), count ? 1u : 0u);
-        for (size_t i = 0; i < count; ++i) {
+        for (const auto node : part.nodes()) {
+          const auto i = part.number(node);
           const auto id = ids[i];
-          const auto& row = part.nodes()[i];
-          EXPECT_EQ(row.source_id, id);
-          EXPECT_EQ(row.bit_position, tree.find_by_number(id).pos);
+          EXPECT_EQ(part.find_by_number(i), node);
+          EXPECT_EQ(part.source_node(node), tree.find_by_number(id));
           std::vector<size_t> expected;
           for (auto c : children(id)) {
             if (start[c] < bits) {
               expected.push_back(local[c]);
             }
           }
-          EXPECT_EQ(row.children, expected);
-          EXPECT_EQ(row.children_complete,
+          std::vector<size_t> represented;
+          part.for_each_child(node, [&](size_t child) {
+            EXPECT_EQ(part.parent(child), node);
+            represented.push_back(child);
+          });
+          EXPECT_EQ(represented, expected);
+          for (size_t j = 0; j < represented.size(); ++j) {
+            const auto child = represented[j];
+            const bool last = j + 1 == represented.size();
+            EXPECT_EQ(part.is_last_child(child), last);
+            if (!last) {
+              EXPECT_EQ(part.next_sibling(child), represented[j + 1]);
+            }
+          }
+          EXPECT_EQ(part.children_complete(node),
                     end[id] <= bits && expected.size() == children(id).size());
         }
       }
@@ -754,8 +768,7 @@ TYPED_TEST(BoundedTraversalTest, FetchMatchesSubtreeBitPrefixes) {
 
 TYPED_TEST(BoundedTraversalTest, FetchOwnsOutputAndBoundsMemory) {
   using Tree = typename TypeParam::Tree;
-  using Part = pixie::tree::TreePart;
-  const Part detached = [] {
+  const auto detached = [] {
     std::mt19937_64 rng(91);
     const auto adjacency =
         TypeParam::order(128, generate_random_tree(128, rng));
@@ -765,24 +778,43 @@ TYPED_TEST(BoundedTraversalTest, FetchOwnsOutputAndBoundsMemory) {
     constexpr size_t limit = 1024;
     pixie::tree::TreeTraversalContext context(tree, limit);
     auto part = context.fetch(tree.root(), 256);
-    static_assert(std::same_as<decltype(part), Part>);
     EXPECT_FALSE(part.empty());
-    EXPECT_LT(part.nodes().size(), 128u);
-    size_t bytes = sizeof(Part) + part.nodes().capacity() * sizeof(Part::Node);
-    for (const auto& row : part.nodes()) {
-      bytes += row.children.capacity() * sizeof(size_t);
-    }
-    EXPECT_EQ(context.memory_usage_bytes(), sizeof(context) +
-                                                context.scratch_bytes() +
-                                                context.scan_scratch_bytes());
-    EXPECT_LE(bytes + context.memory_usage_bytes(), limit);
+    EXPECT_LT(part.size(), 128u);
+    EXPECT_EQ(&part.source_tree(), &tree);
+    EXPECT_EQ(context.memory_usage_bytes(),
+              sizeof(context) + context.scan_scratch_bytes());
+    EXPECT_LE(part.memory_usage_bytes() + context.memory_usage_bytes(), limit);
     (void)context.fetch(tree.child(tree.root(), 0), 1);
     return part;
   }();
   ASSERT_FALSE(detached.empty());
-  EXPECT_EQ(detached.nodes().front().source_id, 0u);
-  ASSERT_FALSE(detached.nodes().front().children.empty());
-  EXPECT_EQ(detached.nodes().front().children.front(), 1u);
+  EXPECT_EQ(detached.source_node(detached.root()).number, 0u);
+  ASSERT_FALSE(detached.is_leaf(detached.root()));
+  EXPECT_EQ(detached.first_child(detached.root()), 1u);
+}
+
+TYPED_TEST(BoundedTraversalTest, FetchBudgetIsMonotoneAcross4KiB) {
+  using Tree = typename TypeParam::Tree;
+  constexpr size_t n = 256;
+  std::vector<std::vector<size_t>> chain(n);
+  chain[0].push_back(0);
+  for (size_t i = 1; i < n; ++i) {
+    chain[i - 1].push_back(i);
+    chain[i].push_back(i - 1);
+  }
+  const Tree tree(TypeParam::encode(n, TypeParam::order(n, chain)), n);
+  size_t previous = 0;
+  // Include the former admission threshold, which also charged context bytes.
+  for (size_t budget = 4096 - 128; budget <= 4096 + 128; ++budget) {
+    SCOPED_TRACE(budget);
+    pixie::tree::TreeTraversalContext context(tree, budget);
+    const auto part = context.fetch(tree.root(), TypeParam::bit_size(n));
+    ASSERT_FALSE(part.empty());
+    EXPECT_GE(part.size(), previous);
+    EXPECT_LE(context.memory_usage_bytes() + part.memory_usage_bytes(), budget);
+    previous = part.size();
+  }
+  EXPECT_LT(previous, n);
 }
 
 TYPED_TEST(BoundedTraversalTest, IndexRejectsEmptyTrees) {
@@ -807,6 +839,14 @@ TYPED_TEST(BoundedTraversalTest, CursorContractsAcrossAdmissionBoundaries) {
   const auto adjacency = TypeParam::order(source.size(), source);
   const auto words = TypeParam::encode(source.size(), adjacency);
   const Tree tree(words, source.size());
+  typename Index::Cursor uncached(tree);
+  const auto root = tree.root();
+  const auto first = tree.first_child(root);
+  uncached.reset(first);
+  EXPECT_EQ(uncached.node(), first);
+  EXPECT_EQ(uncached.parent(), root);
+  uncached.reset(root);
+  EXPECT_EQ(uncached.first_child(), first);
   for (size_t budget : {size_t{0}, sizeof(Index), sizeof(Index) + 1,
                         sizeof(Index) + 32, size_t{32768}}) {
     SCOPED_TRACE(budget);
@@ -814,6 +854,11 @@ TYPED_TEST(BoundedTraversalTest, CursorContractsAcrossAdmissionBoundaries) {
     EXPECT_LE(index.budget_usage_bytes(), budget);
     auto copied_index = index;
     auto moved_index = std::move(copied_index);
+    auto reset = moved_index.cursor();
+    reset.reset(first);
+    EXPECT_EQ(reset.degree(), tree.degree(first));
+    reset.reset(root);
+    EXPECT_EQ(reset.degree(), tree.degree(root));
     std::vector<typename Index::Cursor> pending{moved_index.cursor()};
     size_t visited = 0;
     while (!pending.empty()) {
@@ -890,11 +935,12 @@ TEST(TreeUnpackingTest, WordReaderZeroExtendsUnalignedSourceTails) {
   }
 }
 
-TYPED_TEST(BoundedTraversalTest, AllWorkloadsShareBudgetAndExactEvents) {
-  using Tree = typename TypeParam::Tree;
+template <class Case>
+void CheckBoundedTraversalWorkloads(size_t large_size, size_t trials) {
+  using Tree = typename Case::Tree;
   std::mt19937_64 rng(812);
   for (size_t scenario = 0; scenario < 7; ++scenario) {
-    const size_t n = scenario == 0 ? 1 : scenario == 1 ? 130 : 10001;
+    const size_t n = scenario == 0 ? 1 : scenario == 1 ? 130 : large_size;
     auto source = generate_random_tree(n, rng);
     if (scenario >= 3) {
       source.assign(n, {});
@@ -915,19 +961,19 @@ TYPED_TEST(BoundedTraversalTest, AllWorkloadsShareBudgetAndExactEvents) {
         std::reverse(edges.begin() + 1, edges.end());
       }
     }
-    const auto adjacency = TypeParam::order(n, source);
-    const auto words = TypeParam::encode(n, adjacency);
+    const auto adjacency = Case::order(n, source);
+    const auto words = Case::encode(n, adjacency);
     for (size_t budget :
          {size_t(0), size_t(64), size_t(4096), size_t(8192), size_t(16384),
           size_t(32767), size_t(32768), size_t(32769), size_t(65536),
           size_t(81920), size_t(196608), size_t(524288)}) {
       Tree tree(words, n);
-      pixie::tree::TreeTraversalContext cache(tree, budget);
-      pixie::benchmarks::TreeTraversalWorkloads workload(cache);
-      EXPECT_LE(cache.budget_usage_bytes(), budget);
+      pixie::tree::TreeTraversalContext context(tree, 0);
+      pixie::benchmarks::TreeTraversalWorkloads workload(tree, budget);
+      EXPECT_LE(workload.reserved_bytes(), budget);
       if (budget >= 32768) {
-        EXPECT_TRUE(cache.streaming_enabled());
-        EXPECT_TRUE(cache.optimized_inspection_enabled());
+        EXPECT_TRUE(workload.streaming_enabled());
+        EXPECT_TRUE(workload.optimized_inspection_enabled());
       }
       std::vector<std::pair<size_t, size_t>> expected, actual;
       auto collect = [&](auto node) {
@@ -952,8 +998,8 @@ TYPED_TEST(BoundedTraversalTest, AllWorkloadsShareBudgetAndExactEvents) {
       EXPECT_EQ(work.first, n);
       EXPECT_EQ(work.second, n - 1);
       EXPECT_EQ(actual, expected);
-      for (size_t trial = 0; trial < 32; ++trial) {
-        auto cursor = cache.cursor();
+      for (size_t trial = 0; trial < trials; ++trial) {
+        auto cursor = context.cursor();
         auto node = tree.root();
         while (!tree.is_leaf(node)) {
           ASSERT_EQ(cursor.node().number, node.number);
@@ -977,6 +1023,14 @@ TYPED_TEST(BoundedTraversalTest, AllWorkloadsShareBudgetAndExactEvents) {
       }
     }
   }
+}
+
+TYPED_TEST(BoundedTraversalTest, AllWorkloadsShareBudgetAndExactEvents) {
+  CheckBoundedTraversalWorkloads<TypeParam>(1025, 2);
+}
+
+TYPED_TEST(BoundedTraversalTest, HeavyAllWorkloadsShareBudgetAndExactEvents) {
+  CheckBoundedTraversalWorkloads<TypeParam>(10001, 32);
 }
 
 TYPED_TEST(TreeSpecificationTest,
@@ -3113,7 +3167,7 @@ using SimdTestEvent = std::tuple<size_t, size_t, int>;
 template <class Tree>
 std::vector<SimdTestEvent> CollectExpectedSimdEvents(
     const Tree& tree,
-    pixie::tree::TreeNode root = {0, 0}) {
+    pixie::tree::TreeNode root) {
   std::vector<SimdTestEvent> expected;
   if (tree.empty()) {
     return expected;
@@ -3145,11 +3199,15 @@ std::vector<SimdTestEvent> CollectExpectedSimdEvents(
   return expected;
 }
 
-template <size_t MaxSimdBits, class Tree>
-void CheckBpSimdAgainstExpected(const Tree& tree,
-                                const std::vector<uint64_t>& words,
-                                const std::vector<SimdTestEvent>& expected,
-                                size_t max_depth = 128) {
+template <template <size_t, class, class, class> class Walk,
+          size_t MaxSimdBits,
+          class Tree>
+void CheckSimdWalk(const Tree& tree,
+                   const std::vector<uint64_t>& words,
+                   pixie::tree::TreeNode root,
+                   size_t nodes,
+                   size_t max_depth = 128) {
+  const auto expected = CollectExpectedSimdEvents(tree, root);
   std::vector<SimdTestEvent> actual;
   auto act_visit = [&, token = std::make_unique<int>(1)](
                        pixie::tree::TreeNode node, bool entering) {
@@ -3158,16 +3216,14 @@ void CheckBpSimdAgainstExpected(const Tree& tree,
   auto act_inspect = [&](pixie::tree::TreeNode node) {
     actual.emplace_back(node.number, node.pos, 2);
   };
-  pixie::tree::experimental::BpSimdMicroTraversal<
-      MaxSimdBits, Tree, decltype(act_visit), decltype(act_inspect)>
-      simd(tree, words, act_visit, act_inspect, max_depth);
-  const size_t n = tree.size();
-  simd.walk(n > 0 ? tree.root() : pixie::tree::TreeNode(0, 0));
-  ASSERT_EQ(simd.nodes, n);
-  ASSERT_EQ(simd.children, n > 0 ? n - 1 : 0u);
+  Walk<MaxSimdBits, Tree, decltype(act_visit), decltype(act_inspect)> simd(
+      tree, words, act_visit, act_inspect, max_depth);
+  simd.walk(root);
+  ASSERT_EQ(simd.nodes, nodes);
+  ASSERT_EQ(simd.children, nodes > 0 ? nodes - 1 : 0u);
   ASSERT_EQ(actual, expected)
-      << "BP mismatch for n=" << n << " MaxSimdBits=" << MaxSimdBits
-      << " max_depth=" << max_depth;
+      << "subtree nodes=" << nodes << " root=" << root.number
+      << " MaxSimdBits=" << MaxSimdBits << " max_depth=" << max_depth;
 }
 
 template <size_t MaxSimdBits>
@@ -3176,33 +3232,9 @@ void CheckBpSimdEquivalence(const std::vector<uint64_t>& words,
                             size_t max_depth = 128) {
   using Tree = pixie::tree::BPTree<pixie::RmMBTree<>>;
   Tree tree(words, n);
-  const auto expected = CollectExpectedSimdEvents(tree);
-  CheckBpSimdAgainstExpected<MaxSimdBits>(tree, words, expected, max_depth);
-}
-
-template <size_t MaxSimdBits, class Tree>
-void CheckDfudsSimdAgainstExpected(const Tree& tree,
-                                   const std::vector<uint64_t>& words,
-                                   const std::vector<SimdTestEvent>& expected,
-                                   size_t max_depth = 128) {
-  std::vector<SimdTestEvent> actual;
-  auto act_visit = [&, token = std::make_unique<int>(1)](
-                       pixie::tree::TreeNode node, bool entering) {
-    actual.emplace_back(node.number, node.pos, entering ? 1 : 0);
-  };
-  auto act_inspect = [&](pixie::tree::TreeNode node) {
-    actual.emplace_back(node.number, node.pos, 2);
-  };
-  pixie::tree::experimental::DfudsSimdMicroTraversal<
-      MaxSimdBits, Tree, decltype(act_visit), decltype(act_inspect)>
-      simd(tree, words, act_visit, act_inspect, max_depth);
-  const size_t n = tree.size();
-  simd.walk(n > 0 ? tree.root() : pixie::tree::TreeNode(0, 0));
-  ASSERT_EQ(simd.nodes, n);
-  ASSERT_EQ(simd.children, n > 0 ? n - 1 : 0u);
-  ASSERT_EQ(actual, expected)
-      << "DFUDS mismatch for n=" << n << " MaxSimdBits=" << MaxSimdBits
-      << " max_depth=" << max_depth;
+  const auto root = n ? tree.root() : pixie::tree::TreeNode(0, 0);
+  CheckSimdWalk<pixie::tree::experimental::BpSimdMicroTraversal, MaxSimdBits>(
+      tree, words, root, n, max_depth);
 }
 
 template <size_t MaxSimdBits>
@@ -3211,8 +3243,9 @@ void CheckDfudsSimdEquivalence(const std::vector<uint64_t>& words,
                                size_t max_depth = 128) {
   using Tree = pixie::tree::DFUDSTree<pixie::RmMBTree<>>;
   Tree tree(words, n);
-  const auto expected = CollectExpectedSimdEvents(tree);
-  CheckDfudsSimdAgainstExpected<MaxSimdBits>(tree, words, expected, max_depth);
+  const auto root = n ? tree.root() : pixie::tree::TreeNode(0, 0);
+  CheckSimdWalk<pixie::tree::experimental::DfudsSimdMicroTraversal,
+                MaxSimdBits>(tree, words, root, n, max_depth);
 }
 
 }  // namespace
@@ -3342,8 +3375,12 @@ TEST(TreeSimdMicroPrimitivesTest, LoadsZeroExtendAcrossSpanEnd) {
 }
 
 TEST(TreeSimdMicroTraversalTest, ExhaustiveAndBoundaryEquivalence) {
+  CheckBpSimdEquivalence<128>({}, 0);
   CheckBpSimdEquivalence<512>({}, 0);
+  CheckBpSimdEquivalence<1024>({}, 0);
+  CheckDfudsSimdEquivalence<128>({}, 0);
   CheckDfudsSimdEquivalence<512>({}, 0);
+  CheckDfudsSimdEquivalence<1024>({}, 0);
 
   // Exhaustive small shapes from 8192-entry microtree tables
   for (unsigned key = 0; key < 8192; ++key) {
@@ -3411,42 +3448,46 @@ TEST(TreeSimdMicroTraversalTest, ExhaustiveAndBoundaryEquivalence) {
 }
 
 TEST(TreeSimdMicroTraversalTest, NonrootMixedFanoutAcrossChildBuffer) {
-  // An 80-child internal node with non-leaf children forces the overflow walk
-  // rather than the all-leaf star shortcut. Its sibling bounds the subtree.
-  std::vector<std::vector<size_t>> adj{{0, 1, 2}, {0}, {0}};
-  for (size_t j = 0; j < 80; ++j) {
-    const size_t child = adj.size();
-    adj[1].push_back(child);
-    adj.push_back({1, child + 1});
-    adj.push_back({child});
-  }
-  adj = dfs_order(adj.size(), adj);
-  auto check = [&]<template <size_t, class, class, class> class Walk>(
-                   const auto& tree, const auto& words) {
-    for (auto root :
-         {tree.first_child(tree.root()), tree.child(tree.root(), 1)}) {
-      const auto expected = CollectExpectedSimdEvents(tree, root);
-      std::vector<SimdTestEvent> events;
-      auto visit = [&](auto n, bool entering) {
-        events.emplace_back(n.number, n.pos, entering);
-      };
-      auto inspect = [&](auto n) { events.emplace_back(n.number, n.pos, 2); };
-      Walk<128, std::decay_t<decltype(tree)>, decltype(visit),
-           decltype(inspect)>
-          walk(tree, words, visit, inspect, 128);
-      walk.walk(root);
-      EXPECT_EQ(events, expected);
-      EXPECT_EQ(walk.nodes, tree.is_leaf(root) ? 1u : 161u);
-      EXPECT_EQ(walk.children + 1, walk.nodes);
-    }
-  };
   using namespace pixie::tree;
-  auto bp = EncodeReference<detail::TreeEncodingKind::kBP>(adj.size(), adj);
-  check.template operator()<experimental::BpSimdMicroTraversal>(
-      BPTree<pixie::RmMBTree<>>(bp, adj.size()), bp);
-  auto df = EncodeReference<detail::TreeEncodingKind::kDFUDS>(adj.size(), adj);
-  check.template operator()<experimental::DfudsSimdMicroTraversal>(
-      DFUDSTree<pixie::RmMBTree<>>(df, adj.size()), df);
+  // Each child is a chain so the subtree exceeds even the 1,024-bit SIMD
+  // window. Vary the number of children around the inline buffer limit.
+  constexpr size_t chain_size = 19;
+  for (size_t degree : {31u, 32u, 33u, 80u}) {
+    SCOPED_TRACE(degree);
+    std::vector<std::vector<size_t>> adj{{0, 1, 2}, {0}, {0}};
+    for (size_t j = 0; j < degree; ++j) {
+      size_t parent = 1;
+      for (size_t i = 0; i < chain_size; ++i) {
+        const auto child = adj.size();
+        adj[parent].push_back(child);
+        adj.push_back({parent});
+        parent = child;
+      }
+    }
+    adj = dfs_order(adj.size(), adj);
+    auto check = [&]<template <size_t, class, class, class> class Walk>(
+                     const auto& tree, const auto& words) {
+      const auto inner = tree.first_child(tree.root());
+      const auto leaf = tree.child(tree.root(), 1);
+      const size_t inner_nodes = 1 + degree * chain_size;
+      for (size_t depth_limit : {0u, 128u}) {
+        CheckSimdWalk<Walk, 128>(tree, words, inner, inner_nodes, depth_limit);
+        CheckSimdWalk<Walk, 512>(tree, words, inner, inner_nodes, depth_limit);
+        CheckSimdWalk<Walk, 1024>(tree, words, inner, inner_nodes, depth_limit);
+      }
+      CheckSimdWalk<Walk, 128>(tree, words, leaf, 1);
+      CheckSimdWalk<Walk, 512>(tree, words, leaf, 1);
+      CheckSimdWalk<Walk, 1024>(tree, words, leaf, 1);
+    };
+    const auto bp =
+        EncodeReference<detail::TreeEncodingKind::kBP>(adj.size(), adj);
+    check.template operator()<experimental::BpSimdMicroTraversal>(
+        BPTree<pixie::RmMBTree<>>(bp, adj.size()), bp);
+    const auto df =
+        EncodeReference<detail::TreeEncodingKind::kDFUDS>(adj.size(), adj);
+    check.template operator()<experimental::DfudsSimdMicroTraversal>(
+        DFUDSTree<pixie::RmMBTree<>>(df, adj.size()), df);
+  }
 }
 
 namespace {
@@ -3458,9 +3499,13 @@ struct DecompositionSource {
   std::vector<std::vector<size_t>> children;
   std::vector<size_t> parents;
   std::vector<size_t> next;
+  size_t reported_size;
 
   explicit DecompositionSource(const std::vector<size_t>& parent)
-      : children(parent.size()), parents(parent), next(parent.size()) {
+      : children(parent.size()),
+        parents(parent),
+        next(parent.size()),
+        reported_size(parent.size()) {
     for (size_t v = 1; v < parent.size(); ++v) {
       auto& siblings = children[parent[v]];
       if (!siblings.empty()) {
@@ -3469,7 +3514,7 @@ struct DecompositionSource {
       siblings.push_back(v);
     }
   }
-  size_t size() const { return children.size(); }
+  size_t size() const { return reported_size; }
   size_t root() const { return 0; }
   size_t degree(size_t v) const { return children[v].size(); }
   size_t first_child(size_t v) const { return children[v].front(); }
@@ -3760,7 +3805,7 @@ TYPED_TEST(DecomposedTreeTest, OwningCopiesSurviveSourceAndOriginal) {
   EXPECT_EQ(edges, moved.size() - 1);
 }
 
-TEST(DecomposedTreeLargeTest, DeepAndWideWithoutRecursiveStack) {
+TEST(DecomposedTreeLargeTest, HeavyDeepAndWideWithoutRecursiveStack) {
   for (size_t n : {size_t{65535}, size_t{65536}, size_t{65537}}) {
     for (int shape : {1, 2}) {
       SCOPED_TRACE(::testing::Message() << "n=" << n << " shape=" << shape);
@@ -3862,14 +3907,11 @@ TEST(DecomposedTreePrimitiveTest, FullBottomGroupsAndWideRoutingBases) {
 }
 
 TYPED_TEST(DecomposedTreeTest, RejectsInconsistentSourceSize) {
-  struct Source : DecompositionSource {
-    using DecompositionSource::DecompositionSource;
-    size_t reported = 1;
-    size_t size() const { return reported; }
-  } source({0, 0});
-  EXPECT_THROW((TypeParam{source}), std::invalid_argument);
-  source.reported = 3;
-  EXPECT_THROW((TypeParam{source}), std::invalid_argument);
+  DecompositionSource source({0, 0});
+  for (size_t size : {1u, 3u}) {
+    source.reported_size = size;
+    EXPECT_THROW((TypeParam{source}), std::invalid_argument);
+  }
 }
 
 TYPED_TEST(DecomposedTreeTest, MissingSiblingLeavesViewUsable) {
@@ -4241,9 +4283,10 @@ void CheckLayeredTree(const LayeredTree& tree,
   CheckLayeredNavigation(tree, oracle);
 }
 
-TEST(LayeredDFUDSTest, ExhaustiveSmallOrderedShapes) {
+static void CheckLayeredOrderedShapes(size_t max_nodes,
+                                      size_t expected_shapes) {
   size_t shapes = 0;
-  for (size_t n = 1; n <= 8; ++n) {
+  for (size_t n = 1; n <= max_nodes; ++n) {
     for (uint64_t bits = 1; bits < (uint64_t{1} << (2 * n)); bits += 2) {
       std::vector<size_t> parents, pending;
       bool valid = true;
@@ -4290,12 +4333,20 @@ TEST(LayeredDFUDSTest, ExhaustiveSmallOrderedShapes) {
       }
     }
   }
-  EXPECT_EQ(shapes, 626);
+  EXPECT_EQ(shapes, expected_shapes);
 }
 
-TEST(LayeredDFUDSTest, ShapeBoundariesAndNonPreorderSources) {
-  for (size_t n : {1, 2, 3, 31, 32, 33, 63, 64, 65, 127, 128, 129, 255, 256,
-                   257, 511, 1025}) {
+TEST(LayeredDFUDSTest, ExhaustiveSmallOrderedShapes) {
+  CheckLayeredOrderedShapes(6, 65);
+}
+
+TEST(LayeredDFUDSTest, HeavyExhaustiveSmallOrderedShapes) {
+  CheckLayeredOrderedShapes(8, 626);
+}
+
+static void CheckLayeredShapeBoundaries(std::span<const size_t> sizes,
+                                        size_t seeds) {
+  for (const size_t n : sizes) {
     for (int shape = 0; shape < 6; ++shape) {
       const auto parents = DecompositionParents(n, shape, 313 + n);
       for (size_t height : {1, 3, 8}) {
@@ -4310,11 +4361,22 @@ TEST(LayeredDFUDSTest, ShapeBoundariesAndNonPreorderSources) {
       }
     }
   }
-  for (size_t seed = 0; seed < 12; ++seed) {
+  for (size_t seed = 0; seed < seeds; ++seed) {
     const auto parents = DecompositionParents(513, 0, seed);
     CheckLayeredTree(LayeredTree(DecompositionSource(parents), 2, 1000000.0),
                      parents);
   }
+}
+
+TEST(LayeredDFUDSTest, ShapeBoundariesAndNonPreorderSources) {
+  constexpr size_t sizes[] = {1, 63, 64, 65, 127, 128, 129, 255, 256, 257};
+  CheckLayeredShapeBoundaries(sizes, 2);
+}
+
+TEST(LayeredDFUDSTest, HeavyShapeBoundariesAndNonPreorderSources) {
+  constexpr size_t sizes[] = {1,   2,   3,   31,  32,  33,  63,  64,  65,
+                              127, 128, 129, 255, 256, 257, 511, 1025};
+  CheckLayeredShapeBoundaries(sizes, 12);
 }
 
 TEST(LayeredDFUDSTest, EmptyDefaultsAndInvalidOptions) {
@@ -4594,7 +4656,15 @@ TEST(LayeredDFUDSTest, RejectsUnrepresentableSizeBeforeTraversal) {
   EXPECT_THROW((LayeredTree(Source{})), std::length_error);
 }
 
-TEST(LayeredDFUDSLargeTest, DeepAndWideWithoutRecursiveStack) {
+TEST(LayeredDFUDSTest, RejectsInconsistentSourceSize) {
+  DecompositionSource source({0, 0});
+  for (size_t size : {1u, 3u}) {
+    source.reported_size = size;
+    EXPECT_THROW((LayeredTree(source)), std::invalid_argument);
+  }
+}
+
+TEST(LayeredDFUDSLargeTest, HeavyDeepAndWideWithoutRecursiveStack) {
   const auto chain = DecompositionParents(65537, 1, 1);
   for (double budget : {0.0, 0.05, 1000000.0}) {
     const LayeredTree tree(DecompositionSource(chain), 8, budget);

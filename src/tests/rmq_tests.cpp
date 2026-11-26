@@ -278,9 +278,19 @@ struct RmqArtifactLayout {
   std::size_t candidate_count;
   std::size_t candidates;
   std::size_t has_rank_index;
+  std::size_t depth_selector_size;
   std::size_t depth_selectors;
   std::size_t depth_selector_count;
+  std::size_t depth_min_positions;
   std::size_t depth_min_depths;
+  std::size_t depth_child_count;
+  std::size_t depth_children;
+  std::size_t depth_sparse_slots;
+  std::size_t depth_summary_offsets;
+  std::size_t depth_high_offsets;
+  std::size_t depth_level_sizes;
+  std::size_t depth_level_spans;
+  std::size_t depth_high_level_begin;
   std::size_t candidate_size;
   std::size_t bp_storage_bytes;
 };
@@ -314,13 +324,38 @@ static RmqArtifactLayout locate_rmq_artifact(
     }
   }
   reader.skip(sizeof(std::uint64_t));
+  result.depth_selector_size = reader.position();
   result.depth_selector_count = reader.read_size();
   result.depth_selectors = reader.position();
   reader.skip(result.depth_selector_count * 8 * sizeof(std::uint64_t));
-  reader.skip(reader.read_size() * sizeof(std::uint64_t));
+  const std::size_t min_position_count = reader.read_size();
+  result.depth_min_positions = reader.position();
+  reader.skip(min_position_count * sizeof(std::uint64_t));
   const std::size_t min_depth_count = reader.read_size();
   result.depth_min_depths = reader.position();
   reader.skip(min_depth_count * sizeof(std::int64_t));
+  result.depth_child_count = reader.position();
+  const std::size_t child_count = reader.read_size();
+  result.depth_children = reader.position();
+  reader.skip(child_count * 4 * sizeof(std::uint64_t));
+  const std::size_t sparse_slot_count = reader.read_size();
+  result.depth_sparse_slots = reader.position();
+  reader.skip(sparse_slot_count);
+  reader.skip(reader.read_size() * sizeof(std::uint64_t));  // Internal offsets.
+  const auto summary_count = reader.read_size();
+  result.depth_summary_offsets = reader.position();
+  reader.skip(summary_count * sizeof(std::uint64_t));
+  const auto high_count = reader.read_size();
+  result.depth_high_offsets = reader.position();
+  reader.skip(high_count * sizeof(std::uint64_t));
+  const std::size_t level_count = reader.read_size();
+  result.depth_level_sizes = reader.position();
+  reader.skip(level_count * sizeof(std::uint64_t));
+  const auto span_count = reader.read_size();
+  result.depth_level_spans = reader.position();
+  reader.skip(span_count * sizeof(std::uint64_t));
+  reader.skip(reader.read_size() * sizeof(std::uint64_t));  // Fanouts.
+  result.depth_high_level_begin = reader.position();
   return result;
 }
 
@@ -632,6 +667,14 @@ TEST(RmqSerializationTest, RejectsMalformedIndexMetadataTransactionally) {
                 layout.bp_storage_bytes - 1);
   expect_rejected(std::move(misaligned_storage));
 
+  auto extra_bp_word = valid;
+  extra_bp_word.insert(extra_bp_word.begin() + layout.candidate_count,
+                       sizeof(std::uint64_t), std::byte{0});
+  overwrite_u64(extra_bp_word, layout.bp_storage_size,
+                layout.bp_storage_bytes + sizeof(std::uint64_t));
+  overwrite_u64(extra_bp_word, 2 * sizeof(std::uint64_t), extra_bp_word.size());
+  expect_rejected(std::move(extra_bp_word));
+
   auto insufficient_storage = valid;
   overwrite_u64(insufficient_storage, layout.bp_bit_count,
                 layout.bp_storage_bytes * 8 + 64);
@@ -656,6 +699,37 @@ TEST(RmqSerializationTest, RejectsMalformedIndexMetadataTransactionally) {
   auto invalid_marker = valid;
   invalid_marker[layout.has_rank_index] = std::byte{2};
   expect_rejected(std::move(invalid_marker));
+
+  for (const auto& [offset, replacement] :
+       {std::pair{layout.candidate_count, valid.size()},
+        std::pair{layout.depth_selector_size, valid.size()},
+        std::pair{layout.depth_child_count, valid.size()},
+        std::pair{layout.depth_min_positions, 2 * values.size() + 1},
+        std::pair{layout.depth_children, std::size_t{1}},
+        std::pair{layout.depth_level_sizes, std::size_t{0}},
+        std::pair{layout.depth_level_spans + sizeof(std::uint64_t),
+                  std::size_t{0}},
+        std::pair{layout.depth_summary_offsets + sizeof(std::uint64_t),
+                  std::size_t{1}},
+        std::pair{layout.depth_high_offsets + sizeof(std::uint64_t),
+                  std::size_t{1}},
+        std::pair{layout.depth_high_level_begin, std::size_t{0}}}) {
+    SCOPED_TRACE(offset);
+    auto invalid_depth_metadata = valid;
+    overwrite_u64(invalid_depth_metadata, offset, replacement);
+    expect_rejected(std::move(invalid_depth_metadata));
+  }
+  for (const auto count_offset :
+       {layout.candidate_count, layout.depth_selector_size,
+        layout.depth_child_count}) {
+    SCOPED_TRACE(count_offset);
+    auto excessive_count = valid;
+    overwrite_u64(excessive_count, count_offset, UINT64_MAX);
+    pixie::BinaryReader reader(excessive_count);
+    EXPECT_THROW((void)SerializableRmq::deserialize(reader, values),
+                 std::length_error);
+    EXPECT_EQ(reader.position(), 0u);
+  }
 
   auto invalid_candidate = valid;
   overwrite_u64(invalid_candidate, layout.candidates, values.size());
@@ -686,6 +760,21 @@ TEST(RmqSerializationTest, RejectsMalformedIndexMetadataTransactionally) {
       std::invalid_argument);
   EXPECT_EQ(exact_full_reader.position(), 0u);
 
+  auto incorrect_sparse_minimum = valid;
+  overwrite_u64(incorrect_sparse_minimum,
+                layout.candidates + 2 * sizeof(std::uint64_t),
+                values.size() - 1);
+  pixie::BinaryReader sparse_quick(incorrect_sparse_minimum);
+  EXPECT_NO_THROW((void)SerializableRmq::deserialize(
+      sparse_quick, values, pixie::DeserializationValidation::kQuick));
+  EXPECT_TRUE(sparse_quick.empty());
+  pixie::BinaryReader sparse_full(incorrect_sparse_minimum);
+  EXPECT_THROW(
+      (void)SerializableRmq::deserialize(
+          sparse_full, values, pixie::DeserializationValidation::kFull),
+      std::invalid_argument);
+  EXPECT_EQ(sparse_full.position(), 0u);
+
   auto wrong_depth_selector = valid;
   wrong_depth_selector[layout.depth_selectors] ^= std::byte{1};
   pixie::BinaryReader selector_quick_reader(wrong_depth_selector);
@@ -709,6 +798,25 @@ TEST(RmqSerializationTest, RejectsMalformedIndexMetadataTransactionally) {
       std::invalid_argument);
   EXPECT_EQ(depth_full_reader.position(), 0u);
 
+  // The quick check verifies child extents and positions. The full check also
+  // recomputes child depths and sparse selector entries.
+  for (const std::size_t offset :
+       {layout.depth_children + 3 * sizeof(std::uint64_t),
+        layout.depth_sparse_slots}) {
+    SCOPED_TRACE(offset);
+    auto wrong_summary = valid;
+    wrong_summary[offset] ^= std::byte{1};
+    pixie::BinaryReader quick(wrong_summary);
+    EXPECT_NO_THROW((void)SerializableRmq::deserialize(
+        quick, values, pixie::DeserializationValidation::kQuick));
+    EXPECT_TRUE(quick.empty());
+    pixie::BinaryReader full(wrong_summary);
+    EXPECT_THROW((void)SerializableRmq::deserialize(
+                     full, values, pixie::DeserializationValidation::kFull),
+                 std::invalid_argument);
+    EXPECT_EQ(full.position(), 0u);
+  }
+
   const std::vector<std::int64_t> empty_values;
   const SerializableRmq empty(empty_values);
   std::vector<std::byte> invalid_empty = serialize_rmq(empty);
@@ -718,6 +826,14 @@ TEST(RmqSerializationTest, RejectsMalformedIndexMetadataTransactionally) {
   EXPECT_THROW((void)SerializableRmq::deserialize(empty_reader, empty_values),
                std::invalid_argument);
   EXPECT_EQ(empty_reader.position(), 0u);
+
+  auto invalid_empty_depth = serialize_rmq(empty);
+  overwrite_u64(invalid_empty_depth, empty_layout.depth_high_level_begin, 0);
+  pixie::BinaryReader empty_depth_reader(invalid_empty_depth);
+  EXPECT_THROW(
+      (void)SerializableRmq::deserialize(empty_depth_reader, empty_values),
+      std::invalid_argument);
+  EXPECT_EQ(empty_depth_reader.position(), 0u);
 }
 
 template <class Case>
@@ -1234,6 +1350,7 @@ TEST(RmqHybridBTree, BorderCorrectionForLeafSelectorVariants) {
 
 TEST(RmqHybridBTree, MiddleFanoutBoundaryRanges) {
   using Rmq = pixie::rmq::HybridBTree<int>;
+  using MaxRmq = pixie::rmq::HybridBTree<int, std::greater<int>>;
   constexpr std::size_t kLeaf = Rmq::kLeafSize;
   constexpr std::size_t kMiddleBoundary = kLeaf * Rmq::kMiddleFanout;
 
@@ -1244,8 +1361,12 @@ TEST(RmqHybridBTree, MiddleFanoutBoundaryRanges) {
   values[13] = -100;
   values[kMiddleBoundary - 29] = -90;
   values[kMiddleBoundary + kLeaf + 7] = -110;
+  values[kMiddleBoundary - 33] = 20000;
+  values[kMiddleBoundary + kLeaf + 32] = 20000;
 
-  const Rmq rmq{std::span<const int>(values)};
+  const std::span<const int> source(values);
+  const Rmq rmq(source);
+  const MaxRmq max_rmq(source);
   const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
       {0, values.size()},
       {kMiddleBoundary - 2 * kLeaf, kMiddleBoundary + 2 * kLeaf},
@@ -1256,11 +1377,62 @@ TEST(RmqHybridBTree, MiddleFanoutBoundaryRanges) {
   };
 
   for (const auto& [left, right] : ranges) {
-    const std::size_t expected = naive_arg_min(std::span<const int>(values),
-                                               left, right, std::less<int>());
-    EXPECT_EQ(rmq.arg_min(left, right), expected)
-        << "range=[" << left << "," << right << ")";
+    SCOPED_TRACE(::testing::Message() << left << ".." << right);
+    EXPECT_EQ(rmq.arg_min(left, right),
+              naive_arg_min(source, left, right, std::less<int>()));
+    EXPECT_EQ(max_rmq.arg_min(left, right),
+              naive_arg_min(source, left, right, std::greater<int>()));
   }
+}
+
+TEST(RmqHybridBTree, QueriesEndingAtPackedSelectorBoundaries) {
+  using Rmq = pixie::rmq::HybridBTree<int>;
+  constexpr std::size_t leaf = Rmq::kLeafSize;
+  for (std::size_t children : {64u, 128u, 192u}) {
+    SCOPED_TRACE(children);
+    std::vector<int> values(children * leaf, 0);
+    // Exclude the first child's cached minimum, then include a tie between
+    // the last two children and cut the final query short of that tie.
+    const auto begin = values.size() - 3 * leaf;
+    values[begin] = -3;
+    values[begin + leaf + 1] = -2;
+    values.back() = -2;
+    const Rmq rmq(values);
+    for (std::size_t end : {values.size() - 1, values.size()}) {
+      EXPECT_EQ(rmq.arg_min(begin + 3, end), begin + leaf + 1);
+      EXPECT_EQ(rmq.arg_min(begin + leaf + 2, end),
+                end == values.size() ? end - 1 : begin + leaf + 2);
+    }
+  }
+}
+
+TEST(RmqHybridBTree, RejectsValuesBeyondItsIndexType) {
+  using Rmq = pixie::rmq::HybridBTree<int, std::less<int>, std::uint16_t, 248>;
+  constexpr std::size_t max_size = std::numeric_limits<std::uint16_t>::max();
+  constexpr auto leaf = Rmq::kLeafSize;
+  constexpr auto middle = leaf * Rmq::kMiddleFanout;
+  std::vector<int> values(max_size + 1);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    values[i] = static_cast<int>((7 * i + i / 83) % 509);
+  }
+  values[max_size - 1] = -1;
+  for (std::size_t size : {std::size_t{0}, leaf + 1, max_size}) {
+    SCOPED_TRACE(size);
+    const auto source = std::span<const int>(values).first(size);
+    const Rmq fits(source);
+    EXPECT_EQ(fits.size(), size);
+    const std::pair<std::size_t, std::size_t> ranges[] = {
+        {0, size},
+        {leaf - 1, leaf + 1},
+        {1, size},
+        {size / 2, size},
+        {middle - 4, middle + 7}};
+    for (const auto& [left, right] : ranges) {
+      EXPECT_EQ(fits.arg_min(left, right),
+                naive_arg_min(source, left, right, std::less<int>()));
+    }
+  }
+  EXPECT_THROW((void)Rmq(values), std::length_error);
 }
 
 TEST(RmqHybridBTree, TopSparseOverlayBoundaryRanges) {
@@ -1521,7 +1693,7 @@ TEST(RmqCartesianHybridBTree, DuplicateHeavyRandomDifferentialTo8193) {
 
 TEST(RmqCartesianHybridBTree, DepthBackendDirectPaths) {
   using HighSparseBackend =
-      pixie::rmq::detail::HybridBTreePlusMinusOne<std::size_t, 512, true, 1>;
+      pixie::rmq::detail::HybridBTreePlusMinusOne<std::size_t>;
   constexpr std::size_t kDepthCount = 3 * 512 + 17;
 
   const std::vector<std::uint64_t> words =
@@ -1556,6 +1728,52 @@ TEST(RmqCartesianHybridBTree, DepthBackendDirectPaths) {
 
   EXPECT_THROW(HighSparseBackend(std::span<const std::uint64_t>(), 65),
                std::invalid_argument);
+  EXPECT_TRUE(HighSparseBackend(words, 0).empty());
+  const pixie::RankSelectSupport<> short_rank(words, kDepthCount - 2);
+  EXPECT_THROW((void)HighSparseBackend(words, kDepthCount, short_rank),
+               std::invalid_argument);
+  using NarrowDepthRmq =
+      pixie::rmq::detail::HybridBTreePlusMinusOne<std::uint16_t>;
+  const NarrowDepthRmq narrow(words, kDepthCount);
+  for (const auto& [left, right] : ranges) {
+    EXPECT_EQ(narrow.arg_min(left, right), high_sparse.arg_min(left, right));
+  }
+  const auto expected_max = std::numeric_limits<std::uint16_t>::max();
+  EXPECT_THROW((void)NarrowDepthRmq(words, std::size_t{expected_max} + 1),
+               std::length_error);
+}
+
+TEST(RmqCartesianHybridBTree, DepthQueriesAcrossMiddleLevel) {
+  using DepthRmq = pixie::rmq::detail::HybridBTreePlusMinusOne<std::size_t>;
+  constexpr std::size_t leaf = DepthRmq::kLeafSize;
+  constexpr std::size_t middle_span = leaf * DepthRmq::kMiddleFanout;
+  constexpr std::size_t high_fanout = DepthRmq::kHighLevelFanout;
+  constexpr std::size_t depth_count = leaf * high_fanout * high_fanout + 17;
+
+  // Use packed deltas to get a middle level with only 4 MiB of source bits.
+  // Insert deeper minima at the ends of the first middle node.
+  std::vector<std::uint64_t> words((depth_count + 62) / 64, 0x5555555555555555);
+  words[0] = 0;
+  words[1] = UINT64_MAX;
+  words[middle_span / 64 - 2] = 0;
+  words[middle_span / 64 - 1] = UINT64_MAX;
+  const DepthRmq rmq(words, depth_count);
+
+  const std::pair<std::size_t, std::size_t> ranges[] = {
+      {0, middle_span},
+      {leaf - 7, middle_span - 128},
+      {middle_span - 129, middle_span + leaf + 13},
+      {middle_span, 2 * middle_span},
+      {depth_count - 2 * leaf, depth_count},
+  };
+  for (const auto& [left, right] : ranges) {
+    SCOPED_TRACE(::testing::Message() << left << ".." << right);
+    const std::size_t base = left / 64 * 64;
+    const auto depths = depths_from_delta_bits(
+        std::span(words).subspan(base / 64), right - base);
+    EXPECT_EQ(rmq.arg_min(left, right),
+              base + naive_depth_arg_min(depths, left - base, right - base));
+  }
 }
 
 TEST(RmqCartesianHybridBTree, BpStorageIsCacheLineAligned) {
@@ -1668,20 +1886,26 @@ TEST(RmqCartesianHybridBTree, TopSparseOverlayCapsBlockCount) {
 
 TEST(RmqCartesianHybridBTree, TopSparseOverlayComparatorMaximum) {
   using Rmq = pixie::rmq::CartesianHybridBTree<int, std::greater<int>>;
-  constexpr std::size_t kTopBlock = 4096;
-  std::vector<int> values(2 * kTopBlock + 33, -1000);
+  constexpr std::size_t kTopBlock = Rmq::kMinTopSparseBlockSize;
+  constexpr std::size_t kDepthBoundary = 65536;
+  std::vector<int> values(kDepthBoundary + 33, -1000);
   for (std::size_t i = 0; i < values.size(); ++i) {
     values[i] = -1000 + static_cast<int>((i * 13 + i / 5) % 71);
   }
   values[0] = 1000;
   values[kTopBlock + 17] = 900;
   values[kTopBlock + 18] = 900;
+  values[kDepthBoundary - 37] = 950;
+  values[kDepthBoundary + 7] = 950;
 
   const Rmq rmq(values);
   const std::vector<std::pair<std::size_t, std::size_t>> ranges = {
       {1, values.size()},
       {kTopBlock, kTopBlock + 100},
       {kTopBlock + 18, values.size()},
+      {kDepthBoundary - 39, kDepthBoundary + 11},
+      {kDepthBoundary - 36, kDepthBoundary + 7},
+      {kDepthBoundary - 36, kDepthBoundary + 8},
       {0, values.size()},
   };
 

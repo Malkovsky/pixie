@@ -7,9 +7,8 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 
-#if defined(PIXIE_AVX512_SUPPORT) && defined(__AVX512VBMI__)
+#if defined(__AVX512BW__) && defined(__AVX512VBMI__)
 #include <immintrin.h>
 #endif
 
@@ -41,14 +40,15 @@ alignas(64) inline constexpr auto kPrefixHighBytes = [] {
 }();
 
 // The selected superblock must be nonhomogeneous, with uniformly packed local
-// ends. This excludes the zero terminal alias. Unsupported targets return no
-// result so callers retain the established scalar interpolation/correction.
-template <bool Zero>
-inline std::optional<PackedPrefixLocation> packed_prefix_search(
+// ends. This excludes the zero terminal alias. The scalar locator is used in
+// builds that lack the instructions for the packed search.
+template <bool Zero, class LocateScalar>
+inline PackedPrefixLocation packed_prefix_search(
     const std::uint64_t* record,
     std::uint64_t target,
-    std::size_t valid_bits) {
-#if defined(PIXIE_AVX512_SUPPORT) && defined(__AVX512VBMI__)
+    std::size_t valid_bits,
+    [[maybe_unused]] const LocateScalar& locate_scalar) {
+#if defined(__AVX512BW__) && defined(__AVX512VBMI__)
   const auto packed = _mm512_loadu_si512(record);
   const auto low = _mm512_permutexvar_epi8(
       _mm512_load_si512(kPrefixLowBytes.data()), packed);
@@ -83,7 +83,7 @@ inline std::optional<PackedPrefixLocation> packed_prefix_search(
   (void)record;
   (void)target;
   (void)valid_bits;
-  return std::nullopt;
+  return locate_scalar();
 #endif
 }
 
